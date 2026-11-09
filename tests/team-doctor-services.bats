@@ -273,7 +273,7 @@ EOF
   assert_contains "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent_path_override does not name"
   # The gate's agent must be opencode or claude: auto, another agent or none runs the gate on a
   # setup the team does not check.
-  local agent_fix="Daniel sets agent: opencode in ~/.no-mistakes/config.yaml (then $tools names the wrapper in it), or agent: claude with agent_args_override: {claude: [--setting-sources, \"project,local\", --strict-mcp-config]}"
+  local agent_fix="Daniel sets agent: opencode in ~/.no-mistakes/config.yaml (then $tools names the wrapper in it), or agent: claude with agent_args_override: {claude: [--setting-sources, \"project,local\", --strict-mcp-config, --settings, $CODE_CHECKOUT/bin/lib/gate-claude-settings.json]}"
   printf '%s\n' 'agent: auto # first found' 'agent_path_override:' "  opencode: $wrapper" >"$config"
   run_bin -1 team-doctor
   assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent is auto, neither opencode nor claude, so the gate runs on neither setup the team checks; fix: $agent_fix"
@@ -318,20 +318,81 @@ EOF
   assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
 }
 
+@test "on a Claude gate the gate-agent line requires --settings naming a file with commit attribution off" {
+  only_checks 170-gate-agent.sh
+  tools_at arch
+  rm "$HOME/.no-mistakes/bin/opencode-gate"
+  local config=$HOME/.no-mistakes/config.yaml settings=$BATS_TEST_TMPDIR/gate-settings.json
+  local off=$CODE_CHECKOUT/bin/lib/gate-claude-settings.json
+  local sources='--setting-sources, "project,local", --strict-mcp-config'
+  local fail="FAIL gate-agent: ~/.no-mistakes/config.yaml runs the gate on claude, but its agent_args_override.claude lacks --settings naming a file whose attribution.commit is empty, so the gate's own commits carry no agent line; fix: Daniel sets agent_args_override: {claude: [--setting-sources, \"project,local\", --strict-mcp-config, --settings, $off]} in ~/.no-mistakes/config.yaml"
+  jq -e '.attribution.commit == ""' "$off" >/dev/null
+
+  # The code's file passes.
+  printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources, --settings, $off]}" >"$config"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project,local, --strict-mcp-config and commit attribution off, and claude is installed"
+
+  # With no --settings at all and nothing else lacking, it only warns, so a resume goes on until
+  # Daniel adds it: team-merge still refuses a commit that carries the line.
+  printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources]}" >"$config"
+  run_bin -0 team-doctor
+  local fix=${fail##*; fix: }
+  assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project,local and --strict-mcp-config, but its agent_args_override.claude has no --settings naming a file whose attribution.commit is empty, so the gate's own commits may carry an agent line, which team-merge refuses; fix: $fix"
+  # With a stray item too, the warning names both.
+  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--setting-sources, project,local, --strict-mcp-config]}' >"$config"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, but its agent_args_override.claude has no --settings naming"
+  assert_contains "$(line_of gate-agent)" "which team-merge refuses, and it has local right after --setting-sources project, which claude takes as an argument of its own"
+  # --settings last, with no value.
+  printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources, --settings]}" >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$fail"
+  # A file that is not there, is not JSON, or leaves attribution on or unset fails.
+  local content
+  for content in '' 'not json' '{}' '{"attribution": {"commit": "Co-Authored-By: Claude"}}' '{"attribution": {"sessionUrl": false}}'; do
+    printf '%s' "$content" >"$settings"
+    printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources, --settings, $settings]}" >"$config"
+    run_bin -1 team-doctor
+    assert_equal "$(line_of gate-agent)" "$fail"
+  done
+  printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources, --settings, $BATS_TEST_TMPDIR/no-such.json]}" >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$fail"
+  # One of two with attribution on is enough, and the = form counts.
+  printf '%s' '{}' >"$settings"
+  printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources, --settings, $off, \"--settings=$settings\"]}" >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$fail"
+  # Any file with attribution off passes.
+  printf '%s' '{"attribution": {"commit": ""}}' >"$settings"
+  printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources, \"--settings=$settings\"]}" >"$config"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of gate-agent)" "PASS gate-agent:"
+
+  # An opencode gate never reads it.
+  printf '%s\n' 'agent: opencode' "agent_path_override: {opencode: $HOME/.no-mistakes/bin/opencode-gate}" >"$config"
+  install -m 755 "$CODE_CHECKOUT/bin/lib/opencode-gate" "$HOME/.no-mistakes/bin/opencode-gate"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on opencode"
+}
+
 @test "on a Claude gate the gate-agent line passes only while claude is installed and its flags keep it off Daniel's user settings and MCP servers" {
   only_checks 170-gate-agent.sh
   local config=$HOME/.no-mistakes/config.yaml
-  local args='agent_args_override: {claude: [--setting-sources, "project,local", --strict-mcp-config]}'
-  local pass="PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project,local and --strict-mcp-config, and claude is installed"
+  local off=$CODE_CHECKOUT/bin/lib/gate-claude-settings.json
+  local args="agent_args_override: {claude: [--setting-sources, \"project,local\", --strict-mcp-config, --settings, $off]}"
+  local pass="PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project,local, --strict-mcp-config and commit attribution off, and claude is installed"
   local user_lack="--setting-sources with sources that leave out user, so the gate's claude loads Daniel's user settings (their hooks, the Discord plugin, Remote Control)"
   local strict_lack="--strict-mcp-config, so the gate's claude loads Daniel's MCP servers"
+  local settings_lack="--settings naming a file whose attribution.commit is empty, so the gate's own commits carry no agent line"
   local lacks="FAIL gate-agent: ~/.no-mistakes/config.yaml runs the gate on claude, but its agent_args_override.claude lacks"
   local fix="fix: Daniel sets $args in ~/.no-mistakes/config.yaml"
   tools_at arch
   # Claude's setup needs no wrapper and no agent_path_override; the token is never printed.
   rm "$HOME/.no-mistakes/bin/opencode-gate"
   printf '%s\n' 'agent: claude' 'api_token: fake-token-123' 'agent_config:' '  claude:' '    model: claude-haiku-5-5' \
-    'agent_args_override:' '  claude:' '    - --setting-sources' '    - project,local' '    - --strict-mcp-config' >"$config"
+    'agent_args_override:' '  claude:' '    - --setting-sources' '    - project,local' '    - --strict-mcp-config' '    - --settings' "    - $off" >"$config"
   # The whole doctor, since the token's absence is asserted of every line.
   TEAM_DOCTOR_CHECKS='' run_bin -0 team-doctor
   assert_equal "$(line_of gate-agent)" "$pass"
@@ -340,28 +401,28 @@ EOF
   printf '%s\n' "agent: 'claude'  # the trial" "$args" >"$config"
   run_bin -0 team-doctor
   assert_equal "$(line_of gate-agent)" "$pass"
-  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config, "--setting-sources=project"]' >"$config"
+  printf '%s\n' 'agent: claude' 'agent_args_override:' "  claude: [--strict-mcp-config, \"--setting-sources=project\", \"--settings=$off\"]" >"$config"
   run_bin -0 team-doctor
-  assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, and claude is installed"
+  assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project, --strict-mcp-config and commit attribution off, and claude is installed"
   # Unquoted in a flow sequence, project,local is two items: claude gets project alone, and local
   # as an argument of its own, which warns.
-  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--setting-sources, project,local, --strict-mcp-config]}' >"$config"
+  printf '%s\n' 'agent: claude' "agent_args_override: {claude: [--setting-sources, project,local, --strict-mcp-config, --settings, $off]}" >"$config"
   run_bin -0 team-doctor
-  assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, but agent_args_override.claude has local right after --setting-sources project, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items); fix: Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $args"
-  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--setting-sources=project,local, --strict-mcp-config]}' >"$config"
+  assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project, --strict-mcp-config and commit attribution off, but agent_args_override.claude has local right after --setting-sources project, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items); fix: Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $args"
+  printf '%s\n' 'agent: claude' "agent_args_override: {claude: [--setting-sources=project,local, --strict-mcp-config, --settings, $off]}" >"$config"
   run_bin -0 team-doctor
-  assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, but agent_args_override.claude has local right after --setting-sources=project, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items); fix: Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $args"
+  assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project, --strict-mcp-config and commit attribution off, but agent_args_override.claude has local right after --setting-sources=project, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items); fix: Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $args"
   # A comment inside a flow mapping leaves it open on its line: a form left to Daniel.
   printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--strict-mcp-config # , --setting-sources, project]}' '  ]}' >"$config"
   run_bin -1 team-doctor
   assert_contains "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent_args_override is in a form team-doctor does not read"
   # A flag after the sources is no stray argument.
-  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--setting-sources, project, --model, sonnet, --strict-mcp-config]' >"$config"
+  printf '%s\n' 'agent: claude' 'agent_args_override:' "  claude: [--setting-sources, project, --model, sonnet, --strict-mcp-config, --settings, $off]" >"$config"
   run_bin -0 team-doctor
-  assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, and claude is installed"
+  assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project, --strict-mcp-config and commit attribution off, and claude is installed"
   # A claude key at the top level, not agent_args_override's child, gives claude no flags; nor
   # does one in a comment or nested in another agent's list.
-  local both="$lacks --setting-sources with sources that leave out user, so the gate's claude loads Daniel's user settings (their hooks, the Discord plugin, Remote Control); --strict-mcp-config, so the gate's claude loads Daniel's MCP servers; $fix"
+  local both="$lacks --setting-sources with sources that leave out user, so the gate's claude loads Daniel's user settings (their hooks, the Discord plugin, Remote Control); --strict-mcp-config, so the gate's claude loads Daniel's MCP servers; $settings_lack; $fix"
   printf '%s\n' 'agent: claude' 'agent_args_override:' 'claude: [--setting-sources, project, --strict-mcp-config]' >"$config"
   run_bin -1 team-doctor
   assert_equal "$(line_of gate-agent)" "$both"
@@ -375,29 +436,29 @@ EOF
   # Either flag missing fails, naming what it lets in.
   printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude:' '    - --setting-sources' '    - project,local' >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of gate-agent)" "$lacks $strict_lack; $fix"
+  assert_equal "$(line_of gate-agent)" "$lacks $strict_lack; $settings_lack; $fix"
   printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config]' '  codex: [--setting-sources, project]' >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $fix"
+  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $settings_lack; $fix"
   # Sources that take in user, or none, are the user settings again; one such of two is enough.
   local sources
   for sources in user 'project,user' 'local, user' '' ','; do
     printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude:' '    - --setting-sources' "    - \"$sources\"" \
       '    - --strict-mcp-config' >"$config"
     run_bin -1 team-doctor
-    assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $fix"
+    assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $settings_lack; $fix"
   done
   printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--setting-sources, project, --setting-sources=user, --strict-mcp-config]' >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $fix"
+  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $settings_lack; $fix"
   # --setting-sources last, with no value.
   printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config, --setting-sources]' >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $fix"
+  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $settings_lack; $fix"
   # No agent_args_override, or none for claude: both.
   printf '%s\n' 'agent: claude' 'agent_path_override:' '  claude: /usr/bin/claude' >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $strict_lack; $fix"
+  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $strict_lack; $settings_lack; $fix"
   # A form the read leaves to Daniel.
   printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--setting-sources,' '    project, --strict-mcp-config]' >"$config"
   run_bin -1 team-doctor

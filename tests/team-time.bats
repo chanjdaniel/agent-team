@@ -499,6 +499,9 @@ preapproved_rounds() {
 # T102 (agent-team bug): planner p1020001 14:00 to the stow at 15:00 (60); builder b1020001 from
 # 16:00, running at 20:00 (240 so far, building), its done at 21:00 after the window.
 # Minutes by role: builder 300, 60, 46, 40, 30; reviewer 90, 40, 20, 30; planner 30, 60.
+# Toolkits: b1000001, r1000001, b1010001 and b1010002 carry codegraph; r1000002 codegraph, browser
+# and codegraph again (browser+codegraph); b1020001 browser; b1010003 is a legacy launch with no
+# toolkits field; every other launch an empty list.
 workers_json() {
   cp "$BATS_TEST_DIRNAME/fixtures/ledger-workers.jsonl" "$TEAM_HOME/ledger.jsonl"
   time_json --until 2026-10-28T20:00:00Z "$@"
@@ -522,12 +525,40 @@ workers_json() {
       $'T102\tplanner\tp1020001\tagent-team\tbug\tdefault\t2026-10-28T14:00:00Z\t2026-10-28T15:00:00Z\tstowed\t60\t0\tnull'
   )"
   assert_equal "$(jq -c '[.workers.lifetimes[] | keys_unsorted] | unique' <<<"$json")" \
-    '[["task","project","path","role","session","model","start","end","ended","minutes","rounds","first_done_minutes","phases","transcript"]]'
+    '[["task","project","path","role","session","model","toolkits","start","end","ended","minutes","rounds","first_done_minutes","phases","transcript"]]'
   # Without --since, the lifetimes that ended before 10-28 are in the window too; a done and its
   # ticket-done or pr are one round.
   json=$(workers_json)
   assert_equal "$(jq -c '[.workers.lifetimes[] | select(.task == "T96" or .task == "T98") | [.session, .end, .ended, .minutes, .rounds, .first_done_minutes]]' <<<"$json")" \
     '[["b0960001","2026-10-27T08:30:00Z","done",30,1,30],["b0960002","2026-10-27T09:31:00Z","done",31,1,30],["b0980001","2026-10-27T23:00:00Z","done",180,1,180],["r0980001","2026-10-28T00:30:00Z","done",90,1,90]]'
+}
+
+@test "a worker's stow ends a builder's or a planner's lifetime there, never a reviewer's" {
+  printf '%s\n' \
+    '{"ts":"2026-10-28T10:00:00Z","task":"T7","event":"opened","project":"agent-team","path":"small","type":"fix","title":"x","branch":"fix/T7-x","base":"dev","base_sha":"0123456","worktree":"/w/1"}' \
+    '{"ts":"2026-10-28T10:00:00Z","task":"T7","event":"launch","role":"planner","session":"p0070001","worktree":"/w/1","toolkits":[]}' \
+    '{"ts":"2026-10-28T10:10:00Z","task":"T7","event":"launch","role":"reviewer","session":"r0070001","worktree":"/w/1","toolkits":[]}' \
+    '{"ts":"2026-10-28T10:30:00Z","task":"T7","event":"paused","reason":"stowed: the level fell"}' \
+    '{"ts":"2026-10-28T12:00:00Z","task":"T7","event":"launch","role":"builder","session":"b0070001","worktree":"/w/1","toolkits":[]}' \
+    '{"ts":"2026-10-28T12:30:00Z","task":"T7","event":"paused","reason":"stowed"}' \
+    '{"ts":"2026-10-28T13:00:00Z","task":"T7","event":"paused","reason":"no room for session:reviewer"}' >"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-28T20:00:00Z)
+  assert_equal "$(jq -r '.workers.lifetimes[] | [.session, .end, .ended, .minutes] | map(. // "null") | @tsv' <<<"$json")" "$(
+    printf '%s\n' \
+      $'p0070001\t2026-10-28T10:30:00Z\tstowed\t30' \
+      $'b0070001\t2026-10-28T12:30:00Z\tstowed\t30'
+  )"
+  # A reviewer beside them runs on, since a stow names no session.
+  assert_equal "$(jq -r '.workers.running[].session' <<<"$json")" r0070001
+}
+
+@test "a team-thread wait counts as waiting for a message, in the foreground or the background" {
+  local key
+  for key in "bash team-thread wait" "background bash team-thread wait"; do
+    run -0 jq -nr -L "$REPO_ROOT/bin/lib" --arg key "$key" 'include "workers"; include "time"; include "ledger"; $key | key_class'
+    assert_equal "$output" "wait:message"
+  done
 }
 
 @test "a round's window is 5 minutes after its last event, two dones are two rounds, and a late lone ticket-done is no round" {
@@ -588,6 +619,34 @@ workers_json() {
     '["b1000001","r0980001","b1010001","p1020001","b1010002","r1000001","b1010003","p1000001","r1000003","b0990001"]'
 }
 
+@test "each lifetime carries its launch's toolkits, sorted and deduplicated, and none for a legacy launch with no field" {
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -c '[.workers.lifetimes[] | {(.session): .toolkits}] | add' <<<"$json")" "$(jq -c . <<<'{
+    "r0980001": [], "p1000001": [], "b1000001": ["codegraph"], "r1000001": ["codegraph"],
+    "r1000002": ["browser", "codegraph"], "r1000003": [], "b1010001": ["codegraph"],
+    "b1010002": ["codegraph"], "b1010003": [], "b0990001": [], "p1020001": []}')"
+  assert_equal "$(jq -c '.workers.running | map({session, toolkits})' <<<"$json")" '[{"session":"b1020001","toolkits":["browser"]}]'
+}
+
+@test "the averages by role, project and toolkits group the lifetimes by their toolkit lists, the empty list its own row" {
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -c '[.workers.stats.by_role_project_toolkits[] | keys_unsorted] | unique' <<<"$json")" \
+    '[["role","project","toolkits","workers","mean","median","p90","longest"]]'
+  assert_equal "$(jq -r '.workers.stats.by_role_project_toolkits[] | [.role, .project, (.toolkits | join("+")), .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
+    printf '%s\n' $'builder\tconventioner\tcodegraph\t2\t53\t46\t60\t60' \
+      $'builder\tagent-team\t\t1\t30\t30\t30\t30' $'builder\tagent-team\tcodegraph\t1\t300\t300\t300\t300' \
+      $'builder\tconventioner\t\t1\t40\t40\t40\t40' \
+      $'reviewer\tagent-team\t\t1\t30\t30\t30\t30' $'reviewer\tagent-team\tbrowser+codegraph\t1\t20\t20\t20\t20' \
+      $'reviewer\tagent-team\tcodegraph\t1\t40\t40\t40\t40' $'reviewer\tconventioner\t\t1\t90\t90\t90\t90' \
+      $'planner\tagent-team\t\t2\t45\t30\t60\t60'
+  )"
+  # Each row's toolkits is a list, the empty list for none.
+  assert_equal "$(jq -c '[.workers.stats.by_role_project_toolkits[] | select(.role == "builder") | .toolkits]' <<<"$json")" \
+    '[["codegraph"],[],["codegraph"],[]]'
+}
+
 @test "--task keeps that task's workers alone" {
   local json
   json=$(workers_json --task T101)
@@ -608,6 +667,15 @@ workers_json() {
   grep -Eq '^builder +agent-team +2 +165\.0 +30\.0 +300\.0 +300\.0$' <<<"$output"
   grep -Eq '^role +model +workers +mean +median +p90 +longest$' <<<"$output"
   grep -Eq '^reviewer +claude-sonnet-5-5 +1 +30\.0 +30\.0 +30\.0 +30\.0$' <<<"$output"
+  grep -Eq '^role +project +toolkits +workers +mean +median +p90 +longest$' <<<"$output"
+  grep -Eq '^builder +conventioner +codegraph +2 +53\.0 +46\.0 +60\.0 +60\.0$' <<<"$output"
+  grep -Eq '^builder +agent-team +none +1 +30\.0 +30\.0 +30\.0 +30\.0$' <<<"$output"
+  grep -Eq '^reviewer +agent-team +browser\+codegraph +1 +20\.0 +20\.0 +20\.0 +20\.0$' <<<"$output"
+  grep -Eq '^planner +agent-team +none +2 +45\.0 +30\.0 +60\.0 +60\.0$' <<<"$output"
+  # The toolkits table comes right after the model table, before the longest lifetimes.
+  local after_model=${output#*Lifetimes by role and model, minutes}
+  after_model=${after_model%%Longest lifetimes*}
+  [[ $after_model == *"Lifetimes by role, project and toolkits, minutes"* ]]
   grep -Eq '^task +role +session +path +project +minutes +ended +rounds +first done +top sinks$' <<<"$output"
   grep -Eq '^T100 +builder +b1000001 +feature +agent-team +300\.0 +done +3 +60\.0 +-$' <<<"$output"
   grep -Eq '^T100 +reviewer +r1000001 +feature +agent-team +40\.0 +review +0 +- +-$' <<<"$output"

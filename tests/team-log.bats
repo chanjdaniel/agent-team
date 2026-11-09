@@ -52,6 +52,16 @@ plan_registry() {
   } >"$TEAM_HOME/projects.toml"
 }
 
+# A code checkout of tools, at owner/tools, for run_bin to run team-log from, so the team's own
+# project is mirror by its repo and tools by its path: own_by_repo_and_path <merge_with_plan>
+own_by_repo_and_path() {
+  export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo tools dev)
+  copy_bin "$CODE_CHECKOUT/bin"
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Tools.git
+  plan_registry "$(plan_project mirror "$1" owner/tools && echo && plan_project tools false owner/elsewhere)"
+}
+
 # A project of the task, as team-open logs it: opened <task> <project> [worktree-added]
 opened() {
   jq -cn --arg task "$1" --arg project "$2" --arg event "${3:-opened}" \
@@ -156,6 +166,7 @@ worktree-returned team-close project worktree
 closed team-close archive returned kept
 merged team-merge pr merge head by
 history-rewritten team-clean-messages branch old_head head
+gate-lane-cleared team-clean-messages branch head tag
 caught-up team-catch-up url from head base
 done team-log role session
 ticket-done team-log ticket commits
@@ -237,8 +248,8 @@ TABLE
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\), memory  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*memory: the file in the task directory of the memories.*\)$' <<<"$output"
   grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel.s standing word .*every project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel withdrew .*standing word.*every project when project is all.*across the whole ledger.*\)$' <<<"$output"
+  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
+  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\|standing\)  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
@@ -250,7 +261,7 @@ TABLE
   grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
   grep -Eq '^  ran +team-run-approved +id, exit \(number\)  \(.*\)$' <<<"$output"
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
-  grep -Eq '^  resumed +team-log, team-answer +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
+  grep -Eq '^  resumed +team-log, team-answer +-; optional brief +\(clears held, blocked, paused and waiting; brief: ' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
   grep -Eq '^  denied +team-log, denial-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked; denial-log, every worker.s PermissionDenied hook, .*never the tool.s input\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
@@ -739,11 +750,7 @@ LINES
   assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
 
   # By repo, which --check does not read, the key set to true; and by path, at the code checkout.
-  export CODE_CHECKOUT
-  CODE_CHECKOUT=$(make_repo tools dev)
-  copy_bin "$CODE_CHECKOUT/bin"
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Tools.git
-  plan_registry "$(plan_project mirror true owner/tools && echo && plan_project tools false owner/elsewhere)"
+  own_by_repo_and_path true
   opened T14 mirror worktree-added
   opened T14 tools worktree-added
   run_bin -1 team-log T14 merge-preapproved project=mirror ask=plan discord_message="$(soon)" 'scope=["src/"]'
@@ -899,6 +906,35 @@ merge-standing conv"
   assert_equal "$output" "team-log: projects.toml names a project all, so project=all cannot say every project"
   assert_equal "$(standing_events)" ""
   run_bin -0 team-log T14 merge-standing project=proj discord_message="$(soon)" discord_channel=1563000000000000002
+}
+
+@test "merge-standing and its withdrawal are refused for the team's own project, by name, by repo and by path, and all is logged beside it" {
+  local kind said=(discord_message="$(soon)" discord_channel="$COORDINATOR")
+  plan_registry "$(plan_project agent-team false)"
+  for kind in merge-standing merge-standing-withdrawn; do
+    run_bin -1 team-log T14 $kind project=agent-team "${said[@]}"
+    assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
+  done
+
+  # By repo, the origin of the code checkout team-log runs from; and by path, at that checkout.
+  own_by_repo_and_path false
+  for kind in merge-standing merge-standing-withdrawn; do
+    run_bin -1 team-log T14 $kind project=mirror "${said[@]}"
+    assert_equal "$output" "team-log: mirror is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
+    run_bin -1 team-log T14 $kind project=tools "${said[@]}"
+    assert_equal "$output" "team-log: tools is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
+  done
+  assert_equal "$(standing_events)" ""
+
+  # Every project, and a project not the team's own, are logged as before.
+  run_bin -0 team-log T14 merge-standing project=all "${said[@]}"
+  run_bin -0 team-log T14 merge-standing project=proj "${said[@]}"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
+  assert_equal "$(standing_events)" "merge-standing all
+merge-standing proj
+merge-standing-withdrawn proj
+merge-standing-withdrawn all"
 }
 
 @test "merge-standing-withdrawn needs a standing word for its project, or for any project when it withdraws all" {
@@ -1697,4 +1733,41 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   run_bin -2 team-log T7 --print
   assert_contains "$output" "--print is taken only with --from-message"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 3
+}
+
+@test "refused in a worker session, whatever its role and form, --print and --check included; --help and the coordinator are not" {
+  worker_refused team-log "runs no team-log" T7 review verdict=pass
+  worker_refused team-log "runs no team-log" T7 --from-message 'T7 DONE 01 abc1234 the ticket' --print
+  worker_refused team-log "runs no team-log" --check
+  worker_refused team-log "runs no team-log" --fix-sent-back
+  AGENT_TEAM_ROLE=builder run_bin -0 team-log --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-log")"
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-log T14 resumed
+  assert_equal "$(ledger_without_ts)" '{"task":"T14","event":"resumed"}'
+}
+
+@test "an event holding an address at a public provider is refused, naming its field and never the value, since the records hook would refuse every later ledger commit" {
+  open_t7
+  provider=gmail.com
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T7 waiting on=Daniel "reason=mail someone.else@$provider about the key"
+  assert_contains "$output" "team-log: refusing a ledger event: reason holds 1 email address at a public provider"
+  [[ $output != *someone.else* ]]
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # Two string fields are both named (a list's item, tests/ledger.bats).
+  run_bin -1 team-log T7 paused "reason=from a@$provider" "note=and b@$provider, c@$provider"
+  assert_contains "$output" "refusing a ledger event: reason holds 1 email address at a public provider; note holds 2 email addresses at a public provider"
+  [[ $output != *"@$provider"* ]]
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # What the hook takes is taken: a fixture address, a service, and the team home's own user.email.
+  run_bin -0 team-log T7 waiting on=Daniel "reason=mail team@example.com, noreply@$provider"
+  git init -q "$TEAM_HOME"
+  git -C "$TEAM_HOME" config user.email "daniel@$provider"
+  run_bin -0 team-log T7 waiting on=Daniel "reason=mail daniel@$provider"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$(($(wc -l <<<"$before") + 2))"
+  # The line is judged as written, as the hook reads it: a control character right before the
+  # owner's address is written as an escape, whose last letters run into the address's name.
+  run_bin -1 team-log T7 waiting on=Daniel "reason=mail "$'\x01'"daniel@$provider"
+  assert_contains "$output" "team-log: refusing a ledger event: reason holds 1 email address at a public provider"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$(($(wc -l <<<"$before") + 2))"
 }

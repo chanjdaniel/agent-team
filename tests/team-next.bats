@@ -529,7 +529,7 @@ launched T7-reviewer c0000001"
   # The plan's Disclosure section is a comment only, as the template leaves it: not a Disclosure task.
   printf '%s\n' "" "## Disclosure" "" "<!-- Only for a security change; delete otherwise. -->" >>"$TEAM_HOME/tasks/T7/plan.md"
   run_bin -1 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready $head"
-  assert_contains "$stderr" "pr (T7 has no pr event in owner/proj; --set pr=)"
+  assert_contains "$stderr" "pr (T7 has no open PR in owner/proj; --set pr=)"
   assert_equal "$(bg_calls | wc -l)" 0
   printf '%s\n' "" "Describe it as hardening the input checks." >>"$TEAM_HOME/tasks/T7/plan.md"
   run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready $head"
@@ -828,7 +828,7 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_contains "$output" "logged review verdict=pass head=$sha"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+    "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   # Past 250k, the holder stows and a fresh builder takes the brief.
   live b0000001 260000
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
@@ -850,14 +850,14 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_contains "$output" "logged review verdict=pass head=$sha"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main (whether the merge is clean is not known: the PR's branch feat/T7-toil and main cannot be fetched into $primary: fatal: couldn't find remote ref refs/heads/feat/T7-toil), so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+    "merge base: $url is 3 behind main (whether the merge is clean is not known: the PR's branch feat/T7-toil and main cannot be fetched into $primary: fatal: couldn't find remote ref refs/heads/feat/T7-toil), so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   # A head git cannot read once fetched: base_merge's line is the reason.
   on_origin
   reviewing 0123456789abcdef0123456789abcdef01234567
   pr_on_github 0123456789abcdef0123456789abcdef01234567 3
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main (whether the merge is clean is not known: merge-tree: 0123456789abcdef0123456789abcdef01234567 - not something we can merge), so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+    "merge base: $url is 3 behind main (whether the merge is clean is not known: merge-tree: 0123456789abcdef0123456789abcdef01234567 - not something we can merge), so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   assert_equal "$(outside_calls)" ""
 }
 
@@ -997,6 +997,18 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
     "merge on the standing word: run team-merge T7 for $url at $sha, agent-review success, checks green"
 }
 
+@test "a pass on a PR of the team's own project is the merge ask under a standing word on every project" {
+  event merge-standing '{project: "all", discord_message: "1563000000000000050", discord_channel: "1563000000000000012"}'
+  # proj's repo is the code checkout's origin, so proj is the team's own.
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
+  [[ $output != *"standing word"* ]]
+}
+
 @test "a pass with no PR yet, a gated project's, tells the holding builder to go on" {
   sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"
   jq -cn --arg h "$sha" '{template: "reviewer", project: "proj", values: {head: $h}}' >"$TEAM_HOME/tasks/T7/brief-review.json"
@@ -1006,6 +1018,36 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   assert_equal "$(tail -n 1 <<<"$output")" \
     "send to T7-builder (b0000001, 90k): T7 the review of ${sha:0:8} passed: go on with your delivery"
   assert_equal "$(stub_calls gh)" ""
+}
+
+@test "a later phase after a merged PR: its review-ready gets the pre-gate re-review naming no PR, and its pass sends the builder on" {
+  sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"
+  reviewing "$sha"
+  review_logged pass "$sha" '[]'
+  event 'done' '{role: "reviewer", session: "r0000002"}'
+  event merged "$(jq -cn --arg url "$url" --arg h "$sha" '{pr: 9, url: $url, merge: "abc1234", head: $h, approval: "head"}')"
+  # GitHub says the first phase's PR is merged, and nothing else may be read of it.
+  export GH_HEAD=$sha
+  stub_script gh <<'SH'
+case "$*" in
+  "pr view 9 --repo owner/proj --json number,state,baseRefName,headRefOid,headRefName,changedFiles")
+    jq -cn --arg h "$GH_HEAD" '{number: 9, state: "MERGED", baseRefName: "main", headRefOid: $h, headRefName: "feat/T7-toil", changedFiles: 1}' ;;
+  "pr checks 9 --repo owner/proj"*) echo '[]' ;;
+  *) echo "unplanned gh call: $*" >&2; exit 1 ;;
+esac
+SH
+  local later brief
+  later=$(commit later.txt "feat: phase 2")
+  launched b0000003 brief-deliver-p2 '["browser"]'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE review-ready $later"
+  assert_contains "$output" "launched T7-reviewer"
+  local name
+  name=$(jq -r 'select(.event == "launch" and .role == "reviewer") | .brief' "$TEAM_HOME/ledger.jsonl" | tail -n 1)
+  brief=$(<"$TEAM_HOME/tasks/T7/$name.md")
+  assert_contains "$brief" "No PR yet: reviewed at \`$sha\`, now at the local head \`$later\`."
+  [[ $brief != *team-review* && $brief != *team-ci-wait* && $brief != */pull/* && $brief != *'{{'* ]]
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $later $counts before=none guarded=none"
+  assert_contains "$(tail -n 1 <<<"$output")" "T7 the review of ${later:0:8} passed: go on with your delivery"
 }
 
 @test "a findings verdict needs --sent-back, logs it as numbers and routes the findings to the holder under 250k" {
@@ -1112,4 +1154,12 @@ launched T7-builder c0000001"
   grep -qF 'a `DONE findings` with `--sent-back <list>`' "$manual"
   grep -E '^\| `PAUSED stowed` \|.*`team-next`' "$manual"
   (($(wc -l <"$manual") <= 120))
+}
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  worker_refused team-next "runs no team-next" T7 -- 'T7 DONE 01 abc1234 the ticket'
+  AGENT_TEAM_ROLE=reviewer run_bin -0 team-next --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-next")"
+  AGENT_TEAM_ROLE=coordinator run_bin -2 team-next 7
+  assert_contains "$output" "usage: team-next T<n>"
 }

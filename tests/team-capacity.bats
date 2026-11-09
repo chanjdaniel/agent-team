@@ -329,6 +329,20 @@ age_by() {
 MIB=1048576
 GIB=1073741824
 
+# cgroup_memory <unit> <current MiB> <file MiB> [<shmem MiB>] [<slice>]: <unit>'s cgroup, in
+# <slice> when it is a scope or service, as the user manager reports its ControlGroup, holding
+# <current MiB> (its memory.current) of which <file MiB> is page cache (memory.stat's file, of
+# which <shmem MiB>, default 0, is shared memory) and the rest anonymous memory.
+cgroup_memory() {
+  local path dir shmem=${4:-0}
+  path=$(user_cgroup "$1" ${5:+"$5"})
+  dir=$TEAM_CGROUP_ROOT/sys/fs/cgroup$path
+  unit "$1" "ControlGroup=$path"
+  mkdir -p "$dir"
+  echo $(($2 * MIB)) >"$dir/memory.current"
+  printf 'anon %d\nfile %d\nkernel 0\nshmem %d\n' $((($2 - $3 + shmem) * MIB)) $(($3 * MIB)) $((shmem * MIB)) >"$dir/memory.stat"
+}
+
 # hold_heavy <holder line>: the heavy-run lock held, as a team-heavy run holds it, with <holder
 # line> in it, until the test ends or closes HEAVY_FD.
 hold_heavy() {
@@ -348,7 +362,7 @@ busy_reading() {
      memory: {total: (32 * $gib), available: (20 * $gib), team: (4 * $gib), others: (8 * $gib)}, cpu: null,
      systemd: true, sessions: true,
      tasks: [{task: "T7", memory: (3 * $gib), cpu: null, cpu_nsec: null,
-              sessions: [{id: "a1b2c3d4", role: "builder", memory: $gib, peak: $gib, cpu_seconds: 10}],
+              sessions: [{id: "a1b2c3d4", role: "builder", memory: $gib, cpu_seconds: 10}],
               stacks: [{name: "conventioner-2", memory: (2 * $gib), cpu: 0}]}],
      stacks: [{name: "conventioner-2", class: "team", task: "T7", project: "conventioner", memory: (2 * $gib), cpu: 0,
                limits: (3 * $gib)}],
@@ -394,7 +408,7 @@ team_reading() {
                 others: ($others * $gib | round)}, cpu: null,
        systemd: true, sessions: true,
        tasks: [$s | group_by(.task)[] | {task: .[0].task, memory: ([.[].memory] | add), cpu: null, cpu_nsec: null,
-                sessions: map({id, role, memory, peak: .memory, cpu_seconds: 1}), stacks: []}],
+                sessions: map({id, role, memory, cpu_seconds: 1}), stacks: []}],
        stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$STATE_DIR/readings.jsonl"
 }
 
@@ -420,12 +434,17 @@ team_reading() {
   # A load check's T0 session, no task's work.
   proc 500 1 300 4 /tmp
   sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-reviewer 200" "c0ffee00 coordinator 300" "deadbeef T11-builder 999" "e0e0e0e0 T0-planner 500"
-  unit agent-team-T7.slice MemoryCurrent=$((1024 * MIB)) CPUUsageNSec=90000000000
-  unit agent-team-T7-a1b2c3d4.scope MemoryCurrent=$((800 * MIB)) MemoryPeak=$((900 * MIB)) CPUUsageNSec=85000000000
-  unit agent-team-T9.slice MemoryCurrent=$((70 * MIB)) CPUUsageNSec=3000000000
+  # Each cgroup's use is its working set: T7's slice holds 4 GiB of page cache beside its 1 GiB,
+  # and its builder's scope 4 GiB, 100 MiB of it shared memory, which counts.
+  unit agent-team-T7.slice CPUUsageNSec=90000000000
+  cgroup_memory agent-team-T7.slice 5120 4096
+  unit agent-team-T7-a1b2c3d4.scope CPUUsageNSec=85000000000
+  cgroup_memory agent-team-T7-a1b2c3d4.scope 4996 4296 100 agent-team-T7.slice
+  unit agent-team-T9.slice CPUUsageNSec=3000000000
+  cgroup_memory agent-team-T9.slice 70 0
   # The heavy run's team-heavy (pid 210) holds the lock, and its scope reports what it uses.
   hold_heavy "tests/run in ~/t9 (pid 210, T9) since 2026-11-01 10:00:00 +0000"
-  unit agent-team-heavy-210.scope MemoryCurrent=$((60 * MIB))
+  cgroup_memory agent-team-heavy-210.scope 1084 1024 0 agent-team-T9.slice
   run_bin -0 --separate-stderr team-capacity sample
   assert_equal "$output$stderr" ""
   local reading
@@ -435,19 +454,40 @@ team_reading() {
     '["linux",true,true,true,["T7","T9"]]'
   assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0] | [.memory - 1024 * $mib - 150 * $mib, .cpu, .cpu_nsec, .stacks]' <<<"$reading")" \
     '[628935884,null,90000000000,[{"name":"conventioner-2","memory":628935884,"cpu":0}]]'
-  assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | .peak /= $mib)' <<<"$reading")" \
-    '[{"id":"a1b2c3d4","role":"builder","memory":800,"peak":900,"cpu_seconds":85}]'
+  assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib)' <<<"$reading")" \
+    '[{"id":"a1b2c3d4","role":"builder","memory":800,"cpu_seconds":85}]'
   # T9's slice holds only the heavy run; its reviewer's tree is outside it.
-  assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[1] | [.memory / $mib, (.sessions | map(.memory /= $mib | .peak /= $mib)), .stacks]' <<<"$reading")" \
-    '[390,[{"id":"b1b2c3d4","role":"reviewer","memory":320,"peak":320,"cpu_seconds":42}],[]]'
+  assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[1] | [.memory / $mib, (.sessions | map(.memory /= $mib)), .stacks]' <<<"$reading")" \
+    '[390,[{"id":"b1b2c3d4","role":"reviewer","memory":320,"cpu_seconds":42}],[]]'
   assert_equal "$(jq -c --arg home "$HOME" '.stacks | map(.worktree |= sub("^" + $home; "~"))' <<<"$reading")" \
-    '[{"name":"conventioner-2","class":"team","task":"T7","project":"conventioner","worktree":"~/.treehouse/Conventioner-d4c77a/1/Conventioner","kind":"dev","memory":628935884,"cpu":0,"limits":1879048192},{"name":"nmtest-1895520","class":"gate","task":null,"project":null,"worktree":"~/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner","kind":"gate","memory":315621376,"cpu":0,"limits":536870912}]'
+    '[{"name":"conventioner-2","class":"team","task":"T7","project":"conventioner","worktree":"~/.treehouse/Conventioner-d4c77a/1/Conventioner","kind":"dev","memory":628935884,"cpu":0,"limits":1879048192,"in_use":null},{"name":"nmtest-1895520","class":"gate","task":null,"project":null,"worktree":"~/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner","kind":"gate","memory":315621376,"cpu":0,"limits":536870912,"in_use":false}]'
   # The machine's part: the team's processes by directory and descent.
   assert_equal "$(jq -c --argjson mib "$MIB" '[.memory.total, .memory.team - 628935884 - 315621376, .cpu]' <<<"$reading" |
     jq -c --argjson mib "$MIB" '.[1] /= $mib')" '[34359738368,1638,null]'
   # One systemctl call for every task's slice, every live team session's scope and the heavy run's.
   assert_equal "$(stub_calls systemctl)" \
-    '["--user","show","-p","Id,MemoryCurrent,MemoryPeak,CPUUsageNSec","agent-team-T7.slice","agent-team-T9.slice","agent-team-T7-a1b2c3d4.scope","agent-team-T9-b1b2c3d4.scope","agent-team-heavy-210.scope"]'
+    '["--user","show","-p","Id,ControlGroup,CPUUsageNSec","agent-team-T7.slice","agent-team-T9.slice","agent-team-T7-a1b2c3d4.scope","agent-team-T9-b1b2c3d4.scope","agent-team-heavy-210.scope"]'
+}
+
+@test "sample: a cgroup's use is its working set, so page cache never counts and a group it cannot read counts its processes" {
+  sample_machine
+  local scope
+  scope=$(user_cgroup agent-team-T7-a1b2c3d4.scope agent-team-T7.slice)
+  # A finished builder whose scope holds 4 GiB of cached reads and no anonymous memory; a reviewer
+  # whose scope's memory.stat is gone, so its tree counts; shared memory above the cache counts
+  # whole, the cache never below 0.
+  proc 100 99 512 60 "$T7_WT" "$scope"
+  proc 200 1 300 40 "$T9_WT" "$(user_cgroup agent-team-T9-b1b2c3d4.scope agent-team-T9.slice)"
+  sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-reviewer 200"
+  cgroup_memory agent-team-T7.slice 4096 4096
+  cgroup_memory agent-team-T7-a1b2c3d4.scope 4096 4096 0 agent-team-T7.slice
+  cgroup_memory agent-team-T9.slice 300 200 250
+  cgroup_memory agent-team-T9-b1b2c3d4.scope 300 0 0 agent-team-T9.slice
+  rm "$TEAM_CGROUP_ROOT/sys/fs/cgroup$(user_cgroup agent-team-T9-b1b2c3d4.scope agent-team-T9.slice)/memory.stat"
+  run_bin -0 team-capacity status
+  assert_contains "$output" "  T7: 0.6 GiB; builder a1b2c3d4 0.0 GiB, stack conventioner-2 0.6 GiB"
+  assert_equal "$(jq -c --argjson mib "$MIB" '.tasks | map([.task, ((.memory - ([.stacks[].memory] | add // 0)) / $mib),
+      (.sessions | map(.memory / $mib))])' "$STATE_DIR/readings.jsonl")" '[["T7",0,[0]],["T9",300,[300]]]'
 }
 
 @test "sample: a task's CPU is its slice's since the newest reading and its processes' outside the slice since the snapshot" {
@@ -499,8 +539,8 @@ team_reading() {
   assert_equal "$output$stderr" ""
   assert_equal "$(jq -c --argjson mib "$MIB" '[.os, .systemd, (.tasks | map([.task, ((.memory - ([.stacks[].memory] | add // 0)) / $mib), .cpu_nsec]))]' \
     "$STATE_DIR/readings.jsonl")" '["macos",null,[["T7",1818,null],["T9",320,null]]]'
-  assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | .peak /= $mib)' "$STATE_DIR/readings.jsonl")" \
-    '[{"id":"a1b2c3d4","role":"builder","memory":768,"peak":768,"cpu_seconds":90}]'
+  assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib)' "$STATE_DIR/readings.jsonl")" \
+    '[{"id":"a1b2c3d4","role":"builder","memory":768,"cpu_seconds":90}]'
   # The heavy run's use is its team-heavy's tree.
   assert_equal "$(jq -c --argjson mib "$MIB" '.heavy | .memory /= $mib' "$STATE_DIR/readings.jsonl")" '{"pid":102,"memory":1050}'
   assert_equal "$(stub_calls systemctl)" ""
@@ -510,8 +550,8 @@ team_reading() {
   # the builder's child now, stays the builder's.
   age_by 120
   run_bin -0 --separate-stderr team-capacity sample
-  assert_equal "$(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | .peak /= $mib | del(.cpu_seconds))')" \
-    '[{"id":"a1b2c3d4","role":"builder","memory":1818,"peak":1818}]'
+  assert_equal "$(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | del(.cpu_seconds))')" \
+    '[{"id":"a1b2c3d4","role":"builder","memory":1818}]'
   assert_equal "$(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -c .heavy)" null
 }
 
@@ -532,19 +572,30 @@ team_reading() {
   local scope
   scope=$(user_cgroup agent-team-T7-a1b2c3d4.scope agent-team-T7.slice)
   proc 100 99 512 60 "$T7_WT" "$scope"
-  proc 500 1 600 100 "$HOME/.no-mistakes/worktrees/af267dfa548d/01RUN"
+  # The gate's run works in the worktree its stack runs for, so its stack is in use.
+  proc 500 1 600 100 "$HOME/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner/web"
   sessions "a1b2c3d4 T7-builder 100"
-  unit agent-team-T7-a1b2c3d4.scope MemoryCurrent=$((800 * MIB)) MemoryPeak=$((900 * MIB)) CPUUsageNSec=85000000000
-  unit no-mistakes-daemon-60757c3c.service MemoryCurrent=$((2048 * MIB)) CPUUsageNSec=10000000000
+  unit agent-team-T7-a1b2c3d4.scope CPUUsageNSec=85000000000
+  cgroup_memory agent-team-T7-a1b2c3d4.scope 4896 4096 0 agent-team-T7.slice
+  unit no-mistakes-daemon-60757c3c.service CPUUsageNSec=10000000000
+  cgroup_memory no-mistakes-daemon-60757c3c.service 3072 1024
+  # What the readings kept of this session before they read its working set, a cache-inflated
+  # peak, counts for nothing.
+  mkdir -p "$STATE_DIR"
+  jq -cn --argjson gib "$GIB" '{sessions: {a1b2c3d4: {kind: "session:builder", task: "T7", first: (now | floor | todate),
+    last: (now | floor | todate), peak: (9 * $gib), cpu_seconds: 1}}, stacks: {}, gate: null, limits: {}}' >"$STATE_DIR/live.json"
   run_bin -0 team-capacity sample
   [[ ! -s $STATE_DIR/costs.jsonl ]]
+  assert_equal "$(jq -c '[.stacks[] | [.name, .in_use]]' "$STATE_DIR/readings.jsonl")" '[["conventioner-2",null],["nmtest-1895520",true]]'
   assert_equal "$(jq -c '[(.sessions | keys), (.stacks | keys), .gate.peak, .limits]' "$STATE_DIR/live.json")" \
     "[[\"a1b2c3d4\"],[\"conventioner-2\"],$((2048 * MIB)),{\"conventioner\":1879048192}]"
 
   # Five minutes on, the gate's memory higher and its run still going, the session's peak higher.
   age_by 300
-  unit no-mistakes-daemon-60757c3c.service MemoryCurrent=$((2500 * MIB)) CPUUsageNSec=70000000000
-  unit agent-team-T7-a1b2c3d4.scope MemoryPeak=$((1000 * MIB)) CPUUsageNSec=95000000000
+  unit no-mistakes-daemon-60757c3c.service CPUUsageNSec=70000000000
+  cgroup_memory no-mistakes-daemon-60757c3c.service 2600 100
+  unit agent-team-T7-a1b2c3d4.scope CPUUsageNSec=95000000000
+  cgroup_memory agent-team-T7-a1b2c3d4.scope 1000 0 0 agent-team-T7.slice
   run_bin -0 team-capacity sample
   [[ ! -s $STATE_DIR/costs.jsonl ]]
 
@@ -554,11 +605,12 @@ team_reading() {
   proc 100 99 512 60 "$T7_WT" "$scope"
   echo 'exit 1' | stub_script claude
   docker_down
-  unit no-mistakes-daemon-60757c3c.service MemoryCurrent=$((300 * MIB)) CPUUsageNSec=80000000000
+  unit no-mistakes-daemon-60757c3c.service CPUUsageNSec=80000000000
+  cgroup_memory no-mistakes-daemon-60757c3c.service 300 0
   run_bin -0 team-capacity sample
   # seconds runs from the first reading that saw it to the last: 300, and the time sample took.
-  assert_equal "$(jq -c '[.kind, .peak_bytes / 1048576, .cpu_seconds, (.seconds | . >= 300 and . <= 330)]' "$STATE_DIR/costs.jsonl")" \
-    '["gate",2500,60,true]'
+  assert_equal "$(jq -c '[.kind, .peak_bytes / 1048576, .cpu_seconds, (.seconds | . >= 300 and . <= 330), .measure]' "$STATE_DIR/costs.jsonl")" \
+    '["gate",2500,60,true,"working_set"]'
   assert_equal "$(jq -c '[(.sessions | keys), (.stacks | keys), .gate]' "$STATE_DIR/live.json")" '[["a1b2c3d4"],["conventioner-2"],null]'
 
   # Then, both answering again, the session is gone and the stack stopped.
@@ -570,8 +622,8 @@ team_reading() {
   # Each was last seen by the second reading, the stack's CPU its half a core over the 300 s (and
   # the time sample took) between the two.
   assert_equal "$(tail -n 2 "$STATE_DIR/costs.jsonl" | jq -c '[.kind, .peak_bytes, (.cpu_seconds | if . < 100 then . else . >= 150 and . <= 165 end),
-      (.seconds | . >= 300 and . <= 330)]')" \
-    "$(printf '%s\n' "[\"session:builder\",$((1000 * MIB)),95,true]" '["stack:conventioner",628935884,true,true]')"
+      (.seconds | . >= 300 and . <= 330), .measure]')" \
+    "$(printf '%s\n' "[\"session:builder\",$((1000 * MIB)),95,true,\"working_set\"]" '["stack:conventioner",628935884,true,true,"docker"]')"
   assert_equal "$(jq -c '[.sessions, .stacks, .gate, .limits]' "$STATE_DIR/live.json")" '[{},{},null,{"conventioner":1879048192}]'
   [[ $(tail -n 1 "$STATE_DIR/costs.jsonl" | jq -r .at) == $(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -r .at) ]]
 }
@@ -597,19 +649,29 @@ team_reading() {
     '[true,["T7","T9"],true,null]'
 }
 
-# cost <kind> <peak MiB>...: one cost line of <kind> per peak.
+# cost <kind> <peak MiB>...: one cost line of <kind> per peak, its peak a working set.
 cost() {
   local peak
   mkdir -p "$STATE_DIR"
   for peak in "${@:2}"; do
     jq -cn --arg kind "$1" --argjson peak "$((peak * MIB))" \
-      '{at: "2026-11-01T10:00:00Z", kind: $kind, peak_bytes: $peak, cpu_seconds: 1, seconds: 60}' >>"$STATE_DIR/costs.jsonl"
+      '{at: "2026-11-01T10:00:00Z", kind: $kind, peak_bytes: $peak, cpu_seconds: 1, seconds: 60, measure: "working_set"}' \
+      >>"$STATE_DIR/costs.jsonl"
   done
 }
 
 @test "costs: the seed until 5 samples, then the 90th percentile of the last 20 peaks plus 10%" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   cost session:builder 400 500 600 700
+  # Lines from before the working set, their peaks counting page cache, or of another measure,
+  # never count.
+  local peak
+  for peak in 4000 4000 4000 4000 4000; do
+    jq -cn --argjson peak "$((peak * MIB))" '{at: "2026-11-01T09:00:00Z", kind: "session:builder", peak_bytes: $peak,
+      cpu_seconds: 1, seconds: 60}' >>"$STATE_DIR/costs.jsonl"
+  done
+  jq -cn '{at: "2026-11-01T09:00:00Z", kind: "session:builder", peak_bytes: 1, cpu_seconds: 1, seconds: 60, measure: "rss"}' \
+    >>"$STATE_DIR/costs.jsonl"
   cost session:reviewer 100 200 300 400 500
   # 25 samples: five large ones, then 1 to 20 hundred MiB, of which the last 20 count.
   cost heavy:tests-run 9000 9000 9000 9000 9000 100 200 300 400 500 600 700 800 900 1000 1100 1200 1300 1400 1500 1600 1700 1800 1900 2000
@@ -628,6 +690,43 @@ cost() {
   assert_equal "$(sed -n 5p <<<"$output")" "stack:conventioner: no estimate, no seed: no stack of it seen running yet"
   assert_equal "$(sed -n 6p <<<"$output")" "gate: 2.2 GiB, the seed: gate_gib 2.2 GiB, its default"
   assert_equal "$(sed -n 7p <<<"$output")" "heavy:tests-run: 1.9 GiB, learned from the last 20 of 25 samples, 0.1 GiB to 2.0 GiB"
+}
+
+# old_cost <kind> <peak MiB>...: one cost line of <kind> per peak with no measure, as written
+# before the working set.
+old_cost() {
+  local peak
+  mkdir -p "$STATE_DIR"
+  for peak in "${@:2}"; do
+    jq -cn --arg kind "$1" --argjson peak "$((peak * MIB))" \
+      '{at: "2026-11-01T09:00:00Z", kind: $kind, peak_bytes: $peak, cpu_seconds: 1, seconds: 60}' >>"$STATE_DIR/costs.jsonl"
+  done
+}
+
+@test "costs: a stack's lines from before the working set still count, since Docker's measure never counted page cache" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$STATE_DIR"
+  echo '{"sessions": {}, "stacks": {}, "gate": null, "limits": {"conventioner": 1879048192}}' >"$STATE_DIR/live.json"
+  old_cost stack:conventioner 600 700 800 900 1000
+  run_bin -0 team-capacity costs --json
+  assert_equal "$(jq -c '.costs[] | select(.kind == "stack:conventioner") | [.estimate_bytes, .source, .samples]' <<<"$output")" \
+    "[$((1000 * MIB * 11 / 10)),\"learned\",5]"
+}
+
+@test "costs: a kind short of 5 working-set samples is held at the lower of its seed and what its lines from before give" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # 20 old heavy runs at 2000 MiB, their peaks counting page cache: an upper bound below the 5 GiB seed.
+  old_cost heavy:tests-run 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000
+  cost heavy:tests-run 800 900
+  # Old builders above the 0.5 GiB seed leave the seed; 4 old planners are too few to bound it.
+  old_cost session:builder 4000 4000 4000 4000 4000
+  old_cost session:planner 100 100 100 100
+  run_bin -0 team-capacity costs --json
+  assert_equal "$(jq -c '.costs | map(select(.kind | IN("heavy:tests-run", "session:builder", "session:planner")) | [.kind, .estimate_bytes, .source, .samples])' <<<"$output")" \
+    "[[\"session:builder\",536870912,\"seed\",0],[\"session:planner\",536870912,\"seed\",0],[\"heavy:tests-run\",$((2000 * MIB * 11 / 10)),\"before\",2]]"
+  run_bin -0 team-capacity costs
+  assert_equal "$(grep '^heavy:tests-run:' <<<"$output")" \
+    "heavy:tests-run: 2.1 GiB, the lower of the seed (heavy_gib 5 GiB, its default) and 20 samples from before the working set, 2.0 GiB to 2.0 GiB, which count page cache (2 samples of 5)"
 }
 
 @test "costs: a stack's seed is its mem_limits as the readings last saw it running, and capacity.json's seeds are read" {
@@ -755,6 +854,226 @@ cost() {
   assert_equal "$stderr" "no room for heavy:tests-run at minor (30%): 6.7 GiB of 9.6 GiB reserved, a heavy run of tests-run needs 5.0 GiB; room comes when the team's work shrinks or the level rises"
 }
 
+# agents <text>: what claude agents --json prints, the setup's stub reading it.
+agents() {
+  printf '%s\n' "$1" >"$STUB_FIXTURES/agents.json"
+}
+
+# launched <task> <role> <session>: the launch team-worker logs once its session has started, now.
+launched() {
+  jq -cn --arg t "$1" --arg r "$2" --arg s "$3" \
+    '{ts: (now | floor | todate), task: $t, event: "launch", role: $r, session: $s, worktree: "/w/1", toolkits: []}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# The admissions of status --json, one compact [kind, task] per item.
+admissions() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" status --json | jq -c '.reserved.items[] | select(.part == "admissions") | [.kind, .task]'
+}
+
+# Move every admission and launch <seconds> back.
+seconds_pass() {
+  local back="(fromdateiso8601 - $1 | todate)"
+  jq -c "map(.at |= $back)" "$STATE_DIR/admitted.json" >"$STATE_DIR/admitted.back"
+  mv "$STATE_DIR/admitted.back" "$STATE_DIR/admitted.json"
+  jq -c "if .event == \"launch\" then .ts |= $back else . end" "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/ledger.back"
+  mv "$TEAM_HOME/ledger.back" "$TEAM_HOME/ledger.jsonl"
+}
+
+# Past a launch's grace, inside the 10 minutes.
+two_minutes_pass() {
+  seconds_pass 120
+}
+
+@test "a session just launched keeps its admission though the list does not hold it yet, then a stopped one is released" {
+  busy_reading
+  level minor
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  # The list has not caught up with the launch, or the daemon is restarting: kept, and the next
+  # admission keeps it too.
+  agents '[]'
+  assert_equal "$(admissions)" '["session:reviewer","T9"]'
+  run_bin -0 team-capacity admit --kind session:planner --task T5
+  assert_equal "$(jq -c 'map([.kind, .task])' "$STATE_DIR/admitted.json")" '[["session:reviewer","T9"],["session:planner","T5"]]'
+  # Past the grace, the list's word stands.
+  two_minutes_pass
+  assert_equal "$(admissions)" '["session:planner","T5"]'
+}
+
+@test "admit judges a launch by when its list was read, so a wait for the lock releases no session the list could not judge" {
+  busy_reading
+  level full
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  stub_script claude <<'EOF'
+touch "$STUB_FIXTURES/listed"
+echo '[]'
+EOF
+  # Admit reads its list, then waits on the lock the test holds.
+  local lock tries=0 slow
+  exec {lock}>>"$HOME/.local/state/agent-team/capacity.lock"
+  flock -x "$lock"
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" admit --kind session:planner --task T5 >"$BATS_TEST_TMPDIR/admit.out" 2>&1 3>&- {lock}>&- &
+  slow=$!
+  until [[ -e $STUB_FIXTURES/listed ]]; do
+    ((++tries < 100))
+    sleep 0.1
+  done
+  # A real minute's wait is too slow for the suite, so this launch is 61 seconds old by the time
+  # admit judges it and under a minute old at the list's read, three seconds back: as with a later
+  # launch, that list cannot say this session has stopped.
+  sleep 3
+  local back='now | floor | . - 61 | todate'
+  jq -c --arg at "$(jq -nr "$back")" '. + [{at: $at, kind: "session:builder", task: "T7", name: null, bytes: 1, pid: null}]' \
+    "$STATE_DIR/admitted.json" >"$STATE_DIR/admitted.more"
+  mv "$STATE_DIR/admitted.more" "$STATE_DIR/admitted.json"
+  jq -cn --arg at "$(jq -nr "$back")" '{ts: $at, task: "T7", event: "launch", role: "builder", session: "c0000007", worktree: "/w/1", toolkits: []}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  flock -u "$lock"
+  exec {lock}>&-
+  local code=0
+  wait "$slow" || code=$?
+  assert_equal "$code" 0
+  assert_equal "$(jq -c 'map([.kind, .task])' "$STATE_DIR/admitted.json")" \
+    '[["session:reviewer","T9"],["session:builder","T7"],["session:planner","T5"]]'
+
+  # The next admission's list, read past that launch's minute, has the last word.
+  run_bin -0 team-capacity admit --kind session:planner --task T6
+  assert_equal "$(jq -c 'map([.kind, .task])' "$STATE_DIR/admitted.json")" \
+    '[["session:reviewer","T9"],["session:planner","T5"],["session:planner","T6"]]'
+}
+
+@test "what claude agents leaves running holds no admission's lock, and a slow list holds no other admission" {
+  busy_reading
+  level full
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  two_minutes_pass
+  # The list leaves a process behind, as a daemon it starts would, inheriting all but its output.
+  stub_script claude <<'EOF'
+sleep 20 >/dev/null 2>&1 &
+echo "$!" >>"$STUB_FIXTURES/left-behind"
+echo '[]'
+EOF
+  run_bin -0 team-capacity admit --kind session:planner --task T5
+  local started=$SECONDS
+  run_bin -0 team-capacity admit --kind session:builder --task T5
+  local took=$((SECONDS - started)) pid
+  while read -r pid; do kill "$pid" 2>/dev/null || true; done <"$STUB_FIXTURES/left-behind"
+  ((took < 10))
+
+  # A list that hangs has the next admission wait for nothing but its own.
+  stub_script claude <<'EOF'
+sleep 5
+echo '[]'
+EOF
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" admit --kind session:planner --task T6 >/dev/null 2>&1 3>&- &
+  local slow=$!
+  sleep 1
+  local fast
+  fast=$(flock -n "$HOME/.local/state/agent-team/capacity.lock" echo free || echo held)
+  kill "$slow" 2>/dev/null || true
+  wait "$slow" 2>/dev/null || true
+  assert_equal "$fast" free
+}
+
+@test "an admission whose session has stopped no longer counts as reserved, at its estimate or in the stored reading" {
+  busy_reading
+  level minor
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  # No launch is logged yet, so its session may still be starting: kept, with no session list read.
+  assert_equal "$(admissions)" '["session:reviewer","T9"]'
+  assert_equal "$(stub_calls claude)" ""
+  # Its session runs: kept.
+  launched T9 reviewer c0000009
+  agents '[{"id": "c0000009", "sessionId": "c0000009-1111", "name": "T9-reviewer", "status": "busy"}]'
+  assert_equal "$(admissions)" '["session:reviewer","T9"]'
+  # A list that cannot be read says nothing of it: kept.
+  agents 'not a list'
+  assert_equal "$(admissions)" '["session:reviewer","T9"]'
+  # Its session is gone: released, within its 10 minutes, and the next admission drops it.
+  two_minutes_pass
+  agents '[]'
+  assert_equal "$(admissions)" ""
+  run_bin -0 team-capacity admit --kind session:planner --task T5
+  assert_equal "$(jq -c 'map([.kind, .task])' "$STATE_DIR/admitted.json")" '[["session:planner","T5"]]'
+}
+
+@test "a stopped session's admission leaves its use and spike allowance out of a stored reading that still holds it" {
+  busy_reading '.tasks += [{task: "T9", memory: 1073741824, cpu: null, cpu_nsec: null, stacks: [],
+    sessions: [{id: "c0000009", role: "reviewer", memory: 1073741824, cpu_seconds: 1}]}]'
+  level minor
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  agents '[{"id": "c0000009", "status": "busy"}]'
+  assert_contains "$(reserved_items)" '"session:reviewer","T9"'
+  two_minutes_pass
+  agents '[]'
+  [[ $(reserved_items) != *'"T9"'* ]]
+}
+
+@test "each admission pairs with its own launch: a later one's session running keeps it, and another task's or role's says nothing" {
+  busy_reading
+  level full
+  # Both sessions run while the next admissions read the list, which keeps theirs.
+  agents '[{"id": "c0000001", "status": "busy"}, {"id": "c0000002", "status": "busy"}]'
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000001
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000002
+  run_bin -0 team-capacity admit --kind session:builder --task T9
+  run_bin -0 team-capacity admit --kind session:reviewer --task T8
+  assert_equal "$(jq length "$STATE_DIR/admitted.json")" 4
+  two_minutes_pass
+  # A launch before the admission, and one of another role or task, are not its session.
+  agents '[{"id": "c0000002", "status": "busy"}]'
+  assert_equal "$(admissions | sort)" '["session:builder","T9"]
+["session:reviewer","T8"]
+["session:reviewer","T9"]'
+  agents '[]'
+  assert_equal "$(admissions | sort)" '["session:builder","T9"]
+["session:reviewer","T8"]'
+  # A session listed by its full id only counts.
+  agents '[{"sessionId": "c0000002-1111-4222-8333-444455556666", "status": "busy"}]'
+  assert_equal "$(admissions | sort)" '["session:builder","T9"]
+["session:reviewer","T8"]
+["session:reviewer","T9"]'
+  # A stack's admission and a heavy run's name no session, so no launch releases them.
+  run_bin -0 team-capacity admit --kind stack:other --task T9 --name other-9 --seed-bytes 1024
+  agents '[]'
+  assert_contains "$(admissions)" '"stack:other","T9"'
+}
+
+@test "the plan reads an admission's session from the list it is given" {
+  busy_reading
+  level minor
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
+  run_bin -0 team-capacity plan --json --sessions "$BATS_TEST_TMPDIR/sessions.json"
+  assert_equal "$(stub_calls claude)" ""
+}
+
+@test "the plan takes the time of the list it is given as the list's read, so a list older than a launch releases nothing" {
+  busy_reading
+  level full
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  seconds_pass 90
+  echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
+  touch -d '2 minutes ago' "$BATS_TEST_TMPDIR/sessions.json"
+  run_bin -0 --separate-stderr team-capacity plan --json --sessions "$BATS_TEST_TMPDIR/sessions.json"
+  local kept
+  kept=$(jq .reserved <<<"$output")
+  # The same list, read now, is a minute past that launch.
+  touch "$BATS_TEST_TMPDIR/sessions.json"
+  run_bin -0 --separate-stderr team-capacity plan --json --sessions "$BATS_TEST_TMPDIR/sessions.json"
+  assert_equal "$((kept - $(jq .reserved <<<"$output")))" "$(jq '.[0].bytes' "$STATE_DIR/admitted.json")"
+}
+
 @test "status: a session past its admission window reserves its use, the team one spike allowance for the largest gap, and one in its window the larger of its estimate and its use" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   mkdir -p "$HOME/.config/agent-team"
@@ -806,6 +1125,64 @@ cost() {
   assert_equal "$(reserved_split)" '{"bytes":7.75,"sessions_use":6,"spike_allowance":1.75,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
 }
 
+@test "status: an admission whose session a reading holds reserves it at the larger of its estimate and its use for 10 minutes, and one no reading holds yet its estimate" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"session_gib": 2}' >"$HOME/.config/agent-team/capacity.json"
+  team_reading 8
+  agents '[{"id": "c3c3c3c3", "status": "busy"}, {"id": "c4c4c4c4", "status": "busy"}]'
+  run_bin -0 team-capacity admit --kind session:builder --task T9
+  launched T9 builder c3c3c3c3
+  # No reading holds its session yet: at its estimate.
+  assert_equal "$(reserved_items)" '["admissions","session:builder","T9",2]'
+  # A reading holds it at 0.25 GiB: its use plus its gap to its estimate, named by its session.
+  team_reading 8 "T9 builder c3c3c3c3 0.25"
+  assert_equal "$(reserved_items)" '["admissions","session:builder","T9",2]'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c --argjson gib "$GIB" '[.reserved.items[] | [.part, .name, .estimate_bytes / $gib, .use_bytes / $gib]]' <<<"$output")" \
+    '[["admissions","c3c3c3c3",2,0.25]]'
+  # A second builder of T9, launched since, is not the session the reading holds: at its estimate,
+  # until a reading holds its own, which takes its own admission, never the first's.
+  run_bin -0 team-capacity admit --kind session:builder --task T9
+  launched T9 builder c4c4c4c4
+  assert_equal "$(reserved_items)" '["admissions","session:builder","T9",2]
+["admissions","session:builder","T9",2]'
+  team_reading 8 "T9 builder c3c3c3c3 0.25" "T9 builder c4c4c4c4 2.5"
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c --argjson gib "$GIB" '[.reserved.items[] | [.part, .name, .bytes / $gib]]' <<<"$output")" \
+    '[["admissions","c3c3c3c3",2],["admissions","c4c4c4c4",2.5]]'
+  # Ten minutes on, each is at its use, and the team one allowance.
+  age_admissions 601
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T9",0.25]
+["sessions_use","session:builder","T9",2.5]
+["spike_allowance","session:builder","T9",1.75]'
+  # admitted.json keeps what admit wrote, never the session a status paired it with.
+  assert_equal "$(jq -c 'map(keys)' "$STATE_DIR/admitted.json")" '[["at","bytes","kind","name","pid","task"],["at","bytes","kind","name","pid","task"]]'
+  run_bin -0 team-capacity admit --kind session:planner --task T11
+  assert_equal "$(jq -c 'map(has("session")) | unique' "$STATE_DIR/admitted.json")" '[false]'
+}
+
+@test "status: five builders a reading holds early are each reserved at their estimate until 10 minutes after their admissions" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"session_gib": 1}' >"$HOME/.config/agent-team/capacity.json"
+  team_reading 8
+  agents '[{"id": "b1b1b1b1", "status": "busy"}, {"id": "b2b2b2b2", "status": "busy"}, {"id": "b3b3b3b3", "status": "busy"},
+    {"id": "b4b4b4b4", "status": "busy"}, {"id": "b5b5b5b5", "status": "busy"}]'
+  local n
+  for n in 1 2 3 4 5; do
+    run_bin -0 team-capacity admit --kind session:builder --task "T$n"
+    launched "T$n" builder "b${n}b${n}b${n}b${n}"
+  done
+  # A reading seconds after their launches holds each at 0.1 GiB, a fraction of what it grows to.
+  team_reading 8 "T1 builder b1b1b1b1 0.1" "T2 builder b2b2b2b2 0.1" "T3 builder b3b3b3b3 0.1" \
+    "T4 builder b4b4b4b4 0.1" "T5 builder b5b5b5b5 0.1"
+  assert_equal "$(reserved_split)" '{"bytes":5,"sessions_use":0,"spike_allowance":0,"admissions":5,"stacks":0,"heavy_runs":0,"gates":0}'
+  # Ten minutes on, each is at its use, and the team one allowance.
+  age_admissions 601
+  assert_equal "$(reserved_split)" '{"bytes":1.4,"sessions_use":0.5,"spike_allowance":0.9,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+}
+
 @test "admit on home-pc's numbers: seven idle builders at their use and one allowance leave room for an eighth builder and a heavy run" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   mkdir -p "$HOME/.config/agent-team"
@@ -849,6 +1226,17 @@ cost() {
 team-capacity: no reading of the machine's load, so no budget to admit session:planner by: team-capacity sample says why it takes none"
 }
 
+@test "admit in a builder's session reads the level as anywhere: none refuses, full admits" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  busy_reading
+  level none
+  AGENT_TEAM_ROLE=builder AGENT_TEAM_TASK=T7 run_bin -75 --separate-stderr team-capacity admit --kind stack:conventioner --task T7
+  assert_equal "$stderr" "no room for stack:conventioner: the team is at level none: nothing starts; room comes when Daniel raises the level"
+  level full
+  AGENT_TEAM_ROLE=builder AGENT_TEAM_TASK=T7 run_bin -0 team-capacity admit --kind stack:conventioner --task T7
+  [[ -s $STATE_DIR/admitted.json ]]
+}
+
 @test "status: a stack admitted in the last 10 minutes that the reading shows running is reserved once, at the larger of the two" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   # T7's conventioner-2 runs at 2 GiB of its 3 GiB of limits.
@@ -876,6 +1264,23 @@ team-capacity: no reading of the machine's load, so no budget to admit session:p
     >"$STATE_DIR/admitted.json"
   assert_equal "$(reserved_items | grep stack:)" '["stacks","stack:conventioner","T7",3]
 ["admissions","stack:conventioner","T7",3]'
+}
+
+@test "status: a gate stack is reserved at its mem_limits while its gate run works in it, and at its use once that run is over" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # The gate's stack nmval-t202 at 0.25 GiB of its 2.75 GiB of limits, its run still working in it.
+  local stack='{name: "nmval-t202", class: "gate", task: null, project: null, kind: "gate", memory: ($gib / 4), cpu: 0,
+    limits: ($gib * 2.75)}'
+  busy_reading ".stacks += [$stack + {in_use: true}]"
+  assert_equal "$(reserved_items | grep stack:gate)" '["stacks","stack:gate",null,2.75]'
+  # Its run is over: its use.
+  : >"$STATE_DIR/readings.jsonl"
+  busy_reading ".stacks += [$stack + {in_use: false}]"
+  assert_equal "$(reserved_items | grep stack:gate)" '["stacks","stack:gate",null,0.25]'
+  # A reading from before it was read whether a run works in it: its mem_limits, as before.
+  : >"$STATE_DIR/readings.jsonl"
+  busy_reading ".stacks += [$stack]"
+  assert_equal "$(reserved_items | grep stack:gate)" '["stacks","stack:gate",null,2.75]'
 }
 
 @test "admit counts the running heavy run while its team-heavy holds the lock, at its admission's kind, but not for a heavy run asking" {

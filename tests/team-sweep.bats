@@ -874,6 +874,13 @@ standing() {
   event "$1" "$2" "{project: \"$3\", discord_message: \"$4\", discord_channel: \"1562000000000000000\"}"
 }
 
+# Register <project> beside proj, at owner/<project>: register <project>
+register() {
+  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "direct-pr"' \
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
+    "[$1.pool]" 'provider = "git"' "slots = [\"slots/$1/1\"]" >>"$TEAM_HOME/projects.toml"
+}
+
 standing_due() {
   echo "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's $1, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
 }
@@ -898,6 +905,7 @@ standing_due() {
   # for it again, named by the task's projects (its opened and worktree-added events').
   standing T3 merge-standing-withdrawn proj 1563000000000000002
   run_bin -0 team-sweep
+  register conv
   event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
   standing T3 merge-standing all 1563000000000000003
   run_bin -1 team-sweep
@@ -908,6 +916,67 @@ standing_due() {
   run_bin -1 team-sweep
   assert_equal "$output" "$(standing_due "standing word on conv")"
   no_github
+}
+
+@test "merge-due: none on the standing word for the team's own project, by name, repo or path, and still for another's" {
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  standing T2 merge-standing all 1563000000000000001
+  register agent-team
+  event T3 worktree-added '{project: "agent-team", branch: "feat/T3-work", worktree: "/w/2"}'
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+  assert_equal "$stderr" ""
+
+  # An old ledger's word on the team's own project by name is no word.
+  : >"$TEAM_HOME/ledger.jsonl"
+  event T3 opened '{project: "agent-team", path: "feature", type: "feat", title: "Work",
+    branch: "feat/T3-work", base: "main", base_sha: "0123456", worktree: "/w/1"}'
+  launch T3 reviewer 11111111
+  passed_pr T3
+  standing T2 merge-standing agent-team 1563000000000000002
+  run_bin -0 team-sweep
+  standing T2 merge-standing all 1563000000000000003
+  run_bin -0 team-sweep
+
+  # proj is the team's own by the code checkout's repo, and conv by its path.
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  standing T2 merge-standing all 1563000000000000001
+  register conv
+  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj, conv")"
+  export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo conv)
+  copy_bin "$CODE_CHECKOUT/bin"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  run_bin -0 team-sweep
+}
+
+@test "merge-due: with the registry unreadable, no standing word counts, and stderr says why" {
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  standing T2 merge-standing proj 1563000000000000001
+  rm "$TEAM_HOME/projects.toml"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-sweep: counts no standing word of Daniel's, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
+  # Nor is it read with no standing word in the ledger.
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
 }
 
 @test "merge-due: the plan-time and standing words both named, the plan-time word alone as before" {
@@ -925,12 +994,120 @@ standing_due() {
   assert_equal "$output" "$(standing_due "standing word on proj")"
 }
 
+@test "merge-due: none for a head the word does not cover, as team-state reads it" {
+  opened T3
+  launch T3 reviewer 11111111
+  sessions "$(session 11111111 T3-reviewer idle)"
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
+  # The reviewer found guarded areas, or logged none, or an earlier review counted a security
+  # finding: team-merge would refuse the word, so the coordinator is not sent to it.
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"ci\"]}"
+  run_bin -0 team-sweep
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts}"
+  run_bin -0 team-sweep
+  # A pass that names none is covered again, until a review that counted a security finding.
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: []}"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: ($counts + {security: 1}), guarded: []}"
+  run_bin -0 team-sweep
+  # The plan-time word is held to the same.
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T3
+  launch T3 reviewer 11111111
+  preapproved_pr T3
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"settings\"]}"
+  run_bin -0 team-sweep
+  no_github
+}
+
+@test "merge-due: none while a builder is on a merge-base round, until its rereview or its workers are gone" {
+  opened T3
+  launch T3 builder 11111111
+  launch T3 reviewer 22222222
+  passed_pr T3
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  sessions "$(session 11111111 T3-builder idle)"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+
+  # The holder is sent the brief, and the coordinator logs the resumed naming it. A plain resumed
+  # says nothing of a round.
+  event T3 resumed
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  event T3 resumed '{brief: "brief-merge-base-2"}'
+  sessions "$(session 11111111 T3-builder busy)"
+  run_bin -0 team-sweep
+  no_github
+  # The builder reports its merge, and the rereview is still on it.
+  event T3 'done' '{role: "builder", session: "11111111", report: "merged main f00ba47 conflicts: none"}'
+  launch T3 reviewer 33333333
+  sessions "$(session 11111111 T3-builder idle)" "$(session 33333333 T3-reviewer busy)"
+  run_bin -0 team-sweep
+  # Its worker gone with no review, the round is over, and the finding comes back.
+  sessions "$(session 11111111 T3-builder idle)"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  # With its reviewer live, its pass ends the round, on the merged head.
+  sessions "$(session 33333333 T3-reviewer busy)"
+  run_bin -0 team-sweep
+  event T3 review '{verdict: "pass", head: "f00ba47", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+}
+
+@test "merge-due: judged on the latest review, of a head no pr event logged" {
+  opened T3
+  launch T3 reviewer 11111111
+  sessions "$(session 11111111 T3-reviewer idle)"
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d\", findings: $counts, guarded: []}"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  # A review of a newer head sends findings back: the pass on the pr event's head no longer counts.
+  event T3 review "{verdict: \"findings\", head: \"b2c3d4e\", findings: ($counts + {correctness: 1}), sent_back: [1], guarded: []}"
+  run_bin -0 team-sweep
+  # The fix passes, naming a guarded area, which the word does not cover.
+  event T3 review "{verdict: \"pass\", head: \"c3d4e5f\", findings: $counts, guarded: [\"ci\"]}"
+  run_bin -0 team-sweep
+  # The next pass names none: the word covers it again.
+  event T3 review "{verdict: \"pass\", head: \"d4e5f6a\", findings: $counts, guarded: []}"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  no_github
+}
+
+@test "merge-due: none while a fresh builder launched on a merge-base brief works, nor after team-catch-up's merge is over the hold" {
+  opened T3
+  launch T3 builder 11111111
+  passed_pr T3
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  sessions "$(session 44444444 T3-builder busy)"
+  ledger_line '{ts: "2026-10-22T02:30:00Z", task: "T3", event: "launch", role: "builder", session: "44444444", worktree: "/w/1",
+    toolkits: [], project: "proj", branch: "feat/T3-work", brief: "brief-merge-base"}'
+  run_bin -0 team-sweep
+  # A clean catch-up settles the base with no round left to wait for.
+  event T3 caught-up '{url: "https://github.com/owner/proj/pull/5", from: "a1b2c3d", head: "f00ba47", base: "main"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+}
+
 @test "merge-due: none under a standing word withdrawn, on another project, or with another park" {
   opened T3
   launch T3 builder 11111111
   passed_pr T3
 
   # A word on a project that is none of the task's leaves it parked.
+  register conv
   standing T3 merge-standing conv 1563000000000000001
   run_bin -0 team-sweep
   standing T3 merge-standing proj 1563000000000000002
@@ -1376,7 +1553,7 @@ capacity_reading() {
        memory: {total: (32 * $gib), available: ((32 - $others) * $gib | round), team: ([$s[].memory] | add // 0),
                 others: ($others * $gib | round)},
        tasks: [$s | group_by(.task)[] | {task: .[0].task, memory: ([.[].memory] | add), cpu: null, cpu_nsec: null,
-                sessions: map({id, role, memory, peak: .memory, cpu_seconds: 1}), stacks: []}],
+                sessions: map({id, role, memory, cpu_seconds: 1}), stacks: []}],
        stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
 }
 

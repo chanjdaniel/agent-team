@@ -59,6 +59,23 @@ report_fixture() {
   echo agent-team-records >"$HOME/.config/agent-team/home"
 }
 
+# The report fixture's day files with fixtures/team-tokens/report/ledger-toolkits.jsonl, a second
+# ledger over the same sessions whose builder and reviewer launches carry toolkits, in T1
+# (agent-team) and T2 (conventioner):
+# - T2's builder t0 ([effect], 0.08) delivers ticket 01 and its reviewer k0 ([browser], 0.08)
+#   writes findings, on 2026-10-20;
+# - T1's builder u0 ([effect], 0.08) delivers nothing: b1 ([browser], 0.8), launched after it,
+#   delivers ticket 01; b2 ([effect, browser, effect], no project, 0.62) ticket 02; b3 (no
+#   toolkits field, 0.5) ticket 03; reviewers r1 ([browser], 0.25) findings and r2 ([], 0.5) a pass;
+#   its planner p1 carries [browser] and is in neither list;
+# - on 2026-10-21, T2's builder l1 ([effect], no project, 0.62) delivers ticket 02, and its
+#   reviewer l2 ([browser]) has no replies and writes findings;
+# - after the window's end (16:00): T2's ticket 03 (l1's) and T1's second pass (r2's).
+toolkits_fixture() {
+  report_fixture
+  cp "$BATS_TEST_DIRNAME/fixtures/team-tokens/report/ledger-toolkits.jsonl" "$TEAM_HOME/ledger.jsonl"
+}
+
 # The fixture's report as JSON, its window ending in its last block: report_json [<flag>...]
 report_json() {
   run_bin -0 --separate-stderr team-tokens --until 2026-10-21T16:00Z --json "$@"
@@ -287,14 +304,14 @@ read 3 of 3 transcripts; wrote 1 day file"
   local code=$BATS_TEST_TMPDIR/code
   mkdir -p "$code/bin/lib"
   cp "$REPO_ROOT/bin/team-tokens" "$code/bin/"
-  cp "$REPO_ROOT/bin/lib/prices.json" "$code/bin/lib/"
+  cp "$REPO_ROOT/bin/lib/prices.json" "$REPO_ROOT/bin/lib/command_text.py" "$code/bin/lib/"
   unset TEAM_HOME
   local verb
   for verb in export time ""; do
     run -1 --separate-stderr "$code/bin/team-tokens" ${verb:+"$verb"}
     assert_equal "$stderr" "team-tokens: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
   done
-  [[ ! -e $code/usage ]]
+  [[ ! -e $code/usage && ! -e $code/bin/lib/__pycache__ ]]
   run -0 "$code/bin/team-tokens" --help
 }
 
@@ -367,7 +384,7 @@ read 3 of 3 transcripts; wrote 1 day file"
 @test "the report gives cost per outcome, relaunches and re-reviews from the ledger" {
   report_fixture
   report_json
-  assert_equal "$(q '.outcomes | del(.reviewer_models)')" \
+  assert_equal "$(q '.outcomes | del(.reviewer_models, .builder_toolkits, .reviewer_toolkits)')" \
     '{"sessions":[{"role":"planner","sessions":1,"w":0.69,"median_w":0.69,"mean_w":0.69,"p90_w":0.69},{"role":"builder","sessions":4,"w":2.54,"median_w":0.62,"mean_w":0.635,"p90_w":0.8},{"role":"reviewer","sessions":2,"w":0.75,"median_w":0.375,"mean_w":0.375,"p90_w":0.5}],"counts":{"merged":1,"tickets_done":2,"reviews":2,"pass":1,"findings":1,"launches":9},"complete_tasks":{"count":1,"merged":1,"tickets_done":1,"reviews":2},"measures":{"worker_w_per_merge":3.36,"worker_w_per_ticket":3.36,"builder_w_per_ticket":1.92,"reviewer_w_per_review":0.375,"coordinator_w_per_merge":2.53,"coordinator_w_per_launch":0.281111}}'
   assert_equal "$(q '.relaunches')" \
     '{"reasons":[{"reason":"stow or handoff","count":1,"with_replies":1,"warmup_w":0.62,"median_w":0.62}],"all":1,"warmup_w":0.62}'
@@ -389,6 +406,64 @@ read 3 of 3 transcripts; wrote 1 day file"
   assert_contains "$output" "| Launch model | Reviewer launches | With replies | Reviews | With findings | \$w | \$w per review | Reply models |"
   assert_contains "$output" "| default | 2 | 1 | 1 | 0 | 0.50 | 0.50 | claude-opus-5-5 0.50 |"
   assert_contains "$output" "| sonnet | 1 | 1 | 1 | 1 | 0.25 | 0.25 | claude-sonnet-5-5 0.25 |"
+}
+
+@test "with no toolkit given, the toolkit lists add up to the report's builder and reviewer figures" {
+  report_fixture
+  report_json
+  # T0's builder launch (t0t0t0t0) is the load check, team-test's, so it is in no row.
+  assert_equal "$(q '[.outcomes.builder_toolkits[].toolkits, .outcomes.reviewer_toolkits[].toolkits] | unique')" '[[]]'
+  assert_equal "$(q '[.outcomes.builder_toolkits[].project] | unique')" '["agent-team","conventioner"]'
+  assert_equal "$(q '[(.outcomes.builder_toolkits | map(.tickets_done) | add), .outcomes.counts.tickets_done]')" '[2,2]'
+  assert_equal "$(q '[(.outcomes.builder_toolkits | map(.w) | add), (.outcomes.sessions[] | select(.role == "builder") | .w)]')" '[2.54,2.54]'
+  assert_equal "$(q '[(.outcomes.reviewer_toolkits | map(.reviews) | add), .outcomes.counts.reviews]')" '[2,2]'
+  assert_equal "$(q '[(.outcomes.reviewer_toolkits | map(.w) | add), (.outcomes.sessions[] | select(.role == "reviewer") | .w)]')" '[0.75,0.75]'
+}
+
+@test "the report gives builder and reviewer launches by project and toolkits, each with its outcomes and \$w" {
+  toolkits_fixture
+  report_json
+  # u0 launched before b1, so T1's ticket 01 is b1's; l1's ticket 03 and r2's second pass come after
+  # --until; l2 has no replies, so its findings are not counted; t0 and l1 take T2's project.
+  assert_equal "$(q '.outcomes.builder_toolkits[]' | paste -sd ' ')" \
+    '{"project":"agent-team","toolkits":[],"launches":1,"with_replies":1,"tickets_done":1,"w":0.5,"w_per_ticket":0.5} {"project":"agent-team","toolkits":["browser"],"launches":1,"with_replies":1,"tickets_done":1,"w":0.8,"w_per_ticket":0.8} {"project":"agent-team","toolkits":["browser","effect"],"launches":1,"with_replies":1,"tickets_done":1,"w":0.62,"w_per_ticket":0.62} {"project":"agent-team","toolkits":["effect"],"launches":1,"with_replies":1,"tickets_done":0,"w":0.08,"w_per_ticket":null} {"project":"conventioner","toolkits":["effect"],"launches":2,"with_replies":2,"tickets_done":2,"w":0.7,"w_per_ticket":0.35}'
+  assert_equal "$(q '.outcomes.reviewer_toolkits[]' | paste -sd ' ')" \
+    '{"project":"agent-team","toolkits":[],"launches":1,"with_replies":1,"reviews":1,"findings":0,"w":0.5,"w_per_review":0.5} {"project":"agent-team","toolkits":["browser"],"launches":1,"with_replies":1,"reviews":1,"findings":1,"w":0.25,"w_per_review":0.25} {"project":"conventioner","toolkits":["browser"],"launches":2,"with_replies":1,"reviews":1,"findings":1,"w":0.08,"w_per_review":0.08}'
+  # The same rule credits reviews by model.
+  assert_equal "$(q '[.outcomes.reviewer_models[] | [.model, .launches, .reviews, .findings]]')" '[["default",3,2,1],["sonnet",1,1,1]]'
+  # With a later --until, the outcomes after the first window's end count.
+  report_json --until 2026-10-21T18:00Z
+  assert_equal "$(q '[(.outcomes.builder_toolkits[] | select(.project == "conventioner") | .tickets_done), (.outcomes.reviewer_toolkits[] | select(.toolkits == []) | .reviews)]')" '[3,2]'
+  run_bin -0 team-tokens --until 2026-10-21T16:00Z
+  assert_contains "$output" "| Project | Toolkits | Builder launches | With replies | Tickets done | \$w | \$w per ticket |"
+  assert_contains "$output" "| agent-team | none | 1 | 1 | 1 | 0.50 | 0.50 |"
+  assert_contains "$output" "| agent-team | browser+effect | 1 | 1 | 1 | 0.62 | 0.62 |"
+  assert_contains "$output" "| agent-team | effect | 1 | 1 | 0 | 0.08 | - |"
+  assert_contains "$output" "| conventioner | effect | 2 | 2 | 2 | 0.70 | 0.35 |"
+  assert_contains "$output" "| Project | Toolkits | Reviewer launches | With replies | Reviews | With findings | \$w | \$w per review |"
+  assert_contains "$output" "| agent-team | none | 1 | 1 | 1 | 0 | 0.50 | 0.50 |"
+  assert_contains "$output" "| conventioner | browser | 2 | 1 | 1 | 1 | 0.08 | 0.08 |"
+  # Both tables come after the reviewer-model table, in the cost per outcome section.
+  section=${output#*$'\n'"## Cost per outcome"$'\n'}
+  section=${section%%$'\n'"## Relaunches"$'\n'*}
+  [[ $section == *"| Launch model |"*"Builder launches by toolkits"*"| Project | Toolkits | Builder launches |"*"Reviewer launches by toolkits"*"| Project | Toolkits | Reviewer launches |"* ]]
+}
+
+@test "--task, --since and --until narrow the toolkit lists as they narrow the report" {
+  toolkits_fixture
+  report_json --task T2
+  assert_equal "$(q '[.outcomes.builder_toolkits[], .outcomes.reviewer_toolkits[] | [.project, .toolkits, .launches]]')" \
+    '[["conventioner",["effect"],2],["conventioner",["browser"],2]]'
+  report_json --since 2026-10-21T00:00Z
+  assert_equal "$(q '[.outcomes.builder_toolkits, .outcomes.reviewer_toolkits]')" \
+    '[[{"project":"conventioner","toolkits":["effect"],"launches":1,"with_replies":1,"tickets_done":1,"w":0.62,"w_per_ticket":0.62}],[{"project":"conventioner","toolkits":["browser"],"launches":1,"with_replies":0,"reviews":0,"findings":0,"w":0,"w_per_review":null}]]'
+  run_bin -0 team-tokens --until 2026-10-20T09:00Z --json
+  assert_equal "$(jq -c '[.outcomes.builder_toolkits[] | [.project, .toolkits, .tickets_done]]' <<<"$output")" \
+    '[["agent-team",["effect"],0],["conventioner",["effect"],1]]'
+  # With no builder or reviewer launch in the window, each table says none.
+  run_bin -0 team-tokens --until 2026-10-20T08:20Z
+  assert_contains "$output" "Builder launches by toolkits (their project, and the toolkits each launch carried), the tickets done and \$w over those with replies:"$'\n\n'"None in the window."
+  assert_contains "$output" "Reviewer launches by toolkits, the reviews and \$w over those with replies:"$'\n\n'"None in the window."
 }
 
 @test "the report gives the 5-hour blocks with the current one, and the last seven days per machine" {
@@ -797,6 +872,34 @@ model: 19.5 4 5
 wait message: 3600 1 3600"
 }
 
+@test "a background call that writes a heredoc and then waits on Daniel is keyed by its wait" {
+  local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
+  local session=c4000000-0000-4000-8000-000000000000
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$projects"
+  printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"planner","session":"c4000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
+  jq -nc --arg session "$session" --arg command $'cd CONTENT-dir; cat >> interview.md <<\'EOF\'\nCONTENT-note\nEOF\nteam-thread wait T1' '
+    "<task-notification><task-id>bgwait01</task-id><tool-use-id>toolu_wait</tool-use-id><status>completed</status><summary>CONTENT-done</summary></task-notification>" as $note
+    | {type: "user", timestamp: "2026-10-20T10:00:00.000Z", sessionId: $session, message: {content: "CONTENT-brief"}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:05.000Z", sessionId: $session, requestId: "req_1",
+     message: {stop_reason: "tool_use", content: [{type: "tool_use", id: "toolu_wait", name: "Bash",
+       input: {command: $command, run_in_background: true}}]}},
+    {type: "user", timestamp: "2026-10-20T10:00:05.500Z", sessionId: $session,
+     message: {content: [{type: "tool_result", tool_use_id: "toolu_wait", content: "Command running in background with ID: bgwait01."}]}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:10.000Z", sessionId: $session, requestId: "req_2",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-waiting"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T10:00:10.000Z", sessionId: $session},
+    {type: "queue-operation", operation: "enqueue", timestamp: "2026-10-20T10:30:10.000Z", sessionId: $session, content: $note},
+    {type: "user", timestamp: "2026-10-20T10:30:10.000Z", sessionId: $session, message: {content: $note}},
+    {type: "assistant", timestamp: "2026-10-20T10:30:15.000Z", sessionId: $session, requestId: "req_3",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-done"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T10:30:15.000Z", sessionId: $session}' >"$projects/$session.jsonl"
+  run_bin -0 team-tokens time
+  assert_equal "$(jq -r '.keys | keys[] | select(contains("bash"))' <<<"$output")" "background bash team-thread wait
+bash team-thread wait"
+  if grep CONTENT <<<"$output"; then false; fi
+}
+
 @test "a call is named by its command's first program that is not plumbing, with its subcommand words" {
   # Each command, then the name it gets.
   local cases=(
@@ -832,6 +935,14 @@ wait message: 3600 1 3600"
     'team-checks agent-team cafe123' 'team-checks agent-team'
     'gh-axi pr checks 35' 'gh-axi pr checks'
     '/home/x/agent-team/bin/team-ci-wait https://github.com/CONTENT/x/pull/35 cafe123' 'team-ci-wait'
+    # A heredoc's body is left out, and what follows it counts: its closing line, then the next
+    # command, past a <<- and a quoted marker, and over two heredocs.
+    $'cd CONTENT-dir; cat > CONTENT-f <<\'EOF\'\nCONTENT-line; rm -rf CONTENT-x\nEOF\nteam-thread wait T1' 'team-thread wait'
+    $'cd CONTENT-dir; cat <<-"EOF" | tee CONTENT-f\n\tCONTENT-line\n\tEOF\ntests/run' 'tests/run'
+    $'cat > CONTENT-a <<A\nCONTENT-a\nA\ncat > CONTENT-b <<B\nCONTENT-b\nB\nmake check' 'make check'
+    # A here-string is no heredoc, and a heredoc never closed is cut at its marker: both as before.
+    $'cd CONTENT-dir; cat <<<CONTENT-here\ntests/run' 'cd'
+    $'cd CONTENT-dir; cat > CONTENT-f <<EOF\nCONTENT-line\ntests/run' 'cd'
   )
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1 i session expected=
   rm -r "$HOME/.claude/projects"
@@ -948,9 +1059,9 @@ read 1 of 4 transcripts; wrote 1 time file"
   mv "$BATS_TEST_TMPDIR/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
   local version usage_before
   version=$(jq .version "$scan")
-  assert_equal "$version" 3
-  # Version 2's scan state, written before a stopped background call ended at its stop.
-  jq ".version = 2" "$scan" >"$BATS_TEST_TMPDIR/scan" && mv "$BATS_TEST_TMPDIR/scan" "$scan"
+  assert_equal "$version" 4
+  # Version 3's scan state, written before a heredoc's body was left out of a command's name.
+  jq ".version = 3" "$scan" >"$BATS_TEST_TMPDIR/scan" && mv "$BATS_TEST_TMPDIR/scan" "$scan"
   usage_before=$(fingerprint "$usage"/*.jsonl)
   run_bin -0 team-tokens export
   assert_equal "$output" "usage/home-pc/time/2026-10-20.jsonl: 1 session, 1 new

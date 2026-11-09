@@ -22,7 +22,7 @@
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
-        "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/scratch-only-edits" }]
+        "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/scratch-only-edits", "onFailure": "block", "timeout": 30 }]
       }
     ]
   },

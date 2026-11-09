@@ -67,14 +67,19 @@
 # Daniel's own sessions', since it attaches to their one Agent Chrome window, so either is a
 # malformed command line (exit 2). By Daniel's decision (D1 of T216's report, 2026-11-04), a walk's
 # planner reads that window only by team-ui --capture (capture_refusal in bin/lib/team.sh), never
-# with this toolkit's MCP server. Production toolkits (prod-*) are for the ops role only (exit 1).
-# toolkit_refusal in bin/lib/team.sh holds that list, which team-load-check reads too. The ops role
-# needs prod-read (prod-write comes only beside it) and --request, and is refused while any T<n>-ops
-# session is listed by claude agents (one at a time; end it with team-ops-end). An ops session runs
-# with --restricted and only the built-in tools Read, Glob, Grep, Edit, Write, ToolSearch,
-# SendMessage, ListAgents and Skill (for its toolkits' skills): no shell, no web.
+# with this toolkit's MCP server. Production toolkits (prod-*, and vercel-read) are for the ops
+# role only (exit 1). toolkit_refusal in bin/lib/team.sh holds that list, which team-load-check
+# reads too. The ops role needs prod-read or vercel-read, or both (prod-write comes only beside
+# prod-read, and never beside vercel-read, the sets team-load-check's ops form proves), and
+# --request, and is refused while any T<n>-ops session is listed by claude agents (one at a time;
+# end it with team-ops-end). An ops session runs with --restricted and only the built-in tools
+# Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents and Skill (for its toolkits'
+# skills): no shell, no web.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "launches no session") && die "$why"
 
 # Roles, settings, toolkits and hooks are code: they come from this checkout, beside bin/.
 code=$(dirname "$(dirname "$TEAM_LIB")")
@@ -124,7 +129,11 @@ if [[ $role == ops ]]; then
   # A write session reads through the read user, never the write user.
   [[ " ${toolkits[*]} " != *" prod-write "* || " ${toolkits[*]} " == *" prod-read "* ]] ||
     die "prod-write needs --toolkit prod-read beside it"
-  [[ " ${toolkits[*]} " == *" prod-read "* ]] || die "the ops role needs --toolkit prod-read"
+  # The ops load check proves a write session only as prod-read and prod-write.
+  [[ " ${toolkits[*]} " != *" prod-write "* || " ${toolkits[*]} " != *" vercel-read "* ]] ||
+    die "prod-write takes no --toolkit vercel-read beside it"
+  [[ " ${toolkits[*]} " == *" prod-read "* || " ${toolkits[*]} " == *" vercel-read "* ]] ||
+    die "the ops role needs --toolkit prod-read or --toolkit vercel-read"
   [[ -n $request ]] || die "the ops role needs --request <the link to Daniel's Discord message>"
 fi
 

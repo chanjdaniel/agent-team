@@ -3,6 +3,9 @@
 # `op signout`, driven by files in $OP_STUB_DIR, never by variables (a variable would put the
 # value in the launcher's starting environment, which is what the tests look for):
 #   value    what `op read` prints, with no newline
+#   values/<reference with each / and : replaced by _>
+#            what `op read <reference>` prints in place of value, when present, so each
+#            reference can have its own (op://vault/item/field reads values/op___vault_item_field)
 #   mode     ok (the default), fail (op read fails like a declined prompt), signout-fail
 #   calls    appended: one line per call, its arguments and where its stdin points
 # It runs no command from PATH, so the tests' spies on cat, head and hostname see only what the
@@ -26,7 +29,9 @@ case $1 in
       echo "[ERROR] 2026/10/22 12:00:00 could not read secret '$3': error initializing client: authorization prompt dismissed, please try again" >&2
       exit 1
     fi
-    IFS= read -r -d '' value <"$dir/value" || true
+    file=$dir/values/${3//[\/:]/_}
+    [[ -f $file ]] || file=$dir/value
+    IFS= read -r -d '' value <"$file" || true
     printf '%s' "$value"
     ;;
   signout)

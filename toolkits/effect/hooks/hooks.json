@@ -1,0 +1,17 @@
+{
+  "description": "After an edit of a TypeScript file in a worktree that has node_modules/.bin/effect-tsgo, Effect's language service's findings for that file, as additional context, within the deadline the toolkit's README records.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/effect-diagnostics.mjs\"",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}

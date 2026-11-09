@@ -76,6 +76,13 @@ EOF
   chmod +x "$BATS_TEST_TMPDIR/stubs/git"
 }
 
+# A pre-push hook that refuses, says so on stdout and stderr, and leaves the marker
+# $BATS_TEST_TMPDIR/<name>.ran: refusing_hook <name>
+refusing_hook() {
+  printf '#!/bin/sh\ntouch "%s/%s.ran"\necho "HOOK SAYS NO on stdout"\necho "HOOK SAYS NO on stderr" >&2\nexit 1\n' \
+    "$BATS_TEST_TMPDIR" "$1"
+}
+
 # Everything a checkpoint must leave as it was in the worktree <wt>: its index's bytes, files,
 # staged changes, index entries, stash, branch and head, all read without optional locks.
 worktree_state() {
@@ -99,7 +106,7 @@ changed_in() {
   git -C "$team_origin" diff-tree -r --no-commit-id --name-only "$1"
 }
 
-@test "one checkpoint archives the scratch, pushes the worktree's changes as wip/home/T1 to the team home's origin and commits the records" {
+@test "one checkpoint pushes the ledger first, archives the scratch, pushes the worktree's changes as wip/home/T1 to the team home's origin and commits the rest of the records" {
   run_bin -0 team-open home feature feat work "Do the work"
   local wt=$HOME/slots/home/1 head before
   echo "stashed" >>"$wt/README.md"
@@ -118,7 +125,8 @@ changed_in() {
   run_bin -0 --separate-stderr team-checkpoint
   local snap
   snap=$(git -C "$team_origin" rev-parse wip/home/T1)
-  assert_equal "$output" "T1 home: archived .scratch/task to tasks/T1/scratch
+  assert_equal "$output" "team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD^) chore: checkpoint ledger and pushed dev
+T1 home: archived .scratch/task to tasks/T1/scratch
 T1 home: pushed wip/home/T1 ${snap:0:7} (uncommitted changes on ${head:0:7})
 usage: read 0 of 0 transcripts; no day file changed
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
@@ -146,12 +154,14 @@ refs/heads/lease
 refs/heads/wip/home/T1"
   assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)')" "refs/heads/main"
 
-  # The team home: one commit of the records, the plan team-open wrote among them, pushed.
+  # The team home: the ledger files alone, then the rest of the records, the plan team-open wrote
+  # among them, both pushed.
   assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
-  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
-  assert_equal "$(changed_in dev)" "ledger.jsonl
-level.jsonl
-tasks/T1/plan.md
+  assert_equal "$(git -C "$team_origin" log -2 --format=%s dev)" "chore: checkpoint
+chore: checkpoint ledger"
+  assert_equal "$(changed_in dev^)" "ledger.jsonl
+level.jsonl"
+  assert_equal "$(changed_in dev)" "tasks/T1/plan.md
 tasks/T1/scratch/spec.md"
   assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
   [[ -f $state/last-checkpoint ]]
@@ -192,7 +202,8 @@ tasks/T1/scratch/spec.md"
 
   log_pushes
   run_bin -0 team-checkpoint --force
-  assert_equal "$output" "T1 home: archived .scratch/task to tasks/T1/scratch
+  assert_equal "$output" "team home: nothing new in the ledger
+T1 home: archived .scratch/task to tasks/T1/scratch
 T1 home: wip/home/T1 is up to date (${snap:0:7})
 usage: read 0 of 0 transcripts; no day file changed
 team home: nothing to commit"
@@ -260,8 +271,7 @@ more"
   assert_equal "$(git -C "$team_origin" rev-parse wip/site/T1^)" "$(git -C "$site_wt" rev-parse HEAD)"
   assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" ""
   assert_equal "$(git -C "$site_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" ""
-  assert_equal "$(changed_in dev)" "ledger.jsonl
-tasks/T1/plan.md
+  assert_equal "$(changed_in dev)" "tasks/T1/plan.md
 tasks/T1/scratch-site/notes.md
 tasks/T1/scratch/spec.md"
 }
@@ -280,7 +290,7 @@ tasks/T1/scratch/spec.md"
   touch "$lock"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$(head -n 4 <<<"$output")" "T1 home: skipped: $HOME/slots/home/1 is missing
+  assert_equal "$(sed -n 2,5p <<<"$output")" "T1 home: skipped: $HOME/slots/home/1 is missing
 T2 home: skipped: $HOME/slots/home/2 is on other, not feat/T2-work-2
 T3 home: skipped: a git command is running in $HOME/slots/home/3 (index.lock)
 T4 home: archived .scratch/task to tasks/T4/scratch"
@@ -301,16 +311,260 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   assert_equal "$(jq -r .worktree <<<"$output")" "$other/home/1"
   echo spec >"$other/home/1/.scratch/task/spec.md"
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$(head -n 1 <<<"$output")" "T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(sed -n 2p <<<"$output")" "T1 home: archived .scratch/task to tasks/T1/scratch"
 }
 
-@test "an empty task directory is reported and archives nothing" {
+@test "a worktree whose snapshot git cannot build is that worktree's failure alone: the next is pushed and the records committed" {
+  [[ $(id -u) != 0 ]] || skip "root reads a file whatever its mode"
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/home/2
+  echo "unreadable" >"$one/locked.txt"
+  chmod 000 "$one/locked.txt"
+  echo "change" >"$two/change.txt"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: T1 home: cannot snapshot wip/home/T1: open(\"locked.txt\"): Permission denied"
+  assert_contains "$output" "T2 home: pushed wip/home/T2"
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T2"
+  assert_equal "$(git -C "$team_origin" show wip/home/T2:change.txt)" "change"
+  assert_contains "$output" "team home: committed"
+  assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "an untracked nested repository with no commit fails that worktree's snapshot with git's own line; the others still run" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/home/2
+  echo "spec" >"$one/.scratch/task/spec.md"
+  git init -q "$one/nested"
+  echo "change" >"$two/change.txt"
+  local before
+  before=$(worktree_state "$one")
+
+  run_bin -1 --separate-stderr team-checkpoint
+  assert_equal "$(worktree_state "$one")" "$before"
+  assert_equal "$stderr" "team-checkpoint: T1 home: cannot snapshot wip/home/T1: 'nested/' does not have a commit checked out"
+  # Its archive is kept apart from its snapshot: still made.
+  assert_contains "$output" "T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_contains "$output" "T2 home: pushed wip/home/T2"
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T2"
+  assert_equal "$(git -C "$team_origin" show dev:tasks/T1/scratch/spec.md)" "spec"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "a mirror that fails is that worktree's failure with rsync's reason; its snapshot is still pushed and the next task still runs" {
+  [[ $(id -u) != 0 ]] || skip "root reads a file whatever its mode"
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/home/2
+  echo "unreadable" >"$one/.scratch/task/locked.md"
+  chmod 000 "$one/.scratch/task/locked.md"
+  echo "change 1" >"$one/change.txt"
+  echo "spec 2" >"$two/.scratch/task/spec.md"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  [[ $stderr =~ ^"team-checkpoint: T1 home: cannot mirror $one/.scratch/task into tasks/T1/scratch: rsync".*"locked.md".*"Permission denied"[^$'\n']*$ ]]
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "change 1"
+  assert_contains "$output" "T2 home: archived .scratch/task to tasks/T2/scratch"
+  assert_equal "$(git -C "$team_origin" show dev:tasks/T2/scratch/spec.md)" "spec 2"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "a worktree whose project is gone from the registry is that worktree's failure; its snapshot is pushed and the next task still runs" {
+  run_bin -0 team-open site feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  echo "change 1" >"$HOME/slots/site/1/change.txt"
+  echo "spec 2" >"$HOME/slots/home/1/.scratch/task/spec.md"
+  sed -i '/^\[site/,$d' "$TEAM_HOME/projects.toml"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: T1 site: cannot read site from the registry: unknown project 'site'; known: home"
+  assert_contains "$output" "T1 site: pushed wip/site/T1"
+  assert_contains "$output" "T2 home: archived .scratch/task to tasks/T2/scratch"
+  assert_contains "$output" "T2 home: pushed wip/home/T2"
+  assert_contains "$output" "team home: committed"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "a failed read or push of one worktree's wip ref is that worktree's failure alone" {
+  run_bin -0 team-open site feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  run_bin -0 team-open home feature feat work3 "Work 3"
+  echo "change 1" >"$HOME/slots/site/1/change.txt"
+  echo "change 2" >"$HOME/slots/home/1/change.txt"
+  echo "change 3" >"$HOME/slots/home/2/change.txt"
+  # The read of the team home's origin fails for site's objects alone (the checkpoint reads none
+  # of site's repository config, so a git that refuses it stands in); the origin refuses wip/home/T2.
+  local real_git
+  real_git=$(command -v git)
+  cat >"$BATS_TEST_TMPDIR/stubs/git" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case \$arg in --git-dir=*) dir=\${arg#--git-dir=} ;; ls-remote) read=1 ;; esac
+done
+if [[ -n \${read:-} && -n \${dir:-} ]] && grep -q "/site/" "\$dir/objects/info/alternates" 2>/dev/null; then
+  echo "fatal: the test refuses site's read" >&2
+  exit 128
+fi
+exec "$real_git" "\$@"
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/stubs/git"
+  printf '#!/bin/sh\nwhile read -r old new ref; do [ "$ref" != refs/heads/wip/home/T2 ] || { echo "the test refuses T2" >&2; exit 1; }; done\n' \
+    >"$team_origin/hooks/pre-receive"
+  chmod +x "$team_origin/hooks/pre-receive"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  [[ $stderr =~ ^"team-checkpoint: T1 site: cannot read wip/site/T1 on the team home's origin: the test refuses site's read"$'\n'"team-checkpoint: T2 home: cannot push wip/home/T2 to the team home's origin: "[^$'\n']+$ ]]
+  assert_contains "$output" "T3 home: pushed wip/home/T3"
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T3"
+  assert_contains "$output" "team home: committed"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "the snapshot push runs none of the project's hooks, from .git/hooks or a relative core.hooksPath" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open site feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/site/1 hooks
+  hooks=$(git -C "$home" rev-parse --path-format=absolute --git-common-dir)/hooks
+  git -C "$site" config core.hooksPath .githooks
+  mkdir -p "$two/.githooks"
+  refusing_hook home >"$hooks/pre-push"
+  refusing_hook site >"$two/.githooks/pre-push"
+  chmod +x "$hooks/pre-push" "$two/.githooks/pre-push"
+  echo "change 1" >"$one/change.txt"
+  echo "change 2" >"$two/change.txt"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_contains "$output" "T2 site: pushed wip/site/T2"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "change 1"
+  assert_equal "$(git -C "$team_origin" show wip/site/T2:change.txt)" "change 2"
+  [[ $output$stderr != *"HOOK SAYS NO"* ]]
+  [[ ! -e $BATS_TEST_TMPDIR/home.ran && ! -e $BATS_TEST_TMPDIR/site.ran ]]
+
+  # Each hook is live: a plain push from either worktree runs it and is refused.
+  run git -C "$one" push "$team_origin" HEAD:refs/heads/probe-1
+  ((status != 0))
+  run git -C "$two" push "$team_origin" HEAD:refs/heads/probe-2
+  ((status != 0))
+  [[ -e $BATS_TEST_TMPDIR/home.ran && -e $BATS_TEST_TMPDIR/site.ran ]]
+}
+
+@test "a worktree's repository config runs no command of its own: no fsmonitor and no clean filter" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open site feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/site/1 cmd
+  # Each command leaves its marker, then does what git asks of it: no fsmonitor answer, the
+  # content as it is.
+  for cmd in fsmonitor clean; do
+    printf '#!/bin/sh\ntouch "%s/%s.ran"\n%s\n' "$BATS_TEST_TMPDIR" "$cmd" \
+      "$([[ $cmd == clean ]] && echo cat || echo 'exit 1')" >"$BATS_TEST_TMPDIR/$cmd"
+    chmod +x "$BATS_TEST_TMPDIR/$cmd"
+  done
+  git -C "$home" config core.fsmonitor "$BATS_TEST_TMPDIR/fsmonitor"
+  git -C "$site" config filter.Mark.clean "$BATS_TEST_TMPDIR/clean"
+  git -C "$site" config filter.Mark.required true
+  echo '*.txt filter=Mark' >"$two/.gitattributes"
+  echo "change 1" >"$one/change.txt"
+  echo "change 2" >"$two/change.txt"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_contains "$output" "T2 site: pushed wip/site/T2"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "change 1"
+  assert_equal "$(git -C "$team_origin" show wip/site/T2:change.txt)" "change 2"
+  [[ ! -e $BATS_TEST_TMPDIR/fsmonitor.ran && ! -e $BATS_TEST_TMPDIR/clean.ran ]]
+
+  # Each command is live: git's own commands in the worktree run it.
+  git -C "$one" status --short >/dev/null
+  git -C "$two" hash-object --path change.txt change.txt >/dev/null
+  [[ -e $BATS_TEST_TMPDIR/fsmonitor.ran && -e $BATS_TEST_TMPDIR/clean.ran ]]
+}
+
+@test "the wip ref goes to the team home's origin whatever URL rewrite the worktree's repository config names" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open site feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/site/1 elsewhere=$BATS_TEST_TMPDIR/elsewhere.git url
+  git init -q --bare "$elsewhere"
+  url=$(git -C "$TEAM_HOME" remote get-url origin)
+  git -C "$home" config "url.$elsewhere.insteadOf" "$url"
+  git -C "$site" config "url.$elsewhere.pushInsteadOf" "$url"
+  echo "change 1" >"$one/change.txt"
+  echo "change 2" >"$two/change.txt"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_contains "$output" "T2 site: pushed wip/site/T2"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "change 1"
+  assert_equal "$(git -C "$team_origin" show wip/site/T2:change.txt)" "change 2"
+  assert_equal "$(git -C "$elsewhere" for-each-ref)" ""
+  # The worktree's config is untouched, and a second run sees both up to date.
+  assert_equal "$(git -C "$home" config "url.$elsewhere.insteadOf")" "$url"
+  run_bin -0 team-checkpoint --force
+  assert_contains "$output" "T1 home: wip/home/T1 is up to date"
+  assert_contains "$output" "T2 site: wip/site/T2 is up to date"
+
+  # The rewrite is live: a plain push from either worktree goes elsewhere.
+  git -C "$one" push -q "$url" HEAD:refs/heads/probe-1
+  git -C "$two" push -q "$url" HEAD:refs/heads/probe-2
+  assert_equal "$(git -C "$elsewhere" for-each-ref --format='%(refname)' | paste -sd ' ')" "refs/heads/probe-1 refs/heads/probe-2"
+}
+
+@test "with --deadline, worktrees not begun by it are skipped as failures, the records still committed, and taken first next time; without it every one runs" {
+  local n real_rsync
+  for n in 1 2 3; do
+    run_bin -0 team-open home feature feat "work$n" "Work $n"
+    echo "spec $n" >"$HOME/slots/home/$n/.scratch/task/spec.md"
+  done
+  # T1's archive takes 4 s, so it ends past a 3 s deadline; the others' are quick.
+  real_rsync=$(command -v rsync)
+  printf '#!/usr/bin/env bash\n[[ "$*" != *"/slots/home/1/"* ]] || command -p sleep 4\nexec "%s" "$@"\n' "$real_rsync" \
+    >"$BATS_TEST_TMPDIR/stubs/rsync"
+  chmod +x "$BATS_TEST_TMPDIR/stubs/rsync"
+
+  run_bin -1 --separate-stderr team-checkpoint --deadline 3
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  [[ $stderr =~ ^"team-checkpoint: T2 home: skipped: the checkpoint has run "[0-9]+" s, past its 3 s deadline for worktrees, so the records are committed in time; the next checkpoint takes it first"$'\n'"team-checkpoint: T3 home: skipped: "[^$'\n']*$ ]]
+  # The records are committed and pushed all the same: T1's archive with them.
+  assert_equal "$(git -C "$team_origin" show dev:tasks/T1/scratch/spec.md)" "spec 1"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
+  [[ -z $(git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T2) ]]
+  [[ ! -e $state/last-checkpoint ]]
+
+  # The next checkpoint, with no deadline (as team-stow and team-handoff run it), takes the
+  # skipped first, in their order, then the rest, and every one runs, however long: T2's archive,
+  # the first, now takes 4 s, so T3 and T1 begin past those 3 s and are still taken.
+  printf '#!/usr/bin/env bash\n[[ "$*" != *"/slots/home/2/"* ]] || command -p sleep 4\nexec "%s" "$@"\n' "$real_rsync" \
+    >"$BATS_TEST_TMPDIR/stubs/rsync"
+  run_bin -0 --separate-stderr team-checkpoint --force
+  assert_equal "$stderr" ""
+  assert_equal "$(grep -oE '^T[0-9] home: (pushed|wip/home/T[0-9] is up to date)' <<<"$output" | cut -c1-2 | paste -sd ' ')" "T2 T3 T1"
+  assert_equal "$(git -C "$team_origin" show dev:tasks/T3/scratch/spec.md)" "spec 3"
+  [[ -e $state/last-checkpoint && ! -e $state/checkpoint-first ]]
+}
+
+@test "an empty or a missing task directory is one line under the worktree's label, archives nothing and is no problem" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: $HOME/slots/home/1/.scratch/task is empty, so nothing was archived from home"
-  assert_equal "$output" "T1 home: pushed wip/home/T1 $(git -C "$HOME/slots/home/1" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)
+  assert_equal "$stderr" ""
+  assert_equal "$output" "team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD^) chore: checkpoint ledger and pushed dev
+T1 home: $HOME/slots/home/1/.scratch/task is empty, so nothing was archived from home
+T1 home: pushed wip/home/T1 $(git -C "$HOME/slots/home/1" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)
 usage: read 0 of 0 transcripts; no day file changed
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
+  [[ -f $state/last-checkpoint ]]
+
+  rmdir "$HOME/slots/home/1/.scratch/task"
+  run_bin -0 --separate-stderr team-checkpoint --force
+  assert_equal "$stderr" ""
+  assert_equal "$(head -n 2 <<<"$output")" "team home: nothing new in the ledger
+T1 home: $HOME/slots/home/1/.scratch/task is missing, so nothing was archived from home"
   [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
 }
 
@@ -333,11 +587,12 @@ team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkp
   echo "old" >"$TEAM_HOME/tasks/T1/scratch/big.bin"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: clone (nested repository)
-team-checkpoint: left out of tasks/T1/scratch: big.bin (over 1 MiB)
-team-checkpoint: left out of tasks/T1/scratch: .env.local (may hold a secret)
-team-checkpoint: left out of tasks/T1/scratch: access.json (may hold a secret)"
-  assert_contains "$output" "T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: clone (nested repository)
+T1 home: left out of tasks/T1/scratch: big.bin (over 1 MiB)
+T1 home: left out of tasks/T1/scratch: .env.local (may hold a secret)
+T1 home: left out of tasks/T1/scratch: access.json (may hold a secret)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./notes.md"
   # The checkpoint's commit holds the notes alone: no gitlink, no large file, no secret.
   assert_equal "$(git -C "$team_origin" ls-tree -r dev tasks/T1/scratch)" \
@@ -362,11 +617,13 @@ team-checkpoint: left out of tasks/T1/scratch: access.json (may hold a secret)"
   ln -s notes.md "$dir/latest.md"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: mirror.git (nested repository)
-team-checkpoint: left out of tasks/T1/scratch: tools/node_modules (dependencies)
-team-checkpoint: left out of tasks/T1/scratch: trial (over 200 files)
-team-checkpoint: left out of tasks/T1/scratch: latest.md (link)
-team-checkpoint: left out of tasks/T1/scratch: node_modules (link)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: mirror.git (nested repository)
+T1 home: left out of tasks/T1/scratch: tools/node_modules (dependencies)
+T1 home: left out of tasks/T1/scratch: trial (over 200 files)
+T1 home: left out of tasks/T1/scratch: latest.md (link)
+T1 home: left out of tasks/T1/scratch: node_modules (link)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 -not -path './kept/*' | sort)" "./kept
 ./notes.md
 ./tools"
@@ -385,8 +642,10 @@ team-checkpoint: left out of tasks/T1/scratch: node_modules (link)"
   echo "old" >"$TEAM_HOME/tasks/T1/scratch/ui-check/reviewer-abc1234/menu-390x844.png"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/dialog-1440x810.WEBP (image)
-team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-390x844.png (image)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/dialog-1440x810.WEBP (image)
+T1 home: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-390x844.png (image)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./ui-check
 ./ui-check/reviewer-abc1234
 ./ui-check/reviewer-abc1234/findings.md"
@@ -406,7 +665,9 @@ team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-39
   echo "{}" >"$TEAM_HOME/tasks/T1/scratch/ui-check/reviewer-abc1234/lighthouse/dialog/report.json"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/lighthouse (Lighthouse reports)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/lighthouse (Lighthouse reports)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/ui-check/reviewer-abc1234/findings.md"
 }
 
@@ -420,11 +681,13 @@ team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-39
   echo "backend started" >"$TEAM_HOME/tasks/T1/scratch/stack-logs/home-1-backend.log"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: stack-logs (stack logs)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: stack-logs (stack logs)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/notes.md"
 }
 
-@test "the team-home commit holds every records path and the ledger, never another path staged or ignored" {
+@test "the team-home commits hold every records path, the ledger files in their own, never another path staged or ignored" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
   printf 'ledger.jsonl.lock\ntasks/*/settings.*.json\ntasks/*/mcp.*.json\ntasks/*/ui/\n' >"$TEAM_HOME/.gitignore"
@@ -445,8 +708,8 @@ team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-39
 
   run_bin -0 team-checkpoint
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
-  assert_equal "$(changed_in dev)" "ledger.jsonl
-manual-steps.md
+  assert_equal "$(changed_in dev^)" "ledger.jsonl"
+  assert_equal "$(changed_in dev)" "manual-steps.md
 memory/home/MEMORY.md
 projects/p/backlog/s.md
 tasks/T1/plan.md
@@ -465,8 +728,8 @@ tasks/current.md"
   jq -cn '{ts: (now | todate), task: "T1", event: "waiting", on: "Daniel", reason: "a test"}' >>"$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-checkpoint --force
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
-  assert_equal "$(changed_in dev)" "ledger.jsonl
-manual-steps.md
+  assert_equal "$(changed_in dev^)" "ledger.jsonl"
+  assert_equal "$(changed_in dev)" "manual-steps.md
 projects.toml
 projects/p/backlog/s.md
 tasks/T1/brief-build-01.json
@@ -490,10 +753,106 @@ tasks/queued/x.md"
 A  README.md"
 }
 
+@test "a checkpoint stopped while it archives has already pushed the new ledger line" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
+  local tip pid rc=0 n
+  tip=$(team_tip)
+  # An rsync that hangs, saying it started, until the test lets it go.
+  cat >"$BATS_TEST_TMPDIR/stubs/rsync" <<STUB
+#!/usr/bin/env bash
+touch "$BATS_TEST_TMPDIR/rsync.started"
+until [[ -e "$BATS_TEST_TMPDIR/rsync.release" ]]; do sleep 0.1; done
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/stubs/rsync"
+
+  timeout 60 "$REPO_ROOT/bin/team-checkpoint" >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  pid=$!
+  for ((n = 0; n < 600; n++)); do [[ ! -e $BATS_TEST_TMPDIR/rsync.started ]] || break; sleep 0.1; done
+  [[ -e $BATS_TEST_TMPDIR/rsync.started ]]
+  # While the archive hangs, origin already has the ledger, alone, and nothing else.
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint ledger"
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(changed_in dev)" "ledger.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -r 'select(.event == "opened") | .task')" "T1"
+  # Stopped there, as the heartbeat's time limit stops it: the ledger stays pushed.
+  kill -TERM "$pid"
+  wait "$pid" || rc=$?
+  touch "$BATS_TEST_TMPDIR/rsync.release"
+  ((rc != 0))
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint ledger"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "a file the records hook refuses keeps only its task's group out: the ledger and the other task are pushed, and it goes in once fixed" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  # No address at a real provider is written out (ci.yml's data job would refuse this file).
+  local provider=gmail.com notes=$HOME/slots/home/1/.scratch/task/notes.md
+  echo "reply to ann.applicant@$provider" >"$notes"
+  echo "spec 2" >"$HOME/slots/home/2/.scratch/task/spec.md"
+  echo "readme" >"$TEAM_HOME/README.md"
+  git -C "$TEAM_HOME" add README.md
+
+  run_bin -1 --separate-stderr team-checkpoint
+  [[ $stderr == "team-checkpoint: team home: cannot commit tasks/T1/: data-check: refused: tasks/T1/scratch/notes.md adds an email address at a public provider"* ]]
+  assert_equal "$(wc -l <<<"$stderr")" 1
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_contains "$output" "T2 home: pushed wip/home/T2"
+  assert_equal "$(tail -n 1 <<<"$output")" "team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint tasks/T2/ and pushed dev"
+  assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
+  assert_equal "$(git -C "$team_origin" log -2 --format=%s dev)" "chore: checkpoint tasks/T2/
+chore: checkpoint ledger"
+  assert_equal "$(changed_in dev^)" "ledger.jsonl"
+  assert_equal "$(changed_in dev)" "tasks/T2/plan.md
+tasks/T2/scratch/spec.md"
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1)" ""
+  [[ ! -e $state/last-checkpoint ]]
+  assert_contains "$(git -C "$TEAM_HOME" diff --cached --name-only)" "README.md"
+
+  # Fixed, the next checkpoint commits T1's task directory in the one commit, and exits 0.
+  echo "reply to the applicant" >"$notes"
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
+  assert_equal "$(changed_in dev)" "tasks/T1/plan.md
+tasks/T1/scratch/notes.md"
+  assert_equal "$(git -C "$TEAM_HOME" diff --cached --name-only)" "README.md"
+  [[ -f $state/last-checkpoint ]]
+}
+
+@test "a first commit that fails is said, and the worktrees are still checkpointed and the rest committed" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
+  echo "new" >"$HOME/slots/home/1/new.txt"
+  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  local provider=gmail.com tip refused
+  tip=$(team_tip)
+  jq -cn --arg reason "write to bo@$provider" '{ts: (now | todate), task: "T1", event: "waiting", on: "Daniel", reason: $reason}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  refused="data-check: refused: ledger.jsonl adds an email address at a public provider"
+  [[ $(sed -n 1p <<<"$stderr") == "team-checkpoint: team home: cannot commit the records: $refused"* ]]
+  # The one commit fails on the ledger too, so its group is the one left out.
+  [[ $(sed -n 2p <<<"$stderr") == "team-checkpoint: team home: cannot commit ledger: $refused"* ]]
+  assert_equal "$(wc -l <<<"$stderr")" 2
+  assert_contains "$output" "T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:new.txt)" "new"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint tasks/T1/"
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(changed_in dev)" "tasks/T1/plan.md
+tasks/T1/scratch/spec.md"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
 @test "it exports this machine's usage of each complete day into usage/<machine>/ and commits it" {
   cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$output" "usage: usage/home-pc/2026-10-20.jsonl: 1 reply, 1 new
+  assert_equal "$output" "team home: nothing new in the ledger
+usage: usage/home-pc/2026-10-20.jsonl: 1 reply, 1 new
 usage: usage/home-pc/2026-10-21.jsonl: 3 replies, 3 new
 usage: read 3 of 3 transcripts; wrote 2 day files
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
@@ -503,22 +862,22 @@ usage/home-pc/2026-10-21.jsonl"
   local tip
   tip=$(team_tip)
   run_bin -0 team-checkpoint --force
-  assert_equal "$output" "usage: read 0 of 3 transcripts; no day file changed
+  assert_equal "$output" "team home: nothing new in the ledger
+usage: read 0 of 3 transcripts; no day file changed
 team home: nothing to commit"
   assert_equal "$(team_tip)" "$tip"
 }
 
-@test "a failed export is reported and fails nothing: the records are still committed and pushed" {
+@test "a failed export is a warning and fails nothing: the records are still committed and pushed" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
   cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
   mkdir -p "$TEAM_HOME/usage/home-pc"
   echo "not json" >"$TEAM_HOME/usage/home-pc/2026-10-21.jsonl"
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
+  assert_equal "$stderr" "team-checkpoint: warning: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
   assert_contains "$output" "team home: committed"
-  assert_equal "$(changed_in dev)" "ledger.jsonl
-tasks/T1/plan.md
+  assert_equal "$(changed_in dev)" "tasks/T1/plan.md
 tasks/T1/scratch/spec.md
 usage/home-pc/2026-10-20.jsonl
 usage/home-pc/2026-10-21.jsonl"
@@ -540,11 +899,12 @@ usage/home-pc/2026-10-21.jsonl"
 
   run_bin -0 team-checkpoint
   assert_contains "$output" "team home: committed"
-  assert_contains "$output" "origin's dev had moved; replayed onto it and pushed dev"
-  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$theirs"
+  # The ledger's commit, the first pushed, is the one replayed; the rest goes on top of it.
+  assert_contains "$output" " chore: checkpoint ledger; origin's dev had moved; replayed onto it and pushed dev"
+  assert_equal "$(git -C "$team_origin" rev-parse dev~2)" "$theirs"
   assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
-  assert_equal "$(changed_in dev)" "ledger.jsonl
-tasks/T1/plan.md
+  assert_equal "$(changed_in dev^)" "ledger.jsonl"
+  assert_equal "$(changed_in dev)" "tasks/T1/plan.md
 tasks/T1/scratch/spec.md"
   assert_equal "$(cat "$TEAM_HOME/manual-steps.md")" "from laptop"
   assert_equal "$(git -C "$TEAM_HOME" diff --cached)" "$staged"
@@ -576,9 +936,11 @@ tasks/T1/scratch/spec.md"
   # Out of the way: nothing new to commit, and the commit left behind goes out.
   rm "$TEAM_HOME/README.md"
   run_bin -0 team-checkpoint
+  assert_contains "$output" "team home: nothing new in the ledger; origin's dev had moved; replayed onto it and pushed dev"
   assert_contains "$output" "team home: nothing to commit"
-  assert_contains "$output" "origin's dev had moved; replayed onto it and pushed dev"
-  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$theirs"
+  assert_equal "$(git -C "$team_origin" rev-parse dev~2)" "$theirs"
+  assert_equal "$(git -C "$team_origin" log -2 --format=%s dev^)" "chore: checkpoint ledger
+docs: a readme"
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
   assert_equal "$(cat "$TEAM_HOME/README.md")" "from laptop"
 }
@@ -641,8 +1003,12 @@ tasks/T1/scratch/spec.md"
 }
 
 @test "it needs a machine name, and refuses a malformed command line" {
-  run_bin -2 team-checkpoint --now
-  assert_equal "$output" "team-checkpoint: usage: team-checkpoint [--force]"
+  local args
+  for args in --now "--deadline" "--deadline 1.5" "--deadline x" "--force --force" "--deadline 3 --deadline 4"; do
+    # shellcheck disable=SC2086 # each case is its words
+    run_bin -2 team-checkpoint $args
+    assert_equal "$output" "team-checkpoint: usage: team-checkpoint [--force] [--deadline <seconds>]"
+  done
   rm "$HOME/.config/agent-team/machine"
   run_bin -1 team-checkpoint
   assert_contains "$output" "this machine has no team name"

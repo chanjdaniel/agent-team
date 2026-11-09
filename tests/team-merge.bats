@@ -289,6 +289,46 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
   assert_equal "$(merged_events | jq -r .head)" "$head"
 }
 
+@test "Daniel's word holds through a conflicted merge whose passing review was logged after it, then a clean catch-up" {
+  moved_head conflict base
+  local rereviewed
+  rereviewed=$(git -C "$HOME/projects/proj" rev-parse "$head^1")
+  review "$rereviewed" pass
+  caught_up "$rereviewed"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.head, .approval] | join(" ")')" "$head head"
+}
+
+@test "a catch-up after a conflicted merge is refused when that merge's review failed, came before the word, or git shows the catch-up is not clean" {
+  moved_head conflict base
+  local rereviewed why
+  rereviewed=$(git -C "$HOME/projects/proj" rev-parse "$head^1")
+  why="the merges of the base since Daniel's word on ${approved:0:7} are not clean: ${rereviewed:0:7} conflicted when merged"
+  # A failing review, or a pass the findings of a later review replaced.
+  review "$rereviewed" findings
+  caught_up "$rereviewed"
+  refused "$why"
+  review "$rereviewed" pass
+  review "$rereviewed" findings
+  refused "$why"
+  # A pass logged before the word.
+  jq -c 'select(.event != "review" and .event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  review "$rereviewed" pass
+  event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"1562661774950400000\", head: \"$approved\"}"
+  refused "$why"
+}
+
+@test "a caught-up event is checked against git: a head with a merge of its own past the rereviewed one is refused" {
+  moved_head conflict conflict
+  local rereviewed why
+  rereviewed=$(git -C "$HOME/projects/proj" rev-parse "$head^1")
+  review "$rereviewed" pass
+  # The ledger says the second merge was clean, and it was not.
+  caught_up "$rereviewed"
+  refused "the merges of the base since Daniel's word on ${approved:0:7} are not clean: ${rereviewed:0:7} conflicted when merged"
+}
+
 @test "a commit of the PR's own after Daniel's word is refused naming it, even with a passing review" {
   moved_head base own base
   review "$head" pass
@@ -1089,4 +1129,13 @@ $(merge_post 1563 "\`git revert $MERGE_SHA\`")"
   assert_contains "$stderr" "is fenced since 2026-10-22T14:00:00Z"
   assert_contains "$stderr" "post this text with team-post --coordinator --file <its file>:
 $(merge_post 1563 "\`git revert $MERGE_SHA\`")"
+}
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  worker_refused team-merge "merges no PR" T14
+  worker_refused team-merge "merges no PR" T14 --pr https://github.com/owner/proj/pull/5
+  AGENT_TEAM_ROLE=builder run_bin -0 team-merge --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-merge")"
+  AGENT_TEAM_ROLE=coordinator run_bin -1 team-merge T99
+  assert_equal "$output" "team-merge: unknown task T99: the ledger has no events for it"
 }

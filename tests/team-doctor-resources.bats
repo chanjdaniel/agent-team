@@ -150,7 +150,7 @@ sessions() {
   assert_contains "$(line_of resources)" "; fix: team-timers enable"
   # A reading of the last 15 minutes passes.
   capacity_reading 5
-  "$REPO_ROOT/bin/team-timers" enable >/dev/null
+  "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 0 live team sessions in it"
 }

@@ -15,10 +15,13 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `bin/lib/`: the shared library.
     - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the worktrees held, a reading of the machine's load and the team's use per task, the cost samples and estimates, the reservations and the admission rule, the stow and resume plans, and their texts.
     - `code`: the paths every tracked path matches.
+    - `command_text.py`: the text of a Bash command that runs as code, each heredoc's body left out unless a shell may read it, and a shell's `-c` string and what is piped into a shell where a command starts read as code, for `bin/hooks/command-guard`; `team-tokens` takes its heredoc rule.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
+    - `gate-claude-settings.json`: the settings the gate's Claude takes with `--settings`, its commit attribution off, since it loads no user settings.
     - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode), and reads `agent_args_override`'s list for one agent.
     - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time or standing merge back to Daniel, read by `team-merge`.
+    - `health.jq`: the health module, the one place that says what unhealthy means: the fold of each heartbeat run into the health record, the ledger's one-pass scan, every health threshold, and the view `team-timers health` prints, its problems and its line in markup and plain text.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
     - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names on an opencode gate.
@@ -33,17 +36,21 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
     - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
     - `vendor/git-filter-repo/`: git filter-repo 2.47.0, vendored with its MIT license.
-    - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project and model, the longest, the running, and the classes and breakdown of their time rows.
+    - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project, model and toolkits, the longest, the running, and the classes and breakdown of their time rows.
+    - `working-set.awk`: a cgroup's working set, its `memory.current` less the reclaimable page cache, the one measure of memory use `team-capacity`, `team-heavy` and `team-level` read a cgroup by.
 - `coordinator.settings.json`: the coordinator's own settings: Discord, its hooks and its denials.
 - `LICENSE`: the Apache License 2.0; vendored bats-core and git filter-repo keep their own.
 - `plugins/coordinator-skills/`: skills loaded only into the coordinator by `bin/claude-coordinator`.
 - `README.md`, `SETUP.md`: what a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host".
 - `roles/`: the role prompts each session's system prompt is appended with, one per role, the coordinator's included.
-- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, and the `chrome-devtools-axi` client the browser toolkit's test runs.
+- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, the `chrome-devtools-axi` client the browser toolkit's test runs, and the `effect`, `@effect/tsgo` and `typescript` the effect toolkit's test checks its skill and its hook against.
   - `install`: puts them in the gitignored `servers/node_modules/`, as `team-bootstrap` does while `team-doctor`'s `servers` line fails.
   - `package.json` and `package-lock.json`: the packages and their pins, among them:
+    - `@effect/tsgo`: Effect's language service on TypeScript 7, whose `effect-tsgo` the effect toolkit's test runs its post-edit hook and the `effect-v4` skill's check against.
     - `chrome-devtools-axi`: the client the browser toolkit's test runs, since CI's runner has no global install; sessions run the one `tools.lock` pins, at the same version.
     - `chrome-devtools-mcp`: the sessions' MCP server, which their settings name by `CHROME_DEVTOOLS_AXI_MCP_PATH`.
+    - `effect`: the Effect version whose exports the effect toolkit's test holds the `effect-v4` skill's trap table to.
+    - `typescript`: TypeScript 7, which `effect-tsgo diagnostics` needs installed beside it, though `@effect/tsgo` declares no peer.
 - `settings/`: worker settings: `worker.json` shared, one file per role layered on it.
 - `sops/`: standing procedures.
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.
@@ -51,7 +58,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `knowledge-graph.md`: a project's knowledge graph.
   - `machine-setup.md`: a new machine, driven by `SETUP.md`.
   - `merging.md`: merging on Daniel's word: the per-head, plan-time and standing words, their events, the order `team-merge` tries them, what each holds a PR to, what never merges, and the coordinator's steps on a merge and a refusal.
-  - `model-trials.md`: trialling a cheaper model on one role of one project: the registry's `models`, the effort check, the paired reviews, the measures and their sources, the baseline by PR size and the note to Daniel that ends it.
+  - `model-trials.md`: trialling a cheaper model on one role of one project, or a setup change that claims to save tokens: the registry's `models`, the effort check, the paired reviews, a toolkit's arm, the measures and their sources, the baseline by PR size and the note to Daniel.
   - `platform-gotchas.md`: general rules about the tools the team runs on, which every brief but the ops one points at in the code checkout, never the team home; the retro proposes keeping it short, and each change Daniel approves lands through a PR on this repository.
   - `portability.md`: moving the team between machines.
   - `records-rewrite.md`: the cutover that rewrites the records repository's history with `team-records-rewrite`, each step Daniel's or the coordinator's.
@@ -71,8 +78,11 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `tests/vendor/`: bats-core, vendored.
 - `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
+  - `codegraph/`: for a setup trial's builders and reviewers, a session-start hook that, in a worktree with a `.codegraph/` directory, builds or syncs that worktree's CodeGraph index and prints a banner to locate code with `codegraph explore` first; no MCP server.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
+  - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill, which sends the session to the installed `effect`'s sources, names the v3 and beta traps beside their GA names and gives the check, and a hook giving Effect's findings on each TypeScript file edited.
   - `frontend/`: the Agent Chrome's capture and its server, for Daniel's session and the coordinator; of the workers, only a walk's planner reads it, by `team-ui --capture`.
+  - `spec-review/`: the `spec-review` skill, which has two fresh, read-only reader agents read a task's spec and tickets in parallel, as a stranger and as its builder, and writes their findings to `spec-review.md` for the spec's author to sort.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 
@@ -126,10 +136,15 @@ It holds:
   `.github/workflows/zizmor-online.yml` runs the same zizmor on the same triggers with the run's read-only token, for its online audits (an impostor commit, a known-vulnerable action, ref confusion); it is never a required check, since it depends on GitHub's API, and `tests/repo.bats` holds its triggers and its zizmor pin to `ci.yml`'s.
   A project that still lists `local_checks` in `projects.toml` has them run through `bin/team-checks`, in a fresh detached worktree of the head: by `team-merge` before it merges, and by builders and reviewers on the head they deliver or review; `agent-team` lists none, so for it `team-checks` says so and passes.
   The Bootstrap workflow (`.github/workflows/bootstrap.yml`) runs only by hand: `team-bootstrap` on a fresh macOS runner and in an Arch container, which installs real tools.
-- The toolkit tests are `node --test` files in `tests/toolkits/`, run after `servers/install`: each starts a toolkit's server exactly as its `.mcp.json` declares, with `op` stubbed and a throwaway MongoDB in Docker, and speaks MCP to it over stdio (`tests/toolkits/helpers/` documents the helpers); `mongo-helper.test.mjs` tests the throwaway MongoDB's own wait, which a container that exits ends at once with its exit code, that it keeps its data on tmpfs so it makes no volume, and that it runs tcmalloc on per-thread caches, so MongoDB 8.0 starts on the Linux 6.19 to 7.0.13 kernels whose rseq change its per-CPU caches break (SERVER-121912).
+- The toolkit tests are `node --test` files in `tests/toolkits/`, run after `servers/install`: each starts a toolkit's server exactly as its `.mcp.json` declares, with `op` stubbed and a throwaway MongoDB in Docker (for `vercel-read`, a fake of Vercel's API on the loopback instead), and speaks MCP to it over stdio (`tests/toolkits/helpers/` documents the helpers); `mongo-helper.test.mjs` tests the throwaway MongoDB's own wait, which a container that exits ends at once with its exit code, that it keeps its data on tmpfs so it makes no volume, and that it runs tcmalloc on per-thread caches, so MongoDB 8.0 starts on the Linux 6.19 to 7.0.13 kernels whose rseq change its per-CPU caches break (SERVER-121912).
   `frontend.test.mjs` runs the frontend toolkit's scripts and server against a headless Chrome (the machine's, or `TEAM_CHROME`) on a local fixture page, never a window on the screen; that Chrome must be current enough for `open_devtools`, which `chrome-helper.test.mjs` checks fails at once on one too old.
   `browser.test.mjs` checks the browser toolkit's layout and runs its session-start hook as Claude Code runs a plugin's, under the user settings of today and the guarded ones; it also runs every `chrome-devtools-axi` command its `ui-check` skill names, headless on a fixture site in a named axi session of its own, and fails when the skill names one it does not run or its budget table's token figures do not match its image sizes.
   `servers-ftp.test.mjs` runs get-uri's `ftp://` fetch, as mongodb-mcp-server's proxy support installs it, against a minimal FTP server on the loopback, on the basic-ftp 6.x that `servers/package.json`'s `overrides` puts in place of get-uri's `^5`; `tests/repo.bats` holds the lock to 6.2.1 or later.
+  `codegraph.test.mjs` checks the codegraph toolkit's layout and runs its session-start hook as Claude Code runs a plugin's, on a stub `codegraph` that records its calls, for a builder, a reviewer and the roles it skips, with and without `.codegraph/` and an index, and with each command failing, and holds its banner to six lines.
+  Where a real `codegraph` is on PATH (never on CI), it also runs the hook against it on a project it writes at run time, so the repository holds no `.codegraph/`, and checks the banner names only subcommands that CLI has.
+  `effect.test.mjs` checks the effect toolkit's layout, its README and evals, and its `effect-v4` skill's limits and order, and holds the skill's trap table to the pinned `effect`'s exports: every GA name exists and every v3 or beta name is gone.
+  It runs the toolkit's post-edit hook as Claude Code runs a plugin's, against the pinned `effect-tsgo` on a copy of `tests/toolkits/fixtures/effect-project/` whose `node_modules` links to `servers/node_modules`, and again inside `unshare -rn`, with no network, on a Linux machine that lets an unprivileged user make that namespace, which CI's Ubuntu runner does not.
+  `spec-review.test.mjs` checks the spec-review toolkit's layout, its two reader agents' read-only tools, `omitClaudeMd` and model, the skill's limits and the order of its steps, its README's sections and attribution line, and each eval case's graders.
   `servers-hono.test.mjs` checks that @modelcontextprotocol/sdk and @modelcontextprotocol/node (under mongodb-mcp-server) resolve @hono/node-server 2.1.3 or later, and that each one's Streamable HTTP server transport, served on the loopback inside the test, still answers an MCP `initialize` POST on it with a 200 and the server's result, within a deadline that fails a stream which never sends its event; `tests/repo.bats` holds the lock to 2.1.3 or later.
   No test reaches 1Password or production: the test `PATH` refuses to start if a real `op` is on it.
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
@@ -147,6 +162,7 @@ It holds:
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
   CI's `macos-shards` jobs run `tests/run bats` in three shards on macOS runners, and its `macos` job passes only when every shard did, with the rest of CI: on every PR to `dev` and to `main`, and by hand.
 - Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, no tracked Markdown or template outside the records (`bin/lib/records`, kept as written) has an em dash, and the Layout above stays a list, one thing per line of at most 300 characters, alphabetical within each list.
+- Every PreToolUse hook entry, in `settings/*.json`, `coordinator.settings.json` and a toolkit's `hooks/hooks.json`, sets `"onFailure": "block"` and a whole-number `timeout` from 1 to 120 seconds beside its `command`, which `tests/repo.bats` holds, so a guard hook that fails or hangs blocks the call; `team-doctor`'s `guard hooks` line runs `scratch-only-edits`, `command-guard` and `lease-fence` on a harmless Bash call, since a guard that always fails then blocks every call it sees.
 
 ## Script conventions
 

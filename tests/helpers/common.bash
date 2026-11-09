@@ -284,6 +284,57 @@ stub_script() {
   cat >"$STUB_FIXTURES/$1.sh"
 }
 
+# fails_on_call <cmd> [<text>]: put on PATH a <cmd> that exits 5, printing nothing, on every call
+# one of whose arguments holds <text> (on every call, without one) and runs the machine's own <cmd>
+# otherwise, for a test of what a script does when a command inside it fails unexpectedly. Each
+# call it failed is one line of its arguments in $STUB_CALLS/<cmd>.failed. It exports the stubs'
+# directory as TEAM_PATH_FIRST, so the stand-in wins on macOS too, where the library puts
+# Homebrew's GNU tools (cat, among them) ahead of the rest of PATH.
+fails_on_call() {
+  command -v "$1" >"$STUB_FIXTURES/$1.real"
+  export TEAM_PATH_FIRST=$BATS_TEST_TMPDIR/stubs
+  printf '%s\n' "${2-}" >"$STUB_FIXTURES/$1.fail-on"
+  shared_make fails-on-call <<'EOF'
+#!/usr/bin/env bash
+name=${0##*/} text='' real=''
+IFS= read -r text <"$STUB_FIXTURES/$name.fail-on" || true
+for arg in "${@-}"; do
+  if [[ $arg == *"$text"* ]]; then
+    printf '%s\n' "$*" >>"$STUB_CALLS/$name.failed"
+    exit 5
+  fi
+done
+IFS= read -r real <"$STUB_FIXTURES/$name.real"
+exec "$real" "$@"
+EOF
+  ln -f "$BATS_RUN_TMPDIR/shared/fails-on-call" "$BATS_TEST_TMPDIR/stubs/$1"
+}
+
+# Each file under the team home, HOME and the stubs' call log, with its sha256, one per line, so a
+# test can show a run read and changed nothing, but the log of a uname stub, which the library
+# calls as it is sourced (bin/lib/platform.sh): files_state
+files_state() {
+  find "$TEAM_HOME" "$HOME" "$STUB_CALLS" -type f ! -path "$STUB_CALLS/uname.log" -print0 | sort -z | xargs -0r sha256sum
+}
+
+# <script> <arg>... refuses a worker session of each role, planner, builder, reviewer and ops, of
+# task T7: exit 1, nothing on stdout, and on stderr worker_refusal's sentence, "<script>: a <role>
+# session <does>: that is the coordinator's; send it your message", with no file of the team home
+# or HOME changed and no stub called (files_state): worker_refused <script> <does> [<arg>...]
+worker_refused() {
+  local script=$1 does=$2 role before
+  shift 2
+  before=$(files_state)
+  for role in planner builder reviewer ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin --separate-stderr "$script" "$@"
+    # shellcheck disable=SC2154 # status, output and stderr are bats' run's
+    [[ $status == 1 && -z $output &&
+      $stderr == "$script: a $role session $does: that is the coordinator's; send it your message" ]] ||
+      { printf '%s %s as a %s: exit %s\nstdout: %s\nstderr: %s\n' "$script" "$*" "$role" "$status" "$output" "$stderr" >&2; return 1; }
+  done
+  assert_equal "$(files_state)" "$before"
+}
+
 # The calls made to stub <cmd>, one JSON array of arguments per line (nothing if never called).
 stub_calls() {
   cat "$STUB_CALLS/$1.log" 2>/dev/null || true

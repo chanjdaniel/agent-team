@@ -75,8 +75,11 @@
 # parent null for a clean checkpoint's head, null for a worktree that does not resume from one.
 # Needs this machine's name; refused for a task that is not open or has no open worktree in
 # <project>; re-running after a failure finishes it.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "opens no task") && die "$why"
 
 bin=$(dirname "$TEAM_LIB")
 templates=$(dirname "$bin")/templates

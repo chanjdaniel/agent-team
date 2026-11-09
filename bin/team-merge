@@ -12,9 +12,11 @@
 #   Daniel's word holds for the PR's head when it is the approval's head, or when every commit
 #   since that head not on origin's base is a merge commit (read in the primary checkout, after
 #   fetching the PR's branch and the base) and a review with verdict pass on the head now is
-#   logged after the approval, or, when each such merge is clean (a merge of the base whose tree
-#   is git merge-tree's of its parents), with no review after the word that found anything; a
-#   merge that is neither is refused naming why (the first merge not clean, or the review that
+#   logged after the approval, or on the head a caught-up event says team-catch-up made it from
+#   (reviewed_head), the latest review of that one a pass logged after the approval and git showing
+#   the head adds only clean merges of the base to it, or, when each such merge is clean (a merge of
+#   the base whose tree is git merge-tree's of its parents), with no review after the word that
+#   found anything; a merge that is none of these is refused naming why (the first merge not clean, or the review that
 #   found something); a head that does not hold the approval's, or holds a commit of
 #   its own since it (the first is named), is refused, to ask again; the approval's head must be
 #   one such an event logged; a legacy approval with no head holds for any head, its
@@ -54,12 +56,13 @@
 #   discord_channel is #coordinator's channel or the thread of the task it was logged under
 #   (that task's latest thread event), and Discord shows its discord_message there, whenever it
 #   was sent, from an author in allowFrom; then the plan-time word's checks of the branch, the
-#   reviews and the changed paths, with no scope; it holds for every project, the team's own
-#   included, with no merge_with_plan; every check below holds for it too, and a refusal ends
-#   with a line saying to ask Daniel for the per-head word on the head, in place of the plan-time
-#   word's; a word tried before it that does not hold has its reasons listed too, each reason
-#   once; a per-head or plan-time word that holds never reads it; with no merge-standing in the
-#   ledger, it is never read;
+#   reviews and the changed paths, with no scope; it holds for every project but the team's own
+#   (own_project, as for the plan-time word), with no merge_with_plan, and on the team's own its
+#   one reason is that, its message and those checks not read; every check below holds for it
+#   too, and a refusal ends with a line saying to ask Daniel for the per-head word on the head,
+#   in place of the plan-time word's; a word tried before it that does not hold has its reasons
+#   listed too, each reason once; a per-head or plan-time word that holds never reads it; with
+#   no merge-standing in the ledger, it is never read;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes);
@@ -103,8 +106,11 @@
 # stays 0.
 # Last, team-inbox takes the PR out of the Waiting on you message; when that fails, a line on
 # stderr says so, and the exit stays 0.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "merges no PR") && die "$why"
 
 usage="usage: team-merge T<n> [--pr <url>]"
 
@@ -370,8 +376,10 @@ if [[ $word == plan && -n $head ]]; then
 fi
 # Daniel's word on a head the PR has since moved past holds only through merges of the base, read
 # in the primary checkout once the PR's branch and the base are fetched from origin: merges that
-# are clean (clean_base_merges) with no review logged after the word that found something, or
-# merges whose passing review was logged after the word.
+# are clean (clean_base_merges) with no review logged after the word that found something, merges
+# whose passing review was logged after the word, or a head team-catch-up made from such a head,
+# the latest review of the head it was made from (reviewed_head) a pass logged after the word and
+# git showing it adds only clean merges of the base to that head.
 if [[ -n $approved && -n $pr_ts && -n $head ]] &&
   ! ledger_jq 'same_head($a; $b)' -ne --arg a "$approved" --arg b "$head" >/dev/null; then
   if ! fetch_pr; then
@@ -383,7 +391,14 @@ if [[ -n $approved && -n $pr_ts && -n $head ]] &&
     if [[ -n $own ]]; then
       head_reasons+=("the head moved past Daniel's word with ${own:0:7}: ask again")
     elif ! ledger_jq 'any(.[$approval.i + 1:][]; .event == "review" and .verdict == "pass" and same_head(.head; $head))' \
-      -e --argjson approval "$approval" --arg head "$head" <<<"$events" >/dev/null; then
+      -e --argjson approval "$approval" --arg head "$head" <<<"$events" >/dev/null && ! {
+      reviewed=$(ledger_jq 'reviewed_head($head)' -r --arg head "$head" <<<"$events") || jq_failed $?
+      ! ledger_jq 'same_head($a; $b)' -ne --arg a "$reviewed" --arg b "$head" >/dev/null &&
+        ledger_jq '[.[$approval.i + 1:][] | select(.event == "review" and same_head(.head; $reviewed))] | last | .verdict == "pass"' \
+          -e --argjson approval "$approval" --arg reviewed "$reviewed" <<<"$events" >/dev/null &&
+        git -C "$primary" merge-base --is-ancestor "$approved" "$reviewed" 2>/dev/null &&
+        clean_base_merges "$primary" "$reviewed" "$head" "origin/$base" >/dev/null
+    }; then
       found=$(ledger_jq '[.[$approval.i + 1:][] | select(.event == "review" and .verdict == "findings")] | first
         | if . == null then empty else "the review of the head \(.head[:7]) at \(.ts)" end' \
         -r --argjson approval "$approval" <<<"$events") || jq_failed $?
@@ -412,7 +427,12 @@ fi
 # The standing word holds only while the word applying to the project stands, in #coordinator or
 # the thread of the task it was logged under, where Discord shows its message from an allowFrom
 # author; it is read whenever it was sent, since it is on no head and answers no ask.
-if [[ $word == standing ]]; then
+# The team's own project never merges on it, as on the plan-time word, whatever the word says.
+team_own=''
+if [[ $word == standing ]] && own_project "$project"; then team_own=true; fi
+if [[ -n $team_own ]]; then
+  standing_reasons+=("$project is the team's own project, whose PRs merge only on Daniel's word per head")
+elif [[ $word == standing ]]; then
   out=$(ledger_jq 'standing_word_reasons($project)' -r --arg project "$project" <<<"$standing") || jq_failed $?
   if [[ -n $out ]]; then
     standing_reasons+=("$out")
@@ -432,7 +452,7 @@ if [[ $word == standing ]]; then
 fi
 
 # The standing word holds on the same checks, with no scope, once a word applies and stands.
-if [[ $word == standing && -n $head ]] && jq -e .stands <<<"$standing" >/dev/null; then
+if [[ $word == standing && -z $team_own && -n $head ]] && jq -e .stands <<<"$standing" >/dev/null; then
   unattended_reasons standing_reasons
 fi
 

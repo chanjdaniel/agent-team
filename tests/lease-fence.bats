@@ -122,6 +122,62 @@ age_probe() {
   jq -e '.reachable == false' "$state/probe.json"
 }
 
+@test "with no team home named, a call the lease decides is blocked, saying the hook cannot tell; the others are judged as ever" {
+  homeless() {
+    run --separate-stderr env -u TEAM_HOME "$REPO_ROOT/bin/hooks/lease-fence" "${@:3}" <<<"$(jq -cn --arg tool "$1" \
+      --argjson input "$2" '{hook_event_name: "PreToolUse", cwd: env.HOME, tool_name: $tool, tool_input: $input}')"
+  }
+  local cannot="Blocked: lease-fence cannot tell whether home-pc holds the lease, since neither TEAM_HOME nor ~/.config/agent-team/home names the team home; "
+  [[ ! -e $HOME/.config/agent-team/home ]]
+  homeless mcp__plugin_discord_discord__reply '{"chat_id": "1563", "text": "on it"}'
+  assert_equal "$status" 2
+  assert_contains "$stderr" "$cannot"
+  assert_contains "$stderr" "; a guard that cannot decide refuses, so report it as BLOCKED and do not reach it another way."
+  homeless Bash '{"command": "team-post T1 hi"}'
+  assert_equal "$status" 2
+  assert_contains "$stderr" "$cannot"
+  homeless Bash '{"command": "git push"}' --coordinator
+  assert_equal "$status" 2
+  assert_contains "$stderr" "$cannot"
+  # A worker's push reads only this machine's fence, and other calls nothing.
+  homeless Bash '{"command": "git push"}'
+  assert_equal "$status:$stderr" 0:
+  homeless Bash '{"command": "ls"}' --coordinator
+  assert_equal "$status:$stderr" 0:
+  fence
+  homeless Bash '{"command": "git push"}'
+  assert_equal "$status" 2
+  assert_contains "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z"
+  # A team home that is not a directory is named so.
+  run --separate-stderr env TEAM_HOME="$BATS_TEST_TMPDIR/gone" "$REPO_ROOT/bin/hooks/lease-fence" \
+    <<<'{"tool_name": "mcp__plugin_discord_discord__react", "tool_input": {}}'
+  assert_equal "$status" 2
+  assert_contains "$stderr" "since the team home $BATS_TEST_TMPDIR/gone is not a directory; a guard"
+}
+
+@test "input it cannot read is refused, naming why" {
+  local input
+  for input in 'not json' '' '[]' '{}' '{"tool_input": {"command": "git push"}}' '{"tool_name": 5}' '"Bash"'; do
+    run_bin -2 --separate-stderr hooks/lease-fence <<<"$input"
+    [[ $stderr == "Blocked: lease-fence could not read the hook's input (JSON with a tool_name); a guard that cannot decide refuses, so report it as BLOCKED and do not reach it another way." ]] ||
+      { printf 'input %s: stderr %s\n' "$input" "$stderr" >&2; return 1; }
+  done
+}
+
+@test "a command failing inside it is a refusal that names the hook and the exit code" {
+  # The read of the Bash call's command fails, after its input was read.
+  fails_on_call jq .tool_input.command
+  bash_call -2 ls
+  assert_equal "$output" ""
+  assert_equal "$stderr" "Blocked by lease-fence: it failed with exit 5 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way."
+  assert_equal "$(wc -l <"$STUB_CALLS/jq.failed")" 1
+}
+
+@test "a wrong argument on its command line refuses every call" {
+  run_bin -2 --separate-stderr hooks/lease-fence --bogus <<<'{"tool_name": "Read", "tool_input": {}}'
+  assert_equal "$stderr" "lease-fence: usage: lease-fence [--coordinator]"
+}
+
 @test "origin is asked at most once a minute: a reply within it uses the cached probe" {
   reply -0
   assert_equal "$(probes)" 1
@@ -167,12 +223,13 @@ age_probe() {
   hold="Blocked: GitHub is unreachable (since $(date -d 2026-10-22T13:05:00Z +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
   for command in "git push" "git -C /home/x/wt push origin HEAD" "cd wt && git push" "gh pr create --fill" \
     "gh-axi pr view 6" "cd wt && gh pr checks 6 --watch" "GH_REPO=a/b gh issue list" "/usr/bin/gh api user" \
-    $'git commit -m wip\ngh pr view' "echo x | gh pr comment 6 -F -" "(gh pr view)" '$(gh api user)'; do
+    $'git commit -m wip\ngh pr view' "echo x | gh pr comment 6 -F -" "(gh pr view)" '$(gh api user)' \
+    "{ gh pr view 6; }" "if true; then gh pr view 6; fi" "! gh pr view 6" "for n in 6; do gh pr view \$n; done"; do
     bash_call -2 "$command"
     assert_equal "$stderr" "$hold"
   done
   for command in "git status" "git commit -m 'gh pr later'" "grep -rn 'gh pr' bin" "ls ~/.config/gh" \
-    "cat high.txt" "git log --grep gh" "ghost run" "echo gh-axi"; do
+    "cat high.txt" "git log --grep gh" "ghost run" "echo gh-axi" "git commit -m 'then gh later'"; do
     bash_call -0 "$command"
   done
   # The hold is read from the flag alone: origin is never asked.

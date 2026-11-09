@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # PreToolUse hook that keeps a machine that lost the lease from acting: exit 2 blocks the tool
-# call and shows stderr to the agent; anything else passes at once.
+# call and shows stderr to the agent; exit 0 passes it.
 #
 # Usage: lease-fence [--coordinator]   (the hook's input on stdin; --coordinator on its Bash)
 #   Discord (the coordinator's reply, react and edit_message), and a Bash command of any role
@@ -23,19 +23,45 @@
 #     the holder's does.
 # Reads, in ~/.local/state/agent-team/: fenced (team-lease's), offline (team-timers run's,
 # through offline_hold in bin/lib/team.sh), and what lease_refusal reads there.
+# When it cannot decide it refuses, saying so, as a guard does: input that is not a JSON object
+# with a tool_name string; a call the lease decides (each above but a worker's git push, gh and
+# team-ci-wait, which read only the fence and the offline hold) on a machine that names no team
+# home, whose lease it cannot read; a wrong argument on its command line, which so blocks every
+# call; and any command of its own that fails, which ends as an exit 2 naming the hook and the
+# exit code (team_guard in bin/lib/team.sh). What passes on purpose: the lease part with origin
+# unreachable, or with no machine name or no origin (the fence alone decides then), since the
+# heartbeat owns offline and fences a machine once it finds the lease lost, and refusing there
+# would stop the coordinator's posts whenever GitHub is down.
 set -euo pipefail
+# A guard decides or refuses (bin/lib/team.sh); it reads the lease from the team home, and with
+# none it refuses each call the lease decides, itself.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_guard=lease-fence team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 
 role=worker
-case ${1:-} in
-  '') ;;
-  --coordinator) role=coordinator ;;
-  # Exit 1, not 2: a hook's exit 2 would block every call it sees.
-  *) echo "lease-fence: usage: lease-fence [--coordinator]" >&2 && exit 1 ;;
+case $#:${1:-} in
+  0:) ;;
+  1:--coordinator) role=coordinator ;;
+  # A wrong argument in the settings blocks every call the hook sees, the fail-closed side.
+  *) usage_error "usage: lease-fence [--coordinator]" ;;
 esac
+
+# What a guard that cannot decide tells the agent.
+CANNOT="a guard that cannot decide refuses, so report it as BLOCKED and do not reach it another way."
+
+block() {
+  echo "Blocked: $1" >&2
+  exit 2
+}
+
 input=$(cat)
-tool=$(jq -r '.tool_name // empty' <<<"$input")
+tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<"$input" 2>/dev/null) ||
+  block "lease-fence could not read the hook's input (JSON with a tool_name); $CANNOT"
 machine=$(machine_name 2>/dev/null) || machine="this machine"
+# Why the lease cannot be read, with no team home to read it from, or nothing.
+homeless=$TEAM_HOME_PROBLEM
+[[ -n $homeless || -d $TEAM_HOME ]] || homeless="the team home $TEAM_HOME is not a directory"
 
 # What a machine that may not post does not do, for lease_refusal.
 POSTS="posts nothing to Discord; the coordinator on the holder answers there."
@@ -44,44 +70,46 @@ ANSWERS="logs no answer; the coordinator on the holder takes Daniel's answers."
 # What one that may not wait on an interview does not do, as team-thread wait says it.
 WAITS="waits on no interview; stop, since the coordinator on the holder takes the task on."
 
-block() {
-  echo "Blocked: $1" >&2
-  exit 2
+# Block when this machine may not <does> (lease_refusal), or when it cannot tell, with no team
+# home: lease_block <does>
+lease_block() {
+  [[ -z $homeless ]] || block "lease-fence cannot tell whether $machine holds the lease, since $homeless; $CANNOT"
+  why=$(lease_refusal "$1") && block "$why"
+  return 0
 }
 
 case $tool in
   mcp__plugin_discord_discord__reply | mcp__plugin_discord_discord__react | mcp__plugin_discord_discord__edit_message)
-    why=$(lease_refusal "$POSTS") && block "$why"
+    lease_block "$POSTS"
     ;;
   Bash)
     command=$(jq -r '.tool_input.command // empty' <<<"$input")
     push='(^|[^[:alnum:]_.-])git([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+push([[:space:]]|$)'
-    # gh or gh-axi where a command starts: at the start, after a separator or a line break, past
-    # any variable assignments and a directory.
-    gh=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?gh(-axi)?([[:space:]]|$)'
+    # gh or gh-axi where a command starts, as COMMAND_START in bin/lib/team.sh reads it.
+    gh=$COMMAND_START'gh(-axi)?([[:space:]]|$)'
     # The team commands that write to GitHub and the ledger, where a command starts, as gh.
-    team_write=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(merge|catch-up|open|close)([[:space:]]|$)'
+    team_write=$COMMAND_START'team-(merge|catch-up|open|close)([[:space:]]|$)'
     # team-post, team-ask, which posts through it, or team-inbox, which edits the Waiting on you
     # message, where a command starts, as gh: refused as the Discord tools are, for every role.
-    post=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(post|ask|inbox)([[:space:]]|$)'
+    post=$COMMAND_START'team-(post|ask|inbox)([[:space:]]|$)'
     # team-answer, which logs Daniel's answer, where a command starts, as gh.
-    answer=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-answer([[:space:]]|$)'
+    answer=$COMMAND_START'team-answer([[:space:]]|$)'
     # team-thread wait, the interview's blocking read of Discord, where a command starts, as gh.
-    wait=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-thread[[:space:]]+wait([[:space:]]|$)'
+    wait=$COMMAND_START'team-thread[[:space:]]+wait([[:space:]]|$)'
     # team-ci-wait, a worker's wait on a PR's GitHub checks, where a command starts, as gh.
-    ci_wait=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-ci-wait([[:space:]]|$)'
+    ci_wait=$COMMAND_START'team-ci-wait([[:space:]]|$)'
     if [[ $command =~ $post ]]; then
-      why=$(lease_refusal "$POSTS") && block "$why"
+      lease_block "$POSTS"
     fi
     if [[ $command =~ $answer ]]; then
-      why=$(lease_refusal "$ANSWERS") && block "$why"
+      lease_block "$ANSWERS"
     fi
     if [[ $command =~ $wait ]]; then
-      why=$(lease_refusal "$WAITS") && block "$why"
+      lease_block "$WAITS"
     fi
     if [[ $role == coordinator ]]; then
       if [[ $command =~ $push || $command =~ $team_write ]]; then
-        why=$(lease_refusal "pushes, merges, opens and closes nothing; the coordinator on the holder does.") && block "$why"
+        lease_block "pushes, merges, opens and closes nothing; the coordinator on the holder does."
       fi
     elif why=$(fence_reason); then
       [[ ! $command =~ $push ]] ||

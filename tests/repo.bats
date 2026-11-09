@@ -156,14 +156,16 @@ usage/home-pc/time/2026-10-26.jsonl"
 }
 
 # A record file at the team home's root that must hold across machines is in every list that
-# keeps it: the records, which both commits that carry it there (team-checkpoint's and
+# keeps it: the records, which both commits that carry it there (team-checkpoint's last and
 # team-handoff's) take whole, naming no paths of their own, and CLAUDE.md's table of the team home.
+# team-checkpoint's first commit, of the ledger files by name, is a command substitution, never
+# one of these lines.
 @test "the ledger and the level record are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
   local file script calls
   for script in team-checkpoint team-handoff; do
-    calls=$(grep -E '^[[:space:]]*commit_records ' "$REPO_ROOT/bin/$script")
+    calls=$(grep -E '^[[:space:]]*(records_by_group=1 )?commit_records ' "$REPO_ROOT/bin/$script")
     [[ -n $calls ]] || { echo "$script commits no records" >&2; return 1; }
-    if grep -vE '^[[:space:]]*commit_records "[^"]*" \|\|' <<<"$calls"; then
+    if grep -vE '^[[:space:]]*(records_by_group=1 )?commit_records "[^"]*" \|\|' <<<"$calls"; then
       echo "$script names its own records paths" >&2
       return 1
     fi
@@ -393,6 +395,118 @@ role_matrix() {
   assert_equal "$(jq -c '[.permissions.deny[]? | select(contains("team-run-approved"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
 }
 
+# The gate's state is the gate's own, and the coordinator's on Daniel's OK. Each refused command below
+# holds a placeholder verb, ref or target, so none reaches a real mirror or branch.
+# A rule's * on both sides refuses any Bash call naming the gate's directory itself or a path under
+# its mirrors, a read or a search among them, and a call taking a substitution of the mirror's URL,
+# however it then uses it, a cost accepted as for the Agent Chrome's rules: no documented gate command
+# names those, and a message or a file that does goes through the Write tool and -F
+# (sops/platform-gotchas.md). A worker on the gate's own repository meets this cost on a search
+# typed with the directory's dotted name and on that directory in a throwaway home, and a call typing
+# the gate binary's own path meets it when the mirrors' directory name comes later in the call.
+# A gate's run worktree shares its mirror's refs, so a call naming one is denied each word on a fixed
+# list of git commands that move a ref or a checkout, and a push to one or a remote naming one.
+# It is the word that is matched, anywhere after the path and whatever the command, so those commands'
+# reads there (one is pinned below) and any other read holding the word are refused too, since text
+# cannot tell a read from a write.
+# A deleting or forced push naming the gate's remote anywhere, a branch of that name on origin too,
+# is refused. Deny rules are a speed bump, as CLAUDE.md says of git's, and a role's "When something
+# is denied" stands behind them.
+@test "no worker role writes to the gate's mirrors, by path, by its remote's URL, in a run worktree or by a deleting push" {
+  # shellcheck disable=SC2088,SC2016 # the paths are text, as an agent types them
+  local mirror='~/.no-mistakes/repos/x.git' home_mirror='$HOME/.no-mistakes/repos/x.git' run='~/.no-mistakes/worktrees/01KQ3V2M8Z/x'
+  jq -e '.permissions.deny | index("Edit(~/.no-mistakes/repos/**)") != null' "$REPO_ROOT/settings/worker.json" >/dev/null
+  # shellcheck disable=SC2088,SC2016 # the commands are text, as an agent types them
+  role_matrix \
+    "no-mistakes" "no-mistakes init" "no-mistakes doctor" "no-mistakes rerun" "no-mistakes axi" \
+    "no-mistakes axi run --help" "no-mistakes axi run --intent 'T7: the goal'" "no-mistakes axi status" \
+    "no-mistakes axi logs --step review --full" "no-mistakes axi respond --action approve" \
+    "no-mistakes axi respond --action fix --findings a,b --instructions 'keep it short'" \
+    "no-mistakes axi respond --action skip" "no-mistakes axi sync --check" "no-mistakes axi sync" \
+    "no-mistakes axi sync --recover" "no-mistakes axi sync --recover --keep-local" \
+    "no-mistakes axi sync --adopt-published" "no-mistakes axi abort" "no-mistakes axi abort --run 01KQ3V2M8Z" \
+    "~/.no-mistakes/bin/no-mistakes --version" "git push no-mistakes feat/T1-x" "git push -u no-mistakes HEAD" \
+    "git push no-mistakes HEAD:feat/T1-x" "git push --dry-run no-mistakes feat/T1-x" \
+    "git push no-mistakes feat/T1-x --dry-run" "git fetch no-mistakes" "git ls-remote no-mistakes" \
+    "git remote get-url no-mistakes" "git remote get-url no-mistakes 2>/dev/null || echo none" "git remote -v" \
+    'head=$(git rev-parse HEAD); git remote get-url no-mistakes' 'o=$(git remote get-url origin); git push no-mistakes <ref>' \
+    'h=$(git -C ~/wt rev-parse HEAD); git remote get-url no-mistakes' "git push origin --delete fix/T1-x" \
+    "git push origin fix/T1-no-mistakes-x" "git push -u origin fix/T1-no-mistakes-x" \
+    "ls $run" "cat $run/README.md" "cd $run && git status" "cd $run && git log" "git -C $run status" \
+    "git -C $run log --branches --tags" "git add .no-mistakes.yaml" "cat .no-mistakes.yml" \
+    "rm .no-mistakes.yaml" "grep -n 'no-mistakes/repos' bin/team-clean-messages" "git log -S no-mistakes/repos" -- \
+    "git --git-dir $mirror <command>" "git --git-dir=$mirror <command>" "git --git-dir=$home_mirror <command>" \
+    "git --git-dir \"$home_mirror\" <command>" "git -C $mirror <command>" "git -C $home_mirror <command>" \
+    "git -C ~/wt --git-dir $mirror <command>" "GIT_DIR=$mirror git <command>" "GIT_DIR=\"$home_mirror\" git <command>" \
+    "env GIT_DIR=$mirror git <command>" "export GIT_DIR=$mirror && git <command>" "GIT_COMMON_DIR=$mirror git <command>" \
+    "cd $mirror && git <command>" "pushd $home_mirror && git <command>" "git push $mirror feat/T1-x" \
+    "git clone $mirror y" "git remote add z $mirror" "touch $mirror/x" "cp x $mirror/x" "echo x > $mirror/x" \
+    "tee $mirror/x" "bash -c 'git -C $mirror <command>'" "python3 -c \"open('$home_mirror/x', 'w')\"" \
+    "git --git-dir ~/.no-mistakes//repos/x.git <command>" "git --git-dir ~/.no-mistakes/./repos/x.git <command>" \
+    "git --git-dir ~/.no-mistakes/worktrees/../repos/x.git <command>" "touch ~/.no-mistakes/re*/x.git/y" \
+    "touch ~/.no-mistakes/*/x.git/y" "rm <options> ~/.no-mistakes" "rm <options> ~/.no-mistakes/*" \
+    "mv ~/.no-mistakes <path>" "cd ~/.no-mistakes && git -C repos/x.git <command>" \
+    "cd ~/.no-mistakes/ && git -C repos/x.git <command>" "cd \$HOME/.no-mistakes && <command>" \
+    "pushd ~/.no-mistakes && <command>" "pushd ~/.no-mistakes/ && <command>" \
+    "cd \"\$HOME/.no-mistakes\" && git -C repos/x.git <command>" "cd \"\$HOME/.no-mistakes/\" && <command>" \
+    "cd '$HOME/.no-mistakes' && <command>" "pushd \"\$HOME/.no-mistakes\" && <command>" \
+    "git -C ~/.no-mistakes --git-dir repos/x.git <command>" "git -C ~/.no-mistakes/ --git-dir repos/x.git <command>" \
+    "git -C \"\$HOME/.no-mistakes\" --git-dir repos/x.git <command>" "git -C \"\$HOME/.no-mistakes/\" --git-dir repos/x.git <command>" \
+    "git --git-dir repos/x.git -C ~/.no-mistakes <command>" "git --no-pager -C ~/.no-mistakes --git-dir repos/x.git <command>" \
+    "git -c a.b=c -C ~/.no-mistakes <command>" "env -C ~/.no-mistakes git --git-dir repos/x.git <command>" \
+    'git --git-dir "$(git remote get-url no-mistakes)" <command>' 'git -C "$(git remote get-url no-mistakes)" <command>' \
+    'GIT_DIR=$(git remote get-url no-mistakes) git <command>' 'git --git-dir `git remote get-url no-mistakes` <command>' \
+    'm=$(git remote get-url no-mistakes); git --git-dir "$m" <command>' 'm=$(git remote get-url --push no-mistakes); git -C "$m" <command>' \
+    'm=$(git ls-remote --get-url no-mistakes); git -C "$m" <command>' 'm=$(git -C ~/wt remote get-url no-mistakes); git -C "$m" <command>' \
+    'git remote get-url no-mistakes | xargs -I{} git --git-dir {} <command>' \
+    'git --git-dir "$(git config remote.no-mistakes.url)" <command>' 'git --git-dir `git config --get remote.no-mistakes.url` <command>' \
+    'git --git-dir "$(git -C ~/wt config remote.no-mistakes.url)" <command>' \
+    "cd $run && git update-ref <ref> <sha>" "cd $run && git branch <ref>" "git -C $run update-ref <ref> <sha>" \
+    "git -C $run branch <ref>" "cd $run && git tag <ref>" "cd $run && git symbolic-ref <ref> <ref>" \
+    "cd $run && git fetch <remote>" "git -C $run commit <options>" "git -C $run worktree <command>" \
+    "cd $run && git reset <options>" "cd $run && cd ../../../repos/x.git" "cd $run/../../../repos/x.git" \
+    "git push $run <ref>" "git remote add z $run" "git -C ~/.no-mistakes//worktrees/01KQ3V2M8Z/x update-ref <ref> <sha>" \
+    "cd ~/.no-mistakes/./worktrees/01KQ3V2M8Z/x && git branch <ref>" "git -C $run filter-branch <options>" \
+    "git -C $run bisect <command>" "git -C $run fast-import" "git -C $run branch --show-current" \
+    "git push no-mistakes :feat/T1-x" "git push -u no-mistakes :feat/T1-x" "git push no-mistakes a :feat/T1-x" \
+    "git push no-mistakes ':feat/T1-x'" "git push no-mistakes \":feat/T1-x\"" "git push \"no-mistakes\" :feat/T1-x" \
+    "git push no-mistakes --delete feat/T1-x" "git push --delete no-mistakes feat/T1-x" \
+    "git push no-mistakes feat/T1-x --delete" "git -C ~/wt push no-mistakes --delete feat/T1-x" \
+    "git push \"no-mistakes\" --delete feat/T1-x" "git push no-mistakes -d feat/T1-x" "git push -d no-mistakes feat/T1-x" \
+    "git push no-mistakes feat/T1-x -d <ref>" "git push no-mistakes feat/T1-x -d" "git push -d -u no-mistakes feat/T1-x" \
+    "git push -ud no-mistakes feat/T1-x" "git push no-mistakes --prune <ref>" "git push --prune no-mistakes <ref>" \
+    "git push no-mistakes --mirror <ref>" "git push --mirror no-mistakes <ref>" "git push no-mistakes --force feat/T1-x" \
+    "git push no-mistakes +feat/T1-x" "git -C ~/wt push --force no-mistakes feat/T1-x" \
+    "git -C ~/wt push no-mistakes -f feat/T1-x" "git -C ~/wt push -f no-mistakes feat/T1-x" \
+    "git -C ~/wt push no-mistakes +feat/T1-x" "git -C ~/wt push no-mistakes '+feat/T1-x'" \
+    "git push -uf no-mistakes feat/T1-x" "git push no-mistakes -uf feat/T1-x" "git -C ~/wt push -uf no-mistakes feat/T1-x" \
+    "git push no-mistakes -ud feat/T1-x" "git push no-mistakes feat/T1-x -ud" "git push -vf no-mistakes feat/T1-x" \
+    "git push -vd no-mistakes feat/T1-x"
+}
+
+# team-clean-messages' own refusal (worker_refusal) stands behind these rules; a run of its tests
+# and a search for the flag stay allowed. The coordinator runs the step on Daniel's OK.
+@test "no worker role clears a gate lane, and the coordinator still does" {
+  local bin=$REPO_ROOT/bin
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  role_matrix "$bin/team-clean-messages ~/wt" "$bin/team-clean-messages ~/wt --check" "$bin/team-clean-messages --help" \
+    "git add bin/team-clean-messages tests/team-clean-messages.bats" "shellcheck bin/team-clean-messages" \
+    "tests/vendor/bats-core/bin/bats tests/team-clean-messages.bats -f '--clear-gate-lane'" \
+    "grep -n -- --clear-gate-lane bin/team-clean-messages sops/merging.md" "git log -S--clear-gate-lane" -- \
+    "$bin/team-clean-messages ~/wt --clear-gate-lane" "$bin/team-clean-messages --clear-gate-lane ~/wt" \
+    "team-clean-messages ~/wt --clear-gate-lane" "~/agent-team/bin/team-clean-messages ~/wt --clear-gate-lane" \
+    "./team-clean-messages ~/wt --clear-gate-lane" "cd /tmp && TZ=UTC $bin/team-clean-messages ~/wt --clear-gate-lane" \
+    "\"$bin/team-clean-messages\" ~/wt --clear-gate-lane" "'$bin/team-clean-messages' ~/wt --clear-gate-lane" \
+    "bash $bin/team-clean-messages ~/wt --clear-gate-lane" "bash -c '$bin/team-clean-messages ~/wt --clear-gate-lane'" \
+    "nohup $bin/team-clean-messages ~/wt --clear-gate-lane" "$bin/team-clean-messages ~/wt --clear-gate-lane 2>&1 | tail -1"
+  # The coordinator's own settings deny it nothing of the gate's state.
+  assert_equal "$(jq -c '[.permissions.deny[]? | select(test("clear-gate-lane|no-mistakes"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
+  if denied coordinator.settings.json "$bin/team-clean-messages ~/wt --clear-gate-lane"; then
+    echo "coordinator.settings.json denies the step" >&2
+    return 1
+  fi
+}
+
 @test "no worker role gains Discord: none runs its scripts or reads the bot's files, and only a planner's file leaves it the interview post and wait" {
   local bin=$REPO_ROOT/bin role settings command
   # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
@@ -498,6 +612,32 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   grep -qF '`review.md`' <<<"$(grep -F '`ui-check`' "$REPO_ROOT/roles/reviewer.md")"
 }
 
+# Only the effect toolkit's sessions list effect-v4, so the planner, builder and reviewer roles name
+# it, once each under "What you do", for a session that lists it, each with its duty: a session on
+# a project with no Effect code reads the line and does nothing.
+@test "the planner, builder and reviewer roles name the effect toolkit's effect-v4, each with its duty, for a session that lists it" {
+  local role body line
+  assert_equal "$(sed -n 's/^name: //p' "$REPO_ROOT/toolkits/effect/skills/effect-v4/SKILL.md")" effect-v4
+  for role in planner builder reviewer; do
+    echo "role: $role" >&2
+    assert_equal "$(grep -c 'effect-v4' "$REPO_ROOT/roles/$role.md")" 1
+    body=$(awk '$0 == "## What you do" { on = 1; next } /^## / { on = 0 } on' "$REPO_ROOT/roles/$role.md")
+    line=$(grep -F '`effect-v4`' <<<"$body")
+    grep -qF 'when your session lists `effect-v4`' <<<"$line"
+  done
+  line=$(grep -F '`effect-v4`' "$REPO_ROOT/roles/planner.md")
+  grep -qF 'before you spec Effect code' <<<"$line"
+  grep -qF 'installed `effect` version and the check command' <<<"$line"
+  line=$(grep -F '`effect-v4`' "$REPO_ROOT/roles/builder.md")
+  grep -qF 'before you write Effect code' <<<"$line"
+  grep -qF '"Effect check" line in the PR body' <<<"$line"
+  line=$(grep -F '`effect-v4`' "$REPO_ROOT/roles/reviewer.md")
+  grep -qF 'on the head under review' <<<"$line"
+  grep -qF 'trap table' <<<"$line"
+  grep -qF 'still-type-checks list' <<<"$line"
+  grep -qF '`review.md` with its kind and scope' <<<"$line"
+}
+
 # A reviewer proves nothing with a test of its own (its edit hook keeps it to the task directory):
 # it writes a suspected bug up with a test plan, and the builder writes and runs that test first.
 @test "a reviewer hands a suspected bug's test plan to the builder, who runs it before the fix" {
@@ -521,6 +661,61 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
     assert_equal "$(jq -c '.env | {LAVISH_AXI_TELEMETRY, CODEGRAPH_TELEMETRY, CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS}' "$REPO_ROOT/$file")" \
       '{"LAVISH_AXI_TELEMETRY":"0","CODEGRAPH_TELEMETRY":"0","CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS":"1"}'
   done
+}
+
+# Claude Code requests the one-hour prompt cache for the main conversation only by default, on a
+# subscription within plan usage, and five minutes on usage credits; the team's sessions wait 5 to
+# 60 minutes on CI and messages, so every session pins one hour, and no role file sets it (T247).
+@test "the worker and coordinator settings pin the one-hour prompt cache" {
+  local file
+  for file in "${SETTINGS[@]}"; do
+    assert_equal "$(jq -c '.promptCacheTtl' "$REPO_ROOT/$file")" '"1h"'
+  done
+  for file in "$REPO_ROOT"/settings/*.json; do
+    [[ $file == */worker.json ]] && continue
+    assert_equal "$(jq -c 'has("promptCacheTtl")' "$file")" false
+  done
+}
+
+# Each PreToolUse hook object of each settings or hooks file <file> that lacks onFailure "block"
+# or a whole-number timeout from 1 to 120, one "<file>: <command>: <what>" line each, the file
+# as given: pretooluse_problems <file>...
+pretooluse_problems() {
+  local file
+  for file; do
+    jq -r --arg file "$file" '.hooks.PreToolUse // [] | .[].hooks[]
+      | (.command + ([.args // [] | .[]] | map(" " + .) | join(""))) as $hook
+      | (if .onFailure != "block" then "\($file): \($hook): onFailure is \(.onFailure // "unset"), not \"block\"" else empty end),
+        (if (.timeout | type) != "number" or .timeout != (.timeout | floor) or .timeout < 1 or .timeout > 120
+         then "\($file): \($hook): timeout is \(.timeout // "unset"), not a whole number of seconds from 1 to 120" else empty end)' "$file"
+  done
+}
+
+# A guard hook blocks the call on any failure only when its entry says so, and Claude Code waits
+# 600 seconds on one that hangs by default (T248, R1): every PreToolUse entry fails closed, soon.
+@test "every PreToolUse hook blocks on its failure and has a timeout, in every settings and toolkit hooks file" {
+  local files=() file bad=$BATS_TEST_TMPDIR/bad.json
+  for file in "$REPO_ROOT"/settings/*.json "$REPO_ROOT"/coordinator.settings.json "$REPO_ROOT"/toolkits/*/hooks/hooks.json; do
+    files+=("${file#"$REPO_ROOT/"}")
+  done
+  assert_equal "$(cd "$REPO_ROOT" && pretooluse_problems "${files[@]}")" ""
+  # Each of the four guards, at its timeout.
+  assert_equal "$(cd "$REPO_ROOT" && jq -r '.hooks.PreToolUse // [] | .[].hooks[] | "\(.command | sub("^\"?@TEAM_CODE@/bin/hooks/"; "") | sub("\""; "")) \(.timeout)"' "${files[@]}" | LC_ALL=C sort -u)" \
+    "command-guard 10
+lease-fence --coordinator 60
+lease-fence 60
+ops-log 30
+scratch-only-edits 30"
+  # The check names the file and the hook of each entry left open.
+  jq -n '{hooks: {PreToolUse: [{matcher: "Bash", hooks: [
+      {type: "command", command: "a-guard", timeout: 10},
+      {type: "command", command: "b-guard", args: ["x"], onFailure: "block", timeout: 1.5},
+      {type: "command", command: "c-guard", onFailure: "block", timeout: 121},
+      {type: "command", command: "d-guard", onFailure: "block", timeout: 120}]}],
+    PostToolUse: [{hooks: [{type: "command", command: "e-hook"}]}]}}' >"$bad"
+  assert_equal "$(pretooluse_problems "$bad")" "$bad: a-guard: onFailure is unset, not \"block\"
+$bad: b-guard x: timeout is 1.5, not a whole number of seconds from 1 to 120
+$bad: c-guard: timeout is 121, not a whole number of seconds from 1 to 120"
 }
 
 # Whether one of the Bash deny rules in <settings file> matches <command> in one of its
@@ -885,14 +1080,30 @@ COMMANDS
     'claude --bg --plugin-dir=toolkits/prod-write'
   assert_denies 'Bash(*--mcp-config*prod-*)' 'claude -p hi --mcp-config toolkits/prod-read/.mcp.json' \
     'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.prod-write.json'
+  # vercel-read's launcher is a start-server.mjs, which the rules above cover; its body and a
+  # claude given the toolkit have rules of their own.
+  assert_denies 'Bash(*node *start-server.mjs*)' 'node /home/me/agent-team/toolkits/vercel-read/scripts/start-server.mjs'
+  assert_denies 'Bash(*&& scripts/*start-server.mjs*)' 'cd toolkits/vercel-read && scripts/start-server.mjs'
+  assert_denies 'Bash(*node *vercel-mcp*)' 'node -e "import(\"/home/me/agent-team/servers/vercel-mcp.mjs\")"' \
+    'node servers/vercel-mcp.mjs' 'cd servers && node --input-type=module -e "await import(\"./vercel-mcp.mjs\")"'
+  assert_denies 'Bash(./*vercel-mcp*)' './vercel-mcp.mjs'
+  assert_denies 'Bash(/*vercel-mcp*)' '/home/me/agent-team/servers/vercel-mcp.mjs'
+  assert_denies 'Bash(servers/*vercel-mcp*)' 'servers/vercel-mcp.mjs'
+  assert_denies 'Bash(env *vercel-mcp*)' 'env VERCEL_READ_API=http://127.0.0.1:1 servers/vercel-mcp.mjs'
+  assert_denies 'Bash(bun *vercel-mcp*)' 'bun servers/vercel-mcp.mjs'
+  assert_denies 'Bash(deno *vercel-mcp*)' 'deno run -A servers/vercel-mcp.mjs'
+  assert_denies 'Bash(*--plugin-dir*vercel-read*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/vercel-read' \
+    'claude --bg --plugin-dir=toolkits/vercel-read'
+  assert_denies 'Bash(*--mcp-config*vercel-read*)' 'claude -p hi --mcp-config toolkits/vercel-read/.mcp.json' \
+    'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.vercel-read.json'
 }
 
 # The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
-@test "the production launchers and the MCP server's entry are not executable" {
+@test "the production launchers, the MCP servers' bodies and their 1Password read are not executable" {
   local modes
-  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts servers/mongodb-mcp.mjs |
-    awk '{print $1, $4}')
-  assert_equal "$(wc -l <<<"$modes")" 3
+  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
+    servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/op-secret.mjs | awk '{print $1, $4}')
+  assert_equal "$(wc -l <<<"$modes")" 6
   if grep -v '^100644 ' <<<"$modes"; then echo "executable in git (above)" >&2; return 1; fi
 }
 
@@ -957,26 +1168,92 @@ git status
 COMMANDS
 }
 
-# Only the coordinator launches an ops session, on Daniel's request: a worker is denied team-worker's
-# ops role and the ops load check, while its own test runs of those scripts stay allowed.
-@test "an ops launch and the ops load check are denied to workers, and stay the coordinator's" {
-  local command rule
-  for rule in 'Bash(*team-worker *ops *)' 'Bash(*team-load-check *ops*)'; do
-    jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
-      { echo "settings/worker.json lacks the deny rule $rule" >&2; return 1; }
+# The families of commands whose plain spelling the coordinator's deny rules stop, as the header
+# of bin/claude-coordinator names them and in its order, each with commands of it the rules must
+# refuse: "<family>|<command>|<command>...", one per line.
+coordinator_families() {
+  cat <<'FAMILIES'
+a force push|git push --force origin feat/T1-x|git push -f origin feat/T1-x|git push --force-with-lease origin feat/T1-x|git push -u origin feat/T1-x --force|git push origin +feat/T1-x|git -C ~/wt push --force-with-lease=feat/T1-x:abc1234 origin feat/T1-x|git -C ~/wt push -f origin feat/T1-x|git -C ~/wt push origin +feat/T1-x
+a push to dev or main|git push origin dev|git push origin main|git push origin HEAD:dev|git push origin HEAD:main|git -C ~/wt push origin dev|git -C ~/wt push origin HEAD:main
+git reset --hard|git reset --hard origin/dev|git reset -q --hard HEAD~1
+git clean|git clean -fdx|git clean -n
+git branch -D|git branch -D feat/T1-x
+a Docker prune|docker system prune -af|docker --context default volume prune -f|/usr/bin/docker image prune -a|docker buildx prune
+a merge outside team-merge|gh pr merge https://github.com/me/shop/pull/5 --squash|gh-axi pr merge 5|gh api -X PUT repos/me/shop/pulls/5/merge
+FAMILIES
+}
+
+# One line per gap between the header of the launcher <launcher> and the deny rules of the settings
+# <settings>: the header's sentence naming the families, when it lacks it, and each command of a
+# family the rules allow; nothing when they agree: coordinator_deny_gaps <settings> <launcher>
+coordinator_deny_gaps() {
+  local settings=$1 header family rest command names=() sentence
+  header=$(sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$2" | tr -s ' \n' '  ')
+  while IFS='|' read -r family rest; do
+    names+=("$family")
+    IFS='|' read -r -a commands <<<"$rest"
+    for command in "${commands[@]}"; do
+      denied_in "$settings" "$command" || echo "$family: allowed: $command"
+    done
+  done < <(coordinator_families)
+  sentence="deny rules stop the plain spelling of $(printf '%s, ' "${names[@]:0:${#names[@]}-1}" | sed 's/, $//') and ${names[-1]},"
+  [[ $header == *"$sentence"* ]] || echo "the header does not say: $sentence"
+}
+
+# The coordinator runs in bypass mode, so its deny rules, the workers' own for these families, and
+# dev's protection on GitHub are all that stop it; its launcher's header names only what holds.
+@test "the coordinator's settings deny each family of commands its launcher's header names, in the workers' rules" {
+  local coordinator=$REPO_ROOT/coordinator.settings.json launcher=$REPO_ROOT/bin/claude-coordinator
+  local rules missing command bad=$BATS_TEST_TMPDIR/settings.json
+  assert_equal "$(coordinator_deny_gaps "$coordinator" "$launcher")" ""
+  # The workers' 43 rules of these families, in their own text, with and without git -C.
+  rules=$(jq -r '.permissions.deny[] | select(test("^Bash\\((git (-C \\* )?push (--force|-f|\\* --force|\\* -f|\\* \\+|origin (HEAD:)?(dev|main))|git reset (\\* )?--hard|git clean|git branch -D|(\\*/)?docker (\\* )?[a-z]+ prune)"))' \
+    "$REPO_ROOT/settings/worker.json")
+  assert_equal "$(wc -l <<<"$rules")" 43
+  missing=$(jq -r --arg rules "$rules" '($rules | split("\n")) - .permissions.deny | .[]' "$coordinator")
+  assert_equal "$missing" ""
+  # The commands it still runs.
+  for command in "team-checkpoint --force" "$REPO_ROOT/bin/team-checkpoint --force" \
+    "git push origin feat/T248-guard-hardening" "git push -u origin fix/T1-fix-it" \
+    "git -C ~/wt push origin fix/T1-fix-it" "git -C ~/wt-fix push -u origin fix/T1-fix-it" \
+    "team-clean-messages ~/wt --clear-gate-lane" "$REPO_ROOT/bin/team-clean-messages ~/wt --clear-gate-lane" \
+    "docker ps" "git branch -d feat/T1-x" "git reset --soft HEAD~1" "team-merge https://github.com/me/shop/pull/5"; do
+    if denied_in "$coordinator" "$command"; then echo "denies: $command" >&2; return 1; fi
   done
+  # The header claims no control the team lacks.
+  if grep -qi ruleset "$launcher"; then echo "bin/claude-coordinator names rulesets" >&2; return 1; fi
+  grep -qF "GitHub's protection of agent-team's dev refuses a direct push and a merge with a red check" \
+    <<<"$(sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$launcher" | tr -s ' \n' '  ')"
+  # A family whose rules are gone is named, each of its commands.
+  jq '.permissions.deny -= ["Bash(git clean*)"]' "$coordinator" >"$bad"
+  assert_equal "$(coordinator_deny_gaps "$bad" "$launcher")" "git clean: allowed: git clean -fdx
+git clean: allowed: git clean -n"
+  # So is a header that names a family the list does not hold, or leaves one out.
+  sed 's/git clean, git branch -D, /git branch -D, /' "$launcher" >"$BATS_TEST_TMPDIR/launcher"
+  assert_contains "$(coordinator_deny_gaps "$coordinator" "$BATS_TEST_TMPDIR/launcher")" "the header does not say: deny rules stop"
+}
+
+# Only the coordinator launches an ops session, on Daniel's request: a worker's command-guard hook
+# refuses team-worker's ops role and the ops load check (tests/command-guard.bats), and the
+# coordinator's settings deny neither and run no such hook.
+@test "an ops launch and the ops load check stay the coordinator's" {
+  local command
+  assert_equal "$(jq -c '[.hooks[][]?.hooks[]?.command | select(contains("command-guard"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
   while IFS= read -r command; do
-    denied settings/worker.json "$command" || { echo "a worker may run: $command" >&2; return 1; }
     if denied coordinator.settings.json "$command"; then echo "the coordinator may not run: $command" >&2; return 1; fi
   done <<'COMMANDS'
 /home/me/agent-team/bin/team-worker T5 ops /home/me/slots/proj-1 --toolkit prod-read --request https://discord.com/channels/1/2/3 -- "$(cat /home/me/agent-team/tasks/T5/brief-ops.md)"
 team-worker "T5" ops /home/me/slots/proj-1 --toolkit prod-read --request x -- go
 /home/me/agent-team/bin/team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit prod-read
 team-load-check --role=ops --worktree /home/me/slots/proj-1 --toolkit prod-read --toolkit prod-write
+/home/me/agent-team/bin/team-worker T5 ops /home/me/slots/proj-1 --toolkit vercel-read --request https://discord.com/channels/1/2/3 -- "$(cat /home/me/agent-team/tasks/T5/brief-ops.md)"
+team-worker T5 ops /home/me/slots/proj-1 --toolkit prod-read --toolkit vercel-read --request x -- go
+/home/me/agent-team/bin/team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit vercel-read
+team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit prod-read --toolkit vercel-read
 COMMANDS
 }
 
-@test "a worker's own work on the production toolkits and their tests stays allowed" {
+@test "a worker's own work on the production and Vercel toolkits and their tests stays allowed" {
   local command
   while IFS= read -r command; do
     if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
@@ -989,6 +1266,12 @@ claude plugin validate --strict toolkits/prod-read
 git add toolkits/prod-write/skills/changing-production-data/SKILL.md
 git diff origin/dev -- toolkits/prod-read
 /home/me/agent-team/bin/team-worker T5 builder /home/me/slots/proj-1 -- "Read your brief"
+node --test tests/toolkits/vercel-read.test.mjs
+node --test tests/toolkits/vercel-read.test.mjs --test-name-pattern 'runtime-logs'
+claude plugin validate --strict toolkits/vercel-read
+git add toolkits/vercel-read servers/vercel-mcp.mjs tests/toolkits/vercel-read.test.mjs
+git diff origin/dev -- toolkits/vercel-read servers/vercel-mcp.mjs
+git log --oneline -- servers/vercel-mcp.mjs
 COMMANDS
 }
 
@@ -1084,9 +1367,11 @@ COMMANDS
 }
 
 # A worker's image can leave through team-post, so a worker reaches the Agent Chrome only as a walk's
-# planner by team-ui --capture, where capture_refusal is the guard; these rules are a speed bump, each pinned so a sha or a message id holding
-# 9222 passes, and they also refuse a search naming them, a cost accepted as for the role's rules.
-@test "a worker's Bash call naming the Agent Chrome's port, its axi variable or ui-capture is denied" {
+# planner by team-ui --capture, where capture_refusal is the guard; these rules are a speed bump,
+# each pinned so a sha or a message id holding 9222 passes, and they also refuse a search naming
+# them, a cost accepted. The capture script is refused only run, by the command-guard hook
+# (tests/command-guard.bats).
+@test "a worker's Bash call naming the Agent Chrome's port or its axi variable is denied" {
   local SETTINGS=(settings/worker.json) command
   assert_denies 'Bash(*:9222*)' 'curl http://127.0.0.1:9222/json' 'curl -s localhost:9222/json/version' \
     'chrome-devtools-axi --browser-url=http://127.0.0.1:9222 open http://localhost:5173'
@@ -1094,9 +1379,6 @@ COMMANDS
   assert_denies 'Bash(*port=9222*)' 'chrome --remote-debugging-port=9222'
   assert_denies 'Bash(*CHROME_DEVTOOLS_AXI_BROWSER_URL*)' 'CHROME_DEVTOOLS_AXI_BROWSER_URL=http://127.0.0.1:1 chrome-devtools-axi open x' \
     'export CHROME_DEVTOOLS_AXI_BROWSER_URL=x'
-  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
-  assert_denies 'Bash(*toolkits/frontend/scripts/ui-capture*)' '~/agent-team/toolkits/frontend/scripts/ui-capture .scratch/task/out' \
-    'node toolkits/frontend/scripts/ui-capture out'
   while IFS= read -r command; do
     if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
   done <<'COMMANDS'
@@ -1116,35 +1398,6 @@ COMMANDS
   run -0 jq -r '(.permissions.allow // [])[] | select(contains("team-ui"))' settings/*.json
   assert_equal "$output" "Bash(@TEAM_CODE@/bin/team-ui @TASK@ --capture)
 Bash(@TEAM_CODE@/bin/team-ui @TASK@ --capture --note-file *)"
-}
-
-# worker_refusal (bin/lib/team.sh) reads AGENT_TEAM_ROLE and AGENT_TEAM_TASK, which team-worker sets
-# in a worker's settings: a worker is denied setting either on a command line, and unsetting it
-# with unset or env's -u, so the refusal cannot be talked past (env -i, which clears every
-# variable, is left: it is a speed bump). Like the GIT_CONFIG_ rules, a rule's * on both sides also
-# takes in a search naming an assignment, so grep -n 'AGENT_TEAM_ROLE=' tests/ is refused too;
-# that cost is accepted (a search for the bare name stays allowed).
-@test "a worker cannot set or unset its role or task on a command line" {
-  local SETTINGS=(settings/worker.json) command
-  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
-  assert_denies 'Bash(*AGENT_TEAM_ROLE=*)' 'AGENT_TEAM_ROLE=coordinator ~/agent-team/bin/team-post T7 --file f' \
-    'export AGENT_TEAM_ROLE=x' 'AGENT_TEAM_ROLE= team-post T7 --file f' 'env AGENT_TEAM_ROLE=coordinator team-post T7 --file f'
-  assert_denies 'Bash(*AGENT_TEAM_TASK=*)' 'env AGENT_TEAM_TASK=T1 cmd' 'export AGENT_TEAM_TASK=T8; team-post T8 --file f' \
-    'AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T8 team-post T8 --thread interview --file f'
-  assert_denies 'Bash(*unset AGENT_TEAM_*)' 'unset AGENT_TEAM_ROLE; team-post T7 --file f' \
-    'env --unset AGENT_TEAM_ROLE team-post T7 --file f'
-  assert_denies 'Bash(*unset=AGENT_TEAM_*)' 'env --unset=AGENT_TEAM_ROLE team-post T7 --file f'
-  assert_denies 'Bash(*-u AGENT_TEAM_*)' 'env -u AGENT_TEAM_ROLE team-post T7 --file f'
-  assert_denies 'Bash(*-uAGENT_TEAM_*)' 'env -uAGENT_TEAM_TASK team-post T7 --file f'
-  while IFS= read -r command; do
-    if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
-  done <<'COMMANDS'
-grep -rn AGENT_TEAM_ROLE bin/
-git grep -n 'AGENT_TEAM_TASK:-'
-echo "$AGENT_TEAM_ROLE $AGENT_TEAM_TASK"
-env | grep AGENT_TEAM_
-tests/vendor/bats-core/bin/bats tests/team-post.bats -f 'a planner session'
-COMMANDS
 }
 
 # A channel's bot token and access list are its .env and access.json under ~/.claude/channels/:

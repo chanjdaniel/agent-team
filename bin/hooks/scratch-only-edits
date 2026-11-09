@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # PreToolUse hook for planners and reviewers: they write files only inside the worktree's .scratch/
-# directory. Exit 2 blocks the tool call and shows stderr to the agent.
+# directory. Exit 2 blocks the tool call and shows stderr to the agent; exit 0 passes it.
+#
+# Usage: scratch-only-edits   (the hook's input on stdin)
+#
+# It reads nothing of the team home, so it decides on a machine that names none. When it cannot
+# decide it refuses, saying so: input that is not a JSON object with a tool_name string, a wrong
+# argument on its command line (which so blocks every call), and any command of its own that fails,
+# which ends as an exit 2 naming the hook and the exit code (team_guard in bin/lib/team.sh).
 #
 # An Edit, Write, MultiEdit or NotebookEdit call is judged by its path, resolved with its symlinks.
 #
@@ -236,8 +243,19 @@
 # Test seams: TEAM_SYSTEM_ROOT stands for / in /tmp, as in the library's tool_dirs, and
 # TEAM_BASH_VERSION (major.minor) for the running bash's version.
 set -euo pipefail
+# A guard decides or refuses (bin/lib/team.sh), and reads nothing of the team home, so it decides
+# on a machine that names none.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_guard=scratch-only-edits team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+# A wrong argument in the settings blocks every call the hook sees, the fail-closed side.
+[[ $# -eq 0 ]] || usage_error "usage: scratch-only-edits   (the hook's input on stdin)"
 input=$(cat)
+tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<"$input" 2>/dev/null) || {
+  echo "Blocked: scratch-only-edits could not read the hook's input (JSON with a tool_name); a guard that cannot decide refuses, so report it as BLOCKED and do not reach it another way." >&2
+  exit 2
+}
 cwd=$(jq -r '.cwd // empty' <<<"$input")
 cwd=${cwd:-$PWD}
 root=${CLAUDE_PROJECT_DIR:-$cwd}
@@ -250,7 +268,7 @@ under() {
   [[ $1 == "$2" || $1 == "$2"/* ]]
 }
 
-if [[ $(jq -r '.tool_name // empty' <<<"$input") != Bash ]]; then
+if [[ $tool != Bash ]]; then
   path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input")
   [[ -n $path ]] || exit 0
   [[ $path == /* ]] || path="$cwd/$path"
