@@ -78,10 +78,11 @@ def ledger_reason:
 # run with no coordinator. A run with no coordinator_live (its session list unreadable, or the step
 # not run) keeps the coordinator as the record has it, and one with no findings (the sweep could
 # not run, or the step did not) keeps the findings but no findings_at, the time of the run's look;
-# a look's finding the record already holds keeps its since when the run before made a look no
-# more than $limits.stale_minutes earlier (so a finding is aged only while it is seen at every
-# run, and a failed look or a sleep starts it again), a new one is dated at the look, and one the
-# look does not hold is dropped, so a finding that comes back starts again.
+# a look's finding the record already holds keeps its since when the record's run made a look and
+# ended (or, with no end, was last written) no more than $limits.stale_minutes before this run
+# started, so a finding is aged only while it is seen at every run: a failed look or a sleep
+# starts it again, and a long run does not; a new one is dated at the look, and one the look does
+# not hold is dropped, so a finding that comes back starts again.
 def health_fold($run; $results; $limits):
   (if type == "object" and .schema == "team-health/1" then . else {} end) as $prev
   | (reduce ($results[] | select(.step)) as $r ({};
@@ -120,8 +121,9 @@ def health_fold($run; $results; $limits):
       findings_at: ([$results[] | select(has("findings")) | .findings.at] | last),
       findings: (([$results[] | select(has("findings")) | .findings] | last) as $look
         | if $look == null then $prev.findings
-          else (if ($prev.findings_at | type) == "string"
-                then ($look.at | fromdateiso8601) - ($prev.findings_at | fromdateiso8601) <= $limits.stale_minutes * 60
+          else ($prev.last_run.end // $prev.written) as $then
+            | (if ($prev.findings_at | type) == "string" and ($then | type) == "string"
+                then ($run.start | fromdateiso8601) - ($then | fromdateiso8601) <= $limits.stale_minutes * 60
                 else false end) as $every
             | (reduce ($prev.findings | arrays | .[] | objects
                   | select($every and (.key | type) == "string")) as $f ({}; .[$f.key] = $f.since)) as $seen
@@ -239,10 +241,10 @@ def health_problems($lease; $now; $limits):
   # denied logged since the first look saw them: the coordinator is live but leaves them. Alerting
   # by definition; no sweep kind, since it is about the coordinator itself. Not raised beside the
   # coordinator problem, whose alert says why nothing is attended, nor before this holding began,
-  # nor when the last run made no look or its look is over the stale minutes old.
+  # nor when the last run made no look, nor beside the heartbeat problem, since a heartbeat that
+  # has not run for the stale minutes has not seen the findings at every run.
   | ($rec.ledger.last_event | if type == "string" then . else null end) as $logged
-  | (($rec.findings_at | type) == "string"
-      and $now - ($rec.findings_at | health_epoch) <= $limits.stale_minutes * 60) as $looked
+  | (($rec.findings_at | type) == "string" and $heartbeat == []) as $looked
   | (if $before or $coordinator != [] or ($looked | not) then []
     else
       [$rec.findings | arrays | .[] | objects | select((.since | type) == "string"

@@ -1178,14 +1178,29 @@ SH
   # The machine slept for over an hour after that run, the coordinator with it.
   date_record '.findings[].since = ago(61) | .last_run.start = ago(61) | .last_run.end = ago(61)
     | if has("findings_at") then .findings_at = ago(61) else . end'
+  date_lease_record 61
   local back
   back=$(date -u +%FT%TZ)
   # Read before the first run after waking, the view says nothing of it either.
   view
   assert_equal "$(problem_of unattended)" null
   run_bin -0 team-timers run
-  jq -e --arg back "$back" '(.findings | length) == 1 and .findings[0].since >= $back' "$record"
+  # The sweep also saw the old record's stale heartbeat, a checkpoint-stale finding of its own.
+  jq -e --arg back "$back" '[.findings[] | select(.kind == "stray")] | length == 1 and .[0].since >= $back' "$record"
   view
   assert_equal "$(problem_of unattended)" null
   assert_equal "$(alerts_shown)" ""
+}
+
+@test "a finding seen by a long run and by the next is still aged: only a run that starts over the stale minutes after the last ended dates it anew" {
+  stub_reply claude "$STRAY"
+  run_bin -0 team-timers run
+  date_ledger 120
+  # The run before took 18 minutes: it looked 20 minutes ago and ended 2 minutes ago, missing no slot.
+  date_record '.findings[].since = ago(61) | .findings_at = ago(20) | .last_run.start = ago(20) | .last_run.end = ago(2)'
+  run_bin -0 team-timers run
+  view
+  jq -e '.alerting' <<<"$(problem_of unattended)"
+  assert_equal "$(alerts_shown | wc -l)" 1
+  jq -e '.content | startswith("The coordinator on home-pc has left 1 finding unattended for over an hour")' <<<"$(alerts_shown)"
 }
