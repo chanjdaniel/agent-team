@@ -1887,7 +1887,8 @@ origin_subject() {
           elif .key == "retro" then "T150"
           elif .key == "discord_channel" then $coordinator
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
-      (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
+      (select($k == "merge-approved") | "head=a1b2c3d4"),
+      (.kinds[$k].one_of // [] | .[] | "\(.[0])=x y")' "$CONTRACT")
     tip=$(git -C "$team_origin" rev-parse dev)
     run_bin -0 --separate-stderr team-log T14 "$kind" "${args[@]}"
     assert_equal "$output" ""
