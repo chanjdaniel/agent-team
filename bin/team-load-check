@@ -762,7 +762,7 @@ ops_check() {
   for kit in "${kits[@]}"; do
     [[ -z ${scanned[${leak_name[$kit]}]:-} ]] || continue
     scanned[${leak_name[$kit]}]=1
-    hits=$(grep -rlE "${leak_re[$kit]}" "${own[@]}" "$HOME/.cache/claude-cli-nodejs" "$HOME/.mongodb" \
+    hits=$(grep -rlE "${leak_re[$kit]}" "${own[@]}" "$(claude_cache_dir)" "$HOME/.mongodb" \
       "$TEAM_HOME/tasks/T0" "$TEAM_HOME/memory" 2>/dev/null || true)
     if [[ -n $hits ]]; then
       echo "FAIL: ${leak_name[$kit]} in:"

@@ -444,6 +444,13 @@ command-guard block 10"
     esac
     assert_equal "$(jq -r '.hooks.PreToolUse[].hooks[] | "\(.command | ltrimstr("'"$REPO_ROOT"'/bin/hooks/")) \(.onFailure) \(.timeout)"' "$settings" | sort)" \
       "$(sort <<<"$expected")"
+    # The write hook holds ops to its one file, and planners and reviewers to .scratch/.
+    case $role in
+      planner | reviewer) expected=null ;;
+      ops) expected='[".scratch/answer.md"]' ;;
+      *) expected='' ;;
+    esac
+    assert_equal "$(jq -c '.hooks.PreToolUse[].hooks[] | select(.command | endswith("/scratch-only-edits")) | .args' "$settings")" "$expected"
   done
 }
 
@@ -1300,12 +1307,16 @@ assert_prod_write_gated() {
     <(jq 'del(.permissions.deny)' "$TEAM_HOME/tasks/T7/settings.ops.json")
 }
 
-@test "the generated ops settings allow only prod-read, vercel-read and .scratch edits, ask for every prod-write tool, and deny every outbound tool" {
+@test "the generated ops settings allow only prod-read, vercel-read and the answer file's edits, ask for every prod-write tool, and deny every outbound tool" {
   thread T7
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   local s=$TEAM_HOME/tasks/T7/settings.ops.json rule
-  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/answer.md)"]'
+  # The write hook holds the session to that one file, and blocks when it fails.
+  assert_equal "$(jq -c '[.hooks.PreToolUse[].hooks[] | select(.command | endswith("/scratch-only-edits"))
+    | [.command, .args, .onFailure, .timeout]]' "$s")" \
+    "$(jq -cn --arg c "$REPO_ROOT/bin/hooks/scratch-only-edits" '[[$c, [".scratch/answer.md"], "block", 30]]')"
   # The write rules hold even in a read session, where prod-write is not loaded.
   assert_prod_write_gated "$s"
   assert_equal "$(jq '.permissions.ask | length' "$s")" 11
@@ -1373,7 +1384,7 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
 
   local s=$t/settings.ops.json
   assert_prod_write_gated "$s"
-  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/answer.md)"]'
   # The ops log's hooks cover both toolkits' tools, and block a write whose line is lost.
   assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/ops-log"))
     | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" '^mcp__.*(prod-(read|write)|vercel-read).*__ block'
@@ -1419,7 +1430,7 @@ matcher_matches() {
     run -1 grep -Eq '@TEAM_CODE@|@TASK@|vcp_|VERCEL|op://|token|mongodb(\+srv)?://|password' "$mcp"
 
     local s=$t/settings.ops.json
-    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/answer.md)"]'
     assert_prod_write_gated "$s"
     matcher_matches "$s" mcp__vercel-read__list-deployments mcp__plugin_vercel-read_vercel-read__runtime-logs \
       mcp__prod-read__find mcp__plugin_prod-write_prod-write__delete-many

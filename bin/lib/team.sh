@@ -11,7 +11,7 @@
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append,
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
-# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
+# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, claude_cache_dir, tool_dirs,
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
@@ -495,6 +495,16 @@ team_os() {
     Linux) [[ $(os_release ID) == arch || " $(os_release ID_LIKE) " == *" arch "* ]] && echo arch ;;
     *) return 1 ;;
   esac
+}
+
+# Claude Code's cache directory, where it keeps each project's MCP logs: env-paths' cache of
+# claude-cli-nodejs, ~/Library/Caches/ on macOS, $XDG_CACHE_HOME or ~/.cache/ elsewhere.
+claude_cache_dir() {
+  if [[ ${TEAM_KERNEL:-$(uname -s)} == Darwin ]]; then
+    echo "$HOME/Library/Caches/claude-cli-nodejs"
+  else
+    echo "${XDG_CACHE_HOME:-$HOME/.cache}/claude-cli-nodejs"
+  fi
 }
 
 # The directories the tools of bin/lib/tools.lock are installed into on this OS, in the lock's

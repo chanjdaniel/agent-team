@@ -1175,7 +1175,6 @@ SINCE
 Path: research; you are the ops agent, on the one production request below.
 Project: conv (`chanjdaniel/Conventioner`).
 Worktree: `~/.treehouse/Conventioner-d4c77a/3/Conventioner`, branch `research/T30-ops-market-phases`.
-Task directory: `.scratch/task/` in the worktree (excluded from git), for an answer too long for one message.
 
 ## The request
 
@@ -1192,7 +1191,7 @@ Personal details are never part of your answer, whatever the request asks: answe
 
 ## Report
 
-Write the answer to `.scratch/answer.md`, then send `T30 DONE <answer>` to `coordinator`.
+Write the answer to `.scratch/answer.md`, the one file you can write, then send `T30 DONE <answer>` to `coordinator`.
 EOF
   )"
   # An answer with personal details has no path: the brief has no placeholder to ask for one.
