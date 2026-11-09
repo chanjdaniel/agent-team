@@ -34,7 +34,10 @@
 #      left out, each named on a line; with none, the branch head itself, so a branch never
 #      pushed is kept too and an older snapshot is gone.
 #      A wip/<project>/T<n> already that head, or a snapshot with the same tree and parent, is
-#      left alone. The worktree's files, index, branch and stash are never touched. The push runs
+#      left alone. The worktree's files, index, branch and stash are never touched, and its
+#      files are read running no command its repository's config names (no core.fsmonitor, no
+#      filter driver's clean or process command, so a file a filter such as Git LFS's would
+#      clean is kept as it is on disk), since a worker may write that config. The push runs
 #      none of the project's hooks (hooks off for that one command, its output kept out of the
 #      checkpoint's), since it is the team's own plumbing to a private repository.
 # Then team-tokens export writes this machine's usage of each complete UTC day into usage/<machine>/

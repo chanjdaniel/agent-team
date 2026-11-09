@@ -439,6 +439,38 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   [[ -e $BATS_TEST_TMPDIR/home.ran && -e $BATS_TEST_TMPDIR/site.ran ]]
 }
 
+@test "a worktree's repository config runs no command of its own: no fsmonitor and no clean filter" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open site feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/site/1 cmd
+  # Each command leaves its marker, then does what git asks of it: no fsmonitor answer, the
+  # content as it is.
+  for cmd in fsmonitor clean; do
+    printf '#!/bin/sh\ntouch "%s/%s.ran"\n%s\n' "$BATS_TEST_TMPDIR" "$cmd" \
+      "$([[ $cmd == clean ]] && echo cat || echo 'exit 1')" >"$BATS_TEST_TMPDIR/$cmd"
+    chmod +x "$BATS_TEST_TMPDIR/$cmd"
+  done
+  git -C "$home" config core.fsmonitor "$BATS_TEST_TMPDIR/fsmonitor"
+  git -C "$site" config filter.Mark.clean "$BATS_TEST_TMPDIR/clean"
+  git -C "$site" config filter.Mark.required true
+  echo '*.txt filter=Mark' >"$two/.gitattributes"
+  echo "change 1" >"$one/change.txt"
+  echo "change 2" >"$two/change.txt"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_contains "$output" "T2 site: pushed wip/site/T2"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "change 1"
+  assert_equal "$(git -C "$team_origin" show wip/site/T2:change.txt)" "change 2"
+  [[ ! -e $BATS_TEST_TMPDIR/fsmonitor.ran && ! -e $BATS_TEST_TMPDIR/clean.ran ]]
+
+  # Each command is live: git's own commands in the worktree run it.
+  git -C "$one" status --short >/dev/null
+  git -C "$two" hash-object --path change.txt change.txt >/dev/null
+  [[ -e $BATS_TEST_TMPDIR/fsmonitor.ran && -e $BATS_TEST_TMPDIR/clean.ran ]]
+}
+
 @test "an empty or a missing task directory is one line under the worktree's label, archives nothing and is no problem" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 --separate-stderr team-checkpoint

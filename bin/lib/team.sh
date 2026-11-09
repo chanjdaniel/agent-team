@@ -837,24 +837,40 @@ secret_paths() {
 # The untracked files of the worktree <wt> that may hold a secret (secret_paths), one per line,
 # which a snapshot leaves out (files git ignores are never in one): snapshot_left_out <wt>
 snapshot_left_out() {
-  git -C "$1" ls-files -z --others --exclude-standard | secret_paths
+  git -c core.fsmonitor=false -C "$1" ls-files -z --others --exclude-standard | secret_paths
+}
+
+# The -c options, one per line, under which git runs no command a worktree's repository config
+# names while it reads the worktree's files: no core.fsmonitor, and no clean or process command of
+# a filter driver (each one configured, required or not, Git LFS's included), so a file a filter
+# would clean is read as it is on disk. A worker session may write that config, and the heartbeat
+# that reads the worktree runs outside its permissions: inert_config <wt>
+inert_config() {
+  local key name
+  echo core.fsmonitor=false
+  while IFS= read -r key; do
+    name=${key#filter.} name=${name%.*}
+    printf '%s\n' "filter.$name.clean=" "filter.$name.process=" "filter.$name.required=false"
+  done < <(git -C "$1" config --name-only --get-regexp '^filter\..+\.(clean|process)$' | sort -u)
 }
 
 # The tree of the worktree <wt> as it is, uncommitted changes and untracked files included (files
 # git ignores, and those snapshot_left_out names, are not), built in a copy of its index so the
-# worktree's own index is never touched; it equals HEAD's tree when the worktree is clean. Every
-# step's status is checked, so it fails the same in a condition as under set -e: it returns 1
-# with the failing command's own lines on stderr (git's, for a file it cannot read or a nested
+# worktree's own index is never touched, under inert_config, so no command of the worktree's runs;
+# it equals HEAD's tree when the worktree is clean (a file a filter cleans aside, once changed).
+# Every step's status is checked, so it fails the same in a condition as under set -e: it returns
+# 1 with the failing command's own lines on stderr (git's, for a file it cannot read or a nested
 # repository with no commit), for the caller to report: worktree_tree <wt>
 worktree_tree() {
-  local wt=$1 index copy tree='' rc=0
+  local wt=$1 index copy tree='' rc=0 option inert=()
   index=$(git -C "$wt" rev-parse --path-format=absolute --git-path index) || return 1
+  while IFS= read -r option; do inert+=(-c "$option"); done < <(inert_config "$wt")
   copy=$(mktemp) || return 1
   # A copy of the real index keeps what git knows of each file's state; with none, HEAD's.
-  if [[ -f $index ]]; then cp "$index" "$copy"; else GIT_INDEX_FILE=$copy git -C "$wt" read-tree HEAD; fi &&
-    GIT_INDEX_FILE=$copy git -C "$wt" add -A &&
-    snapshot_left_out "$wt" | GIT_INDEX_FILE=$copy git -C "$wt" update-index --force-remove --stdin &&
-    tree=$(GIT_INDEX_FILE=$copy git -C "$wt" write-tree) || rc=1
+  if [[ -f $index ]]; then cp "$index" "$copy"; else GIT_INDEX_FILE=$copy git "${inert[@]}" -C "$wt" read-tree HEAD; fi &&
+    GIT_INDEX_FILE=$copy git "${inert[@]}" -C "$wt" add -A &&
+    snapshot_left_out "$wt" | GIT_INDEX_FILE=$copy git "${inert[@]}" -C "$wt" update-index --force-remove --stdin &&
+    tree=$(GIT_INDEX_FILE=$copy git "${inert[@]}" -C "$wt" write-tree) || rc=1
   rm -f "$copy"
   ((rc == 0)) || return 1
   printf '%s\n' "$tree"
