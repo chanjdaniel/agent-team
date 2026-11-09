@@ -107,6 +107,47 @@ SCRIPT
   assert_contains "$output" "a launch's discord_message is only for role ops, not \"reviewer\""
 }
 
+@test "an ops done may carry its report's length and its relay, and a question its text or its length, one of them" {
+  local at='"ts":"2026-11-09T02:00:00Z","task":"T7"'
+  append_as team-log "{$at,\"event\":\"done\",\"role\":\"ops\",\"session\":\"d0000001\",\"report_chars\":412,\"relay\":\"1564000000000000001\"}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"done\",\"role\":\"ops\",\"session\":\"d0000001\",\"report_chars\":\"412\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "team-log: refusing a ledger event: report_chars must be a number, got a string"
+  append_as team-log "{$at,\"event\":\"done\",\"role\":\"ops\",\"session\":\"d0000001\",\"report_chars\":412,\"relay\":\"the relay\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "relay must be a Discord id, a string of digits, got a string that is not one"
+  append_as team-log "{$at,\"event\":\"done\",\"role\":\"builder\",\"session\":\"b0000001\",\"report_chars\":12}"
+  assert_equal "$status" "1"
+  assert_contains "$output" 'team-log: refusing a ledger event: a done'"'"'s report_chars is only for role ops, not "builder"'
+  append_as team-log "{$at,\"event\":\"done\",\"role\":\"builder\",\"session\":\"b0000001\",\"relay\":\"1564000000000000001\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" 'a done'"'"'s relay is only for role ops, not "builder"'
+  append_as team-ask "{$at,\"event\":\"question\",\"role\":\"ops\",\"chars\":812,\"discord_message\":\"1564000000000000002\"}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"question\",\"role\":\"builder\",\"text\":\"which store?\"}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"question\",\"role\":\"ops\",\"text\":\"which store?\",\"chars\":12}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "team-log: refusing a ledger event: a question takes text or chars, not both"
+  append_as team-log "{$at,\"event\":\"question\",\"role\":\"ops\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "team-log: refusing a ledger event: a question needs text or chars"
+  append_as team-log "{$at,\"event\":\"question\",\"role\":\"builder\",\"text\":\"\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "a question needs text or chars"
+  append_as team-log "{$at,\"event\":\"question\",\"role\":\"builder\",\"chars\":12}"
+  assert_equal "$status" "1"
+  assert_contains "$output" 'a question'"'"'s chars is only for role ops, not "builder"'
+  assert_equal "$(jq -c '{event, role}' "$TEAM_HOME/ledger.jsonl")" '{"event":"done","role":"ops"}
+{"event":"question","role":"ops"}
+{"event":"question","role":"builder"}'
+  # team-log --check holds the ledger's lines to the same, from strict_from on.
+  echo "{$at,\"event\":\"question\",\"role\":\"ops\"}" >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-log --check
+  assert_contains "$output" "ledger.jsonl:4: a question needs text or chars"
+}
+
 @test "an address at a public provider in a list's item is refused, naming the item and never the value" {
   local provider=gmail.com
   append_as team-worker '{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"launch","role":"reviewer","session":"4f2a9c1e","worktree":"/w","toolkits":["browser","x@'"$provider"'"]}'

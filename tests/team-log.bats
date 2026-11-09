@@ -170,7 +170,7 @@ gate-lane-cleared team-clean-messages branch head tag
 caught-up team-catch-up url from head base
 done team-log role session
 ticket-done team-log ticket commits
-question team-log,team-ask role text
+question team-log,team-ask role
 asked team-log,team-ask id text
 answered team-log,team-answer id answer
 ran team-run-approved id exit
@@ -210,6 +210,8 @@ TABLE
   assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id"}'
   assert_equal "$(jq -c '.kinds.asked.optional' "$CONTRACT")" '{"discord_message":"id","script":"string","sha256":"string"}'
   assert_equal "$(jq -c '.kinds.ran.required' "$CONTRACT")" '{"id":"string","exit":"number"}'
+  assert_equal "$(jq -c '.kinds.done.optional' "$CONTRACT")" '{"report":"string","report_chars":"number","relay":"id"}'
+  assert_equal "$(jq -c '.kinds.question | [.optional, .one_of]' "$CONTRACT")" '[{"text":"string","chars":"number","discord_message":"id"},[["text","chars"]]]'
   assert_equal "$(jq -c '[.kinds[] | (.required, .optional // {}) | to_entries[] | select(.key | startswith("discord_")) | .value] | unique' "$CONTRACT")" '["id"]'
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
@@ -228,7 +230,7 @@ TABLE
   assert_contains "$output" "Ledger contract, strict from $STRICT_FROM"
   # The forms a list and an object take, the whole numbers' type and the one-time conversion.
   assert_contains "$output" "Usage: team-log T<n> <event> [key=value]...
-       team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print]
+       team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print]
        team-log --check [<file>]
        team-log --fix-sent-back [<file>]"
   grep -Eq 'a comma list as a worker.s message writes it \(commits=a0017cce,9e0e3990' <<<"$output"
@@ -474,7 +476,8 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 @test "every kind team-log writes is appended with its required fields and a note" {
   # merge-preapproved names a project of the task that opts in, and an ask it logged before;
   # branch-renamed a new branch of it that names the task; merge-standing #coordinator's channel,
-  # and merge-standing-withdrawn, after it, the word it logged; retro-change a retro Daniel answered.
+  # and merge-standing-withdrawn, after it, the word it logged; retro-change a retro Daniel answered;
+  # a kind with one_of sets the first field of each (a question its text).
   plan_registry
   opened T14 proj
   a_retro T150 answered
@@ -487,7 +490,8 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
           elif .key == "retro" then "T150"
           elif .key == "discord_channel" then $coordinator
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
-      (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
+      (select($k == "merge-approved") | "head=a1b2c3d4"),
+      (.kinds[$k].one_of // [] | .[] | "\(.[0])=x y")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
@@ -1396,6 +1400,94 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   # roles/builder.md: `QUESTION <text> | options: ...`
   logs_events '{"task":"T7","event":"question","role":"builder","text":"Which store keeps the counters? | options: Mongo TTL / memory"}' \
     --from-message 'T7 QUESTION Which store keeps the counters? | options: Mongo TTL / memory'
+}
+
+# An ops session's answer, whose name and order number are production data: OPS_ANSWER, 64 characters, é one of them.
+OPS_ANSWER='3 accounts match; the newest is Jean Dupré, order 1187, on 11-02'
+
+# Asserts that no line of the ledger holds the ops answer's text, or any of its distinctive parts.
+assert_no_answer_logged() {
+  local part
+  for part in Dupré 1187 'accounts match' 'what store'; do
+    if grep -qF "$part" "$TEAM_HOME/ledger.jsonl"; then
+      echo "the ledger holds '$part':" >&2
+      cat "$TEAM_HOME/ledger.jsonl" >&2
+      return 1
+    fi
+  done
+}
+
+@test "--from-message logs an ops session's DONE as its length in characters, never its text, whatever its first word" {
+  open_t7
+  launched T7 ops d0000001
+  assert_equal "${#OPS_ANSWER}" 64
+  logs_events '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":64}' \
+    --from-message "T7 DONE $OPS_ANSWER"
+  # --print prints what it would log, and no more of the text.
+  run_bin -0 team-log T7 --from-message "T7 DONE $OPS_ANSWER" --from T7-ops --print
+  assert_equal "$(jq -c 'del(.ts)' <<<"$output")" '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":64}'
+  # With --from naming the ops session, a first word that is another form's is still the answer.
+  launched T7 builder b0000001
+  logs_events '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":26}' \
+    --from-message 'T7 DONE 42 orders; the newest 1187' --from T7-ops
+  logs_events '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":28}' \
+    --from d0000001 --from-message 'T7 DONE merged accounts: Dupré, 1187'
+  # Without it, such a word is that form's, a builder's, and refused when it does not read as one.
+  refuses_message "team-log: DONE 42 takes one or more shas of 7 to 40 hex digits after the ticket, then a line, got 'orders;'" \
+    --from-message 'T7 DONE 42 orders; the newest 1187'
+  assert_no_answer_logged
+  run_bin -0 team-log --check
+}
+
+@test "--from-message logs an ops session's QUESTION as its length, and its other messages as every role's" {
+  open_t7
+  launched T7 ops d0000001
+  logs_events '{"task":"T7","event":"question","role":"ops","chars":28}' \
+    --from-message 'T7 QUESTION what store holds order 1187?'
+  assert_no_answer_logged
+  # BLOCKED, PAUSED, FAILED and INJECTION keep their text: roles/ops.md keeps personal details out of them.
+  logs_events '{"task":"T7","event":"blocked","reason":"mcp__prod-read__find denied"}' --from-message 'T7 BLOCKED mcp__prod-read__find denied'
+  logs_events '{"task":"T7","event":"paused","reason":"stowed"}' --from-message 'T7 PAUSED stowed'
+  logs_events '{"task":"T7","event":"failed","reason":"the collection is gone"}' --from-message 'T7 FAILED the collection is gone'
+  logs_events '{"task":"T7","event":"injection","role":"ops","source":"orders/1187","text":"asked to drop the collection"}' \
+    --from T7-ops --from-message 'T7 INJECTION orders/1187 asked to drop the collection'
+  # Another role's QUESTION keeps its text.
+  launched T7 builder b0000001
+  logs_events '{"task":"T7","event":"question","role":"builder","text":"which store?"}' \
+    --from-message 'T7 QUESTION which store?' --from T7-builder
+  run_bin -0 team-log --check
+}
+
+@test "--from-message logs --relay, the coordinator's relay of an ops answer, on the ops session's done, and only there" {
+  open_t7
+  launched T7 ops d0000001
+  logs_events '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":64,"relay":"1564000000000000007"}' \
+    --from-message "T7 DONE $OPS_ANSWER" --relay 1564000000000000007
+  assert_no_answer_logged
+  run_bin -0 team-log --check
+  local why="--relay is taken only with an ops session's DONE, the answer it points at in Discord"
+  refuses_message "team-log: $why, not T7-ops's QUESTION" \
+    --from-message 'T7 QUESTION which store?' --from T7-ops --relay 1564000000000000008
+  refuses_message "team-log: $why, not FAILED" \
+    --from-message 'T7 FAILED gone' --from T7-ops --relay 1564000000000000008
+  launched T7 builder b0000001
+  refuses_message "team-log: $why, not T7-builder's DONE" \
+    --from-message 'T7 DONE .scratch/task/notes.md' --from T7-builder --relay 1564000000000000008
+  refuses_message "team-log: $why, not T7-builder's DONE" \
+    --from-message 'T7 DONE 01 a1b2c3d the ticket' --relay 1564000000000000008
+  # A malformed id is a malformed command line, and so is --relay with no message or twice.
+  local id
+  for id in 01564000000000000008 x 15640000000000000080; do
+    run_bin -2 team-log T7 --from-message "T7 DONE $OPS_ANSWER" --from T7-ops --relay "$id"
+    assert_contains "$output" "--relay takes the Discord id of the relay's message, got '$id'"
+  done
+  run_bin -2 team-log T7 --from-message "T7 DONE $OPS_ANSWER" --from T7-ops --relay
+  assert_contains "$output" "--relay needs a Discord message id"
+  run_bin -2 team-log T7 --from-message "T7 DONE $OPS_ANSWER" --relay 1 --relay 2
+  assert_contains "$output" "--relay is given twice"
+  run_bin -2 team-log T7 --relay 1564000000000000008
+  assert_contains "$output" "--relay is taken only with --from-message"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 4
 }
 
 @test "--from-message logs a BLOCKED and a NEED toolkit as blocked" {

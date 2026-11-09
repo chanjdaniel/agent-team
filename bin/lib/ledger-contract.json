@@ -5,6 +5,7 @@
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
     "A kind's field_writers names the one script that may append a line holding each field it lists, among the kind's writers; the others append the kind without it.",
     "A kind's field_when names, for each field it lists, the values another field must hold for a line to carry it, as {\"discord_message\": {\"role\": [\"ops\"]}}: a line holding the field with any other value there is refused.",
+    "A kind's one_of lists sets of fields of which a line carries exactly one, as [[\"text\", \"chars\"]]: a line holding none of a set (an empty string counting as none), or more than one, is refused.",
     "Lines from strict_from on must meet their kind's fields; earlier lines are legacy and only need ts, task and event.",
     "Legacy lines keep shapes no kind has now: closes by hand with no lists, and plan-ready, which is not a kind, since a planner's report is done and a plan put to Daniel is asked.",
     "Read by ledger_append in bin/lib/team.sh (through bin/lib/ledger.jq) and printed by team-log --help."
@@ -72,8 +73,10 @@
     },
     "done": {
       "writer": "team-log",
+      "about": "a worker's report; an ops session's carries report_chars, its report's length in characters, never its text, and relay, the coordinator's message in Discord that relayed it",
       "required": {"role": "string", "session": "string"},
-      "optional": {"report": "string"}
+      "optional": {"report": "string", "report_chars": "number", "relay": "id"},
+      "field_when": {"report_chars": {"role": ["ops"]}, "relay": {"role": ["ops"]}}
     },
     "ticket-done": {
       "writer": "team-log",
@@ -82,7 +85,11 @@
     },
     "question": {
       "writer": ["team-log", "team-ask"],
-      "required": {"role": "string", "text": "string"}
+      "about": "a worker's question; an ops session's carries chars, its length in characters, never its text, and discord_message, the question's first message in the task's thread when team-ask put it to Daniel",
+      "required": {"role": "string"},
+      "optional": {"text": "string", "chars": "number", "discord_message": "id"},
+      "one_of": [["text", "chars"]],
+      "field_when": {"chars": {"role": ["ops"]}}
     },
     "asked": {
       "writer": ["team-log", "team-ask"],

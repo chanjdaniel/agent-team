@@ -135,6 +135,30 @@ waiting"
 waiting"
 }
 
+@test "an ops session's question is posted whole, and logged and pinged only as its length and the thread it is in" {
+  printf 'Write 2 orders of Jean Dupré?\n\nfilter {_id: 1187}, set {status: "void"}\n' >"$BATS_TEST_TMPDIR/ops.md"
+  local question
+  question=$(<"$BATS_TEST_TMPDIR/ops.md")
+  assert_equal "${#question}" 71
+  run_bin -0 --separate-stderr team-ask T7 write-1 --file "$BATS_TEST_TMPDIR/ops.md" --from ops
+  assert_equal "$output" '{"task":"T7","id":"write-1","question":["1564000000000000001"],"ping":"1564000000000000002"}'
+  local line="An ops question of 71 characters, in T7's thread."
+  assert_equal "$(posted)" "$(jq -cn --arg q "$question" '$q')
+\"<@757> T7 has a question for you in <#2222>: $line\""
+  assert_equal "$(logged)" "{\"task\":\"T7\",\"event\":\"question\",\"role\":\"ops\",\"chars\":71,\"discord_message\":\"1564000000000000001\"}
+{\"task\":\"T7\",\"event\":\"asked\",\"id\":\"write-1\",\"text\":\"$line\",\"discord_message\":\"1564000000000000001\"}
+{\"task\":\"T7\",\"event\":\"waiting\",\"on\":\"Daniel\",\"reason\":\"ask write-1\"}"
+  if grep -E 'Dupré|1187' "$TEAM_HOME/ledger.jsonl"; then
+    echo "the ledger holds the ops question's text" >&2
+    return 1
+  fi
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+  # The Waiting on you message, and the snapshot's pending asks, show it by that line.
+  assert_equal "$(inbox_items_shown)" "**Asks**
+- T7 write-1: $line https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001"
+}
+
 @test "the ping mentions each of Daniel's ids and cuts a long first line" {
   echo '{"allowFrom": ["757", 758], "groups": {}}' >"$HOME/.claude/channels/discord/access.json"
   local long

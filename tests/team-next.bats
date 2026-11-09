@@ -336,6 +336,44 @@ no hand-off for DONE gate"
   assert_equal "$(bg_calls)" ""
 }
 
+@test "an ops session's DONE and QUESTION are logged once as their length, the DONE with --relay, and hand nothing on" {
+  launched d0000001 "" '["prod-read"]' ops
+  local count answer='42 orders; the newest is Jean Dupré, 1187'
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  # Its first word is a ticket's, but the sender is the ops session, so it is the answer.
+  run_bin -0 team-next T7 --from T7-ops --relay 1564000000000000007 -- "T7 DONE $answer"
+  assert_equal "$output" "logged done role=ops session=d0000001 report_chars=${#answer} relay=1564000000000000007
+no hand-off for DONE"
+  # A rerun, with the relay or without it, logs it once, as for every role.
+  run_bin -0 team-next T7 --from T7-ops --relay 1564000000000000007 -- "T7 DONE $answer"
+  assert_equal "$output" "already logged done role=ops session=d0000001 report_chars=${#answer} relay=1564000000000000007
+no hand-off for DONE"
+  run_bin -0 team-next T7 --from T7-ops -- "T7 DONE $answer"
+  assert_equal "$output" "already logged done role=ops session=d0000001 report_chars=${#answer}
+no hand-off for DONE"
+  run_bin -0 team-next T7 --from T7-ops -- 'T7 QUESTION which store holds order 1187?'
+  assert_equal "$output" "logged question role=ops chars=29
+no hand-off for QUESTION"
+  run_bin -0 team-next T7 --from T7-ops -- 'T7 QUESTION which store holds order 1187?'
+  assert_equal "$output" "already logged question role=ops chars=29
+no hand-off for QUESTION"
+  assert_equal "$(logged_from $((count + 1)))" "{\"task\":\"T7\",\"event\":\"done\",\"role\":\"ops\",\"session\":\"d0000001\",\"report_chars\":${#answer},\"relay\":\"1564000000000000007\"}
+{\"task\":\"T7\",\"event\":\"question\",\"role\":\"ops\",\"chars\":29}"
+  if grep -E 'Dupré|1187' "$TEAM_HOME/ledger.jsonl"; then
+    echo "the ledger holds the ops answer's text" >&2
+    return 1
+  fi
+  # --relay with another message is team-log's refusal, and a malformed one a malformed command line, each changing nothing.
+  refused "team-log: --relay is taken only with an ops session's DONE, the answer it points at in Discord, not T7-builder's DONE" \
+    T7 --from T7-builder --relay 1564000000000000008 -- 'T7 DONE .scratch/task/notes.md'
+  local before
+  before=$(state)
+  run_bin -2 team-next T7 --from T7-ops --relay 'the relay' -- "T7 DONE $answer"
+  assert_contains "$output" "--relay takes the Discord id of the relay's message, got 'the relay'"
+  assert_equal "$(state)" "$before"
+  assert_equal "$(bg_calls)" ""
+}
+
 @test "--next with another message, and a malformed command line, are usage errors" {
   run_bin -2 team-next T7 --next 02 -- "T7 PAUSED stowed"
   assert_contains "$output" "--next is taken only with a builder's DONE <NN> message, not PAUSED"
@@ -353,7 +391,7 @@ no hand-off for DONE gate"
 
 @test "--help prints the header, and the manual's step 4 names team-next within its 120 lines" {
   run_bin -0 team-next --help
-  assert_contains "$output" "Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>]"
+  assert_contains "$output" "Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>]"
   assert_contains "$output" "[--since <file>] [--template rereview|verify] -- '<the worker's message>'"
   local manual=$REPO_ROOT/roles/coordinator.md
   grep -E '^4\. \*\*Build\.\*\*' -A 1 "$manual" | grep -qF '`team-next T<n> -- '"'"'<the message>'"'"'`'

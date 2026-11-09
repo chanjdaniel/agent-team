@@ -248,6 +248,24 @@ LINES
   )"
 }
 
+@test "digest: an ops session's question, logged as its length, reads as that, and its ask by its fixed line" {
+  opened "$(at 00:00)" T9 retro
+  opened "$(at 00:30)" T1 research
+  event "$(at 01:00)" T1 question '{role: "ops", chars: 71, discord_message: "1564000000000000001"}'
+  event "$(at 01:00)" T1 asked '{id: "write-1", text: "An ops question of 71 characters, in T1'"'"'s thread.", discord_message: "1564000000000000001"}'
+  event "$(at 02:00)" T1 question '{role: "ops", chars: 28}'
+  opened "$(at 05:00)" T10 retro
+  run_bin -0 team-retro digest T10 --json
+  assert_equal "$(jq -c '.questions[]' <<<"$output")" \
+    '{"task":"T1","repeated":true,"events":[{"ts":"2026-10-20T01:00:00Z","kind":"question","text":"(an ops question of 71 characters, kept out of the ledger)","role":"ops"},{"ts":"2026-10-20T01:00:00Z","kind":"asked","text":"An ops question of 71 characters, in T1'"'"'s thread.","id":"write-1"},{"ts":"2026-10-20T02:00:00Z","kind":"question","text":"(an ops question of 28 characters, kept out of the ledger)","role":"ops"}]}'
+  run_bin -0 team-retro digest T10
+  assert_contains "$output" "Questions (1 task):
+  T1, repeated:
+    2026-10-20T01:00:00Z question from ops: (an ops question of 71 characters, kept out of the ledger)
+    2026-10-20T01:00:00Z asked write-1: An ops question of 71 characters, in T1's thread.
+    2026-10-20T02:00:00Z question from ops: (an ops question of 28 characters, kept out of the ledger)"
+}
+
 @test "digest: reviews per task, reopened when findings are followed by another review" {
   opened "$(at 00:00)" T1 feature
   event "$(at 01:00)" T1 review '{verdict: "findings", head: "aaaaaaa"}'

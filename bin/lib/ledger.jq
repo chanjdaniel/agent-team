@@ -51,9 +51,10 @@ def type_problems($name; $want; $legacy):
 # The field types a kind's line may carry: its required and optional fields, and note.
 def field_types($kind): $kind.required + ($kind.optional // {}) + {note: "string"};
 
-# What a line of a known kind must meet: its required fields present and not empty, every
-# field the contract types holding that type ($legacy: as --check reads an existing line), and
-# every field of its field_when only beside the values it names.
+# What a line of a known kind must meet: its required fields present and not empty, exactly one
+# field of each of its one_of sets present and not empty, every field the contract types holding
+# that type ($legacy: as --check reads an existing line), and every field of its field_when only
+# beside the values it names.
 def kind_problems($contract; $legacy):
   . as $line
   | .event as $event
@@ -61,6 +62,11 @@ def kind_problems($contract; $legacy):
   | if $kind == null then "unknown event kind '\($event)'"
     else
       ($kind.required | keys_unsorted[] | select($line[.] == null or $line[.] == "") | "\($event) needs \(.)"),
+      (($kind.one_of // [])[] | . as $set | [.[] | select($line[.] != null and $line[.] != "")] | length
+        | (if $event | test("^[aeiou]") then "an" else "a" end) as $a
+        | if . == 0 then "\($a) \($event) needs \($set | join(" or "))"
+          elif . > 1 then "\($a) \($event) takes \($set | join(" or ")), \(if ($set | length) == 2 then "not both" else "only one" end)"
+          else empty end),
       (field_types($kind) | to_entries[] | .key as $name | .value as $type
         | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy)),
       (($kind.field_when // {}) | to_entries[] | .key as $name | select($line[$name] != null)
@@ -242,8 +248,10 @@ def contract_table:
     (.[] | .value as $kind
       | ([$kind.required | to_entries[] | .value as $type | .key | field_text($type)] as $fields
          | [($kind.optional // {}) | to_entries[] | .value as $type | .key | field_text($type)] as $optional
+         | [($kind.one_of // [])[] | "one of \(join(" or "))"] as $one_of
          | if $fields == [] then "-" else $fields | join(", ") end
-           + if $optional == [] then "" else "; optional \($optional | join(", "))" end) as $text
+           + if $optional == [] then "" else "; optional \($optional | join(", "))" end
+           + if $one_of == [] then "" else "; \($one_of | join("; "))" end) as $text
       | "  \(.key | pad($event_width))  \(writers($kind) | join(", ") | pad($writer_width))  \($text)"
         + if $kind.about then "  (\($kind.about))" else "" end);
 
@@ -1328,6 +1336,11 @@ def retro_changes($w; $placed; $tasks):
        state: (if $life.at != null then "landed" elif $life.end != null then "closed" else "open" end),
        landed: $life.at.ts, prs: $life.prs}];
 
+# A question's or an asked's text, or for an ops session's question, which logs its length and
+# never its text, a line saying so.
+def question_text:
+  .text // (.chars | if . != null then "(an ops question of \(.) characters, kept out of the ledger)" else null end);
+
 # team-retro digest's JSON for the retro task $task (null for a dry run), the team home $team_home
 # naming each task's record directory. Every section is in ledger order.
 def retro_digest($task; $team_home):
@@ -1352,7 +1365,7 @@ def retro_digest($task; $team_home):
          else {ts, task, kind: .event, reason, denial: (.reason | denial)} end],
      questions: [$in | map(select(.event == "question" or .event == "asked")) | task_groups[]
        | {task: .[0].task, repeated: (length >= 2),
-          events: map({ts, kind: .event, text} + if .event == "asked" then {id} else {role} end)}],
+          events: map({ts, kind: .event, text: question_text} + if .event == "asked" then {id} else {role} end)}],
      reviews: [$in | map(select(.event == "review")) | task_groups[]
        | . as $reviews
        | {task: .[0].task, reopened: any(range(length - 1); $reviews[.].verdict == "findings"),
