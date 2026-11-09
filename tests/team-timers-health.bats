@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # team-timers' health: the record every heartbeat run writes (health.json) and the view
 # `team-timers health [--json]` makes of it, the lease record and now (bin/lib/health.jq). The
-# heartbeat suite's setup: home-pc holds the lease on a bare origin, the stub claude lists no
-# session and the service managers are fakes. Time is stepped by dating the record's and the
+# heartbeat suite's setup: home-pc holds the lease on a bare origin, the stub claude lists one
+# live session, the coordinator, and the service managers are fakes. Time is stepped by dating the record's and the
 # lease record's times and by the thresholds' seams, never by sleeping.
 
 load helpers/common
@@ -11,7 +11,7 @@ load helpers/inbox
 setup() {
   sandbox
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   origin=$(hold_lease home-pc)
   fake_service_managers
   stub_command uname
@@ -22,6 +22,9 @@ setup() {
   inbox_discord alerts
   inbox_kept
 }
+
+# The live session list with a coordinator in it, as claude agents --json gives it.
+COORDINATOR='[{"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
 
 teardown() {
   [[ ! -f $BATS_TEST_TMPDIR/http.pids ]] || xargs kill <"$BATS_TEST_TMPDIR/http.pids" 2>/dev/null || true
@@ -105,8 +108,8 @@ http_origin() {
   local checkpoint renewed
   checkpoint=$(date -u -r "$state/last-checkpoint" +%s)
   renewed=$(lease_json "$origin" | jq '.renewed_at | fromdateiso8601')
-  assert_equal "$(jq -r .line <<<"$view")" "-# Health: ok - last checkpoint <t:$checkpoint:R>, lease renewed <t:$renewed:R>"
-  [[ $(jq -r .text <<<"$view") =~ ^"Health: ok - last checkpoint "[0-9T:-]+"Z (0 minutes ago), lease renewed "[0-9T:-]+"Z (0 minutes ago)"$ ]]
+  assert_equal "$(jq -r .line <<<"$view")" "-# Health: ok - last checkpoint <t:$checkpoint:R>, lease renewed <t:$renewed:R>, coordinator live"
+  [[ $(jq -r .text <<<"$view") =~ ^"Health: ok - last checkpoint "[0-9T:-]+"Z (0 minutes ago), lease renewed "[0-9T:-]+"Z (0 minutes ago), coordinator live"$ ]]
 
   # The text form is the plain line, and the view asks no service manager.
   : >"$STUB_CALLS/systemctl.log"
@@ -160,7 +163,7 @@ http_origin() {
   checkpoint=$(date -u -r "$state/last-checkpoint" +%s)
   renewed=$(lease_json "$origin" | jq '.renewed_at | fromdateiso8601')
   assert_equal "$(inbox_shown | tail -n 3 | head -n 2)" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget
--# Health: ok - last checkpoint <t:$checkpoint:R>, lease renewed <t:$renewed:R>"
+-# Health: ok - last checkpoint <t:$checkpoint:R>, lease renewed <t:$renewed:R>, coordinator live"
   [[ $(inbox_shown | tail -n 1) =~ ^"-# team-inbox keeps this current; updated <t:"[0-9]+":R>"$ ]]
 
   git -C "$TEAM_HOME" checkout -q --detach
@@ -465,7 +468,6 @@ SH
   jq -e '.text | endswith("(1 run): timed out after 3 s")' <<<"$(problem_of step-run)"
 
   rm "$STUB_FIXTURES/claude.sh"
-  stub_reply claude '[]'
   run_bin -0 team-timers run
   view
   jq -e '.ok' <<<"$view"
@@ -786,4 +788,167 @@ SH
   TEAM_TIMERS_HEALTH_STALE_MINUTES=0.05 run_bin -1 team-timers run
   assert_equal "$(open_alerts)" "checkpoint $id"
   assert_equal "$(alert_lines | wc -l)" 1
+}
+
+# The coordinator step: one read of the live session list after the checkpoint and ledger steps,
+# looking for a session named coordinator, as claude-coordinator does before it launches one.
+
+# The heartbeat log's coordinator lines, each without its time.
+coordinator_lines() {
+  grep -E '^[^ ]+ coordinator: ' "$log" | cut -d' ' -f2- || true
+}
+
+# The live session list with no coordinator: a worker whose name merely holds the word.
+no_coordinator() {
+  stub_reply claude '[{"id": "a1b2c3d4", "name": "T5-coordinator-notes", "status": "idle"}]'
+}
+
+@test "with a live coordinator the step logs nothing and the view has no coordinator problem; the healthy line ends with it" {
+  run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines)" ""
+  view
+  jq -e '.ok and .problems == [] and (.line | endswith(", coordinator live"))
+    and (.text | endswith(", coordinator live"))' <<<"$view"
+}
+
+@test "no coordinator session two runs in a row posts one alert with the command that starts one; later runs post nothing; the first run with one resolves it" {
+  run_bin -0 team-timers run
+  no_coordinator
+  # One run with none is the coordinator problem, not alerting, and posts nothing.
+  run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines)" "coordinator: no session named coordinator is live; claude-coordinator starts one"
+  view
+  assert_equal "$view_status" 1
+  local since
+  since=$(jq -r '.coordinator.since' "$record")
+  jq -e --arg since "$since" '. == {key: "coordinator", since: $since, text: "no coordinator session since \($since)",
+    alerting: false, sweep: null}' <<<"$(problem_of coordinator)"
+  assert_equal "$(alerts_shown)" ""
+
+  # The second run in a row posts once, mentioning no one.
+  run_bin -0 team-timers run
+  view
+  jq -e --arg since "$since" '.since == $since and .alerting and .sweep == null' <<<"$(problem_of coordinator)"
+  local id
+  id=$(jq -r .id <<<"$(alerts_shown)")
+  jq -e --arg text "No coordinator session is live on home-pc since $(clock "$since"): workers' reports and your messages go unread until one runs. Start it with claude-coordinator." \
+    '. == {id: .id, content: $text, allowed_mentions: {parse: []}}' <<<"$(alerts_shown)"
+  assert_equal "$(alert_lines)" "alert: coordinator: posted to #coordinator (message $id)"
+  assert_equal "$(open_alerts)" "coordinator $id"
+  # It names no sweep kind, so the sweep raises nothing for it: only the worker, in no task of
+  # the ledger, is a finding.
+  run_bin -1 team-sweep --json
+  jq -e 'map(.kind) == ["stray"]' <<<"$output"
+
+  # Later runs post nothing more, and the line says since when.
+  run_bin -0 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 1
+  view
+  assert_equal "$(jq -r .line <<<"$view")" "**Health**: no coordinator session since <t:$(date -d "$since" +%s):t>"
+
+  # The first run that finds one edits the post resolved and clears the problem.
+  stub_reply claude "$COORDINATOR"
+  run_bin -0 team-timers run
+  [[ $(jq -r .content <<<"$(alerts_shown)") =~ ^"No coordinator session is live on home-pc since $(clock "$since"): "[^$'\n']+" Start it with claude-coordinator."$'\n'"-# Resolved at "[0-9]{2}:[0-9]{2}"."$ ]]
+  assert_equal "$(alert_lines | tail -n 1)" "alert: coordinator: resolved (message $id edited)"
+  assert_equal "$(open_alerts)" ""
+  view
+  jq -e '.ok' <<<"$view"
+  assert_equal "$(coordinator_lines | wc -l)" 3
+}
+
+# The next read of the session list only, the coordinator step's (the run's first), runs the bash
+# read from stdin, which exits; every later call answers as stub_reply set it.
+next_list() {
+  cat >"$STUB_FIXTURES/next-list.sh"
+  stub_script claude <<'SH'
+if [[ $1 == agents && -e $STUB_FIXTURES/next-list.sh ]]; then
+  mv "$STUB_FIXTURES/next-list.sh" "$STUB_FIXTURES/next-list.ran"
+  source "$STUB_FIXTURES/next-list.ran"
+fi
+print_file "$STUB_FIXTURES/claude.out"
+exit "$(cat "$STUB_FIXTURES/claude.status")"
+SH
+}
+
+@test "a session list that cannot be read is the coordinator step failing: one failed line, nothing concluded, an open coordinator alert left open" {
+  run_bin -0 team-timers run
+  # With a coordinator last seen live, an unreadable list concludes nothing about it, and the run
+  # still ends 0.
+  next_list <<'SH'
+echo "cannot reach the daemon" >&2
+exit 1
+SH
+  run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines)" \
+    "coordinator: failed: cannot read the live session list (claude agents --json): cannot reach the daemon"
+  assert_contains "$(problems_logged)" "coordinator: failed: cannot read the live session list"
+  view
+  assert_equal "$(problem_of coordinator)" null
+  jq -e '.alerting | not' <<<"$(problem_of step-coordinator)"
+  assert_equal "$(alerts_shown)" ""
+  jq -e '.coordinator == {live: true}' "$record"
+
+  # With none for two runs and its alert open, an unreadable list leaves the alert open.
+  no_coordinator
+  run_bin -0 team-timers run
+  run_bin -0 team-timers run
+  local id runs
+  id=$(jq -r .id <<<"$(alerts_shown)")
+  runs=$(jq .coordinator.runs "$record")
+  next_list <<'SH'
+echo '{"not": "a list"}'
+exit 0
+SH
+  run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines | tail -n 1)" \
+    "coordinator: failed: cannot read the live session list (claude agents --json): it printed no JSON list"
+  assert_equal "$(open_alerts)" "coordinator $id"
+  assert_equal "$(alerts_shown | wc -l)" 1
+  assert_equal "$(jq .coordinator.runs "$record")" "$runs"
+  view
+  jq -e '.alerting' <<<"$(problem_of coordinator)"
+
+  # A list that never answers is stopped at the step's limit.
+  next_list <<'SH'
+sleep 30
+exit 0
+SH
+  TEAM_TIMERS_FINISHED_CALL_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines | tail -n 1)" \
+    "coordinator: failed: cannot read the live session list (claude agents --json): timed out after 1 s"
+  assert_equal "$(open_alerts)" "coordinator $id"
+  jq -e '.steps.coordinator.runs == 2' "$record"
+}
+
+@test "off the lease, offline and fenced the coordinator step does not run, and the record keeps what the last holder run saw" {
+  run_bin -0 team-timers run
+  no_coordinator
+  run_bin -0 team-timers run
+  local seen
+  seen=$(jq -c .coordinator "$record")
+  : >"$STUB_CALLS/claude.log"
+  run -0 "$REPO_ROOT/bin/team-lease" release
+  run_bin -0 team-timers run
+  stub_sleep
+  run -0 "$REPO_ROOT/bin/team-lease" take
+  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  run_bin -75 team-timers run
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  rm "$state/offline"
+  echo '{"since": "2026-11-01T00:00:00Z"}' >"$state/fenced"
+  run_bin team-timers run
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(coordinator_lines | wc -l)" 1
+  assert_equal "$(jq -c .coordinator "$record")" "$seen"
+
+  # Holding again, a record written before the take says nothing of the coordinator until the
+  # first run of this holding looks.
+  rm "$state/fenced"
+  date_record '.written = ago(2)'
+  view
+  assert_equal "$(problem_of coordinator)" null
+  date_lease_record --take 3
+  view
+  jq -e '.key == "coordinator"' <<<"$(problem_of coordinator)"
 }

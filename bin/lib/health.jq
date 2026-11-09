@@ -16,6 +16,10 @@
 #      the last run that counted it,
 #    ledger: {count, bad_lines, last_event}, the lines that are not JSON objects (the first 100
 #      line numbers) and the time of the last event that is not a denied,
+#    coordinator: what the last coordinator step that could read the session list saw: {live:
+#      true} when it listed a session named coordinator, else {live: false, since, runs, run},
+#      since when none has been, for how many runs in a row and the id of the last run that
+#      counted it (null before any step read it),
 #    alerts: {<key>: {since, text, posted, message}}, each open alert: since when its problem
 #      stands, its text, when it was posted to #coordinator (null until a post went through) and
 #      the message that carries it (null until then, or when Discord gave no id); written by
@@ -62,9 +66,12 @@ def ledger_reason:
 # health_fold($run; $results), where $run is {machine, id (unique to the run, so two runs that
 # start in one second are two), start, now, ended (null while the run goes on), last_checkpoint,
 # offline, login_refused} and $results the run's result entries, in order:
-# {step, reason (null when it went well), more}, {holding}, {lease_renewed} and {ledger}. A step
-# fails in a run when any entry of it failed, with the first failure's reason; a step with no
-# entry did not run and keeps its entry; a failure counts once per run however often it is folded.
+# {step, reason (null when it went well), more}, {holding}, {lease_renewed}, {ledger} and
+# {coordinator_live}. A step fails in a run when any entry of it failed, with the first failure's
+# reason; a step with no entry did not run and keeps its entry; a failure counts once per run
+# however often it is folded, and so does a run with no coordinator. A run with no
+# coordinator_live (its session list unreadable, or the step not run) keeps the coordinator as the
+# record has it.
 def health_fold($run; $results):
   (if type == "object" and .schema == "team-health/1" then . else {} end) as $prev
   | (reduce ($results[] | select(.step)) as $r ({};
@@ -92,7 +99,14 @@ def health_fold($run; $results):
       offline: $run.offline,
       login_refused: $run.login_refused,
       steps: $steps,
-      ledger: ([$results[] | select(has("ledger")) | .ledger] | last // $prev.ledger)
+      ledger: ([$results[] | select(has("ledger")) | .ledger] | last // $prev.ledger),
+      coordinator: (([$results[] | select(has("coordinator_live")) | .coordinator_live] | last) as $live
+        | $prev.coordinator as $old
+        | if $live == null then $old
+          elif $live then {live: true}
+          elif ($old | type) == "object" and $old.live == false then
+            (if $old.run == $run.id then $old else $old + {runs: ($old.runs + 1), run: $run.id} end)
+          else {live: false, since: $run.now, runs: 1, run: $run.id} end)
     };
 
 # A text cut to <n> characters, its end marked: health_cut($n)
@@ -191,6 +205,15 @@ def health_problems($lease; $now; $limits):
               + ": \($why | health_sentence).")}]
         else [] end
     end) as $checkpoint
+  # No session named coordinator, as the last step that could read the list saw it, alerting on
+  # the second run in a row; it names no sweep kind, since it is about the coordinator itself.
+  | (if ($rec.coordinator | type) == "object" and $rec.coordinator.live == false and ($before | not) then
+      $rec.coordinator as $c
+      | [{key: "coordinator", since: $c.since, alerting: ($c.runs >= $limits.runs), sweep: null,
+          line: "no coordinator session since \($c.since | health_at)",
+          text: "no coordinator session since \($c.since)",
+          alert: "No coordinator session is live on \($rec.machine) since \($c.since | health_clock): workers' reports and your messages go unread until one runs. Start it with claude-coordinator."}]
+    else [] end) as $coordinator
   | (($rec.ledger.count // 0) > 0 and $steps.ledger != null) as $unparsed
   | (if $unparsed then
       $rec.ledger as $l
@@ -202,7 +225,7 @@ def health_problems($lease; $now; $limits):
             | "ledger.jsonl on \($rec.machine) holds \($l.count) line\($s) no reader can parse (\($where)), so every reader skips \($it): team-log --check names \($it).")}]
     else [] end) as $ledger
   | ($steps | keys_unsorted
-      | map(select(. != "checkpoint" and . != "coordinator" and (. != "ledger" or ($unparsed | not))))
+      | map(select(. != "checkpoint" and (. != "ledger" or ($unparsed | not))))
       | sort_by(. as $name | (health_steps | index($name)) // 999, .)
       | map(. as $name | $steps[$name]
           | (.runs >= $limits.step_runs) as $alerting
@@ -210,12 +233,13 @@ def health_problems($lease; $now; $limits):
              line: "\($name) failing since \(.since | health_at) (\(.runs | health_runs)): \(.reason // "no reason given" | health_cut(150))",
              text: "\($name) failing since \(.since) (\(.runs | health_runs)): \(.reason // "no reason given" | health_cut(150))",
              alert: "The heartbeat's \($name) step has failed \(.runs | health_runs) in a row on \($rec.machine), since \(.since | health_clock): \(.reason // "no reason given" | health_sentence)."})) as $others
-  | $heartbeat + $offline + $refused + $checkpoint + $ledger + $others
+  | $heartbeat + $offline + $refused + $checkpoint + $coordinator + $ledger + $others
   | map(.sweep = (if .alerting then .sweep else null end));
 
 # The alerts the record (the input) calls for at $now: each alerting problem that has an alert
-# text (checkpoint, ledger and step-<name>; heartbeat, offline and login-refused post none here),
-# as {key, since, text}, the text cut to health_alert_limit: health_alerts($lease; $now; $limits)
+# text (checkpoint, coordinator, ledger and step-<name>; heartbeat, offline and login-refused post
+# none here), as {key, since, text}, the text cut to health_alert_limit:
+# health_alerts($lease; $now; $limits)
 def health_alerts($lease; $now; $limits):
   [health_problems($lease; $now; $limits)[] | select(.alerting and (.alert | type) == "string")
     | {key, since, text: (.alert | health_cut(health_alert_limit))}];
@@ -257,11 +281,12 @@ def health_view($raw; $lease; $fenced; $machine; $now; $limits):
         health_unknown($machine; "the health record is not a team-health/1 record (the heartbeat's next run writes it again)")
       else
         ($rec | health_problems($lease; $now; $limits)) as $problems
+        | (if $rec.coordinator.live == true then ", coordinator live" else "" end) as $coordinator
         | if $problems == [] then
             {schema: "team-health/1", machine: $machine, holding: true, ok: true,
-             line: ("-# Health: ok - last checkpoint \($rec.last_checkpoint | if . then health_rel else "never" end), lease renewed \($rec.lease_renewed | if . then health_rel else "never" end)"
+             line: ("-# Health: ok - last checkpoint \($rec.last_checkpoint | if . then health_rel else "never" end), lease renewed \($rec.lease_renewed | if . then health_rel else "never" end)\($coordinator)"
                | health_cut(500)),
-             text: ("Health: ok - last checkpoint \($rec.last_checkpoint | if . then health_plain_rel($now) else "never" end), lease renewed \($rec.lease_renewed | if . then health_plain_rel($now) else "never" end)"
+             text: ("Health: ok - last checkpoint \($rec.last_checkpoint | if . then health_plain_rel($now) else "never" end), lease renewed \($rec.lease_renewed | if . then health_plain_rel($now) else "never" end)\($coordinator)"
                | health_cut(500)),
              problems: []}
           else

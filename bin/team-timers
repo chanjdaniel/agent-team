@@ -46,10 +46,15 @@
 #                     while the record was written before this holding began (the lease
 #                     record's taken_at: a take or a steal whose first run is not due yet; a
 #                     renewal keeps it).
+#              coordinator  no session named coordinator, as the coordinator step last saw the
+#                     session list ("no coordinator session since <t>"); alerting on the second
+#                     run in a row; no sweep kind, since it is about the coordinator itself; not
+#                     raised while the record was written before this holding began.
 #              ledger  lines of ledger.jsonl no reader can parse, with their count and line
 #                     numbers; alerting; sweep health.
-#              step-<name>  any other step failing (the usage export as step-usage), alerting
-#                     after 12 runs in a row; sweep health.
+#              step-<name>  any other step failing (the usage export as step-usage, a session
+#                     list the coordinator step cannot read as step-coordinator), alerting after 12
+#                     runs in a row; sweep health.
 #            Each reason in the line is cut at 150 characters and the line at 500.
 #   run      What the job runs, each step one line in the heartbeat log (and on stdout):
 #              fence  On a fenced machine, team-timers disable, and nothing else.
@@ -90,7 +95,19 @@
 #                     counts its lines that are not JSON objects, by line number, and reads the
 #                     time of its last event that is not a denied, for the health record; a line
 #                     no reader can parse fails the step ("ledger: failed: 2 lines are not JSON
-#                     objects: line 3, 7"). The health record is written next.
+#                     objects: line 3, 7").
+#              coordinator  On the holder, after the ledger step: one read of the live session list
+#                     (claude agents --json, 30 s and killed 10 s later) for a session named
+#                     coordinator, the test claude-coordinator makes before it launches one, so a
+#                     worker whose name merely holds the word is none. It logs nothing while one
+#                     is live, and each run with none "coordinator: no session named coordinator
+#                     is live; claude-coordinator starts one", the health record keeping since
+#                     when. A list that cannot be read is the step failing ("coordinator: failed:
+#                     cannot read the live session list (claude agents --json): <why>"), which
+#                     concludes nothing about the coordinator, so an open coordinator alert stays
+#                     open and one failing 12 runs in a row is its own alert. It fails no run, and
+#                     the heartbeat never starts a coordinator: that launches a session in bypass
+#                     mode, which is Daniel's to decide. The health record is written next.
 #              alert  On the holder, after that write of the record, so before the inbox step and
 #                     the janitor's, and again at the run's end (a run its time limit stopped
 #                     included), never on a run that went offline, was refused its login, is
@@ -116,6 +133,10 @@
 #                         runs): <first failure line>[, and <n> more]. Work since the last good
 #                         one (<HH:MM>) is on this machine only."; with no failure, "No good
 #                         checkpoint on <machine> since <HH:MM> (<n> minutes): <why>."
+#                       coordinator  no coordinator session on the second run in a row: "No
+#                         coordinator session is live on <machine> since <HH:MM>: workers' reports
+#                         and your messages go unread until one runs. Start it with
+#                         claude-coordinator."
 #                       ledger  a line no reader can parse, at once: "ledger.jsonl on <machine>
 #                         holds <n> lines no reader can parse (line <n>, <n>), so every reader
 #                         skips them: team-log --check names them."
@@ -193,32 +214,33 @@
 #            change (team-lease status shows a hold already on), and it prints the first change,
 #            the same line, and exits 0. Re-arm it after acting on that line.
 # In ~/.local/state/agent-team/: health.json (the health record, team-health/1, written whole by the
-# run alone, after the ledger step, before the inbox step, and when the run ends, however it ends, a
-# run its time limit stopped as timed-out: the last run, its start, end, how it ended (ok, failed,
-# offline, login-refused, not-holder, fenced or timed-out) and whether it held the lease; the last
-# good run; the lease's last renewal; the last good checkpoint; each step failing now, since when,
-# for how many runs in a row and its latest reason, counted once a run, a step that did not run
-# keeping its entry; the ledger step's count of lines that are not JSON objects, by line number,
-# with the time of its last event that is not a denied; and the open alerts, each with since when,
-# its text, when it was posted and its message), heartbeat.log ("<UTC time> <step>: <what
-# happened>", kept to its last 1000 lines once it passes 2000), heartbeat-failures.log (each of its
-# lines that reports a problem, the same line: a failed step, a warning, a failed or refused probe
-# and each run's line of an outage, a lease not checked or not renewed, a failed post, a skipped or
-# timed-out run; kept 30 days, the older lines dropped once a run), heartbeat.lock (one run at a
-# time), offline ({since, posted}: GitHub unreachable since the UTC time, and whether #coordinator
-# was told; read by team-lease status, the fence hook and the doctor), login-refused ({since,
-# reason}: the refusal was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it
-# in the journal).
+# run alone, after the coordinator step, before the inbox step, and when the run ends, however it
+# ends, a run its time limit stopped as timed-out: the last run, its start, end, how it ended (ok,
+# failed, offline, login-refused, not-holder, fenced or timed-out) and whether it held the lease;
+# the last good run; the lease's last renewal; the last good checkpoint; each step failing now,
+# since when, for how many runs in a row and its latest reason, counted once a run, a step that did
+# not run keeping its entry; the ledger step's count of lines that are not JSON objects, by line
+# number, with the time of its last event that is not a denied; whether the coordinator step last
+# saw a session named coordinator, and since which run it has not; and the open alerts, each with
+# since when, its text, when it was posted and its message), heartbeat.log ("<UTC time> <step>:
+# <what happened>", kept to its last 1000 lines once it passes 2000), heartbeat-failures.log (each
+# of its lines that reports a problem, the same line: a failed step, a warning, a failed or refused
+# probe and each run's line of an outage, a lease not checked or not renewed, a failed post, a
+# skipped or timed-out run; kept 30 days, the older lines dropped once a run), heartbeat.lock (one
+# run at a time), offline ({since, posted}: GitHub unreachable since the UTC time, and whether
+# #coordinator was told; read by team-lease status, the fence hook and the doctor), login-refused
+# ({since, reason}: the refusal was posted), and on macOS heartbeat.err, the job's stderr (systemd
+# keeps it in the journal).
 # TEAM_TIMERS_CHECKPOINT_SECONDS, TEAM_TIMERS_FINISHED_SECONDS, TEAM_TIMERS_FINISHED_CALL_SECONDS,
 # TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS, TEAM_TIMERS_SWEEP_SECONDS,
 # TEAM_TIMERS_JANITOR_SECONDS, TEAM_TIMERS_RUN_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the
 # checkpoint step's 300 s, the finished step's 90 s after which no stop starts, its 30 s for each
-# call (the back step's session list's too), the capacity step's 60 s for each of its commands, the
-# level step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s and the 10 s after
-# a time limit at which a command still running is killed, TEAM_TIMERS_FAILURES_DAYS the
-# failures log's 30 days, and TEAM_TIMERS_HEALTH_RUNS, TEAM_TIMERS_HEALTH_STALE_MINUTES and
-# TEAM_TIMERS_HEALTH_STEP_RUNS the health view's and the alerts' 2 runs, 15 minutes and 12 runs
-# (the tests' seams).
+# call (the back step's and the coordinator step's session lists' too), the capacity step's 60 s for
+# each of its commands, the level step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's
+# 4200 s and the 10 s after a time limit at which a command still running is killed,
+# TEAM_TIMERS_FAILURES_DAYS the failures log's 30 days, and TEAM_TIMERS_HEALTH_RUNS,
+# TEAM_TIMERS_HEALTH_STALE_MINUTES and TEAM_TIMERS_HEALTH_STEP_RUNS the health view's and the
+# alerts' 2 runs, 15 minutes and 12 runs (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -236,20 +258,21 @@ POST_TIMEOUT=20
 # Seconds: the most team-inbox may take (its lock's wait and two calls).
 INBOX_TIMEOUT=120
 # Seconds: the most each step after the lease step may take on the holder, each command stopped then
-# and killed KILL_SECONDS later: the checkpoint 300 (CHECKPOINT_TIMEOUT), the inbox step 120
-# (INBOX_TIMEOUT above), the finished step 120 (its session list and each stop 30 s,
-# FINISHED_CALL_TIMEOUT, and no stop started once FINISHED_TIMEOUT has passed, so at most 90 s and
-# one last stop's 30), the capacity step's sample and place 60 each, the level step 300, the sweep
-# 300, the pack 300 and the janitor 1200. That is 2760 s in all, 2850 s with the kills (10 s each
-# for the other steps' eight commands and the finished step's last stop), about 48 minutes. The
-# lease step leaves a lease unrenewed only under 14 minutes old, so a run that hits every limit ends
-# with it about 62 minutes old, past the lease's hour (team-lease's TTL_MINUTES), and the next run
-# starts at the next mark, up to INTERVAL minutes and SLACK_SECONDS later, and renews behind its
-# read of origin. A lease past its ttl is stale, which changes only what team-lease take says on
-# another machine (stale, not fresh): the holder still holds it, and the renewal makes it fresh
-# again. RUN_TIMEOUT, 70 minutes, stops a run that outlasts all of that (a hang before the steps,
-# or in a command no step's limit reaches), so one hang never ends the renewals and checkpoints for
-# good; the systemd service's START_TIMEOUT, 75 minutes, is the backstop behind it.
+# and killed KILL_SECONDS later: the checkpoint 300 (CHECKPOINT_TIMEOUT), the coordinator step's
+# session list 30 (FINISHED_CALL_TIMEOUT), the inbox step 120 (INBOX_TIMEOUT above), the finished
+# step 120 (its session list and each stop 30 s, FINISHED_CALL_TIMEOUT, and no stop started once
+# FINISHED_TIMEOUT has passed, so at most 90 s and one last stop's 30), the capacity step's sample
+# and place 60 each, the level step 300, the sweep 300, the pack 300 and the janitor 1200. That is
+# 2790 s in all, 2890 s with the kills (10 s each for the other steps' nine commands and the
+# finished step's last stop), about 48 minutes. The lease step leaves a lease unrenewed only under
+# 14 minutes old, so a run that hits every limit ends with it about 62 minutes old, past the lease's
+# hour (team-lease's TTL_MINUTES), and the next run starts at the next mark, up to INTERVAL minutes
+# and SLACK_SECONDS later, and renews behind its read of origin. A lease past its ttl is stale,
+# which changes only what team-lease take says on another machine (stale, not fresh): the holder
+# still holds it, and the renewal makes it fresh again. RUN_TIMEOUT, 70 minutes, stops a run that
+# outlasts all of that (a hang before the steps, or in a command no step's limit reaches), so one
+# hang never ends the renewals and checkpoints for good; the systemd service's START_TIMEOUT, 75
+# minutes, is the backstop behind it.
 CHECKPOINT_TIMEOUT=${TEAM_TIMERS_CHECKPOINT_SECONDS:-300}
 # Seconds past which the checkpoint begins no worktree, two fifths of its limit (120 of 300): one
 # begun by then makes at most two origin calls of 60 s, so its records commit begins in the limit.
@@ -1253,6 +1276,35 @@ ledger_step() {
   fi
 }
 
+# The coordinator step, on the holder after the ledger step: one read of the live session list
+# (claude agents --json, FINISHED_CALL_TIMEOUT and killed KILL_SECONDS later) for a session named
+# coordinator, claude-coordinator's own test before it launches one. Logs nothing while one is
+# live, and a problem line each run with none, the health record keeping since when; a list that
+# cannot be read is the step failing with that reason, concluding nothing about the coordinator.
+# Never fails the run, and never starts a coordinator: that launches a session in bypass mode,
+# which is Daniel's to decide.
+coordinator_step() {
+  local rc=0 out why=''
+  out=$(timeout --kill-after="$KILL_SECONDS" "$FINISHED_CALL_TIMEOUT" claude agents --json 2>"$err" </dev/null {run_fd}>&-) || rc=$?
+  case $rc in
+    0) jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || why="it printed no JSON list" ;;
+    124 | 137) why="timed out after $FINISHED_CALL_TIMEOUT s" ;;
+    *) why=$(grep -q . "$err" && first_error || echo "claude agents exited $rc") ;;
+  esac
+  if [[ -n $why ]]; then
+    problem coordinator "failed: cannot read the live session list (claude agents --json): $why"
+    step_fail coordinator "cannot read the live session list (claude agents --json): $why"
+    return 0
+  fi
+  step_ok coordinator
+  if jq -e 'any(.[]; type == "object" and .name == "coordinator")' <<<"$out" >/dev/null; then
+    run_fact '{"coordinator_live": true}'
+  else
+    run_fact '{"coordinator_live": false}'
+    problem coordinator "no session named coordinator is live; claude-coordinator starts one"
+  fi
+}
+
 # team-lease renew, logged; a renew that fenced this machine did its job.
 renew() {
   local rc=0 out
@@ -1312,6 +1364,7 @@ run_heartbeat() {
   if ((holding)); then
     checkpoint_step
     ledger_step
+    coordinator_step
     write_record ''
     alerts_step
     inbox_step

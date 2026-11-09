@@ -221,7 +221,7 @@ EOF
 }
 
 # The health record a good heartbeat run on the holder home-pc leaves, just now, with its
-# checkpoint, folded by the health module as team-timers run folds one.
+# checkpoint and a live coordinator, folded by the health module as team-timers run folds one.
 good_heartbeat_run() {
   local state=$HOME/.local/state/agent-team now
   now=$(date -u +%FT%TZ)
@@ -229,7 +229,7 @@ good_heartbeat_run() {
   touch "$state/last-checkpoint"
   jq -n -L "$REPO_ROOT/bin/lib" --arg now "$now" 'include "health";
     null | health_fold({machine: "home-pc", id: "doctor-machine", start: $now, now: $now, ended: "ok",
-      last_checkpoint: $now, offline: null, login_refused: null}; [{holding: true}, {lease_renewed: $now}])' \
+      last_checkpoint: $now, offline: null, login_refused: null}; [{holding: true}, {lease_renewed: $now}, {coordinator_live: true}])' \
     >"$state/health.json"
 }
 
