@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# SessionStart hook of the codegraph toolkit: build or sync the worktree's own CodeGraph index,
+# then tell the session to locate code with it.
+#
+# Usage: codegraph-banner, with Claude Code's SessionStart event on stdin
+#
+# The directory is the event's cwd, else the hook's working directory. In order:
+#   1. nothing unless AGENT_TEAM_ROLE is builder or reviewer;
+#   2. nothing unless codegraph is on PATH;
+#   3. nothing unless the directory has a .codegraph/ directory at its root, the project's own sign
+#      that Daniel chose CodeGraph for it, so a project that did not is never indexed;
+#   4. `codegraph init <dir>` when `codegraph status --json <dir>` reports it uninitialised, else
+#      `codegraph sync <dir>`, their output kept out of the session's context; init runs without
+#      --yes, whose default would install git sync hooks where file watching is off;
+#   5. the banner, or one line naming the command that failed and its exit status.
+# CodeGraph writes only its own files in the directory's .codegraph/, and starts no daemon.
+# Always exits 0, so a session always starts.
+set -uo pipefail
+
+[[ ${AGENT_TEAM_ROLE:-} == builder || ${AGENT_TEAM_ROLE:-} == reviewer ]] || exit 0
+command -v codegraph >/dev/null || exit 0
+
+IFS= read -r -d '' event || true
+dir=$(jq -r '.cwd // empty' <<<"$event" 2>/dev/null) || dir=
+[[ -n $dir ]] || dir=$PWD
+[[ -d $dir/.codegraph ]] || exit 0
+
+failed() {
+  echo "CodeGraph: \`$1\` exited $2, so this worktree has no fresh index; locate code as usual."
+  exit 0
+}
+
+status=$(codegraph status --json "$dir" 2>/dev/null </dev/null) || failed "codegraph status --json $dir" "$?"
+if [[ $(jq -r '.initialized' <<<"$status" 2>/dev/null) == false ]]; then
+  codegraph init "$dir" >/dev/null 2>&1 </dev/null || failed "codegraph init $dir" "$?"
+else
+  codegraph sync "$dir" >/dev/null 2>&1 </dev/null || failed "codegraph sync $dir" "$?"
+fi
+
+cat <<'EOF'
+CodeGraph: this worktree's index is ready.
+Start locating or understanding code with `codegraph explore "<symbol names or a question>"` before grep, find or whole-file reads: it prints the relevant symbols' source with line numbers and the call paths between them.
+For one symbol and its callers and callees, run `codegraph node <name>`.
+Run `codegraph sync` after editing, since the index does not follow edits on its own.
+Still read the exact lines you edit, or cite in a review, before changing or judging them.
+EOF
+exit 0

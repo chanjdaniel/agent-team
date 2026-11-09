@@ -783,6 +783,15 @@ role_texts() {
   assert_equal "$(launches | jq -c .toolkits)" '["effect"]'
 }
 
+@test "the codegraph toolkit adds its plugin directory and no MCP server" {
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" --toolkit codegraph -- go
+  assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/codegraph"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(launches | jq -c .toolkits)" '["codegraph"]'
+}
+
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
   thread T7
   run_bin -0 team-worker T7 reviewer "$wt1" -- go
