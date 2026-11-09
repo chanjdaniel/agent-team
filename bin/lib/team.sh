@@ -515,13 +515,14 @@ worker_refusal() {
 # Print why a worker session of <role> may not load toolkit <name>, or fail when it may: the
 # coordinator toolkit is claude-coordinator's alone and the frontend toolkit Daniel's own sessions'
 # (it attaches to their one Agent Chrome window), so no worker loads either; a production toolkit
-# (prod-*) is the ops role's alone. The one list of them, which team-worker and team-load-check
-# read; an empty <role> judges only the toolkits no worker loads: toolkit_refusal <name> <role or "">
+# (prod-*, and vercel-read) is the ops role's alone. The one list of them, which team-worker and
+# team-load-check read; an empty <role> judges only the toolkits no worker loads:
+# toolkit_refusal <name> <role or "">
 toolkit_refusal() {
   case $1 in
     coordinator) echo "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)" ;;
     frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's" ;;
-    prod-*) [[ -n $2 && $2 != ops ]] || return 1; echo "toolkit '$1' is for the ops role only" ;;
+    prod-* | vercel-read) [[ -n $2 && $2 != ops ]] || return 1; echo "toolkit '$1' is for the ops role only" ;;
     *) return 1 ;;
   esac
 }

@@ -263,7 +263,7 @@ level_reading() {
        memory: {total: (32 * $gib), available: (24 * $gib - ([$s[].memory] | add // 0)), team: ([$s[].memory] | add // 0),
                 others: (8 * $gib)},
        tasks: [$s | group_by(.task)[] | {task: .[0].task, memory: ([.[].memory] | add), cpu: null, cpu_nsec: null,
-                sessions: map({id, role, memory, peak: .memory, cpu_seconds: 1}), stacks: []}],
+                sessions: map({id, role, memory, cpu_seconds: 1}), stacks: []}],
        stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
 }
 
@@ -281,7 +281,8 @@ level_reading() {
   local _
   mkdir -p "$HOME/.local/state/agent-team/capacity"
   for _ in 1 2 3 4 5; do
-    jq -cn '{at: (now | floor | todate), kind: "session:builder", peak_bytes: (10 * 1073741824), cpu_seconds: 60, seconds: 600}' \
+    jq -cn '{at: (now | floor | todate), kind: "session:builder", peak_bytes: (10 * 1073741824), cpu_seconds: 60, seconds: 600,
+      measure: "working_set"}' \
       >>"$HOME/.local/state/agent-team/capacity/costs.jsonl"
   done
   level_reading
