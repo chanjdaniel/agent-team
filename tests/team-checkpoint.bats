@@ -488,7 +488,7 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   # The records are committed and pushed all the same: T1's archive with them.
   assert_equal "$(git -C "$team_origin" show dev:tasks/T1/scratch/spec.md)" "spec 1"
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
-  ! git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T2
+  [[ -z $(git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T2) ]]
   [[ ! -e $state/last-checkpoint ]]
 
   # The next checkpoint takes the skipped first, in their order, then the rest.

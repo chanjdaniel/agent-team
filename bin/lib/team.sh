@@ -163,18 +163,18 @@ email_kind() {
 # refused_emails code|records [<owner>]
 refused_emails() {
   local policy=$1 owner=${2:-} addr kind noun words
-  local -A count=()
+  local -A kind_count=()
   while IFS= read -r addr; do
     kind=$(email_kind "$addr" "$owner")
     case $policy:$kind in
-      code:provider | code:other | records:provider) count[$kind]=$((${count[$kind]:-0} + 1)) ;;
+      code:provider | code:other | records:provider) kind_count[$kind]=$((${kind_count[$kind]:-0} + 1)) ;;
     esac
   done < <(LC_ALL=C grep -aoE "$DATA_EMAIL" || true)
-  for kind in "${!count[@]}"; do
+  for kind in "${!kind_count[@]}"; do
     noun=address words="outside the fixture domains"
-    ((count[$kind] == 1)) || noun=addresses
+    ((kind_count[$kind] == 1)) || noun=addresses
     [[ $kind != provider ]] || words="at a public provider"
-    echo "${count[$kind]} email $noun $words"
+    echo "${kind_count[$kind]} email $noun $words"
   done | sort
 }
 
