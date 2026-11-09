@@ -1166,6 +1166,70 @@ git status
 COMMANDS
 }
 
+# The families of commands whose plain spelling the coordinator's deny rules stop, as the header
+# of bin/claude-coordinator names them and in its order, each with commands of it the rules must
+# refuse: "<family>|<command>|<command>...", one per line.
+coordinator_families() {
+  cat <<'FAMILIES'
+a force push|git push --force origin feat/T1-x|git push -f origin feat/T1-x|git push --force-with-lease origin feat/T1-x|git push -u origin feat/T1-x --force|git push origin +feat/T1-x
+a push to dev or main|git push origin dev|git push origin main|git push origin HEAD:dev|git push origin HEAD:main
+git reset --hard|git reset --hard origin/dev|git reset -q --hard HEAD~1
+git clean|git clean -fdx|git clean -n
+git branch -D|git branch -D feat/T1-x
+a Docker prune|docker system prune -af|docker --context default volume prune -f|/usr/bin/docker image prune -a|docker buildx prune
+a merge outside team-merge|gh pr merge https://github.com/me/shop/pull/5 --squash|gh-axi pr merge 5|gh api -X PUT repos/me/shop/pulls/5/merge
+FAMILIES
+}
+
+# One line per gap between the header of the launcher <launcher> and the deny rules of the settings
+# <settings>: the header's sentence naming the families, when it lacks it, and each command of a
+# family the rules allow; nothing when they agree: coordinator_deny_gaps <settings> <launcher>
+coordinator_deny_gaps() {
+  local settings=$1 header family rest command names=() sentence
+  header=$(sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$2" | tr -s ' \n' '  ')
+  while IFS='|' read -r family rest; do
+    names+=("$family")
+    IFS='|' read -r -a commands <<<"$rest"
+    for command in "${commands[@]}"; do
+      denied_in "$settings" "$command" || echo "$family: allowed: $command"
+    done
+  done < <(coordinator_families)
+  sentence="deny rules stop the plain spelling of $(printf '%s, ' "${names[@]:0:${#names[@]}-1}" | sed 's/, $//') and ${names[-1]},"
+  [[ $header == *"$sentence"* ]] || echo "the header does not say: $sentence"
+}
+
+# The coordinator runs in bypass mode, so its deny rules, the workers' own for these families, and
+# dev's protection on GitHub are all that stop it; its launcher's header names only what holds.
+@test "the coordinator's settings deny each family of commands its launcher's header names, in the workers' rules" {
+  local coordinator=$REPO_ROOT/coordinator.settings.json launcher=$REPO_ROOT/bin/claude-coordinator
+  local rules missing command bad=$BATS_TEST_TMPDIR/settings.json
+  assert_equal "$(coordinator_deny_gaps "$coordinator" "$launcher")" ""
+  # The workers' 34 rules of these families, in their own text.
+  rules=$(jq -r '.permissions.deny[] | select(test("^Bash\\((git push (--force|-f|\\* --force|\\* -f|\\* \\+|origin (HEAD:)?(dev|main))|git reset (\\* )?--hard|git clean|git branch -D|(\\*/)?docker (\\* )?[a-z]+ prune)"))' \
+    "$REPO_ROOT/settings/worker.json")
+  assert_equal "$(wc -l <<<"$rules")" 34
+  missing=$(jq -r --arg rules "$rules" '($rules | split("\n")) - .permissions.deny | .[]' "$coordinator")
+  assert_equal "$missing" ""
+  # The commands it still runs.
+  for command in "team-checkpoint --force" "$REPO_ROOT/bin/team-checkpoint --force" \
+    "git push origin feat/T248-guard-hardening" "git push -u origin fix/T1-fix-it" \
+    "team-clean-messages ~/wt --clear-gate-lane" "$REPO_ROOT/bin/team-clean-messages ~/wt --clear-gate-lane" \
+    "docker ps" "git branch -d feat/T1-x" "git reset --soft HEAD~1" "team-merge https://github.com/me/shop/pull/5"; do
+    if denied_in "$coordinator" "$command"; then echo "denies: $command" >&2; return 1; fi
+  done
+  # The header claims no control the team lacks.
+  if grep -qi ruleset "$launcher"; then echo "bin/claude-coordinator names rulesets" >&2; return 1; fi
+  grep -qF "GitHub's protection of agent-team's dev refuses a direct push and a merge with a red check" \
+    <<<"$(sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$launcher" | tr -s ' \n' '  ')"
+  # A family whose rules are gone is named, each of its commands.
+  jq '.permissions.deny -= ["Bash(git clean*)"]' "$coordinator" >"$bad"
+  assert_equal "$(coordinator_deny_gaps "$bad" "$launcher")" "git clean: allowed: git clean -fdx
+git clean: allowed: git clean -n"
+  # So is a header that names a family the list does not hold, or leaves one out.
+  sed 's/git clean, git branch -D, /git branch -D, /' "$launcher" >"$BATS_TEST_TMPDIR/launcher"
+  assert_contains "$(coordinator_deny_gaps "$coordinator" "$BATS_TEST_TMPDIR/launcher")" "the header does not say: deny rules stop"
+}
+
 # Only the coordinator launches an ops session, on Daniel's request: a worker's command-guard hook
 # refuses team-worker's ops role and the ops load check (tests/command-guard.bats), and the
 # coordinator's settings deny neither and run no such hook.

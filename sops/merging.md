@@ -66,7 +66,7 @@ Like the plan-time word, it never holds for agent-team, the team's own project (
   A per-head merge posts nothing.
 - On a refusal, `team-merge` names every reason it cannot merge, each once, with each word's it tried when the last one does not hold, and merges nothing.
   Under the plan-time or standing word its last line is the ask: "(Daniel's standing word does not hold: ask them for the per-head word on the head <short head> with team-ask, naming <url>)", or the same with "plan-time"; the coordinator asks Daniel for the per-head word with `team-ask`, its text naming the PR's URL.
-  A refusal for attribution lines is fixed first: `team-clean-messages <worktree>` strips them, its push runs only with Daniel's OK, and the new head is reviewed again.
+  A refusal for attribution lines is fixed first: `team-clean-messages <worktree>` strips them, its push, which the coordinator's settings deny it by hand, is the one line of a script it puts to Daniel with `team-ask --script` and runs on their yes with `team-run-approved`, and the new head is reviewed again.
   On a branch the gate's mirror holds, it prints a second step after the push, `team-clean-messages <worktree> --clear-gate-lane`, which runs with the same OK once the push has landed, since the gate's next run would otherwise refuse the old commits.
   That step and the mirrors under `~/.no-mistakes/repos` are the coordinator's: `settings/worker.json` denies every worker the flag and any Bash call naming that path, and `coordinator.settings.json` denies neither.
 - When Daniel withdraws a plan-time word, it logs `team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`, which `team-log` refuses when no `merge-preapproved` of that project stands for the task.
