@@ -112,7 +112,7 @@ asked_at() {
 # The refusal of a reply with no line that starts with yes to ask <id>, Discord message <m>:
 # no_yes <id> <m>
 no_yes() {
-  echo "T7's ask $1, at $(asked_at "$1"), runs nothing: Daniel's latest answer, Discord message $2, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and task id (T7, T7: or T7,); ask again with team-ask T7 $1 --file <question> --script <path>"
+  echo "T7's ask $1, at $(asked_at "$1"), runs nothing: Daniel's latest answer, Discord message $2, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and this task's id, no other (T7, T7: or T7,); ask again with team-ask T7 $1 --file <question> --script <path>"
 }
 
 # The ledger's events of T7 after the opened, without ts, one per line.
@@ -349,7 +349,7 @@ ran"
 @test "a reply with a line that starts with yes runs the script, whatever else it says" {
   approved_script "$WT/scripts/ok.sh" 0
   local n=0 reply
-  for reply in "yes" "Yes, run it" "YES." "t7 yes" "T200: yes" "T7, Yes please" $'1. yes\n2. go with rec\n3. later' \
+  for reply in "yes" "Yes, run it" "YES." "t7 yes" "T7: yes" "T7, Yes please" $'1. yes\n2. go with rec\n3. later' \
     "2) yes" "- yes" "* yes" "  yes" $'Thanks.\nyes, go ahead'; do
     n=$((n + 1))
     approve "ok$n" "$WT/scripts/ok.sh" "$reply"
@@ -367,6 +367,16 @@ ran"
     asked_about "no$n" run-it "$WT/scripts/fix.sh"
     m=$(answer "no$n" "$reply")
     refuses "$(no_yes "no$n" "$m")" "no$n"
+  done
+}
+
+@test "refused with nothing run: a yes on a line that names another task, as in a batched reply" {
+  local n=0 reply m
+  for reply in $'T8 yes\nT7 no' "T200: yes" "t70 yes" "1. T8, yes"; do
+    n=$((n + 1))
+    asked_about "other$n" run-it "$WT/scripts/fix.sh"
+    m=$(answer "other$n" "$reply")
+    refuses "$(no_yes "other$n" "$m")" "other$n"
   done
 }
 

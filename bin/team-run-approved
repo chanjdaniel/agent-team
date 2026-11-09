@@ -22,12 +22,13 @@
 #     bin/lib/team.sh: Daniel's, in the task's thread or #coordinator, sent after the question,
 #     never edited), or the refusal gives its reason;
 #   - its text has a line that starts with the word yes, in any case and ending at a word
-#     boundary, after an optional list marker (1., 2), - or *) and an optional task id (T200,
-#     any case, a colon or comma after it or not): "yes", "Yes, run it", "t200 yes" and a reply
-#     whose first line is "1. yes" pass, and "no", "not yet", "yesterday's plan" and "wait" run
-#     nothing, the refusal quoting the rule and saying to ask again; so a later answer, such as
-#     "no, wait" after a "yes", supersedes an earlier one, and which line of a batched reply
-#     answers which ask stays the coordinator's reading;
+#     boundary, after an optional list marker (1., 2), - or *) and an optional task id, the
+#     ask's own (T<n>, any case, a colon or comma after it or not): for T7, "yes", "Yes, run it",
+#     "t7 yes" and a reply whose first line is "1. yes" pass, and "no", "not yet", "yesterday's
+#     plan", "wait" and "T8 yes", a line that names another task, run nothing, the refusal
+#     quoting the rule and saying to ask again; so a later answer, such as "no, wait" after a
+#     "yes", supersedes an earlier one, and which line of a batched reply answers which ask stays
+#     the coordinator's reading;
 #   - no other run of the ask holds its lock, and no run of it started on this machine: a run
 #     that was killed, or could not log its ran, still used the OK.
 # So one OK runs the script once on one machine, never twice there: the mark of a started run is
@@ -89,12 +90,13 @@ actual=$(sha256sum "$copy" | cut -d' ' -f1)
 lease_gate "an approved script"
 
 # Daniel's latest answer, read back from Discord and held to what team-answer held it to, must
-# have a line that starts with yes.
+# have a line that starts with yes, naming no task but this one: a line of a batched reply that
+# names another task answers that task's ask.
 word=$(answer_message "$task" "$id" "$message" "$events" 2>"$scratch/error") ||
   die "$task's ask $id, at $asked_at, runs nothing on Daniel's latest answer: $(<"$scratch/error")"
-jq -e '.message.content | strings | split("\n")
-  | any(test("^\\s*(?:(?:[0-9]+[.)]|[-*])\\s*)?(?:t[1-9][0-9]*(?:[:,]\\s*|\\s+))?yes\\b"; "i"))' <<<"$word" >/dev/null ||
-  die "$task's ask $id, at $asked_at, runs nothing: Daniel's latest answer, Discord message $message, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and task id ($task, $task: or $task,); ask again with team-ask $task $id --file <question> --script <path>"
+jq -e --arg n "${task#T}" '.message.content | strings | split("\n")
+  | any(test("^\\s*(?:(?:[0-9]+[.)]|[-*])\\s*)?(?:t\($n)(?:[:,]\\s*|\\s+))?yes\\b"; "i"))' <<<"$word" >/dev/null ||
+  die "$task's ask $id, at $asked_at, runs nothing: Daniel's latest answer, Discord message $message, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and this task's id, no other ($task, $task: or $task,); ask again with team-ask $task $id --file <question> --script <path>"
 
 # The run's directory, with no symbolic link from agent-team/ down, then its lock, held to the end.
 state=${XDG_STATE_HOME:-$HOME/.local/state}/agent-team
