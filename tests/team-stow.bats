@@ -270,6 +270,16 @@ rm a1a1a1a1"
   [[ ! -e $HOME/.local/state/agent-team/stow.json ]]
 }
 
+@test "a checkpoint that fails stops the stow with every failure line it gave" {
+  # The team home's origin refuses every wip ref, so each open task's snapshot push fails.
+  printf '#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/wip/*) echo "the test refuses wip" >&2; exit 1 ;; esac; done\n' \
+    >"$team_origin/hooks/pre-receive"
+  chmod +x "$team_origin/hooks/pre-receive"
+  run_bin -1 --separate-stderr team-stow T1
+  [[ $stderr =~ "team-stow: checkpoint: T1 home: cannot push wip/home/T1 to the team home's origin: "[^$'\n']+$'\n'"team-stow: checkpoint: T2 home: cannot push wip/home/T2 to the team home's origin: "[^$'\n']+$'\n'"team-stow: checkpoint: T3 home: cannot push wip/home/T3 to the team home's origin: "[^$'\n']+$'\n'"team-stow: checkpoint: failed; fix what each line above names and run team-stow again"$ ]]
+  assert_equal "$(stowed_events)" ""
+}
+
 @test "a stack that will not stop is said, and its task still stows (exit 1)" {
   docker_down
   run_bin -1 --separate-stderr team-stow T1
