@@ -75,6 +75,14 @@
 # end it with team-ops-end). An ops session runs with --restricted and only the built-in tools
 # Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents and Skill (for its toolkits'
 # skills): no shell, no web.
+# A worker gets only the toolkits its worktree's project lists in the registry (team-project's
+# toolkits): after those refusals and the worktree's and task's checks, and before the lease is
+# checked, any other is refused (exit 1, nothing started or logged), naming the project, its list
+# and the fix, Daniel's yes and then the toolkit's name in that project's toolkits line in
+# projects.toml. The project is the one the task's open worktree names in the ledger, else (T0, a
+# task from before team-open) the registered project whose primary checkout is the worktree's main
+# checkout; a worktree of no registered project gets no toolkit. T0, the load check, measures a
+# toolkit before any project lists it, so it takes any toolkit unlisted but a prod-* one.
 # An ops launch runs on one message of Daniel's, the one --request links, and is refused (exit 1,
 # nothing started or logged, before the session list is read) unless that message is in
 # #coordinator or the task's latest thread (T0's, which has no thread, in #coordinator only), was
@@ -211,7 +219,29 @@ if [[ $task != T0 ]]; then
     done <<<"$worktrees"
     [[ -n $worktree_event ]] || die "$worktree is not one of $task's open worktrees:${open:- it has none}"
   fi
+fi
 
+# A worker gets only the toolkits its worktree's project lists in the registry: the project its
+# open worktree names in the ledger, else (T0, a task from before team-open) the registered project
+# whose primary checkout is the worktree's main checkout. T0, the load check, measures a toolkit
+# before any project lists it, so it may take any but a prod-* one unlisted.
+if ((${#toolkits[@]})); then
+  kit_project=$project
+  if [[ -z $kit_project ]]; then
+    main_checkout=$(git -C "$worktree" worktree list --porcelain | sed -n '1s/^worktree //p')
+    kit_project=$(team_project --find path "$main_checkout" | head -n 1) || exit 1
+    [[ -n $kit_project ]] ||
+      die "$worktree is a worktree of $main_checkout, which is no registered project's primary checkout in projects.toml, so a worker there gets no toolkit (asked for: ${toolkits[*]})"
+  fi
+  kit_list=$(team_project "$kit_project" toolkits) || exit 1
+  for kit in "${toolkits[@]}"; do
+    [[ $task != T0 || $kit == prod-* ]] || continue
+    jq -e --arg kit "$kit" 'index([$kit])' <<<"$kit_list" >/dev/null ||
+      die "toolkit '$kit' is not one of $kit_project's toolkits in projects.toml ($(jq -r 'if . == [] then "it lists none" else join(", ") end' <<<"$kit_list")): a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
+  done
+fi
+
+if [[ $task != T0 ]]; then
   lease_gate "a worker"
   machine=$(machine_name) || exit 1
 fi

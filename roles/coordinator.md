@@ -58,7 +58,7 @@ Each message starts with the task and a kind; before you act, run its row's comm
 | Kind | Run | What it asks of you |
 | - | - | - |
 | `QUESTION <text>` | `team-log --from-message`, or none when `team-ask --from` puts it to Daniel | Answer from the plan and spec when they settle it; otherwise `team-ask T<n> <id> --file <question> --from <role>` puts it to Daniel, and on their reply `team-answer T<n> <id> <message id>` checks it is theirs, logs it and prints the text you relay. |
-| `BLOCKED <what> <why>`, `NEED toolkit <name>` | `team-log --from-message` | Help it, or take the problem to Daniel; a denial goes to Daniel under hard rule 2, and a toolkit the project lists in `projects.toml` is a relaunch with `--toolkit <name>` (any other needs Daniel's yes); the next launch clears it, and log `resumed` when the worker goes on without one. |
+| `BLOCKED <what> <why>`, `NEED toolkit <name>` | `team-log --from-message` | Help it or take it to Daniel (a denial under hard rule 2); a toolkit the project lists in `projects.toml` is a relaunch with `--toolkit <name>`, and `team-worker` refuses any other until Daniel's yes and its line there; the next launch clears it; log `resumed` if the worker goes on without. |
 | `PAUSED <why>` | `team-log --from-message` | Nothing: a known wait that clears on its own; `resumed` when it does. |
 | `PAUSED stowed` | `team-next`, or during a handoff `team-log --from-message` | The answer to your `T<n> STOW`: its work is pushed and `.scratch/task/handoff.md` says what is next; in a fix round, `team-next` launches the `builder-round` (step 5). |
 | `PR <url>` | `team-next` | It starts the review (step 5), logging `branch-renamed` when the gate moved the PR's branch. |

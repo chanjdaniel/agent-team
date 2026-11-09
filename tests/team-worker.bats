@@ -60,7 +60,8 @@ opened() {
 }
 
 # registry [--first <TOML line>] <project>...: a registry holding each project, a git pool of
-# slots/<project>/1 and 2, with the TOML line, if any, in the first project's table.
+# slots/<project>/1 and 2, listing every toolkit the tests give, with the TOML line, if any, in the
+# first project's table.
 registry() {
   local extra='' name
   if [[ $1 == --first ]]; then extra=$2 && shift 2; fi
@@ -76,7 +77,7 @@ merge_method = "merge"
 required_checks = []
 task_dir = ".scratch/task"
 docs = []
-toolkits = ["prod-read", "prod-write"]
+toolkits = ["prod-read", "prod-write", "vercel-read", "browser", "codegraph", "effect", "spec-review", "kit-a", "kit-b", "kit-c"]
 $extra
 pool = { provider = "git", slots = ["slots/$name/1", "slots/$name/2"] }
 
@@ -832,6 +833,122 @@ role_texts() {
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/spec-review"]')"
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["spec-review"]'
+}
+
+# fixture_projects: the registry fixture (tests/fixtures/projects.toml), in which conventioner lists
+# prod-read and prod-write and agent-team none, with a git checkout at both primary checkouts and
+# linked worktrees of them: $conv_wt and $conv_wt2 of conventioner's, $at_wt of agent-team's.
+fixture_projects() {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  conv=$HOME/Documents/projects/personal/Conventioner at=$HOME/agent-team
+  conv_wt=$HOME/wt/conventioner-1 conv_wt2=$HOME/wt/conventioner-2 at_wt=$HOME/wt/agent-team-1
+  local repo
+  for repo in "$conv" "$at"; do
+    git init -q -b main "$repo"
+    git -C "$repo" commit -q --allow-empty -m "chore: start"
+  done
+  git -C "$conv" worktree add -q -b feat/T8-conv "$conv_wt"
+  git -C "$conv" worktree add -q -b feat/T9-conv "$conv_wt2"
+  git -C "$at" worktree add -q -b feat/T7-team "$at_wt"
+}
+
+# The tail of every refusal of a toolkit its project does not list.
+UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
+
+@test "a toolkit the worktree's project does not list is refused, naming the project, its list and Daniel's yes, with nothing started or logged" {
+  fixture_projects
+  ops_stub
+  thread T7
+  opened T7 agent-team feat/T7-team "$at_wt"
+  ops_refused "toolkit 'browser' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T7 builder "$at_wt" --toolkit browser -- go
+  thread T8
+  opened T8 conventioner feat/T8-conv "$conv_wt"
+  ops_refused "toolkit 'effect' is not one of conventioner's toolkits in projects.toml (prod-read, prod-write): $UNLISTED" \
+    T8 reviewer "$conv_wt" --toolkit effect -- go
+  # One toolkit listed and one not: the launch is refused, before Discord is read.
+  ops_refused "toolkit 'vercel-read' is not one of conventioner's toolkits in projects.toml (prod-read, prod-write): $UNLISTED" \
+    T8 ops "$conv_wt" --toolkit prod-read --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(stub_calls curl)" ""
+  # The project is the one the ledger's open worktree names, whichever checkout the worktree is of.
+  thread T9
+  opened T9 agent-team feat/T9-conv "$conv_wt2"
+  ops_refused "toolkit 'prod-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T9 ops "$conv_wt2" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  run_bin -0 team-worker --help
+  assert_contains "$output" "A worker gets only the toolkits its worktree's project lists in the registry (team-project's"
+  run_bin -0 team-project --help
+  assert_contains "$output" "an allow list"$'\n'"                   team-worker enforces"
+}
+
+@test "a toolkit the worktree's project lists launches as today, and so does a launch with no toolkit" {
+  fixture_projects
+  ops_stub
+  thread T8
+  opened T8 conventioner feat/T8-conv "$conv_wt"
+  run_bin -0 team-worker T8 ops "$conv_wt" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(launches | jq -c '{task, role, project, toolkits}')" \
+    '{"task":"T8","role":"ops","project":"conventioner","toolkits":["prod-read","prod-write"]}'
+  thread T7
+  opened T7 agent-team feat/T7-team "$at_wt"
+  run_bin -0 team-worker T7 builder "$at_wt" -- go
+  assert_equal "$(launches | tail -n 1 | jq -c '{task, role, project, toolkits}')" \
+    '{"task":"T7","role":"builder","project":"agent-team","toolkits":[]}'
+  assert_equal "$(bg_calls | wc -l)" 2
+  run_bin -0 team-log --check
+}
+
+@test "T0 and a task with no opened event take the registered project at the worktree's main checkout; a worktree of no registered project gets no toolkit" {
+  fixture_projects
+  ops_stub
+  thread T8
+  # proj, the setup's repository, is no project of the fixture's.
+  local task
+  for task in T8 T0; do
+    ops_refused "$(realpath "$wt1") is a worktree of $(realpath "$primary"), which is no registered project's primary checkout in projects.toml, so a worker there gets no toolkit (asked for: browser effect)" \
+      "$task" builder "$wt1" --toolkit browser --toolkit effect -- go
+  done
+  ops_refused "toolkit 'browser' is not one of conventioner's toolkits in projects.toml (prod-read, prod-write): $UNLISTED" \
+    T8 builder "$conv_wt" --toolkit browser -- go
+
+  run_bin -0 team-worker T8 ops "$conv_wt" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(launches | jq -c '{task, role, toolkits}')" '{"task":"T8","role":"ops","toolkits":["prod-read"]}'
+  run_bin -0 team-worker T8 builder "$wt1" -- go
+  run_bin -0 team-worker T0 ops "$conv_wt" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
+}
+
+@test "T0 takes any toolkit but a prod-* one whatever its worktree's project lists; a prod-* one needs the project to list it" {
+  fixture_projects
+  ops_stub
+  run_bin -0 team-worker T0 builder "$at_wt" --toolkit browser --toolkit effect -- go
+  assert_equal "$(bg_calls | jq -c '[.[index("--plugin-dir") + 1], .[index("--plugin-dir") + 3]]')" \
+    "$(jq -cn --arg k "$REPO_ROOT/toolkits" '["\($k)/browser", "\($k)/effect"]')"
+  run_bin -0 team-worker T0 ops "$at_wt" --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  : >"$STUB_CALLS/claude.log"
+  : >"$HOME/.local/state/agent-team/ops-requests"
+  ops_refused "toolkit 'prod-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T0 ops "$at_wt" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  ops_refused "toolkit 'prod-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T0 ops "$at_wt" --toolkit vercel-read --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+}
+
+@test "the existing toolkit refusals come first and unchanged, on a project that lists none" {
+  fixture_projects
+  ops_stub
+  thread T7
+  opened T7 agent-team feat/T7-team "$at_wt"
+  run_bin -2 team-worker T7 builder "$at_wt" --toolkit coordinator -- go
+  assert_contains "$output" "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)"
+  run_bin -2 team-worker T7 builder "$at_wt" --toolkit frontend -- go
+  assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  run_bin -1 team-worker T7 builder "$at_wt" --toolkit prod-read -- go
+  assert_equal "$output" "team-worker: toolkit 'prod-read' is for the ops role only"
+  run_bin -1 team-worker T7 ops "$at_wt" --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$output" "team-worker: prod-write needs --toolkit prod-read beside it"
+  run_bin -1 team-worker T7 ops "$at_wt" --toolkit prod-read -- go
+  assert_equal "$output" "team-worker: the ops role needs --request <the link to Daniel's Discord message>"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
 }
 
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {

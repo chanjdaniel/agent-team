@@ -57,19 +57,20 @@ esac
 SH
 }
 
-# registry [<treehouse project's pool block>]: projects.toml with a git pool project, site, and,
-# when given, a treehouse one, proj, with that pool
+# registry [<proj's pool block>]: projects.toml with a git pool project, site, and, when given,
+# proj, with that pool, listing prod-read and prod-write
 registry() {
   {
     project site
     printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'
-    if [[ -n ${1:-} ]]; then project proj && echo "$1"; fi
+    if [[ -n ${1:-} ]]; then project proj '["prod-read", "prod-write"]' && echo "$1"; fi
   } >"$TEAM_HOME/projects.toml"
 }
 
+# project <name> [<toolkits, a TOML list>]: the project's table, its toolkits none by default
 project() {
   printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "no-mistakes"' \
-    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []'
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' "toolkits = ${2:-[]}"
 }
 
 # doctor_results [<verdict> <check>]...: the stub doctor's results: a PASS of machine, then each
@@ -162,8 +163,10 @@ team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM
 
 # toolkit_checkout: a code checkout of the test's own for run_bin, holding this one's bin/, roles/
 # and settings/ and two fixture toolkits: served, whose .mcp.json declares the MCP servers served
-# and spare, and plain, with no .mcp.json.
+# and spare, and plain, with no .mcp.json; the code checkout's project is registered, since
+# team-worker gives a toolkit only in a registered project's worktree.
 toolkit_checkout() {
+  { project code && printf '%s\n' '[code.pool]' 'provider = "git"' 'slots = []'; } >>"$TEAM_HOME/projects.toml"
   export CODE_CHECKOUT=$BATS_TEST_TMPDIR/toolkit-code
   mkdir -p "$CODE_CHECKOUT/toolkits/served" "$CODE_CHECKOUT/toolkits/plain"
   copy_bin "$CODE_CHECKOUT/bin"
@@ -365,9 +368,11 @@ prod_read_tools=(aggregate aggregate-db collection-indexes collection-schema col
   count db-stats explain find list-collections list-databases)
 prod_write_tools=(insert-many update-many delete-many create-index drop-index)
 
-# ops_setup: a linked worktree, the stub, and a session that passes every check
+# ops_setup: a linked worktree of proj, registered with a git pool, the stub, and a session that
+# passes every check
 ops_setup() {
   local clone
+  registry "$(printf '%s\n' '[proj.pool]' 'provider = "git"' 'slots = []')"
   clone=$(make_repo proj)
   wt=$HOME/wt/proj-1
   git -C "$clone" worktree add -q -b load "$wt"
@@ -482,6 +487,15 @@ oplog_lines() {
   run_bin -1 team-load-check --role ops --worktree "$wt" --request "$request" --toolkit prod-read
   assert_contains "$output" "team-worker: Discord message ${request##*/} asked for T0's ops launch 6f93fe38 at "
   assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg" or .[0] == "rm")')" ""
+}
+
+@test "the ops form in a worktree whose project does not list the toolkit is refused by team-worker, starting no session" {
+  ops_setup
+  sed -i 's/^toolkits = \["prod-read", "prod-write"\]$/toolkits = ["prod-read"]/' "$TEAM_HOME/projects.toml"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
+  assert_contains "$output" "team-worker: toolkit 'prod-write' is not one of proj's toolkits in projects.toml (prod-read): a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg")')" ""
+  assert_equal "$(stub_calls curl)" ""
 }
 
 @test "an ops session with a stray tool, a shell or a readable /proc fails, and is still ended" {
@@ -1147,7 +1161,6 @@ $(going_on 'gate proj')"
 
 @test "the ops form stops on any FAIL of the project its worktree is in, and goes on past another project's" {
   ops_setup
-  registry "$(printf '%s\n' '[proj.pool]' 'provider = "git"' 'slots = []')"
   doctor_results FAIL 'branches proj'
   run_bin -1 --separate-stderr team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_equal "$stderr" "$stopped"

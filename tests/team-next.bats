@@ -239,6 +239,16 @@ launched T7-builder c0000001"
   refused "ticket 01 is already handed off: T7-builder c0000001 was launched at" T7 -- "T7 DONE 01 $sha done"
 }
 
+@test "a toolkit carried forward that the project no longer lists is team-worker's refusal, and no launch is logged" {
+  local count
+  sed -i 's/^toolkits = \["browser"\]$/toolkits = []/' "$TEAM_HOME/projects.toml"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-next T7 -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "team-worker: toolkit 'browser' is not one of proj's toolkits in projects.toml (it lists none): a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
+  assert_equal "$(logged_from $((count + 1)) | jq -r .event | tr '\n' ' ')" "ticket-done done "
+  assert_equal "$(bg_calls)" ""
+}
+
 @test "a deliverer's brief a launch already read is kept, and the next deliverer takes the next free name" {
   # Every other ticket done and the deliverer launched once; then 01 is built again.
   for n in 02 03 04; do event ticket-done "$(jq -cn --arg n "$n" '{ticket: $n, commits: ["0123456"]}')"; done
