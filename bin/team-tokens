@@ -223,6 +223,12 @@ if sys.version_info < (3, 11):
     )
     sys.exit(1)
 
+# The heredoc rule is bin/lib/command_text.py's, which bin/hooks/command-guard reads too; its
+# import writes no __pycache__ into the code checkout.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from command_text import HEREDOC
+
 NAME = os.path.basename(sys.argv[0])
 USAGE = (
     "usage: team-tokens [--since <ISO>] [--until <ISO>] [--task T<n>] [--machine <name>] [--json]"
@@ -414,10 +420,6 @@ FINAL = {"completed", "failed", "killed", "stopped"}
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 MICRO = timedelta(microseconds=1)
 
-
-# A heredoc, from its marker through its closing line, the rest of the marker's line kept; a
-# here-string (<<<) is none.
-HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n(?:.*?\n)??[ \t]*\2[ \t]*(?=\n|$)", re.S)
 
 
 # The simple commands of a Bash command's text, one at a time: each heredoc's body left out, an
