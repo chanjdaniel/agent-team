@@ -214,12 +214,22 @@ http_origin() {
   # A run that started 20 minutes ago and has not ended says so.
   local start
   date_record '.last_run.end = null | .last_run.ended = null'
-  date_lease_record 25
+  date_lease_record --take 25
   start=$(jq -r .last_run.start "$record")
   view
   jq -e --arg start "$start" '[.problems[].key] == ["heartbeat"]
     and .problems[0].text == "a heartbeat run started \($start) (20 minutes ago) has not ended"' <<<"$view"
   assert_equal "$(jq -r .line <<<"$view")" "**Health**: a heartbeat run started <t:$(date -d "$start" +%s):R> has not ended"
+  # The same when that run renewed the lease after it started, as one run in three does.
+  date_lease_record 19
+  view
+  jq -e --arg start "$start" '[.problems[].key] == ["heartbeat"]
+    and .problems[0].text == "a heartbeat run started \($start) (20 minutes ago) has not ended"' <<<"$view"
+  # A run with no end from before a take is no run of this holding.
+  date_lease_record --take 18
+  seen=$(jq -r .written_at "$state/lease.json")
+  view
+  jq -e --arg seen "$seen" '.problems[0].text == "the heartbeat last ran \($seen) (18 minutes ago)"' <<<"$view"
 
   # A take or a resume just now: quiet until its first run is overdue.
   date_lease_record --take 0

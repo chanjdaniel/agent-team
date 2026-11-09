@@ -138,13 +138,17 @@ def health_problems($lease; $now; $limits):
   | ($limits.stale_minutes * 60) as $stale
   | ($rec.steps // {}) as $steps
   | ([$rec.last_run.start, $lease.written_at] | map(strings) | max) as $seen
-  # A run whose record has no end yet is still going (or was killed before it could say so).
-  | ($seen != null and $seen == $rec.last_run.start and $rec.last_run.end == null) as $going
+  # A run of this holding whose record has no end yet is still going, or was killed before it
+  # could say so; the record is first written after the lease step, so a renewal in that run
+  # may be later than its start.
+  | ($rec.last_run.start | strings) as $start
+  | ($start != null and $rec.last_run.end == null
+      and (($lease.taken_at | type) != "string" or $start >= $lease.taken_at)) as $going
   | (if $seen == null or $now - ($seen | health_epoch) > $stale then
       [{key: "heartbeat", since: $seen, alerting: true, sweep: "checkpoint-stale",
-        line: (if $going then "a heartbeat run started \($seen | health_rel) has not ended"
+        line: (if $going then "a heartbeat run started \($start | health_rel) has not ended"
                else "the heartbeat last ran \(if $seen then $seen | health_rel else "never" end)" end),
-        text: (if $going then "a heartbeat run started \($seen | health_plain_rel($now)) has not ended"
+        text: (if $going then "a heartbeat run started \($start | health_plain_rel($now)) has not ended"
                else "the heartbeat last ran \(if $seen then $seen | health_plain_rel($now) else "never" end)" end)}]
     else [] end) as $heartbeat
   | (if $rec.offline then

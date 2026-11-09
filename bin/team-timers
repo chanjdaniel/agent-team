@@ -34,9 +34,9 @@
 #            record or one that cannot be read is "**Health**: unknown - <why>" (exit 1). The
 #            problems, in order (bin/lib/health.jq defines each rule and threshold once):
 #              heartbeat  the later of the last run's start and the lease record's write is over
-#                     15 minutes old ("a heartbeat run started <t> has not ended" while that run's
-#                     record has no end, else "the heartbeat last ran <t>"); alerting; sweep
-#                     checkpoint-stale.
+#                     15 minutes old ("a heartbeat run started <t> has not ended" while the
+#                     record's last run, one begun since the lease's taken_at, has no end, else
+#                     "the heartbeat last ran <t>"); alerting; sweep checkpoint-stale.
 #              offline, login-refused  the heartbeat's own flags; login-refused alerting, sweep
 #                     health; offline neither, since the coordinator's offline watch tells it.
 #              checkpoint  the checkpoint step failing, or the last good checkpoint over 15
