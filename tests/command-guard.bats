@@ -77,7 +77,18 @@ passes() {
     $'cat >x.md <<-"END"\n\tnode toolkits/frontend/scripts/ui-capture out\n\tEND\ngit add x.md' \
     $'cat >run.sh <<\'EOF\'\nteam-worker T1 ops wt\nEOF' \
     $'cat >a.md <<\'A\' >b.md <<\'B\'\nunset AGENT_TEAM_ROLE\nA\nteam-worker T1 ops\nB' \
-    $'cat >t.md <<END-1\nx\nEND\nteam-worker T1 ops wt\nEND-1'
+    $'cat >t.md <<END-1\nx\nEND\nteam-worker T1 ops wt\nEND-1' $'cat >x.md <<\\EOF\nunset AGENT_TEAM_ROLE\nEOF'
+}
+
+# A shell named as an argument, `.` above all, feeds nothing to a shell: a search of the tree or a
+# commit of it, the forms these guards set free.
+@test "a search or commit whose arguments name a shell or . passes" {
+  passes "grep -rn 'AGENT_TEAM_ROLE=' . | head" "grep -rn 'team-worker T1 ops' . | head" \
+    "grep -rn 'team-worker T1 ops' bin | grep -v bash" \
+    $'git add . && git commit -F - <<\'EOF\'\nfix: x\n\nunset AGENT_TEAM_ROLE is refused now\nEOF' \
+    "grep -rn 'team-worker T1 ops' . && bash -n x.sh" \
+    "case \"\$x\" in a|b) grep -rn 'team-worker T1 ops' . ;; *) git grep -n 'AGENT_TEAM_ROLE=' ;; esac" \
+    $'git commit -m "$(cat <<\'EOF\'\nfix: x\n\nteam-worker T1 ops wt is refused\nEOF\n)"'
 }
 
 @test "a call of another tool passes, and input it cannot read is refused, naming why" {
@@ -93,12 +104,13 @@ passes() {
 
 # The forms a deny rule matching anywhere refused, which a reading of where a command starts must
 # find too: shell grammar, a shell reading its script from stdin, and the common runners.
-@test "a guarded command after a reserved word or in a brace group is refused" {
+@test "a guarded command after a reserved word or a case pattern, in a brace group or in a function is refused" {
   refuses "$OPS" '{ team-worker T1 ops wt; }' 'if true; then team-worker T1 ops wt; fi' \
     'for t in T1; do team-worker "$t" ops wt; done' '! team-worker T1 ops wt' 'x || { team-worker T1 ops wt; }' \
     'if team-worker T1 ops wt; then :; fi' 'while false; do :; done; until team-worker T1 ops wt; do :; done' \
     'if x; then :; else team-worker T1 ops wt; fi' 'if x; then :; elif team-worker T1 ops wt; then :; fi' \
-    'time team-worker T1 ops wt'
+    'time team-worker T1 ops wt' 'f() { team-worker T1 ops wt; }; f' 'function f { team-worker T1 ops wt; }; f' \
+    'coproc team-worker T1 ops wt' 'case x in x) team-worker T1 ops wt;; esac'
   refuses "$SET" 'while x; do AGENT_TEAM_ROLE=x team-post T7 --file f; done' 'let AGENT_TEAM_ROLE=1' \
     'read -r AGENT_TEAM_TASK <<<T1' 'printf -v AGENT_TEAM_ROLE %s coordinator'
   refuses "$UNSET" '{ unset AGENT_TEAM_ROLE; }'
@@ -110,6 +122,75 @@ passes() {
     "printf '%s\n' 'team-worker T1 ops wt' | /bin/bash" $'source /dev/stdin <<\'EOF\'\nteam-worker T1 ops wt\nEOF' \
     $'cat <<\'EOF\' | bash\nteam-worker T1 ops wt\nEOF' $'. /dev/stdin <<EOF\nteam-worker T1 ops wt\nEOF'
   refuses "$SET" $'bash <<\'EOF\'\nAGENT_TEAM_ROLE=x team-post T7 --file f\nEOF'
+}
+
+# What is piped into a shell is read as code in whichever pipeline it stands, and wherever the shell
+# starts in the command it is piped into: in a group, a substitution, behind a wrapper, its name
+# quoted in whole or in part; and a group ends after a compound command's end, as Bash reads it.
+@test "a guarded command piped into a shell in a group, a substitution, behind a wrapper or quoted is refused" {
+  refuses "$OPS" "true && echo 'team-worker T1 ops wt' | bash" "false || echo 'team-worker T1 ops wt' | bash" \
+    "{ echo 'team-worker T1 ops wt' | bash; }" '(echo team-worker T1 ops wt) | bash' \
+    "echo 'team-worker T1 ops wt' | (bash)" $'cat <<\'EOF\' | (bash)\nteam-worker T1 ops wt\nEOF' \
+    "echo 'team-worker T1 ops wt' | \"bash\"" "echo 'team-worker T1 ops wt' | \\bash" \
+    "echo 'team-worker T1 ops wt' | xargs -0 bash -c" $'cat <<\'EOF\' | xargs -0 bash -c\nteam-worker T1 ops wt\nEOF' \
+    "echo 'team-worker T1 ops wt' | flock /tmp/l bash" "echo 'team-worker T1 ops wt' | tee >(bash)" \
+    '(case x in x) echo team-worker T1 ops wt;; esac) | bash' '{ : }; echo team-worker T1 ops wt; } | bash' \
+    "{ if true; then echo 'team-worker T1 ops wt'; fi } | bash" \
+    "{ for i in 1; do echo 'team-worker T1 ops wt'; done } | bash" "{ echo 'team-worker T1 ops wt'; (:) } | bash" \
+    "(case x in x) { :; } esac; echo 'team-worker T1 ops wt') | bash" \
+    "echo 'team-worker T1 ops wt' | ba\"sh\"" "echo 'team-worker T1 ops wt' | \"ba\"sh" \
+    "echo 'team-worker T1 ops wt' | b\\ash" "echo 'team-worker T1 ops wt' | \$'bash'" \
+    "echo 'team-worker T1 ops wt' | /bin/ba''sh" "{ echo 'team-worker T1 ops wt'; ((1)) } | bash" \
+    "{ echo 'team-worker T1 ops wt'; [[ -n x ]] } | bash" "{ echo 'team-worker T1 ops wt'; f() (:) } | bash" \
+    "{ echo 'team-worker T1 ops wt'; function f (:) } | bash" \
+    "a=(x) [[ ; echo 'team-worker T1 ops wt' | bash" "a+=(x) [[ ; echo 'team-worker T1 ops wt' | bash" \
+    "declare -a a=(x) [[ ; echo 'team-worker T1 ops wt' | bash" "((echo 'team-worker T1 ops wt' | bash) )" \
+    "echo \"\$((echo 'team-worker T1 ops wt' | bash) )\"" "echo \$((echo 'team-worker T1 ops wt' | bash) )" \
+    "{ a=(case in) ; echo 'team-worker T1 ops wt'; } | bash" $'{ a=(\ncase in) ; echo \'team-worker T1 ops wt\'; } | bash' \
+    "((echo \"))\"; echo 'team-worker T1 ops wt' ) | bash)" "((echo '))'; echo 'team-worker T1 ops wt' ) | bash)" \
+    "echo \$((echo \"))\"; echo 'team-worker T1 ops wt' ) | bash)" \
+    "((echo \"\`echo \"))\"\`\"; echo 'team-worker T1 ops wt' ) | bash)" \
+    "echo \$((echo \"\`echo \"))\"\`\"; echo 'team-worker T1 ops wt' ) | bash)" \
+    "((echo \"\${x:-\"))\"}\"; echo 'team-worker T1 ops wt' ) | bash)" \
+    "echo \"\$((echo \"\${x:-\"))\"}\"; echo 'team-worker T1 ops wt' ) | bash)\"" \
+    "((echo \$(case x in x) echo;; esac)); echo 'team-worker T1 ops wt' ) | bash" \
+    "((echo \${x:-)}; echo 'team-worker T1 ops wt' | bash ))" "((echo 'team-worker T1 ops wt' | bash; echo \${x:-)} ))" \
+    "((echo 'team-worker T1 ops wt' | bash; echo \$[)] ))"
+}
+
+# Each (( is decided once and each $( in it read once, so the hook's time grows with the command,
+# not with 2 to the power of its nesting; a hook that runs past its timeout lets the call through.
+@test "a guarded pipe thirty ((cmd) ) groups deep is refused at once" {
+  local level="echo 'team-worker T1 ops wt' | bash" k
+  for ((k = 0; k < 30; k++)); do level="((echo \$( $level )) )"; done
+  bash -n -c "$level"
+  run --separate-stderr timeout 10 "$REPO_ROOT/bin/hooks/command-guard" <<<"$(jq -cn --arg c "$level" \
+    '{hook_event_name: "PreToolUse", cwd: env.HOME, tool_name: "Bash", tool_input: {command: $c}}')"
+  assert_equal "$status" 2
+  assert_equal "$stderr" "Blocked by command-guard: $OPS; a guardrail, so report it as BLOCKED and do not reach it another way."
+}
+
+# Bash takes } and esac as reserved words after every compound command's end, so each form below
+# ends its group there, and what the group pipes into bash is read as code. Each command must be
+# one Bash accepts, which bash -n holds, so the list names only forms Bash runs.
+@test "a guarded command piped into a shell from a group ending after any compound command is refused" {
+  local compound prefix command
+  local compounds=('((1))' '[[ -n x ]]' '[[ a < b && ( c ) ]]' '(:)' '{ :; }' 'if :; then :; fi'
+    'while false; do :; done' 'until :; do :; done' 'for i in 1; do :; done' 'for ((i=0; i<1; i++)); do :; done'
+    'for i in 1; { :; }' 'select x in; do break; done' 'case x in x) ;; esac' 'f() (:)' 'f() { :; }'
+    'function f (:)' 'function f { :; }' 'function f() { :; }' 'coproc (:)' 'coproc c { :; }' 'coproc { :; }'
+    $'[[ a &&\n b ]]' $'[[ a && # ]]\n b ]]')
+  for compound in "${compounds[@]}"; do
+    for prefix in '' '! ' 'time ' 'time -p ' 'time -- ' 'time -p -- '; do
+      [[ $prefix == '' || $compound != f* && $compound != coproc* ]] || continue
+      for command in "{ echo 'team-worker T1 ops wt'; $prefix$compound } | bash" \
+        "(case x in x) $prefix$compound esac; echo 'team-worker T1 ops wt') | bash" \
+        "{ echo 'team-worker T1 ops wt'; $prefix$compound >/dev/null; } | bash"; do
+        bash -n -c "$command" || { echo "bash refuses: $command" >&2; return 1; }
+        refuses "$OPS" "$command"
+      done
+    done
+  done
 }
 
 @test "a guarded command run by find -exec, watch, flock, script, su, parallel or after bash -c -- is refused" {
@@ -127,7 +208,14 @@ passes() {
     $'cat <<END-1\nx\nEND-1\nteam-worker T1 ops wt\nEND' $'echo $((1<<X))\nteam-worker T1 ops wt\nX' \
     $'# a <<X note\nteam-worker T1 ops wt\nX' \
     $'cat <<EOF\nx\nEOF\nteam-worker T1 ops wt' $'cat <<-EOF\n\tx\n\tEOF\nteam-worker T1 ops wt' \
-    $'cat <<A <<B\na\nA\nb\nB\nteam-worker T1 ops wt' $'cat <<EOF; team-worker T1 ops wt\nx\nEOF'
+    $'cat <<A <<B\na\nA\nb\nB\nteam-worker T1 ops wt' $'cat <<EOF; team-worker T1 ops wt\nx\nEOF' \
+    $'cat <<E"O"F\nx\nEOF\nteam-worker T1 ops wt\nE' $'cat <<\'E\'OF\nx\nEOF\nteam-worker T1 ops wt\nE' \
+    $'echo $\'it\\\'s\'; echo \'<<X\'\nteam-worker T1 ops wt\nX' $'cat <<EOF; echo \'<<X\'\nx\nEOF\nteam-worker T1 ops wt\nX' \
+    $'echo "$(case x in x) echo "<<X";; esac)"\nteam-worker T1 ops wt\nX' \
+    $'echo "$(case x in x) echo "<<X ";; esac)"\nteam-worker T1 ops wt\nX' \
+    $'echo "${x:-"<<X"}"\nteam-worker T1 ops wt\nX' $'echo "${x:-"<<X "}"\nteam-worker T1 ops wt\nX' \
+    $'echo $[1<<X]\nteam-worker T1 ops wt\nX' $'echo $[1<<X ]\nteam-worker T1 ops wt\nX' \
+    $'cat <<X; [[ a &&\nX\nb ]]\nteam-worker T1 ops wt\nX'
 }
 
 @test "a guarded command after a pipe, in a backtick, in a subshell or through xargs is refused" {

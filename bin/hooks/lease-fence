@@ -56,8 +56,7 @@ case $tool in
   Bash)
     command=$(jq -r '.tool_input.command // empty' <<<"$input")
     push='(^|[^[:alnum:]_.-])git([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+push([[:space:]]|$)'
-    # gh or gh-axi where a command starts (COMMAND_START in bin/lib/team.sh: at the start, after a
-    # separator or a line break, past any variable assignments and a directory).
+    # gh or gh-axi where a command starts, as COMMAND_START in bin/lib/team.sh reads it.
     gh=$COMMAND_START'gh(-axi)?([[:space:]]|$)'
     # The team commands that write to GitHub and the ledger, where a command starts, as gh.
     team_write=$COMMAND_START'team-(merge|catch-up|open|close)([[:space:]]|$)'
