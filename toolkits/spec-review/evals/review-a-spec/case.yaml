@@ -1,0 +1,40 @@
+schema_version: "1.1"
+name: review-a-spec
+description: A planner asked to review the spec it wrote fires the skill, dispatches both readers, and gets both planted faults back as blocking findings of the right kinds.
+tags: [spec-review]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  model: claude-opus-5-5
+  max_turns: 30
+  timeout_seconds: 900
+  allowed_tools: [Read, Glob, Grep, Skill, Agent]
+  prompt: |
+    You are the planner of task T9 on notecat, the shell tool in this directory.
+    You wrote `.scratch/task/spec.md`, its two tickets in `.scratch/task/tickets/` and `.scratch/task/scope.txt` from this plan: "Let `notecat list` sort notes by name or by date, and let a user set the order it uses by default."
+    Before you send the plan for approval, run the spec review on your spec and sort its findings.
+    This run has no Write or Edit tool, so instead of writing `.scratch/task/spec-review.md` and fixing the spec, reply with the whole `spec-review.md` you would write, sorted, saying in each fixed row's Evidence what you would change.
+graders:
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?spec-review"'
+  - name: paraphrase-dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"subagent_type"\s*:\s*"spec-review:spec-paraphrase"'
+    arm: with-only
+  - name: readiness-dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"subagent_type"\s*:\s*"spec-review:spec-readiness"'
+    arm: with-only
+  - name: planted-faults
+    type: llm
+    criteria: |
+      The reply is a spec review of a small spec for a shell tool, notecat, with a table of findings, each with a severity and a kind.
+      PASS if both of these are findings in it, each marked `blocking`:
+      1. Kind `open-decision`: ticket 02 does not say where the new default-order setting is read from (an environment variable, the config file `~/.config/notecat/config`, or both, and which wins).
+      2. Kind `missing`: `spec.md` names a function `filter_notes` in `lib/notecat.sh` for ticket 01 to extend, and that function does not exist (the file has `list_notes`).
+      Other findings, their sorts and evidence, and the review's wording do not change the verdict.
+      FAIL if either is absent, marked `note`, or given another kind.

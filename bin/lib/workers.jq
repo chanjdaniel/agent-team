@@ -37,7 +37,8 @@ def worker_rounds:
 
 # A task's worker lifetimes (input: its events in ledger order, only those at or before $hi): one
 # per launch with a session. Its project is the launch's, else the task's opened; its path the
-# opened's, else "-" (a legacy task); its model the launch's, else "default". Its rounds
+# opened's, else "-" (a legacy task); its model the launch's, else "default"; its toolkits the
+# launch's, sorted and deduplicated, [] for none or a legacy launch with no list. Its rounds
 # (worker_rounds) are of its session's dones and, for a builder, the task's pr and ticket-done
 # events after its launch and before the task's next builder launch (which name no session:
 # ends_worker in ledger.jq); it ends at its last round's last event (ended done when that round
@@ -75,7 +76,8 @@ def task_lifetimes($hi):
      // {end: null, ended: "running"}) as $end
   | ((if $end.end then $end.end | fromdate else $hi end)) as $stop
   | {task: $l.task, project: ($l.project // $opened.project // "-"), path: ($opened.path // "-"), role: $l.role,
-     session: $l.session, model: ($l.model // "default"), start: $l.ts, end: $end.end, ended: $end.ended,
+     session: $l.session, model: ($l.model // "default"),
+     toolkits: ($l.toolkits | if type == "array" then unique else [] end), start: $l.ts, end: $end.end, ended: $end.ended,
      minutes: (if $end.end then ($stop - $start) / 60 | tenths else null end),
      rounds: ($rounds | length),
      first_done_minutes: (if $rounds == [] then null else (($rounds[0].at | fromdate) - $start) / 60 | tenths end),
@@ -93,17 +95,18 @@ def lifetime_stats($hi):
   | {workers: ($m | length), mean: ($m | add / length | tenths), median: ($m | nearest_rank(0.5) | tenths),
      p90: ($m | nearest_rank(0.9) | tenths), longest: ($m | max | tenths)};
 
-# Lifetimes grouped by role and $key (a field name, or null for the role alone), each group's
-# stats, in role order, then most workers first, then by the key.
-def stats_by($key; $hi):
-  group_by([.role, (if $key then .[$key] else null end)])
-  | map({role: .[0].role} + (if $key then {($key): .[0][$key]} else {} end) + lifetime_stats($hi))
-  | sort_by(role_rank, -.workers, (if $key then .[$key] else null end));
+# Lifetimes grouped by role and $keys (a list of field names, [] for the role alone), each
+# group's stats, in role order, then most workers first, then by the keys' values.
+def stats_by($keys; $hi):
+  group_by([.role] + [.[$keys[]]])
+  | map(.[0] as $first | {role: $first.role} + ([$keys[] | {(.): $first[.]}] | add // {}) + lifetime_stats($hi))
+  | sort_by(role_rank, -.workers, [.[$keys[]]]);
 
 # The workers report over the ledger's lines (jq -nR inputs), for the window [$lo, $hi] (seconds)
 # of every task or only $task: lifetimes (ended in the window, by start), running (started by $hi,
-# with age_minutes), stats (by_role, by_role_path, by_role_project, by_role_model, over the ended
-# ones) and longest (the ten longest ended lifetimes' sessions, longest first).
+# with age_minutes), stats (by_role, by_role_path, by_role_project, by_role_model and
+# by_role_project_toolkits, over the ended ones) and longest (the ten longest ended lifetimes'
+# sessions, longest first).
 def workers_report($lo; $hi; $task):
   [ledger_events | by_task | .[]
     | select($task == null or .[0].task == $task)
@@ -113,8 +116,9 @@ def workers_report($lo; $hi; $task):
   | [$all[] | select(.end != null and (.end | fromdate) >= $lo)] as $ended
   | {lifetimes: $ended,
      running: [$all[] | select(.end == null)],
-     stats: {by_role: ($ended | stats_by(null; $hi)), by_role_path: ($ended | stats_by("path"; $hi)),
-       by_role_project: ($ended | stats_by("project"; $hi)), by_role_model: ($ended | stats_by("model"; $hi))},
+     stats: {by_role: ($ended | stats_by([]; $hi)), by_role_path: ($ended | stats_by(["path"]; $hi)),
+       by_role_project: ($ended | stats_by(["project"]; $hi)), by_role_model: ($ended | stats_by(["model"]; $hi)),
+       by_role_project_toolkits: ($ended | stats_by(["project", "toolkits"]; $hi))},
      longest: ($ended | sort_by(-span_minutes($hi)) | .[:10] | map(.session))};
 
 # The classes of a time row's key in report order, with their labels; unseen is the part of a
@@ -303,6 +307,12 @@ def workers_text:
        "",
        "Lifetimes by role and model, minutes",
        ([["role", "model", "workers", "mean", "median", "p90", "longest"]] + ($w.stats.by_role_model | stats_rows("model")) | table),
+       "",
+       "Lifetimes by role, project and toolkits, minutes",
+       ([["role", "project", "toolkits", "workers", "mean", "median", "p90", "longest"]]
+         + [$w.stats.by_role_project_toolkits[]
+             | [.role, .project, (if .toolkits == [] then "none" else .toolkits | join("+") end), (.workers | tostring), (.mean, .median, .p90, .longest | m1)]]
+         | table),
        "",
        "Longest lifetimes",
        (($w.lifetimes | map({(.session): .}) | add) as $by

@@ -1,0 +1,8 @@
+{
+  "name": "codegraph",
+  "version": "0.1.0",
+  "description": "For a builder or reviewer in a worktree whose project keeps a .codegraph/ directory: builds or syncs that worktree's own CodeGraph index at session start and prints a short banner telling the session to locate code with codegraph explore first. No MCP server, no skill.",
+  "author": {
+    "name": "Daniel Chan"
+  }
+}

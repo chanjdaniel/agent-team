@@ -1,0 +1,34 @@
+schema_version: "1.1"
+name: replay-an-ignored-tree
+description: A replay builder reviews an archived spec against a project tree copied under the worktree's gitignored .scratch/, and the readiness reader still finds what the tree has.
+tags: [spec-review]
+context:
+  scaffold_script: scaffold.sh
+execution:
+  model: claude-opus-5-5
+  max_turns: 30
+  timeout_seconds: 900
+  allowed_tools: [Read, Glob, Grep, Skill, Agent]
+  prompt: |
+    You are the builder of a replay: you review archived specs you did not write, against a copy of their project at its base commit.
+    The archived spec of task T9 is copied to `.scratch/task/replay/T9/task/`, and notecat, its project, to `.scratch/task/replay/T9/tree/`.
+    Run `/spec-review .scratch/task/replay/T9/task .scratch/task/replay/T9/tree`.
+    This run has no Write or Edit tool, so instead of writing `spec-review.md`, reply with the whole `spec-review.md` you would write.
+graders:
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?spec-review"'
+  - name: readiness-dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"subagent_type"\s*:\s*"spec-review:spec-readiness"'
+    arm: with-only
+  - name: tree-searched
+    type: llm
+    criteria: |
+      The reply is a spec review of a small spec for a shell tool, notecat, with a table of findings, each with a kind.
+      Its spec extends a function `rotate_notes`, which the project has, and calls a function `prune_notes` in `lib/notecat.sh`, which the project does not have.
+      PASS if a finding of kind `missing` says `prune_notes` does not exist, and no finding says `rotate_notes` does not exist or could not be found.
+      Other findings, their severities, and the review's wording do not change the verdict.
+      FAIL if `prune_notes` is not a `missing` finding, or if any finding reports `rotate_notes` missing, absent or not found.

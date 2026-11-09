@@ -1,8 +1,9 @@
-# SOP: trialling a cheaper model on one role
+# SOP: trialling a cheaper model on one role, or a setup change
 
 Written on 2026-10-27 by T52, for the first trial: Sonnet 5.5 for reviewers.
 A later trial, of builders say, follows the same method with its own role.
 A trial starts only on Daniel's word, and only Daniel's word keeps or ends its model.
+It covers setup trials too, since T247: a toolkit, hook or instruction that claims to save tokens is trialled by the same measures, as "Trialling a setup change" below says.
 
 ## How a role gets a model
 
@@ -60,3 +61,68 @@ The paired reviews' own launches log `opus`, so their $w is a row of their own i
 - The note gives each measure for the trial and the baseline, each with the count of reviews behind it and the bucket mix; the five paired comparisons, finding by finding; the effort each side ran at; and the $w the trial model saved per review and over the trial.
 - Daniel decides: the registry line stays, as the project's new default, or goes, by a records change to `projects.toml` either way.
   The machine settings' `modelSettings` entry for the trial model stays or goes with it.
+
+## Trialling a setup change
+
+A toolkit, hook or instruction that claims to save tokens is kept only on a measured trial and Daniel's word, as a model is.
+T239 (`tasks/T239/scratch/report.md`) is why: each token-saving method it judged claimed a saving on its own benchmark or surface, yet in the post's test of whole task runs two of them spent more tokens than the baseline (Context Mode 68% more, Mandarin 46%).
+So a change's own numbers never keep it: only the team's own tasks with and without it, measured as below, and Daniel's decision on them.
+
+### Before the setup trial
+
+1. Daniel says yes to the change, its project, the roles it is for and the size.
+2. The coordinator lists a toolkit in the project's `toolkits` in the team home's `projects.toml`, a records-only commit after `team-project --check` passes, since those are the toolkits a worker of the project may be given (`team-project --help`).
+3. The coordinator notes the trial's start time, `<start>`.
+
+### The arm
+
+- A change that can be a toolkit is one: the coordinator gives `--toolkit <name>` to the first builder of every other task of the project opened after `<start>`, in the order they open, and not to the tasks between them.
+- `team-next` launches a task's later builders with the toolkits of its latest builder launch, and its reviewers with those of its latest reviewer launch, else of its latest builder launch, so a task stays in its first builder's arm.
+  A launch by hand (the next phase's first ticket, a resume, a replacement) gives the same `--toolkit`s as the task's latest launch of that role, else of its latest builder launch, so no task mixes arms.
+- The ledger's launch events log each launch's `toolkits`, which tells the arms apart, and the measures below split by them.
+- A change that cannot be a toolkit (a role prompt's wording or a setting, say) is trialled by alternating weeks from `<start>`: on in the first week, off in the second, and so on, each week's launches its arm, measured with `--since` and `--until` set to the week; the closing note says which form the trial took.
+
+### The size
+
+Daniel's number: 40 tickets done per arm for a builder-side change, and 40 reviews per arm for a reviewer-side one, unless they pick another.
+At about 40 tickets per arm the trial detects a difference in builder $w per ticket of about 25% or more, assuming a spread of about the mean, which T239 could not measure; the note reports the spread it finds.
+
+### The setup trial's measures
+
+Each measure is taken per task, with `--task T<n>`, over the trial's tasks (the arm) and the tasks between them (the baseline): the project's tasks opened after `<start>` whose PR is merged or closed by the trial's end, `<end>`, which each report takes as `--until <end>`.
+So a task opened before `<start>`, which also has no toolkit, never counts as baseline, and a task still in flight, with $w but no ticket done yet, counts in neither arm.
+In each task's report the arm's rows are those whose `toolkits` hold the trial's toolkit; a project's other toolkits make rows of their own (`["browser"]` and `["browser", "codegraph"]`, say), each counted in its arm by whether it holds the trial's toolkit.
+
+| Measure | Where it comes from |
+| - | - |
+| Builder $w per ticket done | `team-tokens --json --task T<n>`: `outcomes.builder_toolkits`, its rows by `project` and `toolkits`, their `tickets_done` and `w` (a ticket done counted for the builder launch that delivered it), summed over each arm's tasks |
+| Reviewer $w per review | The same report's `outcomes.reviewer_toolkits`: `reviews` and `w` (a review counted for the reviewer launch that wrote it), summed over each arm's tasks |
+| Findings share and notes sent back per review | The ledger's `review` events, as the model trial's measures are taken: the share with `verdict` `findings` (which `outcomes.reviewer_toolkits`'s `findings` over `reviews` gives per task), and the notes sent back per review, the length of `sent_back`, over each arm's tasks |
+| Re-review rounds per PR | `team-time --json --task T<n>`'s `reviews` and `team-tokens --json --task T<n>`'s `rereviews`, for each of the arm's tasks |
+| Wall time per worker | `team-time --json --task T<n>`: `workers.lifetimes`, each lifetime's `minutes` by its `role` and `toolkits`, over each arm's tasks |
+
+The same reports over the whole window, `team-tokens --json --since <start> --until <end>`'s toolkit rows and `team-time --json --since <start> --until <end>`'s `workers.stats.by_role_project_toolkits`, give a quick read while the trial runs, never the note's figures: they also hold the project's tasks opened before `<start>`, all in the baseline, and the $w of tasks not done by `--until`.
+
+### The setup trial's baseline
+
+- The baseline is the same project's launches without the toolkit in the same window: the tasks between the trial's, so both arms see the same weeks of the project's work.
+- Each task is weighed by its PR's size in the model trial's four buckets (see "The baseline" above), its measures taken with `--task T<n>` as above, and the baseline weighed to the trial arm's mix of buckets; a bucket with no baseline task is left out of both sides, and the note says so.
+
+### The stop rule
+
+The coordinator tells Daniel at once when the trial arm's findings share or its re-review rounds per PR rise above the baseline's, and Daniel may end the trial there.
+
+### The end of a setup trial
+
+- Once each arm reaches the size, the coordinator writes a short note to Daniel and keeps it in the team home as `projects/<project>/setup-trials/<YYYY-MM-DD>-<role>-<toolkit>.md`, the date `<start>`'s.
+- The note gives each measure for both arms, each with the counts of launches, tickets done or reviews behind it and the bucket mix, the spread of builder $w per ticket, and the $w the change saved or cost per ticket or review and over the trial.
+- Daniel decides: the toolkit stays in the project's `toolkits` and the coordinator gives it to the project's builders and reviewers by default, or it leaves the registry, by a records change to `projects.toml` either way.
+
+### The first setup trial: CodeGraph on Conventioner
+
+- The arm is `--toolkit codegraph` on Conventioner's builders and reviewers, which the coordinator gives only once it lists `codegraph` in the project's `toolkits`.
+  The toolkit (`toolkits/codegraph/README.md`) builds or syncs the worktree's own CodeGraph index at session start and prints a banner to locate code with `codegraph explore` first.
+- Both arms already carry the user CLAUDE.md's CodeGraph instruction, to reach for CodeGraph where a `.codegraph/` directory exists, and on 2026-11-09 every Conventioner slot had one holding only its tracked `.gitignore`, with no index.
+  So the trial tests a built index plus the banner against today's uninitialised slots, never CodeGraph against no mention of it.
+- It is a builder-side and reviewer-side change, so it runs to 40 tickets done and 40 reviews per arm unless Daniel picks another size, and its notes are `projects/conventioner/setup-trials/<YYYY-MM-DD>-builder-codegraph.md` and `-reviewer-codegraph.md`.
+- It needs Daniel's word on its start and its size, as every setup trial does.
