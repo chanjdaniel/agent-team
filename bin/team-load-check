@@ -812,9 +812,9 @@ ops_check() {
   if [[ -f $oplog ]]; then before=$(wc -l <"$oplog"); else before=0; fi
 
   # One 1Password prompt per toolkit, each server reading its own secret.
-  local -a counted=('' a two three)
-  prompts="${counted[${#kits[@]}]} 1Password prompts are coming on the PC: approve them"
-  ((${#kits[@]} > 1)) || prompts='a 1Password prompt is coming on the PC: approve it'
+  local -A counted=([2]=two [3]=three)
+  if ((${#kits[@]} > 1)); then prompts="${counted[${#kits[@]}]} 1Password prompts are coming on the PC: approve them"
+  else prompts='a 1Password prompt is coming on the PC: approve it'; fi
   [[ -z $writes ]] || prompts+='; then decline each of the five write prompts on the phone'
   echo "load check: Daniel, $prompts"
   # The session is always ended with team-ops-end, which deletes its transcript.
