@@ -18,8 +18,9 @@
 //                            starts one and waits until its root user can ping it; resolves
 //                            { name, port, expires, uri, password, client, stop() }; on any failure
 //                            it removes the container first, then rejects
-//   removeThrowaway(name)    removes the container (docker rm --force), then checks it is gone:
-//                            { gone: true } or { gone: false, error }; synchronous, for a signal
+//   removeThrowaway(name)    kills a docker run still starting one, removes the container (docker rm
+//                            --force), then checks it is gone: { gone: true } or { gone: false,
+//                            error }; synchronous, for a signal
 //   throwaway.stop()         closes the client, then removeThrowaway
 //
 // The container: the pinned image with its data and config on tmpfs, so restored personal data
@@ -31,9 +32,11 @@
 // `join`, { network, alias }, connects it to a network of the caller's under that alias too (the
 // rehearsal's internal network, as `mongodb`).
 // Every docker call gets childEnv() alone (children.mjs), the password added only to `docker run`'s.
+// Every call but `docker run` is synchronous and short; `docker run`, which may pull the image, runs
+// without blocking, so a signal is handled while it waits.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { childEnv, lastLine } from "./children.mjs";
+import { childEnv, lastLine, run } from "./children.mjs";
 
 // Production is Atlas on MongoDB 8.0.
 export const throwawayImage = "mongo:8.0.34@sha256:4a4ab5d4834207389e0d7270fac988e21ffedccecba77991a552f755df229907";
@@ -96,7 +99,12 @@ export function removeExpired(now = Date.now()) {
 
 export const throwawayName = (kind) => `${toolkit}-${kind}-${randomBytes(6).toString("hex")}`;
 
+// The docker run children still running, which removeThrowaway kills first, so a run a signal
+// interrupts never goes on to start a container after its maker is gone.
+const starting = new Set();
+
 export function removeThrowaway(name) {
+  for (const child of starting) child.kill("SIGKILL");
   const gone = docker(["rm", "--force", "--volumes", name]);
   const left = docker(["container", "inspect", "--format", "{{.Id}}", name]);
   if (!left.ok && /no such (container|object)/i.test(left.why)) return { gone: true };
@@ -107,7 +115,7 @@ export async function startThrowaway({ name, kind, join, MongoClient }) {
   const password = randomBytes(24).toString("hex");
   const expires = isoSecond(Date.now() + lifeSeconds * 1000);
   const remove = () => removeThrowaway(name);
-  const started = docker(
+  const started = await dockerRun(
     [
       "run", "--detach", "--rm", "--name", name,
       ...toolkitLabels({ kind, expires }),
@@ -119,8 +127,7 @@ export async function startThrowaway({ name, kind, join, MongoClient }) {
       "--entrypoint", "timeout",
       throwawayImage, String(lifeSeconds), "docker-entrypoint.sh", "mongod",
     ],
-    // Pulling the image the first time can take minutes.
-    { env: childEnv({ MONGO_INITDB_ROOT_PASSWORD: password }), timeoutMs: 10 * 60_000 },
+    childEnv({ MONGO_INITDB_ROOT_PASSWORD: password }),
   );
   if (!started.ok) {
     remove();
@@ -154,6 +161,26 @@ export async function startThrowaway({ name, kind, join, MongoClient }) {
     remove();
     throw error;
   }
+}
+
+// docker run, as docker() answers, but without blocking: pulling the image the first time can take
+// minutes, and a signal meanwhile must be handled at once.
+async function dockerRun(args, env) {
+  let result;
+  try {
+    result = await run("docker", args, {
+      env,
+      timeoutMs: 10 * 60_000,
+      onSpawn: (child) => {
+        starting.add(child);
+        child.on("exit", () => starting.delete(child));
+      },
+    });
+  } catch (error) {
+    return { ok: false, stdout: "", why: error.code === "ENOENT" ? "docker is not installed" : error.message };
+  }
+  if (result.timedOut) return { ok: false, stdout: "", why: "docker run did not finish in 10 min" };
+  return { ok: result.code === 0, stdout: result.stdout.trim(), why: lastLine(result.stderr) || `docker run exited ${result.code ?? result.signal}` };
 }
 
 // The image's entrypoint restarts mongod once after creating the root user, so wait for a ping

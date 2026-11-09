@@ -3,12 +3,14 @@
 //
 //   await restoreDrill({ argv, database, root })
 //                            the body of toolkits/prod-mongo/scripts/restore-drill.mjs: prints one
-//                            JSON object on stdout (with --text, drillAnswer's text instead) and
-//                            exits 0 on PASS, 1 on FAIL, a refusal or a failure, and 128 plus
+//                            JSON object on stdout (with --text, drillAnswer's text instead), each
+//                            step as it starts on stderr (`restore-drill: <step>`), and exits 0 on PASS, 1 on FAIL, a refusal or a failure, and 128 plus
 //                            the signal's number when stopped by SIGINT, SIGTERM or SIGHUP
 //   await drillTool({ input, root, shown, scrubbed, progress })
 //                            the restore-drill tool: runs that script through the server's own
-//                            checkout's bin/team-heavy, and answers { text, isError }
+//                            checkout's bin/team-heavy, relays each step the script writes on its
+//                            stderr (`restore-drill: <step>`) as a progress notification, and
+//                            answers { text, isError }
 //   drillAnswer(result)      the tool's answer to the script's JSON: { text, isError }
 //   restoreLimit             512 MiB: the largest restore a drill takes, read from the manifest's
 //                            restoredBytes (the database's data and indexes, uncompressed, never the
@@ -48,6 +50,12 @@ const checkout = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const teamHeavy = join(checkout, "bin", "team-heavy");
 const script = join(checkout, "toolkits", "prod-mongo", "scripts", "restore-drill.mjs");
 const signals = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
+
+// Each step of the script, one line on its stderr, which drillTool relays as a progress
+// notification and a person running it by hand reads as it goes.
+const stepPrefix = "restore-drill: ";
+const step = (text) => writeSync(2, `${stepPrefix}${text}\n`);
+const stepLine = (line) => (line.startsWith(stepPrefix) ? line.slice(stepPrefix.length) : undefined);
 
 export async function restoreDrill({ argv, database, root: configuredRoot }) {
   process.umask(0o077);
@@ -120,13 +128,16 @@ async function drill({ rest, database, root, shown, state }) {
   const drills = join(folder, "drills");
   const recordPath = join(drills, `${at}.json`);
   if (existsSync(recordPath)) throw new Refusal(`${shownFolder}/drills/${at}.json already exists: ask again in a second`);
+  step("removing what earlier drills left past their expiry");
   state.removed = removeExpired(started);
   state.name = throwawayName("drill");
+  step("starting the throwaway MongoDB");
   const throwaway = await startThrowaway({ name: state.name, kind: "drill", MongoClient });
   const scrubbed = scrubber(throwaway.uri);
 
   mkdirSync(drills, { recursive: true, mode: 0o700 });
   let restoreError;
+  step("restoring the dump");
   try {
     const restored = await runWithConfig(
       "mongorestore",
@@ -144,8 +155,10 @@ async function drill({ rest, database, root, shown, state }) {
     throw new Error(`mkfifo failed: ${scrubbed(error.message)}`);
   }
 
+  step("comparing each collection with the manifest");
   const collections = await compare(throwaway.client, database, manifest);
   const verdict = !restoreError && collections.every(({ match }) => match) ? "PASS" : "FAIL";
+  step("removing the throwaway MongoDB");
   const cleanup = await throwaway.stop();
   state.name = undefined;
   const ended = Date.now();
@@ -222,13 +235,26 @@ export async function drillTool({ input, root, shown, scrubbed, progress }) {
   }
   progress(`drilling ${stamp}, through the machine's heavy-run lock`);
   const args = ["run", "--wait", wait, "--kind", "restore-drill", "--label", `prod-mongo restore-drill ${stamp}`, "--", process.execPath, script, stamp];
+  // The script's steps, relayed as they come; its other stderr lines are kept for a failure's reason.
+  const relay = (child) => {
+    let partial = "";
+    child.stderr.on("data", (chunk) => {
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop();
+      for (const line of lines) {
+        const text = stepLine(line);
+        if (text !== undefined) progress(text);
+      }
+    });
+  };
   let ran;
   try {
     // TERM, so the script removes its throwaway before it ends.
-    ran = await run(teamHeavy, args, { env: childEnv(extra), timeoutMs: (Number(wait) + 30) * 60_000, killSignal: "SIGTERM" });
+    ran = await run(teamHeavy, args, { env: childEnv(extra), timeoutMs: (Number(wait) + 30) * 60_000, killSignal: "SIGTERM", onSpawn: relay });
   } catch (error) {
     throw new Refusal(`team-heavy could not start: ${scrubbed(error.message)}`);
   }
+  ran.stderr = ran.stderr.split("\n").filter((line) => stepLine(line) === undefined).join("\n");
   if (ran.code === 75) {
     const why = scrubbed(lastLine(ran.stderr)).replace(/^team-heavy: /, "");
     return { text: `restore-drill: the machine is busy: ${why}; ask again later`, isError: true };

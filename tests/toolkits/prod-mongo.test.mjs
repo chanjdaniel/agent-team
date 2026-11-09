@@ -648,13 +648,19 @@ describe("restore-drill", () => {
 
   // The spy docker: each call's arguments, one per line and ended by "--- end", in `calls`, and
   // the environment `docker run` starts with, in `run-environ`; then the real docker, but for
-  // `docker port`, which fails while `fail-port` exists.
+  // `docker port`, which fails while `fail-port` exists. While `hold-run` exists, `docker run`
+  // first writes `run-held` and waits up to 20 seconds for `go-run`, as a first pull of the image does.
   function spyDocker() {
     const dir = tempDir("docker-spy");
     writeFileSync(join(dir, "docker"), `#!/bin/sh
 dir='${dir}'
 { printf '%s\\n' "$@"; echo '--- end'; } >>"$dir/calls"
 if [ "$1" = run ]; then ${environOf} >"$dir/run-environ"; fi
+if [ "$1" = run ] && [ -f "$dir/hold-run" ]; then
+  : >"$dir/run-held"
+  n=0
+  while [ ! -f "$dir/go-run" ] && [ $n -lt 200 ]; do sleep 0.1; n=$((n + 1)); done
+fi
 if [ "$1" = port ] && [ -f "$dir/fail-port" ]; then echo 'Error: no port, as the test asked' >&2; exit 1; fi
 exec '${realDocker}' "$@"
 `, { mode: 0o755 });
@@ -749,6 +755,43 @@ exit $status
       spawnSync(realDocker, ["rm", "--force", name]);
       spawnSync(realDocker, ["network", "rm", network]);
     }
+  });
+
+  test("sends a progress notification per step of a backup and of a drill, the drill's relayed from its script", async () => {
+    const steps = (server, token) =>
+      server.fromServer
+        .filter(({ method, params }) => method === "notifications/progress" && params.progressToken === token)
+        .map(({ params }) => [params.progress, params.message]);
+    let stamp;
+    await withServer(async (server) => {
+      const result = await server.callTool("backup", {}, { progressToken: "b" });
+      assert.ok(!result.isError, result.text);
+      stamp = backups()[0];
+      assert.deepEqual(steps(server, "b"), [
+        [1, "checking the backups folder"],
+        [2, "reading the database's size"],
+        [3, "counting each collection"],
+        [4, "dumping"],
+        [5, "counting each collection again"],
+        [6, "checking the dump"],
+      ]);
+    });
+    await drillServer(async (server) => {
+      const result = await server.callTool("restore-drill", {}, { progressToken: "d" });
+      assert.ok(!result.isError, result.text);
+      assert.deepEqual(steps(server, "d"), [
+        [1, `drilling ${stamp}, through the machine's heavy-run lock`],
+        [2, "removing what earlier drills left past their expiry"],
+        [3, "starting the throwaway MongoDB"],
+        [4, "restoring the dump"],
+        [5, "comparing each collection with the manifest"],
+        [6, "removing the throwaway MongoDB"],
+      ]);
+      // No token, no notification.
+      const quiet = await server.callTool("restore-drill", {});
+      assert.ok(!quiet.isError, quiet.text);
+      assert.equal(server.fromServer.filter(({ method }) => method === "notifications/progress").length, 6);
+    });
   });
 
   test("passes on a backup the test took, records its verdict beside it, and leaves nothing running", async () => {
@@ -1043,6 +1086,30 @@ exit $status
     assert.doesNotMatch(restorer.read("cmdline"), /mongodb:\/\//);
     assert.ok(!restorer.read("environ").includes(password), "the password is in mongorestore's environment");
     assert.equal(restorer.read("config-kind"), "fifo\n");
+  });
+
+  test("stops at once on SIGTERM while docker run still waits, and leaves no container", async () => {
+    const stamp = await takeBackup();
+    const script = join(repoRoot, "toolkits", "prod-mongo", "scripts", "restore-drill.mjs");
+    docker.set("hold-run");
+    const child = spawn(process.execPath, [script, stamp], {
+      env: { HOME: home, PATH: [restorer.dir, docker.dir, toolsDir, testPath()].join(":"), PROD_MONGO_ROOT: root },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const done = ended(child);
+    await until(() => existsSync(join(docker.dir, "run-held")), 60_000);
+    const stopped = Date.now();
+    child.kill("SIGTERM");
+    const result = await done;
+    assert.ok(Date.now() - stopped < 10_000, `it waited ${Date.now() - stopped} ms for docker run`);
+    assert.equal(result.code, 128 + 15, result.stderr);
+    const out = JSON.parse(result.stdout);
+    assert.equal(out.failed, "the drill was stopped (SIGTERM)");
+    assert.deepEqual(out.cleanup, { gone: true });
+    // The held docker run never goes on to start the container once its drill is gone.
+    await new Promise((resolve) => setTimeout(resolve, 25_000));
+    assert.ok(gone(out.container), out.container);
+    assert.deepEqual(drillsOf(stamp), []);
   });
 
   test("removes its throwaway when stopped by SIGINT, SIGTERM or SIGHUP mid-drill, and records no verdict", async () => {
