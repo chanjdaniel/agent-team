@@ -1075,6 +1075,14 @@ COMMANDS
   assert_denies 'Bash(env *prod-mongo/scripts/settings*)' 'env node toolkits/prod-mongo/scripts/settings.mjs'
   assert_denies 'Bash(bun *prod-mongo/scripts/settings*)' 'bun toolkits/prod-mongo/scripts/settings.mjs'
   assert_denies 'Bash(deno *prod-mongo/scripts/settings*)' 'deno run -A toolkits/prod-mongo/scripts/settings.mjs'
+  # The 1Password read every server body shares exports readSecrets, which a shell's import could
+  # call with any reference, raising a 1Password prompt no launch announced.
+  assert_denies 'Bash(*node *op-secret*)' \
+    'node --input-type=module -e "await import(\"/home/me/agent-team/servers/op-secret.mjs\")"' \
+    'cd servers && node -e "import(\"./op-secret.mjs\").then((m) => m.readSecrets(\"x\", [\"op://a/b/c\"]))"'
+  assert_denies 'Bash(env *op-secret*)' 'env OP_ACCOUNT=x node -e "import(\"./servers/op-secret.mjs\")"'
+  assert_denies 'Bash(bun *op-secret*)' 'bun -e "await import(\"./servers/op-secret.mjs\")"'
+  assert_denies 'Bash(deno *op-secret*)' 'deno eval "await import(\"./servers/op-secret.mjs\")"'
   assert_denies 'Bash(*--plugin-dir*vercel-read*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/vercel-read' \
     'claude --bg --plugin-dir=toolkits/vercel-read'
   assert_denies 'Bash(*--mcp-config*vercel-read*)' 'claude -p hi --mcp-config toolkits/vercel-read/.mcp.json' \
@@ -1203,6 +1211,10 @@ git diff origin/dev -- servers/prod-mongo/server.mjs toolkits/prod-mongo/scripts
 sed -n 1,40p servers/prod-mongo/server.mjs
 cat toolkits/prod-mongo/scripts/settings.mjs
 claude plugin validate --strict toolkits/prod-mongo
+git diff origin/dev -- servers/op-secret.mjs
+sed -n 1,40p servers/op-secret.mjs
+grep -n readSecrets servers/op-secret.mjs servers/vercel-mcp.mjs
+git add servers/op-secret.mjs
 COMMANDS
 }
 

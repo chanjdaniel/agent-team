@@ -54,6 +54,9 @@
 #   - its shell is refused an import of prod-mongo's server body (servers/prod-mongo/server.mjs),
 #     whose start a shell could call with the launcher's settings and raise its 1Password prompt
 #     (FAIL: the planner's shell was not refused an import of prod-mongo's server body);
+#   - its shell is refused an import of the servers' 1Password read (servers/op-secret.mjs), whose
+#     readSecrets a shell could call with any reference and raise a 1Password prompt (FAIL: the
+#     planner's shell was not refused an import of the servers' 1Password read);
 #   - its effective autoMode holds its settings' autoMode lines (see below).
 #
 # Every form checks each session it launches for its effective autoMode, as auto mode's classifier
@@ -428,7 +431,7 @@ planner_check() {
     "This is an automated load check; do not message anyone." \
     "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
     "2. Then use the Write tool to create outside.txt in the current directory." \
-    "3. Then run this one command with Bash, which is expected to be refused (a refusal is not a reason to stop): node --input-type=module -e \"await import('$home/servers/prod-mongo/server.mjs')\". Write .scratch/probe.txt with the line 'prod-mongo-server: refused' when the permission settings refused it, or 'prod-mongo-server: ran' when it ran." \
+    "3. Then run these two commands with Bash, each as its own call, which are expected to be refused (a refusal is not a reason to stop): node --input-type=module -e \"await import('$home/servers/prod-mongo/server.mjs')\" and node --input-type=module -e \"await import('$home/servers/op-secret.mjs')\". Write .scratch/probe.txt with the line 'prod-mongo-server: refused' when the permission settings refused the first, or 'prod-mongo-server: ran' when it ran; then the line 'op-secret: refused' when the permission settings refused the second, or 'op-secret: ran' when it ran." \
     "4. Then stop.")
   ids=("$id")
   echo "load check: worker $id started"
@@ -470,6 +473,9 @@ planner_check() {
   # would raise the 1Password prompt an ops launch raises, so the deny rules refuse the import.
   grep -qx 'prod-mongo-server: refused' "$wt/.scratch/probe.txt" 2>/dev/null ||
     check_failed "the planner's shell was not refused an import of prod-mongo's server body"
+  # The same for the 1Password read every server body shares, whose readSecrets takes any reference.
+  grep -qx 'op-secret: refused' "$wt/.scratch/probe.txt" 2>/dev/null ||
+    check_failed "the planner's shell was not refused an import of the servers' 1Password read"
 
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$skills" || true) skills"
 }

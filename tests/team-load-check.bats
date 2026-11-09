@@ -8,7 +8,8 @@
 # is a claude stub that writes the inventory from $STUB_FIXTURES/inventory.txt, notes in
 # $BATS_TEST_TMPDIR/launch where it started, writes outside.txt where it started when
 # $STUB_FIXTURES/write-outside exists, and reports its shell's import of prod-mongo's server body
-# refused unless $STUB_FIXTURES/import-ran exists. Before it, each treehouse project's
+# refused unless $STUB_FIXTURES/import-ran exists, and of the 1Password read unless
+# $STUB_FIXTURES/op-secret-ran does. Before it, each treehouse project's
 # lease is rehearsed on a fake pool (helpers/treehouse); the registry has no treehouse project
 # unless a test adds one.
 
@@ -40,7 +41,8 @@ case $1 in
       ls -A | grep -vx -e .git -e .gitignore -e README.md -e .scratch || true; } >"$BATS_TEST_TMPDIR/launch"
     [[ ! -e $STUB_FIXTURES/write-outside ]] || echo planner >outside.txt
     cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt
-    if [[ -e $STUB_FIXTURES/import-ran ]]; then echo 'prod-mongo-server: ran'; else echo 'prod-mongo-server: refused'; fi >.scratch/probe.txt
+    { if [[ -e $STUB_FIXTURES/import-ran ]]; then echo 'prod-mongo-server: ran'; else echo 'prod-mongo-server: refused'; fi
+      if [[ -e $STUB_FIXTURES/op-secret-ran ]]; then echo 'op-secret: ran'; else echo 'op-secret: refused'; fi; } >.scratch/probe.txt
     echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
     ;;
   agents) echo '[]' ;;
@@ -238,13 +240,29 @@ left_nothing() {
   run_bin -0 team-load-check
   local prompt
   prompt=$(stub_calls claude | jq -r 'select(.[0] == "--bg") | .[-1]')
-  assert_contains "$prompt" "3. Then run this one command with Bash, which is expected to be refused"
+  assert_contains "$prompt" "3. Then run these two commands with Bash, each as its own call, which are expected to be refused"
   assert_contains "$prompt" "node --input-type=module -e \"await import('$REPO_ROOT/servers/prod-mongo/server.mjs')\""
   assert_contains "$prompt" "4. Then stop."
 
   touch "$STUB_FIXTURES/import-ran"
   run_bin -1 team-load-check
   assert_contains "$output" "FAIL: the planner's shell was not refused an import of prod-mongo's server body"
+  left_nothing
+}
+
+@test "a planner whose shell may import the servers' 1Password read fails the check" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  local prompt
+  prompt=$(stub_calls claude | jq -r 'select(.[0] == "--bg") | .[-1]')
+  assert_contains "$prompt" "node --input-type=module -e \"await import('$REPO_ROOT/servers/op-secret.mjs')\""
+  assert_contains "$prompt" "then the line 'op-secret: refused' when the permission settings refused the second, or 'op-secret: ran' when it ran."
+  [[ $output != *"1Password read"* ]]
+
+  touch "$STUB_FIXTURES/op-secret-ran"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: the planner's shell was not refused an import of the servers' 1Password read"
+  [[ $output != *"prod-mongo's server body"* ]]
   left_nothing
 }
 
