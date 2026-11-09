@@ -19,7 +19,7 @@ setup() {
   state=$HOME/.local/state/agent-team
   log=$state/heartbeat.log
   record=$state/health.json
-  inbox_discord
+  inbox_discord alerts
   inbox_kept
 }
 
@@ -252,7 +252,7 @@ http_origin() {
   mv "$ledger.new" "$ledger"
   checkpoint_due
   run_bin -0 team-timers run
-  [[ $output != *" ledger: "* ]]
+  assert_equal "$(grep -cE '^[^ ]+ ledger: ' <<<"$output")" 0
   view
   jq -e '.ok' <<<"$view"
 }
@@ -440,4 +440,295 @@ SH
     and .last_run.ended == null and .last_run.end == null and .last_run.holding and .last_checkpoint != null
     and .ledger.count == 0' "$HOME/at-inbox.json"
   jq -e '.last_run.ended == "ok" and .last_run.end != null and .last_good_run == .last_run.start' "$record"
+}
+
+# The alerts: one post in #coordinator when a problem becomes alerting, nothing more while it
+# stands, and an edit of that post when it ends. The inbox's fake Discord answers them
+# (alerts_shown); the times in them are this machine's local hours and minutes.
+
+# A UTC time as the heartbeat writes it in a post.
+clock() {
+  date -d "$1" +%H:%M
+}
+
+# The heartbeat log's alert lines, each without its time.
+alert_lines() {
+  grep ' alert: ' "$log" | cut -d' ' -f2- || true
+}
+
+# The failures log's lines, each without its time.
+problems_logged() {
+  cut -d' ' -f2- "$state/heartbeat-failures.log" 2>/dev/null || true
+}
+
+# The ids of the open alerts in the record, by key, as "<key> <message>" lines.
+open_alerts() {
+  jq -r '.alerts // {} | to_entries[] | "\(.key) \(.value.message)"' "$record"
+}
+
+# Fail the checkpoint as a team home off its branch does, and make it due.
+fail_checkpoint() {
+  git -C "$TEAM_HOME" checkout -q --detach
+  checkpoint_due
+}
+
+@test "two failed checkpoint runs post one alert with the first failure line and the last good one; later failing runs post nothing; a good run edits it resolved; a later incident posts anew" {
+  run_bin -0 team-timers run
+  fail_checkpoint
+  # One failed run posts nothing.
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown)" ""
+  assert_equal "$(alert_lines)" ""
+
+  checkpoint_due
+  run_bin -1 team-timers run
+  local since first more id good
+  since=$(jq -r .steps.checkpoint.since "$record")
+  # The last good checkpoint, which checkpoint_due dated 5 minutes back.
+  good=$(jq -r .last_checkpoint "$record")
+  first=$(jq -r .steps.checkpoint.reason "$record")
+  more=$(jq -r .steps.checkpoint.more "$record")
+  assert_equal "$first" "team home: not on a branch, so the records are not committed"
+  assert_equal "$more" 1
+  id=$(jq -r .id <<<"$(alerts_shown)")
+  jq -e --arg text "Checkpoints are failing on home-pc since $(clock "$since") (2 runs): $first, and 1 more. Work since the last good one ($(clock "$good")) is on this machine only." \
+    '. == {id: .id, content: $text, allowed_mentions: {parse: []}}' <<<"$(alerts_shown)"
+  assert_equal "$(alert_lines)" "alert: checkpoint: posted to #coordinator (message $id)"
+  assert_equal "$(open_alerts)" "checkpoint $id"
+
+  # A third and a fourth failing run post nothing more.
+  checkpoint_due
+  run_bin -1 team-timers run
+  checkpoint_due
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 1
+  assert_equal "$(alert_lines | wc -l)" 1
+
+  # The next good checkpoint edits the message in place and posts nothing new.
+  local posts
+  posts=$(grep -c '^POST channels/[0-9]*/messages$' "$STUB_FIXTURES/inbox/calls")
+  git -C "$TEAM_HOME" checkout -q dev
+  checkpoint_due
+  run_bin -0 team-timers run
+  local text
+  text=$(jq -r .content <<<"$(alerts_shown)")
+  [[ $text =~ ^"Checkpoints are failing on home-pc since $(clock "$since") (2 runs): "[^$'\n']+$'\n'"-# Resolved at "[0-9]{2}:[0-9]{2}"."$ ]]
+  assert_equal "$(grep -c '^POST channels/[0-9]*/messages$' "$STUB_FIXTURES/inbox/calls")" "$posts"
+  assert_contains "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/$id"
+  assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: resolved (message $id edited)"
+  assert_equal "$(open_alerts)" ""
+  # A good run after it does nothing more.
+  run_bin -0 team-timers run
+  assert_equal "$(alert_lines | wc -l)" 2
+
+  # A later incident posts a new message.
+  fail_checkpoint
+  run_bin -1 team-timers run
+  checkpoint_due
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 2
+  [[ $(alerts_shown | tail -n 1 | jq -r .id) != "$id" ]]
+  [[ $(alerts_shown | tail -n 1 | jq -r .content) == "Checkpoints are failing on home-pc since "*" (2 runs): "* ]]
+}
+
+@test "a last good checkpoint over 15 minutes old with no failure recorded posts the stale alert once, saying since when and why" {
+  run_bin -0 team-timers run
+  fake_checkpoint <<'SH'
+echo "not due: the last checkpoint is recent"
+SH
+  touch -d '-16 minutes' "$state/last-checkpoint"
+  local good
+  good=$(date -u -r "$state/last-checkpoint" +%FT%TZ)
+  run_bin -0 team-timers run
+  jq -e --arg text "No good checkpoint on home-pc since $(clock "$good") (16 minutes): the checkpoint step did not run." \
+    '.content == $text' <<<"$(alerts_shown)"
+  run_bin -0 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 1
+}
+
+@test "an alert post Discord refuses is logged in both logs and posted by the next run; an edit of a message that is gone is logged and closes the incident" {
+  run_bin -0 team-timers run
+  fail_checkpoint
+  run_bin -1 team-timers run
+  echo 503 >"$STUB_FIXTURES/inbox/fail"
+  checkpoint_due
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown)" ""
+  # Refused at the judging before the inbox step and again at the run's end.
+  assert_equal "$(alert_lines)" "alert: checkpoint: the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run
+alert: checkpoint: the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run"
+  assert_equal "$(problems_logged | grep '^alert: ')" "$(alert_lines)"
+  jq -e '.alerts.checkpoint.posted == null and .alerts.checkpoint.message == null' "$record"
+
+  # The next run posts it, with its text of that run, from the incident's since.
+  rm "$STUB_FIXTURES/inbox/fail"
+  local since
+  since=$(jq -r .alerts.checkpoint.since "$record")
+  checkpoint_due
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 1
+  [[ $(alerts_shown | jq -r .content) == "Checkpoints are failing on home-pc since $(clock "$since") (3 runs): "* ]]
+  local id
+  id=$(alerts_shown | jq -r .id)
+  assert_equal "$(open_alerts)" "checkpoint $id"
+
+  # The message is gone: the edit fails, is logged, and the incident is closed all the same.
+  rm "$STUB_FIXTURES/inbox/$id.json"
+  git -C "$TEAM_HOME" checkout -q dev
+  checkpoint_due
+  run_bin -0 team-timers run
+  assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: ended, but message $id could not be marked resolved (curl: (22) The requested URL returned error: 404); closed all the same"
+  assert_equal "$(problems_logged | grep '^alert: ' | tail -n 1)" "$(alert_lines | tail -n 1)"
+  assert_equal "$(open_alerts)" ""
+  run_bin -0 team-timers run
+  assert_equal "$(grep -c 'PATCH channels/[0-9]*/messages/'"$id" "$STUB_FIXTURES/inbox/calls")" 1
+}
+
+@test "a ledger line no reader can parse posts the ledger alert in the same run, once, and resolves when the line is fixed" {
+  local ledger=$TEAM_HOME/ledger.jsonl count
+  printf '%s\n' "not json" '[1, 2]' >>"$ledger"
+  count=$(wc -l <"$ledger")
+  run_bin -1 team-timers run
+  jq -e --arg text "ledger.jsonl on home-pc holds 2 lines no reader can parse (line $((count - 1)), $count), so every reader skips them: team-log --check names them." \
+    '.content == $text' <<<"$(alerts_shown)"
+  checkpoint_due
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 1
+
+  head -n "$((count - 2))" "$ledger" >"$ledger.new"
+  mv "$ledger.new" "$ledger"
+  checkpoint_due
+  run_bin -0 team-timers run
+  [[ $(alerts_shown | jq -r .content) == *$'\n'"-# Resolved at "??:??. ]]
+  assert_equal "$(open_alerts)" ""
+}
+
+@test "a step failing 12 runs in a row posts its alert once, 11 runs post nothing, and its first good run resolves it" {
+  local file=$HOME/.config/agent-team/capacity.json
+  mkdir -p "${file%/*}"
+  echo '{"minor_share": "a third"}' >"$file"
+  run_bin -1 team-timers run
+  date_record '.steps.capacity.runs = 10 | .steps.level.runs = 10'
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown)" ""
+
+  run_bin -1 team-timers run
+  local since
+  since=$(jq -r .steps.capacity.since "$record")
+  assert_equal "$(alerts_shown | jq -r .content | head -n 1)" \
+    "The heartbeat's capacity step has failed 12 runs in a row on home-pc, since $(clock "$since"): $file: minor_share must be a number above 0 and at most 1, not \"a third\"."
+  # The level step reads the same file, so it alerts in the same run.
+  assert_equal "$(open_alerts | cut -d' ' -f1 | sort | paste -sd ' ')" "step-capacity step-level"
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 2
+
+  rm "$file"
+  run_bin -0 team-timers run
+  assert_equal "$(open_alerts)" ""
+  assert_equal "$(alert_lines | grep -c ': resolved (message ')" 2
+}
+
+@test "offline, with the login refused and off the lease, no alert is posted or resolved, and an open one is judged again on the next holder run" {
+  run_bin -0 team-timers run
+  fail_checkpoint
+  run_bin -1 team-timers run
+  checkpoint_due
+  run_bin -1 team-timers run
+  local id
+  id=$(alerts_shown | jq -r .id)
+  # The checkpoint would now work, but no run here judges the alerts.
+  git -C "$TEAM_HOME" checkout -q dev
+  local before
+  before=$(alert_lines | wc -l)
+
+  stub_sleep
+  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  run_bin -75 team-timers run
+  run_bin -75 team-timers run
+  rm "$state/offline"
+  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 403)"
+  run_bin -1 team-timers run
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  rm "$state/login-refused"
+  run -0 "$REPO_ROOT/bin/team-lease" release
+  run_bin -0 team-timers run
+  assert_equal "$(alert_lines | wc -l)" "$before"
+  assert_equal "$(open_alerts)" "checkpoint $id"
+  [[ $(alerts_shown | jq -r .content) != *Resolved* ]]
+
+  # Fenced: the run disables the heartbeat and judges nothing.
+  run -0 "$REPO_ROOT/bin/team-lease" take
+  echo '{"since": "2026-11-01T00:00:00Z"}' >"$state/fenced"
+  run_bin team-timers run
+  assert_equal "$(alert_lines | wc -l)" "$before"
+  rm "$state/fenced"
+
+  # The next holder run judges it again: the checkpoint works, so it resolves.
+  checkpoint_due
+  run_bin -0 team-timers run
+  assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: resolved (message $id edited)"
+  assert_equal "$(open_alerts)" ""
+}
+
+@test "a checkpoint alert is posted before the run's janitor step" {
+  fake_checkpoint <<'SH'
+echo "team-checkpoint: T1 home: cannot push: the remote hung up" >&2
+exit 1
+SH
+  rm "$BATS_TEST_TMPDIR/code/bin/team-janitor"
+  printf '#!/usr/bin/env bash\necho "the janitor ran"\n' >"$BATS_TEST_TMPDIR/code/bin/team-janitor"
+  chmod +x "$BATS_TEST_TMPDIR/code/bin/team-janitor"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"heartbeat_janitor": true}' >"$HOME/.config/agent-team/stack.json"
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  local alert janitor
+  alert=$(grep -n ' alert: checkpoint: posted ' <<<"$output" | cut -d: -f1)
+  janitor=$(grep -n ' janitor: the janitor ran$' <<<"$output" | cut -d: -f1)
+  [[ -n $alert && -n $janitor ]]
+  ((alert < janitor))
+  assert_equal "$(alerts_shown | wc -l)" 1
+}
+
+@test "an alert mentions no one whatever its reason holds, and is cut to Discord's limit with room for its resolved line" {
+  local long
+  long=$(printf 'x%.0s' {1..3000})
+  fake_checkpoint <<SH
+echo "team-checkpoint: T1 home: cannot push: @everyone <@123> $long" >&2
+exit 1
+SH
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  local shown
+  shown=$(alerts_shown)
+  jq -e '.allowed_mentions == {parse: []} and (.content | length) == 1978 and (.content | endswith("..."))' <<<"$shown"
+
+  rm "$BATS_TEST_TMPDIR/code/bin/team-checkpoint"
+  cp "$REPO_ROOT/bin/team-checkpoint" "$BATS_TEST_TMPDIR/code/bin/team-checkpoint"
+  checkpoint_due
+  run_bin -0 team-timers run
+  shown=$(alerts_shown)
+  jq -e '.allowed_mentions == {parse: []} and (.content | length) == 2000' <<<"$shown"
+}
+
+@test "a run that outlasts the stale minutes judges nothing at its end, so an open checkpoint alert is not resolved by the heartbeat problem it then sees" {
+  run_bin -0 team-timers run
+  fail_checkpoint
+  run_bin -1 team-timers run
+  checkpoint_due
+  run_bin -1 team-timers run
+  local id
+  id=$(alerts_shown | jq -r .id)
+  # A janitor that takes 4 s, with a run 3 s old counted as a heartbeat not running: at the run's
+  # end the view says the heartbeat last ran too long ago, which says nothing of the checkpoint.
+  fake_checkpoint <<'SH'
+echo "team-checkpoint: team home: not on a branch, so the records are not committed" >&2
+exit 1
+SH
+  rm "$BATS_TEST_TMPDIR/code/bin/team-janitor"
+  printf '#!/usr/bin/env bash\ncommand -p sleep 4\n' >"$BATS_TEST_TMPDIR/code/bin/team-janitor"
+  chmod +x "$BATS_TEST_TMPDIR/code/bin/team-janitor"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"heartbeat_janitor": true}' >"$HOME/.config/agent-team/stack.json"
+  TEAM_TIMERS_HEALTH_STALE_MINUTES=0.05 run_bin -1 team-timers run
+  assert_equal "$(open_alerts)" "checkpoint $id"
+  assert_equal "$(alert_lines | wc -l)" 1
 }

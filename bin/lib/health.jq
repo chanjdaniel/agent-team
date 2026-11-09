@@ -15,7 +15,11 @@
 #      many runs in a row, its latest reason, how many more failure lines it gave, and the id of
 #      the last run that counted it,
 #    ledger: {count, bad_lines, last_event}, the lines that are not JSON objects (the first 100
-#      line numbers) and the time of the last event that is not a denied}
+#      line numbers) and the time of the last event that is not a denied,
+#    alerts: {<key>: {since, text, posted, message}}, each open alert: since when its problem
+#      stands, its text, when it was posted to #coordinator (null until a post went through) and
+#      the message that carries it (null until then, or when Discord gave no id); written by
+#      team-timers as it posts and resolves, never by health_fold}
 # Keys it does not name are kept as they are.
 
 # The thresholds, each defined here once: a checkpoint failing for `runs` runs in a row alerts, a
@@ -106,6 +110,16 @@ def health_plain_rel($now): "\(.) (\(health_age($now)) minutes ago)";
 
 def health_runs: "\(.) run\(if . == 1 then "" else "s" end)";
 
+# A UTC time as this machine's local hours and minutes (TZ's), as the heartbeat's other posts
+# write it: health_clock
+def health_clock: health_epoch | strflocaltime("%H:%M");
+
+# Discord's limit on a message, less room for the line an alert's edit adds when it resolves.
+def health_alert_limit: 2000 - ("\n-# Resolved at 00:00." | length);
+
+# A reason as the end of a sentence: its own last full stop left off.
+def health_sentence: rtrimstr(".");
+
 # The view for a machine that keeps no health, one whose record is unknown, and one whose
 # problems are known, with or without problems.
 def health_not_holding($machine):
@@ -153,19 +167,30 @@ def health_problems($lease; $now; $limits):
           [{key: "checkpoint", since: $failing.since, alerting: ($failing.runs >= $limits.runs or $old),
             sweep: "checkpoint-stale",
             line: "checkpoint failing since \($failing.since | health_at) (\($failing.runs | health_runs)): \($failing.reason | health_cut(150))",
-            text: "checkpoint failing since \($failing.since) (\($failing.runs | health_runs)): \($failing.reason | health_cut(150))"}]
+            text: "checkpoint failing since \($failing.since) (\($failing.runs | health_runs)): \($failing.reason | health_cut(150))",
+            alert: ("Checkpoints are failing on \($rec.machine) since \($failing.since | health_clock) (\($failing.runs | health_runs)): "
+              + ($failing.reason // "no reason given" | health_sentence)
+              + (if ($failing.more // 0) > 0 then ", and \($failing.more) more" else "" end) + ". "
+              + (if $good then "Work since the last good one (\($good | health_clock)) is on this machine only."
+                 else "No checkpoint has worked yet, so all work is on this machine only." end))}]
         elif $old then
           [{key: "checkpoint", since: $good, alerting: true, sweep: "checkpoint-stale",
             line: "no good checkpoint \(if $good then "since \($good | health_rel)" else "yet" end): \($why | health_cut(150))",
-            text: "no good checkpoint \(if $good then "since \($good | health_plain_rel($now))" else "yet" end): \($why | health_cut(150))"}]
+            text: "no good checkpoint \(if $good then "since \($good | health_plain_rel($now))" else "yet" end): \($why | health_cut(150))",
+            alert: ("No good checkpoint on \($rec.machine) "
+              + (if $good then "since \($good | health_clock) (\($good | health_age($now)) minutes)" else "yet" end)
+              + ": \($why | health_sentence).")}]
         else [] end
     end) as $checkpoint
   | (($rec.ledger.count // 0) > 0 and $steps.ledger != null) as $unparsed
   | (if $unparsed then
       $rec.ledger as $l
       | ("\($l.count) ledger line\(if $l.count == 1 then "" else "s" end) no reader can parse") as $what
+      | ("line \($l.bad_lines[:10] | map(tostring) | join(", "))\(if $l.count > 10 then ", and \($l.count - 10) more" else "" end)") as $where
       | [{key: "ledger", since: $steps.ledger.since, alerting: true, sweep: "health", line: $what,
-          text: "\($what) (line \($l.bad_lines[:10] | map(tostring) | join(", "))\(if $l.count > 10 then ", and \($l.count - 10) more" else "" end))"}]
+          text: "\($what) (\($where))",
+          alert: ((if $l.count == 1 then ["", "it"] else ["s", "them"] end) as [$s, $it]
+            | "ledger.jsonl on \($rec.machine) holds \($l.count) line\($s) no reader can parse (\($where)), so every reader skips \($it): team-log --check names \($it).")}]
     else [] end) as $ledger
   | ($steps | keys_unsorted
       | map(select(. != "checkpoint" and . != "coordinator" and (. != "ledger" or ($unparsed | not))))
@@ -174,9 +199,39 @@ def health_problems($lease; $now; $limits):
           | (.runs >= $limits.step_runs) as $alerting
           | {key: "step-\($name)", since: .since, alerting: $alerting, sweep: (if $alerting then "health" else null end),
              line: "\($name) failing since \(.since | health_at) (\(.runs | health_runs)): \(.reason // "no reason given" | health_cut(150))",
-             text: "\($name) failing since \(.since) (\(.runs | health_runs)): \(.reason // "no reason given" | health_cut(150))"})) as $others
+             text: "\($name) failing since \(.since) (\(.runs | health_runs)): \(.reason // "no reason given" | health_cut(150))",
+             alert: "The heartbeat's \($name) step has failed \(.runs | health_runs) in a row on \($rec.machine), since \(.since | health_clock): \(.reason // "no reason given" | health_sentence)."})) as $others
   | $heartbeat + $offline + $refused + $checkpoint + $ledger + $others
   | map(.sweep = (if .alerting then .sweep else null end));
+
+# The alerts the record (the input) calls for at $now: each alerting problem that has an alert
+# text (checkpoint, ledger and step-<name>; heartbeat, offline and login-refused post none here),
+# as {key, since, text}, the text cut to health_alert_limit: health_alerts($lease; $now; $limits)
+def health_alerts($lease; $now; $limits):
+  [health_problems($lease; $now; $limits)[] | select(.alerting and (.alert | type) == "string")
+    | {key, since, text: (.alert | health_cut(health_alert_limit))}];
+
+# What to post and what to resolve at $now, from the record (the input) and its open alerts:
+# {post: [{key, since, text}], resolve: [{key, since, text, posted, message}]}. An alert called for
+# with no open one, or with one never posted, is posted (its since the open one's, its text this
+# run's); one open whose problem is no longer alerting is resolved; one open and posted while its
+# problem stands is left alone, whatever its reason becomes. Only on the holder, so a machine that
+# does not hold plans nothing, and nothing while a heartbeat, offline or login-refused problem
+# stands (a run that has outlasted the stale minutes, say), since each hides the checkpoint
+# problem without saying it has ended: health_alert_plan($lease; $fenced; $machine; $now; $limits)
+def health_alert_plan($lease; $fenced; $machine; $now; $limits):
+  if ($lease | type) != "object" or $lease.holder != $machine or $lease.state != "held" or $fenced
+    or type != "object" or .schema != "team-health/1" then
+    {post: [], resolve: []}
+  elif any(health_problems($lease; $now; $limits)[]; .key == "heartbeat" or .key == "offline" or .key == "login-refused") then
+    {post: [], resolve: []}
+  else
+    (.alerts // {}) as $open
+    | health_alerts($lease; $now; $limits) as $wanted
+    | {post: [$wanted[] | select($open[.key].posted == null) | .since = ($open[.key].since // .since)],
+       resolve: [$open | to_entries[] | select(.key as $key | all($wanted[]; .key != $key))
+         | {key, since: .value.since, text: .value.text, posted: .value.posted, message: .value.message}]}
+  end;
 
 # The view (team-timers health --json) from the record's text $raw (null when there is none), the
 # lease record $lease (null when there is none), whether $fenced, this $machine, $now (seconds)
