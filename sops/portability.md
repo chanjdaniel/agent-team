@@ -67,7 +67,7 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 What a dead machine can lose:
 
 - while checkpoints succeed, about the last 5 minutes of work in flight, since the heartbeat checkpoints on each run;
-- none of the ledger's events of a kind its contract marks `"push": true` (Daniel's word and answers, a `plan-approved`, a `merged`, a `closed`, a `ran`), since each writer pushes the ledger the moment it logs one (`ledger_push` in `bin/lib/team.sh`), and a push that fails says so on stderr and leaves it to the next checkpoint;
+- none of the ledger's events of a kind its contract marks `"push": true` (Daniel's word and answers, a `plan-approved`, a `merged`, a `closed`, a `ran`), since each writer pushes the ledger the moment it logs one (`ledger_push` in `bin/lib/team.sh`), and a push that fails, or one not tried while the team holds offline, says so on stderr and leaves it to the next checkpoint;
 - when checkpoints stop, everything since the last good one, which no window bounds: what holds then is the heartbeat's post in `#coordinator` and the sweep's `checkpoint-stale` finding, both standing until a checkpoint succeeds again.
 
 What `team-checkpoint` does:

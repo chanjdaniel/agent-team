@@ -312,3 +312,24 @@ awaiting() {
   assert_equal "$(jq -c '[.id, .script != null]' "$TEAM_HOME/ledger.jsonl")" '["fix",true]
 ["fix",false]'
 }
+
+@test "ledger_push never fails its caller: a commit that fails with nothing on stderr is the one line with its fallback reason, and the script goes on" {
+  git -C "$TEAM_HOME" init -q -b dev
+  git -C "$TEAM_HOME" remote add origin "$BATS_TEST_TMPDIR/origin.git"
+  local script=$BATS_TEST_TMPDIR/bin/team-log
+  cat >"$script" <<SCRIPT
+#!/usr/bin/env bash
+set -euo pipefail
+source "$REPO_ROOT/bin/lib/team.sh" "\$@"
+commit_records() { return 1; }
+ledger_append '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"plan-approved","by":"Daniel"}'
+ledger_push
+echo "went on"
+SCRIPT
+  chmod +x "$script"
+  guard_sandbox
+  run --separate-stderr "$script"
+  assert_equal "$status" "0"
+  assert_equal "$output" "went on"
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (commit_records failed with no reason); the next checkpoint pushes it"
+}

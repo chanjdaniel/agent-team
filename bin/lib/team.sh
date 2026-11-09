@@ -263,14 +263,22 @@ ledger_append() {
 # its caller: a commit that fails (the records hook refuses it) or a push that fails is one line
 # on stderr, "<script>: the ledger is not on origin yet (<why>); the next checkpoint pushes it",
 # and a machine that is fenced or lost the lease (lease_refusal) commits and pushes nothing,
-# saying so in the same form. A team home that is no git checkout with an origin is left as it
+# saying so in the same form. While the team holds offline (the heartbeat's offline flag) and the
+# machine is not fenced, it makes no network call: it commits nothing and says GitHub is
+# unreachable since when, in the first form, since the checkpoint of the heartbeat's back step
+# commits and pushes the ledger. A team home that is no git checkout with an origin is left as it
 # is, silently. Each script that writes a push kind calls it once, after its last event:
 # ledger_push
 ledger_push() {
-  local why err
+  local why err offline=$HOME/.local/state/agent-team/offline since
   [[ -n ${LEDGER_PUSH_DUE:-} ]] || return 0
   LEDGER_PUSH_DUE=''
   [[ -e $TEAM_HOME/.git ]] && git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 0
+  if [[ -e $offline ]] && ! fence_reason >/dev/null; then
+    since=$(jq -er '.since | strings' "$offline" 2>/dev/null) || since=$(date -u -r "$offline" +%FT%TZ)
+    echo "${0##*/}: the ledger is not on origin yet (GitHub is unreachable since $(date -d "$since" +%H:%M), and the team is holding); the next checkpoint pushes it" >&2
+    return 0
+  fi
   if why=$(lease_refusal "commits and pushes no ledger"); then
     echo "${0##*/}: the ledger is not on origin yet ($why)" >&2
     return 0
@@ -278,7 +286,7 @@ ledger_push() {
   err=$(mktemp) || return 0
   if ! (NET_ERR=$err.net NET_TIMEOUT=20 commit_records "chore: ledger ${LEDGER_TASKS[*]} ${LEDGER_KINDS[*]}" ledger.jsonl \
     >/dev/null 2>"$err"); then
-    why=$(grep -m1 . "$err" | sed -E "s/^${0##*/}: team home: //; s/^committed [0-9a-f]+ [^;]*; //; s/:$//")
+    why=$({ grep -m1 . "$err" || true; } | sed -E "s/^${0##*/}: team home: //; s/^committed [0-9a-f]+ [^;]*; //; s/:$//")
     echo "${0##*/}: the ledger is not on origin yet (${why:-commit_records failed with no reason}); the next checkpoint pushes it" >&2
   fi
   rm -f "$err" "$err.net"

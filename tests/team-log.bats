@@ -1888,6 +1888,27 @@ origin_subject() {
 plan-approved"
 }
 
+@test "while the team holds offline, the push is skipped at once with no network call, saying the next checkpoint pushes it" {
+  push_home
+  local head tip
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  echo '{"since": "2026-10-22T14:00:00Z"}' >"$HOME/.local/state/agent-team/offline"
+  rm -f "$HOME/.local/state/agent-team/probe.json"
+  # An origin that would hang every call: the skip makes none.
+  git -C "$TEAM_HOME" remote set-url origin "http://127.0.0.1:9/agent-team.git"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (GitHub is unreachable since $(date -d 2026-10-22T14:00:00Z +%H:%M), and the team is holding); the next checkpoint pushes it"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  [[ ! -e $HOME/.local/state/agent-team/probe.json ]]
+
+  # A fenced machine says it is fenced, offline or not.
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  [[ $stderr == "team-log: the ledger is not on origin yet (home-pc is fenced since "* ]]
+}
+
 @test "a team home with no origin, or that is no git checkout, prints nothing and fails nothing" {
   run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
   assert_equal "$output" ""

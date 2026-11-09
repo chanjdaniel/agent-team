@@ -59,8 +59,8 @@
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
 # merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
 # merge-standing-withdrawn, retro-schedule) is committed and pushed to the team home's origin
-# before team-log ends (ledger_push in bin/lib/team.sh), in either form; a push that fails is one
-# line on stderr, and the exit stays 0.
+# before team-log ends (ledger_push in bin/lib/team.sh), in either form; a push that fails, or
+# one not tried while the team holds offline, is one line on stderr, and the exit stays 0.
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
 # coordinator's message table gives it, checks each as above, and logs them all, or with --print
 # prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
