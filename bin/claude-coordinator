@@ -40,8 +40,9 @@
 # --all` lists a session named coordinator in any state but stopped, so the ledger keeps one
 # writer and Discord one listener: a background one whose turn is done (or that failed) counts,
 # though the daemon has settled its process and the list without --all leaves it out, since a
-# message or a finished shell of its wakes it. A non-blocking flock on ~/.local/state/agent-team/coordinator-launch.lock, held from
-# that check through the launch, makes a second launch at the same moment exit 1 at once.
+# message or a finished shell of its wakes it. A non-blocking flock on
+# ~/.local/state/agent-team/coordinator-launch.lock, held from that check through the launch,
+# makes a second launch at the same moment exit 1 at once.
 #
 # Usage: claude-coordinator [--prompt <text>] [working-directory]   (default: the team home)
 #   --prompt  the session's first prompt, in place of "You are the coordinator. Daniel talks to
@@ -75,7 +76,8 @@ flock -n "$lock_fd" || die "another claude-coordinator is launching right now (i
 # Every session the daemon may run again: without --all, the list leaves out a background session
 # with no process that is neither working nor blocked, as one is once its turn ends (done) or it
 # failed and the daemon settles its process, though a message or a finished shell of its wakes it.
-# --all lists every job the daemon still keeps, so only a stopped one, which nothing wakes, is gone.
+# --all lists every job the daemon still keeps, so only a stopped one, which nothing wakes on its
+# own, is gone.
 sessions=$(claude agents --json --all {lock_fd}>&- | jq -ce 'select(type == "array")' 2>/dev/null) ||
   die "cannot read the session list (claude agents --json --all)"
 live=$(jq -r 'map(select(.name == "coordinator" and .state != "stopped")) | first

@@ -377,10 +377,9 @@ JSON
 }
 
 @test "a background coordinator whose turn is done and whose process the daemon settled refuses the launch" {
-  # 240ef01f on 2026-11-09: done at 12:08:09, settled, woken at 12:09:20 by the daemon.
-  sessions "$(session 0a1b2c3d 0a1b2c3d-1111 T14-builder busy)" "$(settled 240ef01f 240ef01f-8efc coordinator "done")"
+  sessions "$(session 0a1b2c3d 0a1b2c3d-1111 T14-builder busy)" "$(settled 6d7e8f90 6d7e8f90-4444 coordinator "done")"
   run_bin -1 --separate-stderr claude-coordinator
-  assert_contains "$stderr" "claude-coordinator: a coordinator is already live: session 240ef01f"
+  assert_contains "$stderr" "claude-coordinator: a coordinator is already live: session 6d7e8f90"
   assert_equal "$(stub_calls claude)" '["agents","--json","--all"]'
   assert_not_launched
 }
@@ -392,8 +391,8 @@ JSON
   assert_not_launched
 }
 
-@test "a stopped coordinator, which nothing wakes, does not refuse the launch" {
-  sessions "$(settled 7e6352ef 7e6352ef-1111 coordinator stopped)" "$(settled 240ef01f 240ef01f-8efc coordinator stopped)" \
+@test "a stopped coordinator, which nothing wakes on its own, does not refuse the launch" {
+  sessions "$(settled 1a2b3c4d 1a2b3c4d-5555 coordinator stopped)" "$(settled 6d7e8f90 6d7e8f90-4444 coordinator stopped)" \
     "$(settled 0a1b2c3d 0a1b2c3d-1111 T14-builder "done")"
   run_bin -0 claude-coordinator
   assert_equal "$(stub_calls claude | tail -n 1)" "$(launch_argv)"
