@@ -1,27 +1,30 @@
 // prod-mongo's backup tool: one verified mongodump of the database into <root>/<UTC stamp>/.
 //
 //   await takeBackup({ MongoClient, value, database, root, mongodump, scrubbed, shown, progress })
-//                            the answer's text; throws a Refusal, whose message is the one line
-//                            the answer gives, when the backup was refused or failed
+//                            the answer's text; throws a Refusal (refusal.mjs) when the backup was
+//                            refused or failed
 //   roomRefusal(free, dataSize)   why a file system with `free` bytes has no room for a dump of a
 //                            database of `dataSize` bytes, or nothing
 //   stampOf(date)            the folder name of a backup started at `date`: 2026-11-08T142305Z
 //
-// The steps: create the root (mode 0700), read the server's version and dbStats and check the
-// room, list the collections and count each one's documents (before), dump into
-// <root>/.<stamp>.partial/dump through a FIFO in that 0700 directory that carries the connection
-// string to `mongodump --config` and is gone once mongodump has read it, count again (after),
-// count the dump's own documents and read its index names, judge each collection, then write
-// manifest.json and rename the folder to <root>/<stamp>/. On any failure the partial folder,
-// which this call made, is removed. mongodump's own output never reaches an answer: only its exit
-// and its last stderr line, through `scrubbed`.
+// The steps: check the root against every rule before any connection (root.mjs's checkRoot,
+// which makes it with mode 0700, or sets a looser one to 0700), read the server's version and
+// dbStats and check the room, list the collections and count each one's documents (before),
+// dump into <root>/.<stamp>.partial/dump through a FIFO in that 0700 directory that carries the
+// connection string to `mongodump --config` and is gone once mongodump has read it, count again
+// (after), count the dump's own documents and read its index names, judge each collection, then
+// write manifest.json and rename the folder to <root>/<stamp>/; the answer ends with the
+// retention line (list.mjs). On any failure the partial folder, which this call made, is
+// removed. mongodump's own output never reaches an answer: only its exit and its last stderr
+// line, through `scrubbed`.
 import { spawnSync } from "node:child_process";
 import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { childEnv, lastLine, run } from "./children.mjs";
 import { count, duration, humanBytes, readDump } from "./dump.mjs";
-
-export class Refusal extends Error {}
+import { listRoot, retentionLine, writing } from "./list.mjs";
+import { Refusal } from "./refusal.mjs";
+import { checkRoot } from "./root.mjs";
 
 const mongodumpTimeoutMs = 20 * 60_000;
 const fifoOpenTimeoutMs = 30_000;
@@ -45,11 +48,11 @@ export async function takeBackup({ MongoClient, value, database, root, mongodump
   const stamp = stampOf(started);
 
   progress("checking the backups folder");
-  if (existsSync(root) && !statSync(root).isDirectory()) throw new Refusal(`${shown(root)} is not a directory`);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  const folder = join(root, stamp);
-  const partial = join(root, `.${stamp}.partial`);
-  if (existsSync(folder) || existsSync(partial)) throw new Refusal(`${shown(folder)} already exists: ask again in a second`);
+  const { real, note } = checkRoot(root, { create: true, shown });
+  const folder = join(real, stamp);
+  const partial = join(real, `.${stamp}.partial`);
+  const shownFolder = `${shown(root)}/${stamp}`;
+  if (existsSync(folder) || existsSync(partial)) throw new Refusal(`${shownFolder} already exists: ask again in a second`);
 
   const client = new MongoClient(value, { serverSelectionTimeoutMS: 20_000, appName: "prod-mongo" });
   const failure = (error) => new Refusal(driverReason(error, scrubbed));
@@ -64,7 +67,7 @@ export async function takeBackup({ MongoClient, value, database, root, mongodump
     } catch (error) {
       throw failure(error);
     }
-    const { bavail, bsize } = statfsSync(root);
+    const { bavail, bsize } = statfsSync(real);
     const room = roomRefusal(Number(bavail) * Number(bsize), Number(stats.dataSize ?? 0));
     if (room) throw new Refusal(room);
 
@@ -82,6 +85,7 @@ export async function takeBackup({ MongoClient, value, database, root, mongodump
     }
 
     mkdirSync(partial, { mode: 0o700 });
+    writing.add(partial);
     try {
       progress("dumping");
       await dump({ value, database, partial, mongodump, scrubbed });
@@ -123,10 +127,12 @@ export async function takeBackup({ MongoClient, value, database, root, mongodump
       manifest.totals.bytes = bytesUnder(partial);
       writeFileSync(join(partial, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
       renameSync(partial, folder);
-      return answer({ manifest, folder: shown(folder), took: ended - started });
+      return [answer({ manifest, folder: shownFolder, took: ended - started }), ...(note ? [note] : []), retentionLine(listRoot(real).dumps)].join("\n");
     } catch (error) {
       rmSync(partial, { recursive: true, force: true });
       throw error;
+    } finally {
+      writing.delete(partial);
     }
   } finally {
     await client.close().catch(() => {});

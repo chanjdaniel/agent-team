@@ -9,12 +9,15 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { roomRefusal, stampOf } from "../../servers/prod-mongo/backup.mjs";
 import { childEnv, scrubber } from "../../servers/prod-mongo/children.mjs";
+import { humanBytes } from "../../servers/prod-mongo/dump.mjs";
+import { kept } from "../../servers/prod-mongo/list.mjs";
+import { destinationRefusal, dumpByStamp } from "../../servers/prod-mongo/root.mjs";
 import { opStub, repoRoot, startToolkitServer, stubDir, tempDir, testPath } from "./helpers/mcp.mjs";
 import { startMongo } from "./helpers/mongo.mjs";
 import { assertNoLeak, launcherRefusalTests } from "./helpers/toolkit.mjs";
@@ -130,9 +133,13 @@ async function seed() {
   await db.createCollection("open_markets", { viewOn: "markets", pipeline: [{ $match: { stalls: { $gte: 20 } } }] });
 }
 
-async function withServer(body, { value = production.uri("ops-read", marker) } = {}) {
+// A connection string no call can reach: a tool that answers with it read no database, and a
+// refusal given with it came before any connection.
+const unreachable = () => `mongodb://ops-read:${marker}@127.0.0.1:1/?authSource=admin&serverSelectionTimeoutMS=2000`;
+
+async function withServer(body, { value = production.uri("ops-read", marker), env = {} } = {}) {
   const op = opStub({ value });
-  const server = startToolkitServer("prod-mongo", { home, opDir: op.dir, path: serverPath(spy)(), env: { PROD_MONGO_ROOT: root } });
+  const server = startToolkitServer("prod-mongo", { home, opDir: op.dir, path: serverPath(spy)(), env: { PROD_MONGO_ROOT: root, ...env } });
   try {
     await server.initialize();
     await body(server, op);
@@ -184,11 +191,12 @@ test("no file of the toolkit or its server is executable", () => {
   }
 });
 
-test("the tools are backup alone, taking no input", async () => {
+test("the tools are backup and list-backups, each taking no input", async () => {
   await withServer(async (server) => {
     const tools = await server.listTools();
-    assert.deepEqual(tools.map((tool) => tool.name), ["backup"]);
-    assert.deepEqual(tools[0].inputSchema, { type: "object", properties: {}, additionalProperties: false });
+    assert.deepEqual(tools.map((tool) => tool.name), ["backup", "list-backups"]);
+    for (const tool of tools) assert.deepEqual(tool.inputSchema, { type: "object", properties: {}, additionalProperties: false }, tool.name);
+    assert.equal(tools[1].annotations.readOnlyHint, true);
   });
 });
 
@@ -210,7 +218,8 @@ describe("backup", () => {
     const lines = text.split("\n");
     assert.match(lines[0], new RegExp(`^Backup taken: ~/conventioner-backups/${stamp} \\(\\d+(\\.\\d)? (B|KiB|MiB) on disk, \\d+ s\\), mongodump ${mongodumpVersion.replaceAll(".", "\\.")}$`));
     assert.equal(lines[1], "4 collections and 1 view, 10 documents, each matching the database's count:");
-    assert.deepEqual(lines.slice(2), [
+    assert.match(lines.at(-1), /^The folder holds 1 dump \(\d+(\.\d)? (B|KiB|MiB)\); the newest 5 are kept, none is past that\.$/);
+    assert.deepEqual(lines.slice(2, -1), [
       "- accounts: 2 documents",
       "- applications: 5 documents",
       "- archived: 0 documents",
@@ -340,6 +349,10 @@ describe("backup", () => {
       const second = await server.callTool("backup", {});
       assert.equal(second.isError, true);
       assert.equal(second.text, "backup: a backup is already running");
+      // list-backups takes no lock, and names the running backup's folder for what it is.
+      const listed = await server.callTool("list-backups", {});
+      assert.ok(!listed.isError, listed.text);
+      assert.match(listed.text, /^- \.\d{4}-\d{2}-\d{2}T\d{6}Z\.partial: .*, being written by the backup running now$/m);
       spy.set("go");
       assert.ok(!(await first).isError);
     });
@@ -356,12 +369,11 @@ describe("backup", () => {
   });
 
   test("fails in one line naming neither the host nor the secret when the database is unreachable", async () => {
-    const value = `mongodb://ops-read:${marker}@127.0.0.1:1/?authSource=admin&serverSelectionTimeoutMS=2000`;
     await withServer(async (server) => {
       const result = await server.callTool("backup", {});
       assert.equal(result.isError, true);
       assert.equal(result.text, "backup: failed: could not reach the database");
-    }, { value });
+    }, { value: unreachable() });
     assert.deepEqual(backups(), []);
   });
 
@@ -374,6 +386,218 @@ describe("backup", () => {
       assert.equal(result.text, "backup: failed: ~/conventioner-backups is not a directory");
     });
     assert.equal(statSync(root).isFile(), true);
+  });
+});
+
+describe("the backups root", () => {
+  // Each rule refuses backup and list-backups alike, with its reason, before any connection (the
+  // database is unreachable, so a connection would have failed with that instead), and makes nothing.
+  async function refused(expected, { env = {} } = {}) {
+    await withServer(async (server) => {
+      for (const tool of ["backup", "list-backups"]) {
+        const result = await server.callTool(tool, {});
+        assert.equal(result.isError, true, result.text);
+        if (expected instanceof RegExp) assert.match(result.text, new RegExp(`^${tool}: failed: ${expected.source}$`));
+        else assert.equal(result.text, `${tool}: failed: ${expected}`);
+      }
+    }, { value: unreachable(), env });
+    assert.equal(spy.read("cmdline"), null, "mongodump ran");
+  }
+  const dir = (...parts) => {
+    const path = join(home, ...parts);
+    mkdirSync(path, { recursive: true });
+    return path;
+  };
+
+  test("refuses one inside a git checkout", async () => {
+    dir("repo", ".git");
+    root = join(home, "repo", "backups");
+    await refused("the backups folder ~/repo/backups is inside a git checkout: ~/repo holds .git");
+    assert.equal(existsSync(root), false);
+  });
+
+  test("refuses one inside a linked worktree, whose .git is a file", async () => {
+    dir("worktree");
+    writeFileSync(join(home, "worktree", ".git"), "gitdir: /elsewhere\n");
+    root = join(home, "worktree", "deep", "backups");
+    await refused("the backups folder ~/worktree/deep/backups is inside a git checkout: ~/worktree holds .git");
+    assert.equal(existsSync(join(home, "worktree", "deep")), false);
+  });
+
+  test("refuses a symlinked root whose real path is inside a checkout, made or not", async () => {
+    dir("repo", ".git");
+    dir("repo", "made");
+    symlinkSync(join(home, "repo", "made"), join(home, "made-link"));
+    symlinkSync(join(home, "repo", "not-yet"), join(home, "dangling-link"));
+    for (const link of ["made-link", "dangling-link"]) {
+      root = join(home, link);
+      await refused(`the backups folder ~/${link} is inside a git checkout: ~/repo holds .git`);
+    }
+    assert.equal(existsSync(join(home, "repo", "not-yet")), false);
+  });
+
+  test("takes a symlinked root whose real path passes, and answers from the path as given", async () => {
+    dir("elsewhere");
+    symlinkSync(join(home, "elsewhere"), join(home, "link"));
+    root = join(home, "link");
+    await withServer(async (server) => {
+      const result = await server.callTool("backup", {});
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text, /^Backup taken: ~\/link\/\d{4}-\d{2}-\d{2}T\d{6}Z /);
+    });
+    assert.equal(readdirSync(join(home, "elsewhere")).length, 1);
+  });
+
+  test("refuses one inside the team home, named by TEAM_HOME or by the setting, even with no .git", async () => {
+    dir("records");
+    root = join(home, "records", "backups");
+    await refused("the backups folder ~/records/backups is inside the team home, ~/records", { env: { TEAM_HOME: join(home, "records") } });
+    dir(".config", "agent-team");
+    writeFileSync(join(home, ".config", "agent-team", "home"), "records\n");
+    await refused("the backups folder ~/records/backups is inside the team home, ~/records");
+  });
+
+  test("refuses one inside ~/.claude or ~/.no-mistakes", async () => {
+    root = join(home, ".claude", "jobs", "backups");
+    await refused("the backups folder ~/.claude/jobs/backups is inside ~/.claude, Claude Code's own folder of transcripts and jobs");
+    root = join(home, ".no-mistakes", "backups");
+    await refused("the backups folder ~/.no-mistakes/backups is inside ~/.no-mistakes, the gate's own folder of worktrees");
+  });
+
+  test("refuses one inside a shared temporary directory, TMPDIR or XDG_RUNTIME_DIR", async () => {
+    root = join(tempDir("root"), "backups");
+    await refused(/the backups folder \/\S+ is inside a shared temporary directory, \/(tmp|var\/folders|private\/\S+)/);
+    root = join(dir("scratch"), "backups");
+    await refused("the backups folder ~/scratch/backups is inside a shared temporary directory, ~/scratch", { env: { TMPDIR: join(home, "scratch") } });
+    await refused("the backups folder ~/scratch/backups is inside a shared temporary directory, ~/scratch", { env: { XDG_RUNTIME_DIR: join(home, "scratch") } });
+  });
+
+  test("refuses one inside a synced folder, by its name or a sync client's marker", async () => {
+    root = join(home, "Dropbox", "backups");
+    await refused("the backups folder ~/Dropbox/backups is inside a synced folder, ~/Dropbox");
+    dir("shared");
+    writeFileSync(join(home, "shared", ".stfolder"), "");
+    root = join(home, "shared", "backups");
+    await refused("the backups folder ~/shared/backups is inside a synced folder: ~/shared holds .stfolder");
+  });
+
+  test("refuses one inside a CI workspace", async () => {
+    root = join(dir("workspace"), "backups");
+    await refused("the backups folder ~/workspace/backups is inside a CI workspace, GITHUB_WORKSPACE (~/workspace)", { env: { GITHUB_WORKSPACE: join(home, "workspace") } });
+  });
+
+  test("refuses the home itself and a relative path", async () => {
+    root = home;
+    await refused("the backups folder ~ is the home directory itself");
+    root = "conventioner-backups";
+    await refused("the backups folder conventioner-backups is not an absolute path");
+  });
+
+  test("sets a looser root to 0700 and says so once", async () => {
+    mkdirSync(root);
+    chmodSync(root, 0o755);
+    await withServer(async (server) => {
+      const first = await server.callTool("backup", {});
+      assert.ok(!first.isError, first.text);
+      const lines = first.text.split("\n");
+      assert.equal(lines.at(-2), "~/conventioner-backups was mode 0755, open to others, so it is now 0700, yours alone.");
+      assert.match(lines.at(-1), /^The folder holds 1 dump /);
+      assert.equal(statSync(root).mode & 0o777, 0o700);
+      const again = await server.callTool("list-backups", {});
+      assert.ok(!again.isError, again.text);
+      assert.doesNotMatch(again.text, /was mode/);
+      chmodSync(root, 0o750);
+      const listed = await server.callTool("list-backups", {});
+      assert.match(listed.text, /^~\/conventioner-backups was mode 0750, open to others, so it is now 0700, yours alone\.$/m);
+      assert.equal(statSync(root).mode & 0o777, 0o700);
+    });
+  });
+});
+
+describe("list-backups", () => {
+  const sized = (text) => text.replaceAll(/\d+(\.\d)? (B|KiB|MiB)/g, "<size>");
+
+  test("says the root does not exist yet, and makes nothing", async () => {
+    await withServer(async (server) => {
+      const result = await server.callTool("list-backups", {});
+      assert.ok(!result.isError, result.text);
+      assert.equal(result.text, "~/conventioner-backups does not exist yet, so it holds no dumps.\nThe folder holds no dumps; the newest 5 are kept.");
+    }, { value: unreachable() });
+    assert.equal(existsSync(root), false);
+  });
+
+  test("lists verified dumps newest first with what was derived from them, the other entries apart, and those past the rule", async () => {
+    await withServer(async (server) => {
+      assert.ok(!(await server.callTool("backup", {})).isError);
+    });
+    const [taken] = backups();
+    // Five older copies of it, verified, and one whose manifest is not.
+    const older = ["2025-01-01T000000Z", "2025-01-02T000000Z", "2025-01-03T000000Z", "2025-01-04T000000Z", "2025-01-05T000000Z"];
+    for (const stamp of older) cpSync(join(root, taken), join(root, stamp), { recursive: true });
+    cpSync(join(root, taken), join(root, "2025-06-01T000000Z"), { recursive: true });
+    const unverified = join(root, "2025-06-01T000000Z", "manifest.json");
+    writeFileSync(unverified, JSON.stringify({ ...JSON.parse(readFileSync(unverified, "utf8")), verified: false }));
+    // What later tools derive from a dump, in its folder.
+    const derived = (...parts) => join(root, taken, ...parts);
+    mkdirSync(derived("drills"));
+    writeFileSync(derived("drills", "2026-01-01T100000Z.json"), JSON.stringify({ verdict: "FAIL" }));
+    writeFileSync(derived("drills", "2026-01-01T110000Z.json"), JSON.stringify({ verdict: "PASS" }));
+    mkdirSync(derived("rehearsals", "2026-01-01T120000Z"), { recursive: true });
+    mkdirSync(derived("undo", "2026-01-01T130000Z"), { recursive: true });
+    mkdirSync(derived("undo", "2026-01-01T140000Z"), { recursive: true });
+    mkdirSync(derived("diffs"));
+    writeFileSync(derived("diffs", "2025-01-05T000000Z.json"), "{}");
+    // Daniel's own dump, one a killed server left, a stamp-named folder with no manifest, a file.
+    mkdirSync(join(root, "hand-dump"));
+    writeFileSync(join(root, "hand-dump", "markets.bson"), "hand-made");
+    mkdirSync(join(root, ".2025-02-01T000000Z.partial"));
+    writeFileSync(join(root, ".2025-02-01T000000Z.partial", "x"), "part");
+    mkdirSync(join(root, "2025-03-01T000000Z"));
+    writeFileSync(join(root, "notes.txt"), "mine");
+
+    spy = spyMongodump();
+    let text;
+    await withServer(async (server) => {
+      const result = await server.callTool("list-backups", {});
+      assert.ok(!result.isError, result.text);
+      text = result.text;
+    }, { value: unreachable() });
+    assert.equal(spy.read("cmdline"), null, "mongodump ran");
+    const summary = "4 collections and 1 view, 10 documents, <size>";
+    const plain = "0 drills, 0 rehearsals, 0 undos, 0 diffs";
+    assert.deepEqual(sized(text).split("\n"), [
+      "~/conventioner-backups holds 7 dumps taken by this toolkit, newest first:",
+      `- ${taken}: ${summary}, verified; 2 drills (newest PASS), 1 rehearsal, 2 undos, 1 diff`,
+      `- 2025-06-01T000000Z: ${summary}, not verified; ${plain}`,
+      ...older.toReversed().map((stamp) => `- ${stamp}: ${summary}, verified; ${plain}`),
+      "4 other entries:",
+      "- .2025-02-01T000000Z.partial: <size>, left unfinished",
+      "- 2025-03-01T000000Z: <size>, not taken by this toolkit",
+      "- hand-dump: <size>, not taken by this toolkit",
+      "- notes.txt: <size>, not taken by this toolkit",
+      "In all, <size>.",
+      `The folder holds 7 dumps (<size>); the newest ${kept} are kept, so 2 are past that, for Daniel to delete by hand: 2025-06-01T000000Z (not verified), 2025-01-01T000000Z.`,
+    ]);
+    const total = walk(root).reduce((sum, { stat }) => sum + (stat.isFile() ? stat.size : 0), 0);
+    assert.ok(text.includes(`\nIn all, ${humanBytes(total)}.\n`), text);
+    assert.match(text, /^- hand-dump: 9 B, not taken by this toolkit$/m);
+    assert.ok(!text.includes(home) && !text.includes(email), text);
+    // The toolkit never deletes a dump.
+    assert.equal(backups().length, 11);
+  });
+
+  test("backup's answer names the dumps past the rule too", async () => {
+    mkdirSync(root, { mode: 0o700 });
+    const old = ["2025-01-01T000000Z", "2025-01-02T000000Z", "2025-01-03T000000Z", "2025-01-04T000000Z", "2025-01-05T000000Z"];
+    for (const stamp of old) {
+      mkdirSync(join(root, stamp));
+      writeFileSync(join(root, stamp, "manifest.json"), JSON.stringify({ verified: true, totals: { collections: 1, views: 0, documents: 1 } }));
+    }
+    await withServer(async (server) => {
+      const result = await server.callTool("backup", {});
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text.split("\n").at(-1), /^The folder holds 6 dumps \(\S+ \S+\); the newest 5 are kept, so 1 is past that, for Daniel to delete by hand: 2025-01-01T000000Z\.$/);
+    });
   });
 });
 
@@ -406,6 +630,126 @@ describe("the server's rules", () => {
       roomRefusal(gib, 512 * 1024 ** 2),
       "the backups folder's disk has 1.0 GiB free, less than the 2.0 GiB a dump needs (1 GiB plus twice the database's 512.0 MiB of data)",
     );
+  });
+
+  test("the room rule's edges: exactly enough passes, a byte short refuses naming both numbers", () => {
+    const gib = 1024 ** 3;
+    assert.equal(roomRefusal(gib, 0), undefined);
+    assert.equal(roomRefusal(gib + 2 * gib, gib), undefined);
+    assert.equal(
+      roomRefusal(gib + 2 * gib - 1, gib),
+      "the backups folder's disk has 3.0 GiB free, less than the 3.0 GiB a dump needs (1 GiB plus twice the database's 1.0 GiB of data)",
+    );
+    assert.match(roomRefusal(0, 0), /^the backups folder's disk has 0 B free, less than the 1\.0 GiB a dump needs/);
+  });
+
+  // The rules the server cannot reach on this machine: macOS's folders, the CI variables, the forms
+  // a symlink gives, on a context written out.
+  describe("destinationRefusal", () => {
+    const linux = { home: "/home/d", teamHome: "/home/d/agent-team-records", tmpdir: "/tmp", env: {}, platform: "linux", holding: {}, resolved: {} };
+    const mac = { ...linux, home: "/Users/d", teamHome: undefined, tmpdir: "/var/folders/ab/T", platform: "darwin" };
+    const refusal = (path, context) => destinationRefusal(path, context);
+
+    test("passes the launcher's root, and one beside the checkouts", () => {
+      assert.equal(refusal("/home/d/conventioner-backups", linux), undefined);
+      assert.equal(refusal("/srv/backups", linux), undefined);
+      assert.equal(refusal("/Users/d/conventioner-backups", mac), undefined);
+    });
+
+    test("refuses / and the home, however written", () => {
+      assert.equal(refusal("/", linux), "the backups folder / is / itself");
+      assert.equal(refusal("/home/d/", linux), "the backups folder ~ is the home directory itself");
+      assert.equal(refusal("/home/d/x/..", linux), "the backups folder ~ is the home directory itself");
+    });
+
+    test("refuses Desktop and Documents on macOS only", () => {
+      for (const name of ["Desktop", "Documents"]) {
+        assert.equal(refusal(`/Users/d/${name}/backups`, mac), `the backups folder ~/${name}/backups is inside a synced folder, ~/${name}`);
+        assert.equal(refusal(`/home/d/${name}/backups`, linux), undefined);
+      }
+    });
+
+    test("refuses macOS's cloud folders and temporary directories", () => {
+      assert.equal(refusal("/Users/d/Library/CloudStorage/GoogleDrive-d/backups", mac), "the backups folder ~/Library/CloudStorage/GoogleDrive-d/backups is inside a synced folder, ~/Library/CloudStorage");
+      assert.equal(refusal("/Users/d/Library/Mobile Documents/backups", mac), "the backups folder ~/Library/Mobile Documents/backups is inside a synced folder, ~/Library/Mobile Documents");
+      assert.equal(refusal("/private/var/folders/ab/T/backups", mac), "the backups folder /private/var/folders/ab/T/backups is inside a shared temporary directory, /private/var/folders");
+      assert.equal(refusal("/private/tmp/backups", mac), "the backups folder /private/tmp/backups is inside a shared temporary directory, /private/tmp");
+    });
+
+    test("refuses every synced folder by name, a work OneDrive included", () => {
+      for (const name of ["Box", "Dropbox", "Google Drive", "GoogleDrive", "iCloud Drive", "MEGA", "Nextcloud", "OneDrive", "ownCloud", "pCloudDrive", "Sync"]) {
+        assert.equal(refusal(`/home/d/${name}/b`, linux), `the backups folder ~/${name}/b is inside a synced folder, ~/${name}`);
+      }
+      assert.equal(refusal("/home/d/OneDrive - Acme Ltd/b", linux), "the backups folder ~/OneDrive - Acme Ltd/b is inside a synced folder, ~/OneDrive - Acme Ltd");
+      assert.equal(refusal("/home/d/OneDriveNotes/b", linux), undefined);
+    });
+
+    test("refuses below any sync client's marker, a .sync_*.db file included", () => {
+      for (const marker of [".dropbox", ".dropbox.cache", ".nextcloudsync.log", ".owncloudsync.log", ".stfolder", ".sync", ".sync_4f2a.db"]) {
+        assert.equal(refusal("/data/share/b", { ...linux, holding: { "/data/share": [marker] } }), `the backups folder /data/share/b is inside a synced folder: /data/share holds ${marker}`);
+      }
+    });
+
+    test("refuses the CI workspaces and the temporary directories the environment names", () => {
+      for (const name of ["GITHUB_WORKSPACE", "RUNNER_WORKSPACE", "RUNNER_TEMP"]) {
+        assert.equal(refusal("/home/runner/work/x/b", { ...linux, env: { [name]: "/home/runner/work/x" } }), `the backups folder /home/runner/work/x/b is inside a CI workspace, ${name} (/home/runner/work/x)`);
+      }
+      assert.equal(refusal("/run/user/1000/b", { ...linux, env: { XDG_RUNTIME_DIR: "/run/user/1000" } }), "the backups folder /run/user/1000/b is inside a shared temporary directory, /run/user/1000");
+      assert.equal(refusal("/var/tmp/b", linux), "the backups folder /var/tmp/b is inside a shared temporary directory, /var/tmp");
+      assert.equal(refusal("/dev/shm/b", linux), "the backups folder /dev/shm/b is inside a shared temporary directory, /dev/shm");
+    });
+
+    test("judges the real path as well as the one given, and a named directory by its real path too", () => {
+      assert.equal(refusal("/home/d/link", { ...linux, real: "/home/d/Dropbox/b" }), "the backups folder ~/link is inside a synced folder, ~/Dropbox");
+      assert.equal(refusal("/home/d/link", { ...linux, real: "/home/d/repo/b", holding: { "/home/d/repo": [".git"] } }), "the backups folder ~/link is inside a git checkout: ~/repo holds .git");
+      assert.equal(refusal("/home/d/b", { ...linux, real: "/mnt/records/b", teamHome: "/home/d/records", resolved: { "/home/d/records": "/mnt/records" } }), "the backups folder ~/b is inside the team home, ~/records");
+      // A home that is itself a symlink: its real form is the home too.
+      assert.equal(refusal("/home/d/b", { ...linux, real: "/data/home/d/.claude/b", resolved: { "/home/d": "/data/home/d" } }), "the backups folder ~/b is inside ~/.claude, Claude Code's own folder of transcripts and jobs");
+      // A prefix of a name is not a parent.
+      assert.equal(refusal("/home/d/agent-team-records-old/b", linux), undefined);
+      assert.equal(refusal("/tmpfiles/b", linux), undefined);
+    });
+  });
+
+  describe("dumpByStamp", () => {
+    let real;
+    beforeEach(() => {
+      real = join(newHome(), "backups");
+      mkdirSync(real);
+      const make = (stamp, manifest) => {
+        mkdirSync(join(real, stamp));
+        if (manifest !== undefined) writeFileSync(join(real, stamp, "manifest.json"), manifest);
+      };
+      make("2026-11-08T142305Z", JSON.stringify({ verified: true, totals: { documents: 3 } }));
+      make("2026-11-08T150000Z", JSON.stringify({ verified: false }));
+      make("2026-11-08T160000Z");
+      make("2026-11-08T170000Z", "{not json");
+      symlinkSync(join(real, "2026-11-08T142305Z"), join(real, "2026-11-08T180000Z"));
+    });
+    test("gives the verified dump of a stamp", () => {
+      const { stamp, folder, manifest } = dumpByStamp(real, "2026-11-08T142305Z", "~/b");
+      assert.deepEqual([stamp, folder, manifest.totals.documents], ["2026-11-08T142305Z", join(real, "2026-11-08T142305Z"), 3]);
+    });
+
+    test("refuses a path, a partial's name or anything not a stamp", () => {
+      for (const stamp of ["../2026-11-08T142305Z", "/etc", "2026-11-08T142305Z/", ".2026-11-08T142305Z.partial", "2026-11-08", "", 7, undefined]) {
+        assert.throws(() => dumpByStamp(real, stamp, "~/b"), { message: /is not a backup's name, which is its UTC start, as 2026-11-08T142305Z$/ }, String(stamp));
+      }
+      assert.throws(() => dumpByStamp(real, "../x", "~/b"), { message: `"../x" is not a backup's name, which is its UTC start, as 2026-11-08T142305Z` });
+      assert.throws(() => dumpByStamp(real, "x".repeat(100), "~/b"), { message: `"${"x".repeat(40)}..." is not a backup's name, which is its UTC start, as 2026-11-08T142305Z` });
+    });
+
+    test("refuses a stamp with no folder, no verified manifest, or a symlink for a folder", () => {
+      assert.throws(() => dumpByStamp(real, "2026-01-01T000000Z", "~/b"), { message: "~/b holds no backup 2026-01-01T000000Z" });
+      for (const stamp of ["2026-11-08T150000Z", "2026-11-08T160000Z", "2026-11-08T170000Z"]) {
+        assert.throws(() => dumpByStamp(real, stamp, "~/b"), { message: `~/b/${stamp} has no verified manifest.json, so it is not a dump this toolkit took` }, stamp);
+      }
+      assert.throws(() => dumpByStamp(real, "2026-11-08T180000Z", "~/b"), { message: "~/b/2026-11-08T180000Z is not a folder this toolkit took" });
+    });
+  });
+
+  test("the retention rule keeps the 5 newest verified dumps", () => {
+    assert.equal(kept, 5);
   });
 
   test("scrubbed drops every connection string, the secret's parts and hosts, and anything from a {", () => {

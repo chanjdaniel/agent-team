@@ -51,7 +51,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `effect`: the Effect version whose exports the effect toolkit's test holds the `effect-v4` skill's trap table to.
     - `mongodb`: the driver the prod-mongo server counts and checks its dumps with, at the version the pinned MongoDB MCP server installs.
     - `typescript`: TypeScript 7, which `effect-tsgo diagnostics` needs installed beside it, though `@effect/tsgo` declares no peer.
-  - `prod-mongo/`: the prod-mongo toolkit's server body: its start, its tools, `childEnv` and `scrubbed` (the only way a child gets an environment and its error text an answer), and a dump's counts and index names, read without decoding a document.
+  - `prod-mongo/`: the prod-mongo toolkit's server body: its start, its tools, the backups root's rules (`destinationRefusal`), `childEnv` and `scrubbed` (the only way a child gets an environment and its error text an answer), and a dump's counts and index names, read without decoding a document.
 - `settings/`: worker settings: `worker.json` shared, one file per role layered on it.
 - `sops/`: standing procedures.
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.

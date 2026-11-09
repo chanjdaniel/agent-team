@@ -13,15 +13,19 @@
 // mongodump, through the FIFO backup.mjs feeds it. Every child is started with childEnv()
 // (children.mjs), and every child's or the driver's error text reaches an answer only through
 // scrubbed. The umask is 077, so every file and directory it or a child makes is its user's alone.
-// Its tools: backup (backup.mjs). One long call runs at a time: a second backup while one runs is
-// refused at once. A long tool sends a progress notification per step when the call carries a
-// progressToken.
+// Its tools: backup (backup.mjs) and list-backups (list.mjs), each checking the root against
+// root.mjs's rules before it touches it. One long call runs at a time: a second backup while one
+// runs is refused at once; list-backups takes no such lock. A long tool sends a progress
+// notification per step when the call carries a progressToken.
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { connectionStringRefusal } from "../mongodb-mcp.mjs";
 import { readSecrets } from "../op-secret.mjs";
 import { childEnv, scrubber } from "./children.mjs";
-import { Refusal, takeBackup } from "./backup.mjs";
+import { takeBackup } from "./backup.mjs";
+import { kept, listing } from "./list.mjs";
+import { Refusal } from "./refusal.mjs";
+import { checkRoot } from "./root.mjs";
 
 export async function startProdMongo({ name, reference, database, root: configuredRoot }) {
   const fail = (reason) => {
@@ -62,6 +66,21 @@ export async function startProdMongo({ name, reference, database, root: configur
       long: true,
       run: ({ progress }) =>
         takeBackup({ MongoClient: sdk.MongoClient, value, database, root, mongodump: { command: "mongodump", version: mongodumpVersion }, scrubbed, shown, progress }),
+    },
+    {
+      name: "list-backups",
+      description:
+        `List the dumps under ${shown(root)}, newest first: each one's collections, documents, size, whether it was verified, ` +
+        "its newest restore drill's verdict and what was derived from it; then any other entry there (a hand-made dump, " +
+        `one a killed backup left unfinished) by name and size; the total, and the dumps past the rule that keeps the newest ${kept} ` +
+        "verified ones, for Daniel to delete by hand. Reads only the folder, no database, and sets it to mode 0700 when it is looser. Takes no input.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      long: false,
+      run: () => {
+        const { real, note, missing } = checkRoot(root, { shown });
+        return listing({ real, shownRoot: shown(root), note, missing });
+      },
     },
   ];
 
