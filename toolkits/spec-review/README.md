@@ -26,7 +26,8 @@ Before its first launch, the coordinator runs `team-load-check --toolkit spec-re
 
 ## What it costs
 
-- The skill's description, about 60 tokens, in the starting context of every session that lists the toolkit, and the two agents' descriptions, about 60 tokens each, in its Agent tool's list.- Per review: measured by T240's replay.
+- The skill's description, about 60 tokens, in the starting context of every session that lists the toolkit, and the two agents' descriptions, about 60 tokens each, in its Agent tool's list.
+- Per review: measured by T240's replay.
 
 ## Credits
 
