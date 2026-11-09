@@ -11,11 +11,17 @@
 # ledger" and pushes the branch, as the records commit below does, so no worktree, however slow or
 # broken, keeps the ledger from origin; nothing new in either is a line saying so, and a failure is
 # the team home's, after which the rest still runs.
-# Then, for each open task, in task number order, for each of its open worktrees, each
-# contained: any step of one worktree that fails, from the registry lookup to the push, is that
-# worktree's failure, with the first error line it gave (git's, rsync's or the registry's), and
-# stops no other worktree nor any later step; its archive and its snapshot are made apart, so
-# either is still made when the other failed.
+# Then, for each open task, in task number order (those the last checkpoint skipped at its
+# deadline first, in their order), for each of its open worktrees, each contained: any step of
+# one worktree that fails, from the registry lookup to the push, is that worktree's failure, with
+# the first error line it gave (git's, rsync's or the registry's), and stops no other worktree nor
+# any later step; its archive and its snapshot are made apart, so either is still made when the
+# other failed. Once the checkpoint has run 120 s (its lock wait included), each worktree not yet
+# begun is skipped as a failure, "<label>: skipped: the checkpoint has run <n> s, past its 120 s
+# for worktrees, ...", and kept in ~/.local/state/agent-team/checkpoint-first for the next
+# checkpoint to take first: one begun by then makes at most two origin calls of 60 s each, so
+# the records commit below begins inside the heartbeat's 300 s limit for the checkpoint (bin/
+# team-timers), and a slow GitHub costs the worktrees left, never the records.
 #   1. A worktree that is missing, on another branch than its recorded one, or locked by a running
 #      git command (index.lock) is skipped with a line saying why.
 #   2. Its task directory is mirrored into tasks/T<n>/scratch/ (the project the task was opened
@@ -74,6 +80,10 @@ SLACK_SECONDS=60
 # Seconds: the most one call to an origin may take, and the longest wait for another checkpoint.
 NET_TIMEOUT=60
 LOCK_WAIT=120
+# Seconds since the checkpoint started past which no worktree is begun, so the records commit
+# begins inside the heartbeat's limit for the checkpoint; TEAM_CHECKPOINT_WORKTREE_SECONDS is the
+# tests' seam.
+WORKTREE_SECONDS=${TEAM_CHECKPOINT_WORKTREE_SECONDS:-120}
 
 usage="usage: team-checkpoint [--force]"
 force=''
@@ -84,6 +94,8 @@ machine=$(machine_name) || exit 1
 bin=$(dirname "$TEAM_LIB")
 state=$HOME/.local/state/agent-team
 last=$state/last-checkpoint
+# The worktrees the last checkpoint skipped at its deadline, "<task> <project>" a line, taken first.
+first=$state/checkpoint-first
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 NET_ERR=$scratch/err
@@ -240,9 +252,22 @@ if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
     -nRc "$TEAM_HOME/ledger.jsonl")
 fi
 
+# Those the last checkpoint skipped at its deadline first, in its order, then the rest.
+if [[ -s $first ]] && ((${#worktrees[@]})); then
+  mapfile -t worktrees < <(printf '%s\n' "${worktrees[@]}" |
+    jq -c --rawfile first "$first" -n '($first | split("\n") | map(select(. != ""))) as $first
+      | [inputs] | sort_by((.task + " " + .project) as $l | ($first | index($l)) // ($first | length)) | .[]')
+fi
+
+skipped=()
 for wt_json in "${worktrees[@]}"; do
   IFS=$'\t' read -r task project branch wt archive < <(jq -r '[.task, .project, .branch, .worktree, .archive] | @tsv' <<<"$wt_json")
   label="$task $project"
+  if ((SECONDS >= WORKTREE_SECONDS)); then
+    fail "$label: skipped: the checkpoint has run $SECONDS s, past its $WORKTREE_SECONDS s for worktrees, so the records are committed in time; the next checkpoint takes it first"
+    skipped+=("$label")
+    continue
+  fi
   why=$(skip_reason "$wt" "$branch")
   if [[ -n $why ]]; then
     say "$label: skipped: $why"
@@ -265,6 +290,7 @@ for wt_json in "${worktrees[@]}"; do
   esac
   snapshot "$task" "$project" "$wt" "$label"
 done
+if ((${#skipped[@]})); then printf '%s\n' "${skipped[@]}" >"$first"; else rm -f "$first"; fi
 
 # This machine's usage, each complete day of it, for the commit.
 rc=0

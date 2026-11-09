@@ -471,6 +471,35 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   [[ -e $BATS_TEST_TMPDIR/fsmonitor.ran && -e $BATS_TEST_TMPDIR/clean.ran ]]
 }
 
+@test "worktrees not begun by the worktree deadline are skipped as failures, the records still committed, and taken first next time" {
+  local n real_rsync
+  for n in 1 2 3; do
+    run_bin -0 team-open home feature feat "work$n" "Work $n"
+    echo "spec $n" >"$HOME/slots/home/$n/.scratch/task/spec.md"
+  done
+  # An archive that takes 4 s, so T1's, begun at once, ends past the 3 s deadline.
+  real_rsync=$(command -v rsync)
+  printf '#!/usr/bin/env bash\ncommand -p sleep 4\nexec "%s" "$@"\n' "$real_rsync" >"$BATS_TEST_TMPDIR/stubs/rsync"
+  chmod +x "$BATS_TEST_TMPDIR/stubs/rsync"
+
+  TEAM_CHECKPOINT_WORKTREE_SECONDS=3 run_bin -1 --separate-stderr team-checkpoint
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  [[ $stderr =~ ^"team-checkpoint: T2 home: skipped: the checkpoint has run "[0-9]+" s, past its 3 s for worktrees, so the records are committed in time; the next checkpoint takes it first"$'\n'"team-checkpoint: T3 home: skipped: "[^$'\n']*$ ]]
+  # The records are committed and pushed all the same: T1's archive with them.
+  assert_equal "$(git -C "$team_origin" show dev:tasks/T1/scratch/spec.md)" "spec 1"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
+  ! git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T2
+  [[ ! -e $state/last-checkpoint ]]
+
+  # The next checkpoint takes the skipped first, in their order, then the rest.
+  rm "$BATS_TEST_TMPDIR/stubs/rsync"
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_equal "$(grep -oE '^T[0-9] home: (pushed|wip/home/T[0-9] is up to date)' <<<"$output" | cut -c1-2 | paste -sd ' ')" "T2 T3 T1"
+  assert_equal "$(git -C "$team_origin" show dev:tasks/T3/scratch/spec.md)" "spec 3"
+  [[ -e $state/last-checkpoint && ! -e $state/checkpoint-first ]]
+}
+
 @test "an empty or a missing task directory is one line under the worktree's label, archives nothing and is no problem" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 --separate-stderr team-checkpoint
