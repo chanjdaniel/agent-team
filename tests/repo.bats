@@ -663,6 +663,20 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   done
 }
 
+# Claude Code requests the one-hour prompt cache for the main conversation only by default, on a
+# subscription within plan usage, and five minutes on usage credits; the team's sessions wait 5 to
+# 60 minutes on CI and messages, so every session pins one hour, and no role file sets it (T247).
+@test "the worker and coordinator settings pin the one-hour prompt cache" {
+  local file
+  for file in "${SETTINGS[@]}"; do
+    assert_equal "$(jq -c '.promptCacheTtl' "$REPO_ROOT/$file")" '"1h"'
+  done
+  for file in "$REPO_ROOT"/settings/*.json; do
+    [[ $file == */worker.json ]] && continue
+    assert_equal "$(jq -c 'has("promptCacheTtl")' "$file")" false
+  done
+}
+
 # Whether one of the Bash deny rules in <settings file> matches <command> in one of its
 # deny_forms, a rule's * matching any text as Claude Code's does: denied <settings file> <command>
 denied() {

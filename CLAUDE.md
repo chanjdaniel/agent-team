@@ -35,7 +35,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
     - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
     - `vendor/git-filter-repo/`: git filter-repo 2.47.0, vendored with its MIT license.
-    - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project and model, the longest, the running, and the classes and breakdown of their time rows.
+    - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project, model and toolkits, the longest, the running, and the classes and breakdown of their time rows.
     - `working-set.awk`: a cgroup's working set, its `memory.current` less the reclaimable page cache, the one measure of memory use `team-capacity`, `team-heavy` and `team-level` read a cgroup by.
 - `coordinator.settings.json`: the coordinator's own settings: Discord, its hooks and its denials.
 - `LICENSE`: the Apache License 2.0; vendored bats-core and git filter-repo keep their own.
@@ -57,7 +57,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `knowledge-graph.md`: a project's knowledge graph.
   - `machine-setup.md`: a new machine, driven by `SETUP.md`.
   - `merging.md`: merging on Daniel's word: the per-head, plan-time and standing words, their events, the order `team-merge` tries them, what each holds a PR to, what never merges, and the coordinator's steps on a merge and a refusal.
-  - `model-trials.md`: trialling a cheaper model on one role of one project: the registry's `models`, the effort check, the paired reviews, the measures and their sources, the baseline by PR size and the note to Daniel that ends it.
+  - `model-trials.md`: trialling a cheaper model on one role of one project, or a setup change that claims to save tokens: the registry's `models`, the effort check, the paired reviews, a toolkit's arm, the measures and their sources, the baseline by PR size and the note to Daniel.
   - `platform-gotchas.md`: general rules about the tools the team runs on, which every brief but the ops one points at in the code checkout, never the team home; the retro proposes keeping it short, and each change Daniel approves lands through a PR on this repository.
   - `portability.md`: moving the team between machines.
   - `records-rewrite.md`: the cutover that rewrites the records repository's history with `team-records-rewrite`, each step Daniel's or the coordinator's.
@@ -76,6 +76,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `tests/vendor/`: bats-core, vendored.
 - `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
+  - `codegraph/`: for a setup trial's builders and reviewers, a session-start hook that, in a worktree with a `.codegraph/` directory, builds or syncs that worktree's CodeGraph index and prints a banner to locate code with `codegraph explore` first; no MCP server.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
   - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill, which sends the session to the installed `effect`'s sources, names the v3 and beta traps beside their GA names and gives the check, and a hook giving Effect's findings on each TypeScript file edited.
   - `spec-review/`: the `spec-review` skill, which has two fresh, read-only reader agents read a task's spec and tickets in parallel, as a stranger and as its builder, and writes their findings to `spec-review.md` for the spec's author to sort.
@@ -135,6 +136,8 @@ It holds:
   `frontend.test.mjs` runs the frontend toolkit's scripts and server against a headless Chrome (the machine's, or `TEAM_CHROME`) on a local fixture page, never a window on the screen; that Chrome must be current enough for `open_devtools`, which `chrome-helper.test.mjs` checks fails at once on one too old.
   `browser.test.mjs` checks the browser toolkit's layout and runs its session-start hook as Claude Code runs a plugin's, under the user settings of today and the guarded ones; it also runs every `chrome-devtools-axi` command its `ui-check` skill names, headless on a fixture site in a named axi session of its own, and fails when the skill names one it does not run or its budget table's token figures do not match its image sizes.
   `servers-ftp.test.mjs` runs get-uri's `ftp://` fetch, as mongodb-mcp-server's proxy support installs it, against a minimal FTP server on the loopback, on the basic-ftp 6.x that `servers/package.json`'s `overrides` puts in place of get-uri's `^5`; `tests/repo.bats` holds the lock to 6.2.1 or later.
+  `codegraph.test.mjs` checks the codegraph toolkit's layout and runs its session-start hook as Claude Code runs a plugin's, on a stub `codegraph` that records its calls, for a builder, a reviewer and the roles it skips, with and without `.codegraph/` and an index, and with each command failing, and holds its banner to six lines.
+  Where a real `codegraph` is on PATH (never on CI), it also runs the hook against it on a project it writes at run time, so the repository holds no `.codegraph/`, and checks the banner names only subcommands that CLI has.
   `effect.test.mjs` checks the effect toolkit's layout, its README and evals, and its `effect-v4` skill's limits and order, and holds the skill's trap table to the pinned `effect`'s exports: every GA name exists and every v3 or beta name is gone.
   It runs the toolkit's post-edit hook as Claude Code runs a plugin's, against the pinned `effect-tsgo` on a copy of `tests/toolkits/fixtures/effect-project/` whose `node_modules` links to `servers/node_modules`, and again inside `unshare -rn`, with no network, on a Linux machine that lets an unprivileged user make that namespace, which CI's Ubuntu runner does not.
   `spec-review.test.mjs` checks the spec-review toolkit's layout, its two reader agents' read-only tools, `omitClaudeMd` and model, the skill's limits and the order of its steps, its README's sections and attribution line, and each eval case's graders.
