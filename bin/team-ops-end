@@ -7,10 +7,10 @@
 #   Code's cache (<$XDG_CACHE_HOME or ~/.cache>/claude-cli-nodejs/, on macOS
 #   ~/Library/Caches/claude-cli-nodejs/) with a line whose sessionId is the session's uuid;
 # - its session directory, <config>/session-env/<session uuid>/;
+# - its file checkpoints, <config>/file-history/<session uuid>/, where Claude Code keeps earlier
+#   texts of the files the session edited, the answer file among them;
 # - and the answer file in its worktree, <cwd>/.scratch/answer.md, which the coordinator has
 #   relayed.
-# It leaves <config>/file-history/<session uuid>/, where Claude Code keeps its checkpoints of the
-# files the session edited, the answer file among them.
 #
 # It cannot delete the session's copy on claude.ai. An ops session runs with Remote Control, which
 # Daniel's phone approvals need, and while it is connected claude.ai stores its conversation, tool
@@ -23,9 +23,9 @@
 #   task  T<n>, e.g. T5 (T0 for the load check)
 #
 # Each path is found only by the session's full uuid, read from claude agents --json --all, never
-# by a pattern over names: the transcript and the session directory are named by it, and an MCP
-# log is one whose JSON lines name it as their sessionId, so a log of another session that quotes
-# the uuid is kept. Refuses, deleting nothing, when no <task>-ops session is listed, when one has
+# by a pattern over names: the transcript, the session directory and the checkpoints are named by
+# it, and an MCP log is one whose JSON lines name it as their sessionId, so a log of another
+# session that quotes the uuid is kept. Refuses, deleting nothing, when no <task>-ops session is listed, when one has
 # no full uuid, or when claude rm fails. Prints each path it deleted as "deleted <path>", then
 # "ended <task>-ops (<id>)". An MCP log it cannot read is named on stderr and kept, and it fails
 # once it has deleted the rest.
@@ -96,11 +96,12 @@ for entry in "${found[@]}"; do
     rm -f -- "$path"
     echo "deleted $path"
   done
-  path=$config/session-env/$uuid
-  if [[ -e $path || -L $path ]]; then
-    rm -rf -- "$path"
-    echo "deleted $path"
-  fi
+  for path in "$config/session-env/$uuid" "$config/file-history/$uuid"; do
+    if [[ -e $path || -L $path ]]; then
+      rm -rf -- "$path"
+      echo "deleted $path"
+    fi
+  done
   answer=$cwd/.scratch/answer.md
   if [[ $cwd == /* && -f $answer ]]; then
     rm -f -- "$answer"

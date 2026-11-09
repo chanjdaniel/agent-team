@@ -204,13 +204,20 @@ SH
   [[ -f $slug/$uuid.jsonl ]]
 }
 
-@test "the session's MCP logs, found by its uuid, and its session directory are deleted, nothing else" {
+@test "the session's MCP logs, found by its uuid, its session directory and its file checkpoints are deleted, nothing else" {
   mcp_logs "$(native_cache)"
+  # Claude Code's checkpoints of the files a session edited: an earlier text of its answer.
+  local history=$HOME/.claude/file-history
+  mkdir -p "$history/$uuid" "$history/aaaaaaaa-1111-4222-8333-944455556666"
+  echo "42 orders" >"$history/$uuid/3f1c2a9b8e7d6c5a@v1"
+  echo "another session's" >"$history/aaaaaaaa-1111-4222-8333-944455556666/3f1c2a9b8e7d6c5a@v1"
   agents "$(ops_session)"
   run_bin -0 team-ops-end T5
   assert_logs_ended
   assert_contains "$output" "deleted $HOME/.claude/session-env/$uuid"$'\n'
+  assert_contains "$output" "deleted $history/$uuid"$'\n'
   [[ ! -e $HOME/.claude/session-env/$uuid && -d $HOME/.claude/session-env/aaaaaaaa-1111-4222-8333-944455556666 ]]
+  [[ ! -e $history/$uuid && -f $history/aaaaaaaa-1111-4222-8333-944455556666/3f1c2a9b8e7d6c5a@v1 ]]
   # Everything is deleted before the session is reported ended.
   assert_equal "${output##*$'\n'}" "ended T5-ops (4f2a9c1e)"
   # A second end of a session already gone deletes nothing more and still ends.
@@ -249,11 +256,12 @@ SH
     stub_reply uname Linux
   fi
   # CLAUDE_CONFIG_DIR holds the session directory and the transcripts when set.
-  mkdir -p "$HOME/config/session-env/$uuid" "$HOME/config/projects/-p"
+  mkdir -p "$HOME/config/session-env/$uuid" "$HOME/config/projects/-p" "$HOME/config/file-history/$uuid"
   echo '{}' >"$HOME/config/projects/-p/$uuid.jsonl"
   mkdir -p "$HOME/.claude/session-env/$uuid"
   CLAUDE_CONFIG_DIR=$HOME/config run_bin -0 team-ops-end T5
   assert_contains "$output" "deleted $HOME/config/session-env/$uuid"$'\n'
+  assert_contains "$output" "deleted $HOME/config/file-history/$uuid"$'\n'
   assert_contains "$output" "deleted $HOME/config/projects/-p/$uuid.jsonl"$'\n'
   [[ ! -e $HOME/config/session-env/$uuid && -d $HOME/.claude/session-env/$uuid ]]
 }

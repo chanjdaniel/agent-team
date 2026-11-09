@@ -15,11 +15,12 @@
 # refusing, and --stop-busy stops busy sessions instead of refusing (an ops session through
 # team-ops-end, like an idle one).
 # Then, in order: team-ops-end T<n> when the task's ops session is listed, which stops and removes
-# it and deletes its transcript, MCP logs, session directory and answer file, naming each on stderr
-# (when it fails the close stops with its reason, the task half closed, and a second close runs it
-# again while the session is still listed); claude stop <id> for each other live session of the task's launch events (by id,
-# never another task's, never an ops session's), then, when any was stopped, the landed check
-# again for each worktree to return (one that no longer has landed is kept with --keep-worktree,
+# it and deletes its transcript, MCP logs, session directory, file checkpoints and answer file,
+# naming each on stderr (when it fails the close stops with its reason, the task half closed, and
+# a second close runs it again while the session is still listed); claude stop <id> for each
+# other live session of the task's launch events (by id, never another task's, never an ops
+# session's), then, when any was stopped, the landed check again for each worktree to return
+# (one that no longer has landed is kept with --keep-worktree,
 # else exit 1 with the task half closed); team-stack down --worktree <path> for each worktree to return whose project has a
 # stack block, so nothing of it is left running (its logs, saved in the task directory, stay out
 # of the archive; a kept worktree keeps its stack; a failed teardown stops the close with the
@@ -234,8 +235,8 @@ fi
 trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-close: $task is half closed; fix the cause above and run team-close $task again" >&2' EXIT
 
 # End the task's ops session through team-ops-end before any other session stops: it stops and
-# removes the session and deletes its transcript, MCP logs, session directory and answer file,
-# each named on stderr. When it fails the close stops half closed, and a second close ends the
+# removes the session and deletes its transcript, MCP logs, session directory, file checkpoints
+# and answer file, each named on stderr. When it fails the close stops half closed, and a second close ends the
 # session again while it is still listed.
 removed=()
 if [[ $ops_listed != '[]' ]]; then
