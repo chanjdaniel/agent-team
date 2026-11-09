@@ -25,6 +25,10 @@ set -euo pipefail
 # shellcheck disable=SC2034 # read by bin/lib/team.sh
 team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/team.sh" "$@"
+# Its pathspecs are its own (":(literal)<path>"), whatever the commit it checks was made with: a
+# hook inherits git's environment, and commit_records commits with GIT_LITERAL_PATHSPECS, under
+# which that pathspec matches nothing and a text file's addresses would go unread.
+unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
 
 policy=${1:-}
 [[ $policy == code || $policy == records ]] ||
