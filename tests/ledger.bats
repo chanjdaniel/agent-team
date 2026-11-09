@@ -90,6 +90,23 @@ SCRIPT
   assert_equal "$(jq -c '.model' "$TEAM_HOME/ledger.jsonl")" $'"sonnet"\nnull'
 }
 
+@test "an ops launch may name its request's discord_message, an id; no other role's launch may" {
+  local launch='{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"launch","session":"4f2a9c1e","worktree":"/w","toolkits":["prod-read"],"request":"https://discord.com/channels/1/2/1564000000000000001"'
+  append_as team-worker "$launch,\"role\":\"ops\",\"discord_message\":\"1564000000000000001\"}"
+  assert_equal "$status" "0"
+  append_as team-worker "$launch,\"role\":\"ops\",\"discord_message\":\"the request\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "discord_message must be a Discord id, a string of digits, got a string that is not one"
+  append_as team-worker "$launch,\"role\":\"builder\",\"discord_message\":\"1564000000000000002\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" 'team-worker: refusing a ledger event: a launch'"'"'s discord_message is only for role ops, not "builder"'
+  assert_equal "$(jq -r .discord_message "$TEAM_HOME/ledger.jsonl")" 1564000000000000001
+  # team-log --check holds the lines of the ledger to the same, from strict_from on.
+  echo "$launch,\"role\":\"reviewer\",\"discord_message\":\"1564000000000000003\"}" >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-log --check
+  assert_contains "$output" "a launch's discord_message is only for role ops, not \"reviewer\""
+}
+
 @test "an address at a public provider in a list's item is refused, naming the item and never the value" {
   local provider=gmail.com
   append_as team-worker '{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"launch","role":"reviewer","session":"4f2a9c1e","worktree":"/w","toolkits":["browser","x@'"$provider"'"]}'

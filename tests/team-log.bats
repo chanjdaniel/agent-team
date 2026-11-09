@@ -205,7 +205,7 @@ TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, ([.value.writer] | flatten | join(",")), (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
   assert_equal "$actual" "$expected"
-  assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","brief":"string"}'
+  assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","discord_message":"id","brief":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
   assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id"}'
   assert_equal "$(jq -c '.kinds.asked.optional' "$CONTRACT")" '{"discord_message":"id","script":"string","sha256":"string"}'
@@ -254,7 +254,7 @@ TABLE
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  walk +team-ui +state \(on\|off\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
-  grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, brief  \(request is the link to Daniel.s Discord message, on an ops launch; model is the --model the session launched on, .*\)$' <<<"$output"
+  grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, discord_message \(id\), brief  \(request is the link to Daniel.s Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on \(team-worker refuses one that did\), which only an ops launch carries; model is the --model the session launched on, .*\)$' <<<"$output"
   grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\)  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
   grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
   grep -Eq '^  ran +team-run-approved +id, exit \(number\)  \(.*\)$' <<<"$output"

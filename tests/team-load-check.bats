@@ -12,6 +12,7 @@
 # unless a test adds one.
 
 load helpers/common
+load helpers/ops-request
 load helpers/treehouse
 
 setup() {
@@ -429,7 +430,13 @@ oplog_lines() {
   ops_setup
   mkdir -p "$TEAM_HOME/tasks/T0"
   printf '%s\n' '# Ops log of T0' '' '- 2026-10-22T00:00:00Z requested `prod-read` `find` `{}`' >"$TEAM_HOME/tasks/T0/ops-log.md"
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  local request
+  request=$(ops_request "$OPS_COORDINATOR")
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$request" --toolkit prod-read
+  # team-worker launched it on Daniel's message, read back from #coordinator, and recorded it.
+  assert_equal "$(stub_calls curl | jq -r '.[-1]')" "https://discord.com/api/v10/channels/$OPS_COORDINATOR/messages/${request##*/}"
+  assert_equal "$(cut -d ' ' -f 1,3 "$HOME/.local/state/agent-team/ops-requests")" "${request##*/} 6f93fe38"
+  assert_contains "$(last_prompt)" "on Daniel's request $request."
   assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
   assert_contains "$output" "load check: ops's effective autoMode holds the $(team_lines ops | wc -l) lines of its settings' autoMode"
   assert_equal "$(cat "$BATS_TEST_TMPDIR/automode-cwd")" "$(realpath "$wt")"
@@ -447,13 +454,43 @@ oplog_lines() {
   assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "rm")')" '["rm","6f93fe38"]'
 }
 
+@test "the ops form needs --request, the link to Daniel's message, before the doctor runs; a message used before launches nothing" {
+  ops_setup
+  cp "$TEAM_DOCTOR" "$BATS_TEST_TMPDIR/doctor.pass"
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$BATS_TEST_TMPDIR/doctor-ran"' 'exit 1' >"$TEAM_DOCTOR"
+  run_bin -2 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_equal "$output" "team-load-check: --role ops needs --request <the link to Daniel's Discord message in #coordinator asking for this load check>"
+  run_bin -2 team-load-check --role ops --worktree "$wt" --request load-check --toolkit prod-read
+  assert_equal "$output" "team-load-check: --request must link Daniel's Discord message, https://discord.com/channels/<guild>/<channel>/<message>, got 'load-check'"
+  run_bin -2 team-load-check --request "$(ops_request "$OPS_COORDINATOR")"
+  assert_equal "$output" "team-load-check: --request is for --role ops only"
+  run_bin -2 team-load-check --context --request "$(ops_request "$OPS_COORDINATOR")"
+  assert_equal "$output" "team-load-check: --request is for --role ops only"
+  [[ ! -e $BATS_TEST_TMPDIR/doctor-ran ]]
+  assert_equal "$(stub_calls claude)" ""
+  cp "$BATS_TEST_TMPDIR/doctor.pass" "$TEAM_DOCTOR"
+  run_bin -0 team-load-check --help
+  assert_contains "$output" "team-load-check --role ops --worktree <path> --request <link> --toolkit <name>..."
+  assert_contains "$output" "The ops form needs --request <link>, the link to Daniel's message in #coordinator asking for this"
+  assert_contains "$output" "so each load"$'\n'"check of the ops role needs a new message"
+
+  # One message runs one load check: the next needs a new one.
+  local request
+  request=$(ops_request "$OPS_COORDINATOR")
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$request" --toolkit prod-read
+  : >"$STUB_CALLS/claude.log"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$request" --toolkit prod-read
+  assert_contains "$output" "team-worker: Discord message ${request##*/} asked for T0's ops launch 6f93fe38 at "
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg" or .[0] == "rm")')" ""
+}
+
 @test "an ops session with a stray tool, a shell or a readable /proc fails, and is still ended" {
   ops_setup
   local s=$STUB_FIXTURES/session
   sed -i 's/^Bash: absent$/Bash: present/; s/^tools: Read,/tools: Read, Bash, WebFetch,/' "$s/tools.txt"
   echo mcp__plugin_prod-read_prod-read__find >>"$s/tools.txt"
   printf '%s\n' 'grep-environ: allowed: 42' 'read-status: allowed' >"$s/probes.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  > mcp__plugin_prod-read_prod-read__find"
   assert_contains "$output" "FAIL: built-in tools beyond the ops allowlist: Bash WebFetch"
   assert_contains "$output" "FAIL: Bash is not reported absent"
@@ -467,7 +504,7 @@ oplog_lines() {
   ops_setup
   local s=$STUB_FIXTURES/session
   printf '%s\n' simplify prod-write:changing-production-data loop >"$s/skills.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: skills beyond the toolkits': simplify prod-write:changing-production-data loop"
   assert_contains "$output" "FAIL: the session cannot invoke querying-production-data"
   assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
@@ -475,16 +512,16 @@ oplog_lines() {
   # The bare names count as well as the namespaced ones; no skills file is no skill.
   rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
   echo querying-production-data >"$s/skills.txt"
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed" "$s/skills.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: the session cannot invoke querying-production-data"
 
   # A write session needs both.
   rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
   write_session
   echo prod-read:querying-production-data >"$s/skills.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
   assert_contains "$output" "FAIL: the session cannot invoke changing-production-data"
   [[ $output != *"skills beyond"* ]]
 }
@@ -492,12 +529,12 @@ oplog_lines() {
 @test "the ops log must gain exactly a requested and a ran line for the one read" {
   ops_setup
   oplog_lines requested
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-collections"
 
   rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
   oplog_lines requested ran ran
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-collections"
 }
 
@@ -508,7 +545,7 @@ oplog_lines() {
   rm "$s/tools.txt" "$s/probes.txt" "$s/query.txt"
   echo 'not connected' >"$s/done.txt"
   : >"$STUB_FIXTURES/ops-log"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" 'FAIL: a production server did not connect: prod-read (CONNECTION_CLOSED): "Connection closed"'
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
@@ -559,7 +596,7 @@ write_line() {
 @test "an ops session whose five writes are each declined at a prompt passes, and keeps the write inventory" {
   ops_setup
   write_session
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
   assert_contains "$output" "load check: Daniel, two 1Password prompts are coming on the PC: approve them; then decline each of the five write prompts on the phone"
   assert_contains "$output" "load check: 16 MCP tools, 10 built-in tools"
   assert_equal "${lines[-1]}" "PASS"
@@ -583,7 +620,7 @@ write_line() {
   transcript list-collections:result insert-many:user-rejected insert-many:user-rejected update-many:result \
     delete-many:user-rejected create-index:user-rejected drop-index:user-rejected >"$STUB_FIXTURES/transcript.jsonl"
   { write_line ran update-many; write_line failed create-index; } >>"$STUB_FIXTURES/ops-log"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
   assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  < mcp__prod-write__drop-index"
   assert_contains "$output" "FAIL: insert-many was not called once and declined at its prompt (transcript: 2 call(s))"
   assert_contains "$output" "FAIL: update-many was not called once and declined at its prompt (transcript: 1 call(s))"
@@ -642,7 +679,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
 @test "an ops session that reads only through vercel-read passes, keeps its inventory and is ended with its transcript" {
   ops_setup
   vercel_session
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
   assert_contains "$output" "load check: 5 MCP tools, 10 built-in tools"
   assert_equal "${lines[-1]}" "PASS"
@@ -667,7 +704,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   # Built here, so the file holds no token-shaped string.
   token=vcp_$(printf 'Ab1_%.0s' {1..5})
   jq -nc --arg text "the token is $token" '{type: "user", message: {content: $text}}' >"$STUB_FIXTURES/transcript.jsonl"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  < mcp__vercel-read__runtime-logs"$'\n'"  > mcp__vercel-read__promote-deployment"
   assert_contains "$output" "FAIL: skills beyond the toolkits': simplify"
   assert_contains "$output" "FAIL: the session cannot invoke reading-vercel-deployments"
@@ -685,7 +722,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   echo prod-read:querying-production-data >>"$s/skills.txt"
   vercel_lines ran >>"$STUB_FIXTURES/ops-log"
   jq -nc '{type: "user", message: {content: "masked as <vercel-token>, the vcp_ prefix, vcp_short"}}' >"$STUB_FIXTURES/transcript.jsonl"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" "FAIL: skills beyond the toolkits': prod-read:querying-production-data"
   assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-deployments"
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 3
@@ -700,14 +737,14 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   token=vcp_$(printf 'Fx9_%.0s' {1..5})
   mkdir -p "$TEAM_HOME/tasks/T9/scratch/work" "$TEAM_HOME/memory/proj"
   echo "const token = \"$token\";" >"$TEAM_HOME/tasks/T9/scratch/work/dump-tools.mjs"
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_equal "${lines[-1]}" "PASS"
 
   # In T0's directory or the memory, it is one.
   relaunch
   echo "$token" >"$TEAM_HOME/tasks/T0/notes.txt"
   echo "$token" >"$TEAM_HOME/memory/proj/vercel.md"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" "FAIL: a Vercel token in:"
   assert_contains "$output" "  $TEAM_HOME/tasks/T0/notes.txt"
   assert_contains "$output" "  $TEAM_HOME/memory/proj/vercel.md"
@@ -722,7 +759,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   rm "$s/tools.txt" "$s/probes.txt" "$s/vercel.txt"
   echo 'not connected' >"$s/done.txt"
   : >"$STUB_FIXTURES/ops-log"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" 'FAIL: a production server did not connect: vercel-read (CONNECTION_CLOSED): "Connection closed"'
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
@@ -730,7 +767,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   relaunch
   printf '%s\n' 'prod-read: connected' 'notice: connected' 'vercel-read: still connecting after 30 searches' \
     'notice: vercel-read is still connecting' >"$s/connect.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
   assert_contains "$output" 'FAIL: a production server did not connect: connected vercel-read is still connecting'
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
 }
@@ -738,7 +775,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
 @test "an ops session with prod-read and vercel-read passes on both smoke reads, and the ops log must gain both reads' lines and no more" {
   ops_setup
   vercel_session prod-read
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read --toolkit prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read --toolkit prod-read
   assert_contains "$output" "load check: Daniel, two 1Password prompts are coming on the PC: approve them"
   [[ $output != *"write prompts"* ]]
   assert_contains "$output" "load check: 16 MCP tools, 10 built-in tools"
@@ -754,26 +791,26 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   # prod-read's lines alone, then one line too many, then a smoke read not run.
   relaunch
   oplog_lines requested ran
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
   assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-deployments"
   assert_contains "$output" "FAIL: the ops log gained 2 event lines, not one per call made"
   [[ $output != *"line for list-collections"* ]]
   relaunch
   vercel_session prod-read
   vercel_lines ran >>"$STUB_FIXTURES/ops-log"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
   assert_contains "$output" "FAIL: the ops log gained 5 event lines, not one per call made"
   relaunch
   vercel_session prod-read
   rm "$STUB_FIXTURES/session/query.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
   assert_contains "$output" "FAIL: list-collections did not run"
   [[ $output != *"list-deployments did not run"* ]]
 }
 
 @test "the session prompt waits for and smoke-reads only the toolkits given" {
   ops_setup
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   local prompt
   prompt=$(last_prompt)
   assert_contains "$prompt" "1. Wait for prod-read: "
@@ -783,7 +820,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
 
   relaunch
   vercel_session
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   prompt=$(last_prompt)
   assert_contains "$prompt" "1. Wait for vercel-read: "
   assert_contains "$prompt" "for each of vercel-read, a line '<server>: connected'"
@@ -794,7 +831,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
 
   relaunch
   vercel_session prod-read
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read --toolkit prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read --toolkit prod-read
   prompt=$(last_prompt)
   assert_contains "$prompt" "1. Wait for prod-read and vercel-read: "
   assert_contains "$prompt" "4. Call mcp__prod-read__list-collections exactly once"
@@ -1112,12 +1149,12 @@ $(going_on 'gate proj')"
   ops_setup
   registry "$(printf '%s\n' '[proj.pool]' 'provider = "git"' 'slots = []')"
   doctor_results FAIL 'branches proj'
-  run_bin -1 --separate-stderr team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 --separate-stderr team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_equal "$stderr" "$stopped"
   [[ ! -e $STUB_FIXTURES/launched ]]
 
   doctor_results FAIL 'branches site'
-  run_bin -0 --separate-stderr team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -0 --separate-stderr team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_equal "$stderr" "$(going_on 'branches site')"
   assert_equal "${lines[-1]}" "PASS"
 }

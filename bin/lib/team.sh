@@ -16,8 +16,8 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
-# daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
-# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
+# discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL and OPS_REQUEST_MAX_AGE.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
 # that sets team_guard (below) exits 2 for every exit of its but 0.
 # shellcheck shell=bash
@@ -1261,6 +1261,11 @@ render_template() {
 # shellcheck disable=SC2034 # read by the scripts that source this library
 COORDINATOR_CHANNEL=${TEAM_COORDINATOR_CHANNEL:-1562486564871995482}
 
+# The most seconds before an ops launch that Daniel's message asking for it may have been sent, by
+# the time in its id: team-worker refuses an older one.
+# shellcheck disable=SC2034 # read by the scripts that source this library
+OPS_REQUEST_MAX_AGE=3600
+
 # The Discord channel under which each interviewed task's interview thread is opened: Daniel's,
 # kept out of the plugin's access.json groups, so the plugin delivers none of its messages to the
 # coordinator (it keys a thread on its parent). TEAM_INTERVIEW_CHANNEL overrides it, an empty one
@@ -1307,6 +1312,14 @@ discord_api() {
     return 1
   }
   curl -fsS -H @- "${@:2}" "https://discord.com/api/v10/$1" <<<"Authorization: Bot $token"
+}
+
+# Print the channel and message ids of a Discord message link,
+# https://discord.com/channels/<guild>/<channel>/<message>, as "<channel> <message>", or fail
+# printing nothing: discord_link <link>
+discord_link() {
+  [[ $1 =~ ^https://discord\.com/channels/[1-9][0-9]{0,18}/([1-9][0-9]{0,18})/([1-9][0-9]{0,18})$ ]] || return 1
+  echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
 }
 
 # Read Daniel's word from Discord: message <id> from the first of the places that has it, through

@@ -51,8 +51,9 @@ def type_problems($name; $want; $legacy):
 # The field types a kind's line may carry: its required and optional fields, and note.
 def field_types($kind): $kind.required + ($kind.optional // {}) + {note: "string"};
 
-# What a line of a known kind must meet: its required fields present and not empty, and every
-# field the contract types holding that type ($legacy: as --check reads an existing line).
+# What a line of a known kind must meet: its required fields present and not empty, every
+# field the contract types holding that type ($legacy: as --check reads an existing line), and
+# every field of its field_when only beside the values it names.
 def kind_problems($contract; $legacy):
   . as $line
   | .event as $event
@@ -61,7 +62,11 @@ def kind_problems($contract; $legacy):
     else
       ($kind.required | keys_unsorted[] | select($line[.] == null or $line[.] == "") | "\($event) needs \(.)"),
       (field_types($kind) | to_entries[] | .key as $name | .value as $type
-        | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy))
+        | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy)),
+      (($kind.field_when // {}) | to_entries[] | .key as $name | select($line[$name] != null)
+        | .value | to_entries[] | .key as $on | .value as $values
+        | select(any($values[]; . == $line[$on]) | not)
+        | "\(if $event | test("^[aeiou]") then "an" else "a" end) \($event)'s \($name) is only for \($on) \($values | join(" or ")), not \($line[$on] | tojson)")
     end;
 
 # A value team-log was given for field $name, whose contract type is $want (null for a field the
