@@ -1029,8 +1029,9 @@ def level_findings:
 # team-sweep's health findings, from team-timers health --json's view (or {error} when it could
 # not be read), each with task and session null: checkpoint-stale for the alerting problems whose
 # sweep kind it is (checkpoint, heartbeat), health for those whose kind is health (login-refused,
-# ledger, a step failing for an hour), joined in one finding each, and one health finding naming
-# the error when the view could not be read. A view off the lease has no problems, so none.
+# ledger, a step failing 12 runs in a row), each kind's joined in one finding, and one health
+# finding naming the error when the view could not be read. A view off the lease, or {} (a
+# machine with no team name), has no problems, so none.
 def health_findings:
   if .error then
     {task: null, kind: "health", session: null, name: null, next: "fix what team-timers names",
