@@ -37,8 +37,11 @@
 # plan-time or standing word covers it.
 # The coordinator runs it; lease-fence blocks it on a machine that lost the lease, as its git push
 # and team-merge.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "catches no branch up") && die "$why"
 
 usage="usage: team-catch-up T<n> [--pr <url>]"
 

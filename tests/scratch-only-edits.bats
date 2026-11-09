@@ -73,6 +73,48 @@ setup() {
   assert_equal "$output" ""
 }
 
+@test "with no team home named, an edit or a shell write is still judged" {
+  homeless() {
+    TMPDIR=$tmp run --separate-stderr env -u TEAM_HOME "$REPO_ROOT/bin/hooks/scratch-only-edits" <<<"$(jq -cn --arg cwd "$wt" \
+      --arg tool "$1" --argjson input "$2" '{hook_event_name: "PreToolUse", cwd: $cwd, tool_name: $tool, tool_input: $input}')"
+  }
+  [[ ! -e $HOME/.config/agent-team/home ]]
+  homeless Write '{"file_path": "src/main.sh", "content": "x"}'
+  assert_equal "$status" 2
+  assert_equal "$stderr" "Blocked: this role may edit files only under $wt/.scratch (tried $wt/src/main.sh)."
+  homeless Write '{"file_path": ".scratch/task/notes.md", "content": "x"}'
+  assert_equal "$status:$stderr" 0:
+  homeless Bash '{"command": "echo x > src/a"}'
+  assert_equal "$status" 2
+  assert_equal "$stderr" "Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried $wt/src/a)."
+  homeless Bash '{"command": "echo x > .scratch/a"}'
+  assert_equal "$status:$stderr" 0:
+}
+
+@test "input it cannot read is refused, naming why" {
+  local input
+  for input in 'not json' '' '[]' '{"tool_input": {"file_path": "src/a"}}' '{"tool_name": 5}' '"Write"'; do
+    run_bin -2 --separate-stderr hooks/scratch-only-edits <<<"$input"
+    [[ $stderr == "Blocked: scratch-only-edits could not read the hook's input (JSON with a tool_name); a guard that cannot decide refuses, so report it as BLOCKED and do not reach it another way." ]] ||
+      { printf 'input %s: stderr %s\n' "$input" "$stderr" >&2; return 1; }
+  done
+}
+
+@test "a command failing inside it is a refusal that names the hook and the exit code" {
+  # The read of the call's working directory fails, after its input was read.
+  fails_on_call jq .cwd
+  edit -2 "$wt/.scratch/task/notes.md"
+  assert_equal "$output" ""
+  assert_equal "$stderr" "Blocked by scratch-only-edits: it failed with exit 5 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way."
+  assert_equal "$(wc -l <"$STUB_CALLS/jq.failed")" 1
+}
+
+@test "a wrong argument on its command line refuses every call" {
+  run_bin -2 --separate-stderr hooks/scratch-only-edits --bogus \
+    <<<"$(jq -cn --arg cwd "$wt" '{cwd: $cwd, tool_name: "Read", tool_input: {file_path: "a"}}')"
+  assert_equal "$stderr" "scratch-only-edits: usage: scratch-only-edits   (the hook's input on stdin)"
+}
+
 @test "a shell append to the team home's records is blocked" {
   blocked 'echo x >> ~/agent-team-records/memory/p/MEMORY.md' "$HOME/agent-team-records/memory/p/MEMORY.md"
 }

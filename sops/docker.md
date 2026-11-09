@@ -261,7 +261,7 @@ Builders, planners and reviewers carry these rules in a short `## Docker stacks`
 - `~/agent-team/bin/team-stack stop` a stack no longer needed, and `~/agent-team/bin/team-stack down` it when done.
 - Never prune, and never remove another task's or project's containers, volumes or networks; never test against Daniel's primary stack.
 
-Every worker's settings (`settings/worker.json`) deny Docker's prune commands, `docker <object> prune` for `system`, `volume`, `image`, `network`, `builder`, `container` and `buildx`, each in three spellings: `docker <object> prune*`, `docker * <object> prune*` (global options first) and `*/docker <object> prune*` (by path).
+Every worker's settings (`settings/worker.json`) and the coordinator's (`coordinator.settings.json`) deny Docker's prune commands, `docker <object> prune` for `system`, `volume`, `image`, `network`, `builder`, `container` and `buildx`, each in three spellings: `docker <object> prune*`, `docker * <object> prune*` (global options first) and `*/docker <object> prune*` (by path).
 These are a speed bump, as every deny rule is; the guarantee is that no script the team runs prunes.
 
 ## Seeing what Docker holds

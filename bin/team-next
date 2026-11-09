@@ -102,10 +102,13 @@
 # twice.
 # Any other message is logged, and the last line says it has no hand-off.
 # It never posts to Discord, sends a message, merges, approves a plan or answers a question.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 # Exit codes: 0 done, 1 refused, 2 a malformed command line; when a script it runs fails, that
 # script's own code, 75 (try again later) among them.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "runs no team-next") && die "$why"
 
 bin=$(dirname "$TEAM_LIB")
 usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>'"
