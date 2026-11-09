@@ -1,5 +1,6 @@
-# A fake Discord for team-inbox, for the tests of every script that runs it: `load helpers/inbox`,
-# then call inbox_discord after the test's own curl stub, if it has one.
+# A fake Discord for team-inbox, and for the heartbeat's alerts too, for the tests of every script
+# that runs them: `load helpers/inbox`, then call inbox_discord (inbox_discord alerts for the
+# heartbeat's suites) after the test's own curl stub, if it has one.
 #
 # inbox_discord writes $STUB_FIXTURES/inbox.sh, which answers team-inbox's calls and exits, and
 # returns at once for any other call. A curl stub of the test's own sources it first, with the line
@@ -9,7 +10,12 @@
 #   GET   channels/<c>                         {id: <c>, guild_id: <INBOX_GUILD>}
 #   POST  channels/<c>/messages, flags 4       keeps the body as $STUB_FIXTURES/inbox/<id>.json,
 #                                              the ids 1569000000000000001 and on; answers {id}
+#   POST  channels/<c>/messages, an alert      with alerts given: the same, its id also a line of
+#         (allowed_mentions in its body)       $STUB_FIXTURES/inbox/alerts (without, other
+#                                              scripts' posts that name allowed_mentions too
+#                                              reach the test's own stub)
 #   PATCH channels/<c>/messages/<m>            replaces <m>'s body, or fails 404 when it is gone
+# A body is read from --data-binary @<file> (team-inbox's) or -d <json> (the heartbeat's).
 # Each call is a line "<method> <path under /api/v10/>" in $STUB_FIXTURES/inbox/calls. With
 # $STUB_FIXTURES/inbox/fail holding "<status> [<retry-after>]", every one of them fails so, its
 # status in the header dump after -D as curl writes it.
@@ -19,19 +25,24 @@ INBOX_GUILD=1560000000000000000
 
 inbox_discord() {
   mkdir -p "$STUB_FIXTURES/inbox"
-  cat >"$STUB_FIXTURES/inbox.sh" <<'EOF'
+  printf 'inbox_alerts=%s\n' "$([[ ${1:-} == alerts ]] && echo 1 || echo 0)" >"$STUB_FIXTURES/inbox.sh"
+  cat >>"$STUB_FIXTURES/inbox.sh" <<'EOF'
 inbox_dir=$STUB_FIXTURES/inbox inbox_method=GET inbox_body='' inbox_headers=/dev/null inbox_args=("$@")
 for ((inbox_i = 0; inbox_i < ${#inbox_args[@]} - 1; inbox_i++)); do
   case ${inbox_args[inbox_i]} in
     -X) inbox_method=${inbox_args[inbox_i + 1]} ;;
     --data-binary) inbox_body=${inbox_args[inbox_i + 1]#@} ;;
+    -d)
+      inbox_body=$inbox_dir/body.$$
+      printf '%s\n' "${inbox_args[inbox_i + 1]}" >"$inbox_body"
+      ;;
     -D) inbox_headers=${inbox_args[inbox_i + 1]} ;;
   esac
 done
 if [[ ${*: -1} =~ ^https://discord\.com/api/v10/(channels/([0-9]+)(/messages(/([0-9]+))?)?)$ ]] &&
   { [[ $inbox_method == GET && -z ${BASH_REMATCH[3]} ]] ||
     [[ $inbox_method == PATCH && -n ${BASH_REMATCH[5]} ]] ||
-    { [[ $inbox_method == POST && -n ${BASH_REMATCH[3]} && -z ${BASH_REMATCH[5]} ]] && [[ -f $inbox_body ]] && jq -e '.flags == 4' "$inbox_body" >/dev/null 2>&1; }; }; then
+    { [[ $inbox_method == POST && -n ${BASH_REMATCH[3]} && -z ${BASH_REMATCH[5]} ]] && [[ -f $inbox_body ]] && jq -e --argjson alerts "$inbox_alerts" '.flags == 4 or ($alerts == 1 and has("allowed_mentions"))' "$inbox_body" >/dev/null 2>&1; }; }; then
   inbox_path=${BASH_REMATCH[1]} inbox_channel=${BASH_REMATCH[2]} inbox_message=${BASH_REMATCH[5]}
   echo "$inbox_method $inbox_path" >>"$inbox_dir/calls"
   inbox_status=''
@@ -54,6 +65,7 @@ if [[ ${*: -1} =~ ^https://discord\.com/api/v10/(channels/([0-9]+)(/messages(/([
       echo "$inbox_n" >"$inbox_dir/count"
       inbox_message=$((1569000000000000000 + inbox_n))
       cp "$inbox_body" "$inbox_dir/$inbox_message.json"
+      ! jq -e 'has("allowed_mentions")' "$inbox_body" >/dev/null || echo "$inbox_message" >>"$inbox_dir/alerts"
       jq -n --arg m "$inbox_message" '{id: $m}'
       ;;
   esac
@@ -76,14 +88,19 @@ inbox_shown() {
 }
 
 # The message's lines between its title and its time, the items and section headings, without the
-# resources line.
+# resources line and the health line.
 inbox_items_shown() {
-  inbox_shown | sed '1d;$d' | sed '/^Resources: /d'
+  inbox_shown | sed '1d;$d' | sed -E '/^Resources: /d;/^(-# Health|\*\*Health\*\*): /d'
 }
 
 # The message's resources line, none when it has none.
 inbox_resources_shown() {
   inbox_shown | sed -n '/^Resources: /p'
+}
+
+# The message's health line, none when it has none.
+inbox_health_shown() {
+  inbox_shown | sed -nE '/^(-# Health|\*\*Health\*\*): /p'
 }
 
 # team-inbox's calls to the fake Discord, one "<method> <path>" per line.
@@ -98,4 +115,14 @@ inbox_kept() {
   jq -n --arg guild "$INBOX_GUILD" '{channel: "1562486564871995482", guild: $guild, message: "1569000000000000000"}' \
     >"$HOME/.local/state/agent-team/inbox.json"
   echo '{"content": ""}' >"$STUB_FIXTURES/inbox/1569000000000000000.json"
+}
+
+# The heartbeat's alerts in #coordinator, in the order they were posted, each as the fake Discord
+# now holds it ({id, content, allowed_mentions}), one JSON object per line.
+alerts_shown() {
+  local id
+  [[ -f $STUB_FIXTURES/inbox/alerts ]] || return 0
+  while read -r id; do
+    jq -c --arg id "$id" '{id: $id} + .' "$STUB_FIXTURES/inbox/$id.json"
+  done <"$STUB_FIXTURES/inbox/alerts"
 }

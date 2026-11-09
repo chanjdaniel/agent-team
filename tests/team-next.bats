@@ -997,6 +997,18 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
     "merge on the standing word: run team-merge T7 for $url at $sha, agent-review success, checks green"
 }
 
+@test "a pass on a PR of the team's own project is the merge ask under a standing word on every project" {
+  event merge-standing '{project: "all", discord_message: "1563000000000000050", discord_channel: "1563000000000000012"}'
+  # proj's repo is the code checkout's origin, so proj is the team's own.
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
+  [[ $output != *"standing word"* ]]
+}
+
 @test "a pass with no PR yet, a gated project's, tells the holding builder to go on" {
   sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"
   jq -cn --arg h "$sha" '{template: "reviewer", project: "proj", values: {head: $h}}' >"$TEAM_HOME/tasks/T7/brief-review.json"
@@ -1142,4 +1154,12 @@ launched T7-builder c0000001"
   grep -qF 'a `DONE findings` with `--sent-back <list>`' "$manual"
   grep -E '^\| `PAUSED stowed` \|.*`team-next`' "$manual"
   (($(wc -l <"$manual") <= 120))
+}
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  worker_refused team-next "runs no team-next" T7 -- 'T7 DONE 01 abc1234 the ticket'
+  AGENT_TEAM_ROLE=reviewer run_bin -0 team-next --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-next")"
+  AGENT_TEAM_ROLE=coordinator run_bin -2 team-next 7
+  assert_contains "$output" "usage: team-next T<n>"
 }

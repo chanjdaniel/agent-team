@@ -413,6 +413,28 @@ $REPO_ROOT/bin/hooks/command-guard"
   [[ -x $REPO_ROOT/bin/hooks/scratch-only-edits && -x $REPO_ROOT/bin/hooks/lease-fence && -x $REPO_ROOT/bin/hooks/command-guard ]]
 }
 
+@test "every role's generated settings keep onFailure block and the timeout on each PreToolUse hook" {
+  thread T7
+  ops_stub
+  local role settings expected
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    expected="lease-fence block 60
+command-guard block 10"
+    case $role in
+      planner | reviewer) expected+=$'\nscratch-only-edits block 30' ;;
+      ops) expected+=$'\nscratch-only-edits block 30\nops-log block 30' ;;
+    esac
+    assert_equal "$(jq -r '.hooks.PreToolUse[].hooks[] | "\(.command | ltrimstr("'"$REPO_ROOT"'/bin/hooks/")) \(.onFailure) \(.timeout)"' "$settings" | sort)" \
+      "$(sort <<<"$expected")"
+  done
+}
+
 @test "toolkits add their plugin directories and only their MCP servers" {
   fake_checkout
   thread T7
@@ -781,6 +803,24 @@ role_texts() {
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/effect"]')"
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["effect"]'
+}
+
+@test "the codegraph toolkit adds its plugin directory and no MCP server" {
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" --toolkit codegraph -- go
+  assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/codegraph"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(launches | jq -c .toolkits)" '["codegraph"]'
+}
+
+@test "the spec-review toolkit adds its plugin directory and no MCP server" {
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" --toolkit spec-review -- go
+  assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/spec-review"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(launches | jq -c .toolkits)" '["spec-review"]'
 }
 
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
@@ -1528,7 +1568,7 @@ LINES
   : >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
   capacity_room $((819 * 1048576))
   jq -c '.tasks = [{task: "T9", memory: 429496730, cpu: null, cpu_nsec: null, stacks: [],
-                    sessions: [{id: "6c6c6c6c", role: "reviewer", memory: 429496730, peak: 429496730, cpu_seconds: 1}]}]' \
+                    sessions: [{id: "6c6c6c6c", role: "reviewer", memory: 429496730, cpu_seconds: 1}]}]' \
     "$HOME/.local/state/agent-team/capacity/readings.jsonl" >"$BATS_TEST_TMPDIR/reading"
   mv "$BATS_TEST_TMPDIR/reading" "$HOME/.local/state/agent-team/capacity/readings.jsonl"
   run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go
@@ -1550,4 +1590,14 @@ LINES
   assert_equal "$stderr" "team-worker: team-capacity admit failed for T7-builder (exit 1): team-capacity: $HOME/.config/agent-team/capacity.json: session_gib must be a number above 0, not 0"
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
+}
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  thread T7
+  worker_refused team-worker "launches no session" T7 builder "$wt1" -- go
+  worker_refused team-worker "launches no session" T7 ops "$wt1" --toolkit prod-read --request x -- go
+  AGENT_TEAM_ROLE=builder run_bin -0 team-worker --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-worker")"
+  AGENT_TEAM_ROLE=coordinator run_bin -2 team-worker T7 builder
+  assert_contains "$output" "usage: team-worker <task> <role> <worktree>"
 }

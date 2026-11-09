@@ -9,17 +9,31 @@
 # exported, so every script and every session it starts runs with that one PATH. It sets
 # TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
-# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, ledger_append,
+# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append,
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
-# pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
+# pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
-# PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
-# Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
+# own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
+# daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
+# Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
+# that sets team_guard (below) exits 2 for every exit of its but 0.
 # shellcheck shell=bash
+
+# A guard hook decides or refuses: a PreToolUse hook of bin/hooks/ sets team_guard to its name
+# before sourcing, and any exit of its but 0 and 2, this library's own refusals and a failed
+# command under set -e included, then ends as an exit 2 with one line on stderr saying so, so the
+# call is blocked even where its settings entry does not block on a failure. Read by Bash 3.2 too.
+if [[ -n ${team_guard:-} ]]; then
+  team_guard_exit() {
+    [[ $1 != 0 && $1 != 2 ]] || return 0
+    echo "Blocked by $team_guard: it failed with exit $1 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way." >&2
+    exit 2
+  }
+  trap 'team_guard_exit $?' EXIT
+fi
 
 # PWD names a directory other than ".", or none, once the one the shell is in is deleted. Read by
 # Bash 3.2 too, before platform.sh's version check.
@@ -62,6 +76,13 @@ TEAM_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # the records hook refuses them (data-check) and a task's archive leaves them out
 # (archive_left_out), so a screenshot never reaches the team home's history.
 IMAGE_TYPE='png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|heif|avif'
+# An email address as the data rules find one, the file types after a name@word. that make it a
+# file's name and no address (logo@2x.png), and the public providers whose addresses the records
+# never take: data-check holds a change to them, and ledger_append each event, so no ledger line
+# is one the records hook refuses in every later commit of the ledger.
+DATA_EMAIL="[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}"
+DATA_FILE_TYPE='png|jpe?g|svg|gif|webp|ico|js|ts|vue|css|scss|py|json|md|html|lock|map|mjs|cjs|txt|min'
+DATA_PROVIDER='^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|me|mac|aol|protonmail|proton|pm|gmx|mail|shaw|telus|rogers|sympatico|bell|yandex|qq|163|zoho|hey|fastmail)\.[a-z.]{2,8}$'
 
 # The team home's loose objects at which team-timers run's pack step packs it on the lease holder
 # (git gc, which since git 2.40, tools.lock's floor, packs the unreachable ones too, in a cruft
@@ -70,12 +91,13 @@ IMAGE_TYPE='png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|heif|avif'
 PACK_LOOSE=200
 
 # Where a command starts in a Bash command's text, the opening of an extended regular expression a
-# hook follows with a command's name: at the start, after a separator, a parenthesis, a backtick or
-# a line break, past the reserved words a command may follow there ({, !, if, then, else, elif,
-# do, while, until and time), any variable assignments and a directory. bin/hooks/lease-fence and
+# hook follows with a command's name: at the start, after a separator, a parenthesis (a subshell's
+# or a case pattern's), a brace (a group's or a function's body), a backtick or a line break, past
+# the reserved words a command may follow there ({, !, if, then, else, elif, do, while, until,
+# time and coproc), any variable assignments and a directory. bin/hooks/lease-fence and
 # bin/hooks/command-guard read it.
 # shellcheck disable=SC2034 # read by the hooks
-COMMAND_START=$'(^|[;&|(`\n])[[:space:]]*((\\{|!|if|then|else|elif|do|while|until|time)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?'
+COMMAND_START=$'(^|[;&|(){`\n])[[:space:]]*((\\{|!|if|then|else|elif|do|while|until|time|coproc)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?'
 
 # Refuse with a reason on stderr.
 die() {
@@ -129,10 +151,72 @@ json_vars() {
   done
 }
 
+# The kind of one address: none (no address), service, fixture, owner (<owner>, git's user.email,
+# lowercase, when given), provider or other: email_kind <address> [<owner>]
+email_kind() {
+  local addr=${1,,} owner=${2:-}
+  local name=${addr%@*} domain=${addr##*@}
+  if [[ $domain =~ \.($DATA_FILE_TYPE)$ || $domain =~ ^[0-9] ]]; then
+    echo none
+  elif [[ $name =~ ^no-?reply$ || $name == git || $domain == users.noreply.github.com ]]; then
+    echo service
+  elif [[ $domain =~ (^|\.)example(\.|$) || $domain =~ \.(test|invalid|localhost)$ ||
+    $domain == localhost || $domain =~ (^|\.)ex\.(com|io|org)$ ]]; then
+    echo fixture
+  elif [[ -n $owner && $addr == "$owner" ]]; then
+    echo owner
+  elif [[ $domain =~ $DATA_PROVIDER ]]; then
+    echo provider
+  else
+    echo other
+  fi
+}
+
+# How many addresses in the text on stdin the policy code or records refuses (code: a provider's
+# or any other outside the fixture domains; records: a provider's but <owner>'s), as "<count>
+# email address(es) <where>" for each kind it refuses, one per line in name order:
+# refused_emails code|records [<owner>]
+refused_emails() {
+  local policy=$1 owner=${2:-} addr kind noun words
+  local -A kind_count=()
+  while IFS= read -r addr; do
+    kind=$(email_kind "$addr" "$owner")
+    case $policy:$kind in
+      code:provider | code:other | records:provider) kind_count[$kind]=$((${kind_count[$kind]:-0} + 1)) ;;
+    esac
+  done < <(LC_ALL=C grep -aoE "$DATA_EMAIL" || true)
+  for kind in "${!kind_count[@]}"; do
+    noun=address words="outside the fixture domains"
+    ((kind_count[$kind] == 1)) || noun=addresses
+    [[ $kind != provider ]] || words="at a public provider"
+    echo "${kind_count[$kind]} email $noun $words"
+  done | sort
+}
+
+# What the event <line> holds that the records hook refuses, as "<field> holds <count> email
+# address(es) at a public provider" for each string field (a list's item as <field>.<index>),
+# joined by "; ", or nothing. Each field is read as the line writes it, escapes and all, since
+# that is the text the hook reads (an escaped control character's last letters run into the
+# address after it), and the owner is the team home's git user.email, as the hook's is:
+# ledger_refused_data <line>
+ledger_refused_data() {
+  local owner field text words out=''
+  owner=$(git -C "$TEAM_HOME" config user.email 2>/dev/null) || owner=''
+  while IFS=$'\t' read -r field text; do
+    while IFS= read -r words; do
+      out+="${out:+; }$field holds $words"
+    done < <(printf '%s\n' "$text" | refused_emails records "${owner,,}")
+  done < <(jq -r 'paths(strings) as $p | getpath($p) | select(test("@"))
+    | [($p | map(tostring) | join(".")), tojson] | @tsv' <<<"$1")
+  printf '%s' "$out"
+}
+
 # Append one JSON object as one line to the ledger, under an exclusive lock beside it, so two
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
-# script must be its kind's writer. With <seconds>, the lock is waited on at most that long, and
-# a lock still held then is a refusal: ledger_append <event> [<seconds>]
+# script must be its kind's writer, and no string in it may hold what the records hook refuses (an
+# address at a public provider), since the ledger is append-only and that line would fail every
+# later commit of it. With <seconds>, the lock is waited on at most that long, and a lock still
+# held then is a refusal: ledger_append <event> [<seconds>]
 ledger_append() {
   local out line problems lock_wait=()
   # One jq run: the object's compact line, then its problems ("none" when the input holds no object
@@ -147,6 +231,9 @@ ledger_append() {
   [[ $line != none ]] || die "not a JSON object for the ledger: $1"
   [[ $line != many ]] || die "not one JSON object for the ledger: $1"
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
+  [[ ! $line =~ $DATA_EMAIL ]] || problems=$(ledger_refused_data "$line")
+  [[ -z $problems ]] ||
+    die "refusing a ledger event: $problems, which the records never take and the append-only ledger could never drop; give it without the address"
   [[ -z ${2:-} ]] || lock_wait=(-w "$2")
   {
     flock -x "${lock_wait[@]}" 9 || die "could not take the ledger's lock${2:+ within ${2}s}"
@@ -336,30 +423,35 @@ rsync_rule() {
 
 # Mirror the task directory <dir> of a worktree of <project> into <archive> under the team home
 # (tasks/T<n>/scratch or tasks/T<n>/scratch-<project>), so the archive is the task directory as
-# it is now, less what archive_left_out names, each named on stderr as "left out of <archive>:
-# <path> (<why>)", and removed from an archive made before it was left out. A missing or empty
-# task directory archives nothing and is reported on stderr, failing:
+# it is now, less what archive_left_out names, and removed from an archive made before it was
+# left out. Its notes go to stdout, one line each and with no script prefix, for the caller to
+# label: "left out of <archive>: <path> (<why>)" for each path left out, and "<dir> is missing,
+# so nothing was archived from <project>" (or "is empty"). Returns 0 when it archived, 1 when
+# there was nothing to archive, and 2 when the mirror failed, with one line on stderr, "cannot
+# mirror <dir> into <archive>: <rsync's first error line>"; it never exits the caller:
 # archive_task_dir <dir> <project> <archive>
 archive_task_dir() {
-  local dir=$1 why path rules
+  local dir=$1 why path rules err reason
   if [[ ! -d $dir ]]; then
-    echo "${0##*/}: $dir is missing, so nothing was archived from $2" >&2
+    echo "$dir is missing, so nothing was archived from $2"
     return 1
   elif [[ -z $(find "$dir" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
-    echo "${0##*/}: $dir is empty, so nothing was archived from $2" >&2
+    echo "$dir is empty, so nothing was archived from $2"
     return 1
   fi
-  rules=$(mktemp)
+  rules=$(mktemp) err=$(mktemp)
   while IFS=$'\t' read -r -d '' why path; do
-    echo "${0##*/}: left out of $3: $path ($why)" >&2
+    echo "left out of $3: $path ($why)"
     rsync_rule "$path" >>"$rules"
   done < <(archive_left_out "$dir")
-  mkdir -p "$TEAM_HOME/$3"
-  if ! rsync -a --delete --delete-excluded --from0 --exclude-from="$rules" -- "$dir/" "$TEAM_HOME/$3/"; then
-    rm -f "$rules"
-    die "cannot mirror $dir into $3"
+  if ! mkdir -p "$TEAM_HOME/$3" 2>"$err" ||
+    ! rsync -a --delete --delete-excluded --from0 --exclude-from="$rules" -- "$dir/" "$TEAM_HOME/$3/" 2>"$err"; then
+    reason=$(grep -m1 . "$err" || echo "no reason given")
+    echo "cannot mirror $dir into $3: $reason" >&2
+    rm -f "$rules" "$err"
+    return 2
   fi
-  rm -f "$rules"
+  rm -f "$rules" "$err"
 }
 
 # Print this machine's team name, the first line of ~/.config/agent-team/machine (lower-case
@@ -762,28 +854,43 @@ secret_paths() {
 # The untracked files of the worktree <wt> that may hold a secret (secret_paths), one per line,
 # which a snapshot leaves out (files git ignores are never in one): snapshot_left_out <wt>
 snapshot_left_out() {
-  git -C "$1" ls-files -z --others --exclude-standard | secret_paths
+  git -c core.fsmonitor=false -C "$1" ls-files -z --others --exclude-standard | secret_paths
+}
+
+# The -c options, one per line, under which git runs no command a worktree's repository config
+# names while it reads the worktree's files: no core.fsmonitor, and no clean or process command of
+# a filter driver (each one configured, required or not, Git LFS's included), so a file a filter
+# would clean is read as it is on disk. A worker session may write that config, and the heartbeat
+# that reads the worktree runs outside its permissions: inert_config <wt>
+inert_config() {
+  local key name
+  echo core.fsmonitor=false
+  while IFS= read -r key; do
+    name=${key#filter.} name=${name%.*}
+    printf '%s\n' "filter.$name.clean=" "filter.$name.process=" "filter.$name.required=false"
+  done < <(git -C "$1" config --name-only --get-regexp '^filter\..+\.(clean|process)$' | sort -u)
 }
 
 # The tree of the worktree <wt> as it is, uncommitted changes and untracked files included (files
 # git ignores, and those snapshot_left_out names, are not), built in a copy of its index so the
-# worktree's own index is never touched; it equals HEAD's tree when the worktree is clean:
-# worktree_tree <wt>
+# worktree's own index is never touched, under inert_config, so no command of the worktree's runs;
+# it equals HEAD's tree when the worktree is clean (a file a filter cleans aside, once changed).
+# Every step's status is checked, so it fails the same in a condition as under set -e: it returns
+# 1 with the failing command's own lines on stderr (git's, for a file it cannot read or a nested
+# repository with no commit), for the caller to report: worktree_tree <wt>
 worktree_tree() {
-  local wt=$1 index copy tree
+  local wt=$1 index copy tree='' rc=0 option inert=()
   index=$(git -C "$wt" rev-parse --path-format=absolute --git-path index) || return 1
-  copy=$(mktemp)
+  while IFS= read -r option; do inert+=(-c "$option"); done < <(inert_config "$wt")
+  copy=$(mktemp) || return 1
   # A copy of the real index keeps what git knows of each file's state; with none, HEAD's.
-  if [[ -f $index ]]; then cp "$index" "$copy"; else GIT_INDEX_FILE=$copy git -C "$wt" read-tree HEAD; fi
-  if GIT_INDEX_FILE=$copy git -C "$wt" add -A &&
-    snapshot_left_out "$wt" | GIT_INDEX_FILE=$copy git -C "$wt" update-index --force-remove --stdin &&
-    tree=$(GIT_INDEX_FILE=$copy git -C "$wt" write-tree); then
-    rm -f "$copy"
-    printf '%s\n' "$tree"
-  else
-    rm -f "$copy"
-    return 1
-  fi
+  if [[ -f $index ]]; then cp "$index" "$copy"; else GIT_INDEX_FILE=$copy git "${inert[@]}" -C "$wt" read-tree HEAD; fi &&
+    GIT_INDEX_FILE=$copy git "${inert[@]}" -C "$wt" add -A &&
+    snapshot_left_out "$wt" | GIT_INDEX_FILE=$copy git "${inert[@]}" -C "$wt" update-index --force-remove --stdin &&
+    tree=$(GIT_INDEX_FILE=$copy git "${inert[@]}" -C "$wt" write-tree) || rc=1
+  rm -f "$copy"
+  ((rc == 0)) || return 1
+  printf '%s\n' "$tree"
 }
 
 # The message of a checkpoint's snapshot commit, which marks it as one (is_snapshot):
@@ -867,17 +974,19 @@ origin_reason() {
 # out, then push the branch when it is ahead of origin's (or origin's is unknown). The commit is made
 # under the ledger's lock and holds the changed records alone, what git ignores left out, so
 # whatever else is staged stays staged; the team home's hooks run, and a path they refuse fails the
-# commit. A push origin rejects fetches its branch and replays the commits it lacks onto it, when
-# they apply cleanly and no local change is in the way (a branch switch's two-tree merge, so what
-# is staged stays staged), then pushes again once. Prints one line on stdout, like
-# "team home: committed <sha> <message> and pushed dev" or "team home: nothing to commit"; a
-# failure adds its reason on stderr and returns 1. Given <path>s (records, relative to the team
-# home), it commits those alone. When the caller sets records_edit to a command, it runs first,
-# under the same lock, so the change it makes and its commit are one step; when it fails, nothing
-# is committed and its status is returned. Network calls go through origin_git, so NET_ERR must
-# name a file: commit_records <message> [<path>...]
+# commit. When the caller sets records_by_group and that one commit fails, it commits group by
+# group instead (records_commit_groups), so a refused path keeps only its own group out, and
+# pushes what it committed. A push origin rejects fetches its branch and replays the commits it
+# lacks onto it, when they apply cleanly and no local change is in the way (a branch switch's
+# two-tree merge, so what is staged stays staged), then pushes again once. Prints one line on
+# stdout, like "team home: committed <sha> <message> and pushed dev" or "team home: nothing to
+# commit"; a failure adds its reason on stderr and returns 1. Given <path>s (records, relative to
+# the team home), it commits those alone. When the caller sets records_edit to a command, it runs
+# first, under the same lock, so the change it makes and its commit are one step; when it fails,
+# nothing is committed and its status is returned. Network calls go through origin_git, so NET_ERR
+# must name a file: commit_records <message> [<path>...]
 commit_records() {
-  local message=$1 branch committed upstream out rc=0
+  local message=$1 branch committed upstream out rc=0 split=0
   local -a record_paths records
   if (($# > 1)); then records=("${@:2}"); else mapfile -t records < <(records_pathspecs); fi
   if ! branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
@@ -892,11 +1001,14 @@ commit_records() {
     ((${#record_paths[@]} == 0)) || GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" add -A -- "${record_paths[@]}"
     mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" diff --cached -z --name-only --no-renames HEAD -- "${records[@]}")
     if ((${#record_paths[@]})); then
-      if GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "$message" --only -- "${record_paths[@]}" >"$NET_ERR" 2>&1; then
+      if records_commit "$message" "${record_paths[@]}"; then
         committed="committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) $message"
+      elif [[ -n ${records_by_group:-} ]]; then
+        records_commit_groups "$message" "${record_paths[@]}" || split=1
+        committed=$RECORDS_COMMITTED
       else
         committed=''
-        echo "${0##*/}: team home: cannot commit the records: $(grep -m1 . "$NET_ERR" || echo "git commit failed")" >&2
+        echo "${0##*/}: team home: cannot commit the records: $RECORDS_WHY" >&2
       fi
     fi
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
@@ -905,12 +1017,12 @@ commit_records() {
   if git -C "$TEAM_HOME" rev-parse -q --verify "$upstream" >/dev/null &&
     [[ -z $(git -C "$TEAM_HOME" rev-list -n 1 "$upstream..HEAD") ]]; then
     echo "team home: $committed"
-    return 0
+    return "$split"
   fi
   out=$(origin_git -C "$TEAM_HOME" push --porcelain origin "refs/heads/$branch:refs/heads/$branch") || rc=$?
   if ((rc == 0)); then
     echo "team home: $committed and pushed $branch"
-    return 0
+    return "$split"
   fi
   if ! grep -q '^!' <<<"$out"; then
     echo "${0##*/}: team home: $committed; cannot push $branch: $(origin_reason "$rc")" >&2
@@ -928,6 +1040,62 @@ commit_records() {
     return 1
   fi
   echo "team home: $committed; origin's $branch had moved; replayed onto it and pushed $branch"
+  return "$split"
+}
+
+# Commit the staged records <path>... alone as <message>; on a failure RECORDS_WHY holds git's or
+# the hook's first line: records_commit <message> <path>...
+records_commit() {
+  if GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "$1" --only -- "${@:2}" >"$NET_ERR" 2>&1; then
+    return 0
+  fi
+  RECORDS_WHY=$(grep -m1 . "$NET_ERR" || echo "git commit failed")
+  return 1
+}
+
+# The group the records path <path> is committed in when the one commit fails, in REPLY: ledger
+# for ledger.jsonl and level.jsonl, the entry one level down under tasks/ (tasks/T5/,
+# tasks/current.md), else the top-level entry (usage/, projects.toml): record_group <path>
+record_group() {
+  case $1 in
+    ledger.jsonl | level.jsonl) REPLY=ledger ;;
+    tasks/*/*)
+      REPLY=${1#tasks/}
+      REPLY=tasks/${REPLY%%/*}/
+      ;;
+    tasks/*) REPLY=$1 ;;
+    */*) REPLY=${1%%/*}/ ;;
+    *) REPLY=$1 ;;
+  esac
+}
+
+# Commit the staged records <path>... group by group (record_group), the ledger's first, then the
+# rest in name order, each alone as "<message> <group>", under the caller's lock (commit_records).
+# Says "team home: committed <sha> <message> <group>" for each group committed but the last, which
+# RECORDS_COMMITTED holds, in commit_records' form, for its push line (empty when none was
+# committed); a group that fails is one line on stderr naming it and the hook's first line, stays
+# staged and uncommitted, and makes it return 1: records_commit_groups <message> <path>...
+records_commit_groups() {
+  local message=$1 group path rc=0
+  local -a groups paths
+  RECORDS_COMMITTED=''
+  mapfile -t groups < <(for path in "${@:2}"; do record_group "$path" && printf '%s\n' "$REPLY"; done |
+    LC_ALL=C sort -u | awk '$0 == "ledger" { print; next } { rest[++n] = $0 } END { for (i = 1; i <= n; i++) print rest[i] }')
+  for group in "${groups[@]}"; do
+    paths=()
+    for path in "${@:2}"; do
+      record_group "$path"
+      [[ $REPLY != "$group" ]] || paths+=("$path")
+    done
+    if records_commit "$message $group" "${paths[@]}"; then
+      [[ -z $RECORDS_COMMITTED ]] || echo "team home: $RECORDS_COMMITTED"
+      RECORDS_COMMITTED="committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) $message $group"
+    else
+      echo "${0##*/}: team home: cannot commit $group: $RECORDS_WHY" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
 }
 
 # The local paths in the way of moving <checkout> from HEAD to <commit>: changed there and here
@@ -1184,6 +1352,54 @@ daniel_message() {
     '{place: $place, channel: $channel, who: $who, message: .}' <<<"$reply"
 }
 
+# Read Discord message <message> as Daniel's answer to <task>'s ask <id>, held to what an answer
+# is held to: sent after the latest asked of <id> in <events> (the task's events, one JSON
+# array), that is after its question's message (the asked's discord_message, which team-ask
+# logs), else no earlier than the asked's ts, as Discord ids order by time; Daniel's
+# (daniel_message), in the task's thread, else #coordinator; and never edited, so its text is
+# the text Daniel sent. With <does>, a machine that is fenced or lost the lease (lease_refusal
+# <does>) is refused after the time check and before Discord is read. Prints daniel_message's
+# {place, channel, who, message}, the text being .message.content; fails with the one reason on
+# stderr. team-answer and team-run-approved hold an answer to it:
+# answer_message <task> <id> <message> <events> [<does>]
+answer_message() {
+  local task=$1 id=$2 message=$3 events=$4 sent asked question asked_ts why thread places=() word edited
+  [[ $message =~ ^[1-9][0-9]{0,18}$ ]] || {
+    echo "$message is not a Discord message id, so it is not Daniel's answer to $task's $id" >&2
+    return 1
+  }
+  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+  sent=$(((10#$message >> 22) / 1000 + 1420070400))
+  asked=$(jq -c --arg id "$id" 'map(select(.event == "asked" and .id == $id)) | last' <<<"$events") || return 1
+  question=$(jq -r '.discord_message // empty | tostring' <<<"$asked") || return 1
+  if [[ $question =~ ^[1-9][0-9]{0,18}$ ]]; then
+    ((10#$message > 10#$question)) || {
+      echo "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $task's question $id (Discord message $question), so it is not Daniel's answer to it" >&2
+      return 1
+    }
+  else
+    asked_ts=$(jq -r .ts <<<"$asked") || return 1
+    ((sent >= $(date -ud "$asked_ts" +%s))) || {
+      echo "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $task asked $id at $asked_ts, so it is not Daniel's answer to it" >&2
+      return 1
+    }
+  fi
+  if [[ -n ${5:-} ]] && why=$(lease_refusal "$5"); then
+    echo "$why" >&2
+    return 1
+  fi
+  thread=$(jq -r 'map(select(.event == "thread") | .discord_thread | strings) | last // empty' <<<"$events") || return 1
+  if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
+  places+=("#coordinator $COORDINATOR_CHANNEL")
+  word=$(daniel_message "$message" "the answer" "${places[@]}") || return 1
+  edited=$(jq -r '.message.edited_timestamp // empty' <<<"$word") || return 1
+  [[ -z $edited ]] || {
+    echo "Discord message $message was edited at $edited, so its text may not be what Daniel first sent: ask them to send the answer again as a new message" >&2
+    return 1
+  }
+  printf '%s\n' "$word"
+}
+
 # Bring the Waiting on you message in #coordinator up to date with this checkout's team-inbox, at
 # the end of a script that changed what waits on Daniel; a failure is one line on stderr, "<script>:
 # the Waiting on you message is not updated: <why>", and never the caller's: refresh_inbox
@@ -1218,6 +1434,18 @@ own_project() {
   [[ $url =~ [:/]([^/:]+/[^/:]+)$ ]] || return 1
   [[ ${BASH_REMATCH[1],,} == "$(jq -r '.repo | ascii_downcase' <<<"$project")" ]]
 }
+
+# The registered projects a standing word of Daniel's may cover, one per line in the registry's
+# order: every one but the team's own (own_project), whose PRs merge only on the per-head word.
+# Fails, with team-project's reasons on stderr, on a registry it cannot read: standing_projects
+standing_projects() (
+  local list project
+  list=$(team_project --list) || exit 1
+  while IFS= read -r project; do
+    [[ -n $project ]] || continue
+    own_project "$project" || printf '%s\n' "$project"
+  done <<<"$list"
+)
 
 # The project, its repo as the registry spells it, and the number of a pull request URL, one
 # per line, refusing any URL but https://github.com/<owner>/<name>/pull/<n> in a registered
@@ -1505,7 +1733,8 @@ task_state_json() (
 
 # The pr part's standing_word: Daniel's standing word on the PR's project, read from every task's
 # events in the ledger, or null when no merge-standing or merge-standing-withdrawn names the
-# project or all; else {word, withdrawn} as standing_word gives them, with covers and reasons.
+# project or all, or the project is the team's own (own_project), which no standing word covers;
+# else {word, withdrawn} as standing_word gives them, with covers and reasons.
 # While the task awaits merge, reasons are why the word would not let team-merge merge the PR
 # unasked, from the pieces team-merge holds it to (the word standing, the task's branch, its
 # reviews and the PR's changed files), and covers is whether there are none; Daniel's message is
@@ -1515,6 +1744,7 @@ pr_standing_word() {
   local events=$1 state=$2 pr=$3 dir=$4 project ledger=$TEAM_HOME/ledger.jsonl standing out rc=0 reasons=()
   project=$(jq -r '.project // empty' <<<"$pr") || return 1
   if [[ -z $project ]]; then echo null; return; fi
+  if (own_project "$project"); then echo null; return; fi
   [[ -e $ledger ]] || ledger=/dev/null
   # Only a line naming the kinds can be one of them, so jq reads those alone.
   standing=$({ grep -F merge-standing "$ledger" || true; } |

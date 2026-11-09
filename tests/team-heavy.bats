@@ -184,15 +184,32 @@ most_at_once() {
   [[ ! -e $BATS_TEST_TMPDIR/at-once ]]
 }
 
-# The user manager on Linux, as the systemctl stub: it answers, every scope's MemoryPeak is <peak>
-# bytes and its CPUUsageNSec <nsec>, and a stop of a unit is logged and stops nothing (the run's
-# process group is what a stop ends here).
+# The user manager on Linux, as the systemctl stub: it answers, every scope's cgroup holds a
+# working set of <bytes> beside 3 GiB of page cache, and its CPUUsageNSec is <nsec>; with <end
+# bytes>, the first look at its cgroup reads <bytes>, which makes $BATS_TEST_TMPDIR/looked, and
+# every later one <end bytes>, the first taking <seconds> more after it makes looked. A stop of a
+# unit is logged and stops nothing (the run's process group is what a stop ends here):
+# fake_scopes <bytes> <nsec> [<end bytes> [<seconds>]]
 fake_scopes() {
+  local name bytes cache=3221225472 dir
   stub_command uname
   stub_reply uname Linux
+  for name in first end; do
+    bytes=$1
+    [[ $name == first || -z ${3:-} ]] || bytes=$3
+    dir=$TEAM_CGROUP_ROOT/sys/fs/cgroup/heavy-$name.scope
+    mkdir -p "$dir"
+    echo $((bytes + cache)) >"$dir/memory.current"
+    printf 'anon %d\nfile %d\nshmem 0\n' "$bytes" "$cache" >"$dir/memory.stat"
+  done
   stub_script systemctl <<SH
 case \$2 in
-  show) if [[ \$3 == -P ]]; then echo 262; else printf 'MemoryPeak=%s\\nCPUUsageNSec=%s\\n' $1 $2; fi ;;
+  show)
+    if [[ \$3 == -P && \$4 == Version ]]; then echo 262
+    elif [[ \$3 == -P && \$4 == ControlGroup ]]; then
+      if [[ -e $BATS_TEST_TMPDIR/looked ]]; then echo /heavy-end.scope
+      else touch $BATS_TEST_TMPDIR/looked; sleep ${4:-0}; echo /heavy-first.scope; fi
+    else printf 'CPUUsageNSec=%s\\n' $2; fi ;;
   stop) ;;
   *) echo "systemctl stub: unplanned call: \$*" >&2; exit 127 ;;
 esac
@@ -222,7 +239,7 @@ costs() {
   exec {held}<&-
 }
 
-@test "on Linux a run goes through systemd-run in its task's scope and slice, and its scope's peak and CPU are its cost" {
+@test "on Linux a run goes through systemd-run in its task's scope and slice, and its scope's working set and CPU are its cost" {
   fake_scopes 3221225472 12500000000
   cd "$HOME"
   AGENT_TEAM_TASK=T7 run_bin -3 --separate-stderr team-heavy run --kind tests-run -- bash -c 'echo "ran held=$TEAM_HEAVY_HELD"; exit 3'
@@ -244,6 +261,27 @@ costs() {
   assert_equal "$(costs | sed -n 3p)" '["heavy:true",3221225472,12.5]'
   run_bin -0 team-heavy status
   assert_equal "$output" free
+  assert_equal "$(jq -r .measure "$COSTS" | sort -u)" working_set
+}
+
+@test "on Linux a run's peak is the highest working set its scope's samples saw, not its last" {
+  # The first look reads 5 GiB in use, the last, as the command ends, 1 GiB; the page cache beside
+  # them never counts.
+  fake_scopes 5368709120 1000000000 1073741824
+  run_bin -0 --separate-stderr team-heavy run --kind tests-run -- \
+    bash -c 'for ((i = 0; i < 200; i++)); do [[ -e $0 ]] && exit 0; sleep 0.1; done; exit 1' "$BATS_TEST_TMPDIR/looked"
+  assert_equal "$stderr" ""
+  assert_equal "$(costs)" '["heavy:tests-run",5368709120,1]'
+}
+
+@test "on Linux a look still reading when the run ends keeps its sample" {
+  # The first look reads 5 GiB a second after the command has seen it start and ended, so the run
+  # ends while that look is in flight; the sample it reads is still the peak.
+  fake_scopes 5368709120 1000000000 1073741824 1
+  run_bin -0 --separate-stderr team-heavy run --kind tests-run -- \
+    bash -c 'for ((i = 0; i < 200; i++)); do [[ -e $0 ]] && exit 0; sleep 0.1; done; exit 1' "$BATS_TEST_TMPDIR/looked"
+  assert_equal "$stderr" ""
+  assert_equal "$(costs)" '["heavy:tests-run",5368709120,1]'
 }
 
 @test "on Linux without a user manager or a scope, a run goes in a process group of its own, says so once, and its sampled peak is its cost" {

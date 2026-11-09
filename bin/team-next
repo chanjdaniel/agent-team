@@ -66,14 +66,15 @@
 # left for the coordinator, the holder being the task's latest builder launch, under 250k while
 # team-state reads its context under 250,000 tokens or none, and gone when its session is not
 # live. For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks
-# green" (or the failing, pending and missing checks), "merge pre-approved: run team-merge T<n>
-# for ..." instead while team-state's plan-time approval stands, or "merge on the standing word: run
+# green" (or the failing, pending and missing checks), "merge pre-approved: run team-merge T<n> for
+# ..." instead while team-state's plan-time approval stands, or "merge on the standing word: run
 # team-merge T<n> for ..." while it does not and a standing word of Daniel's stands for the PR's
-# project (team-state's pr.standing_word), the review found no guarded area and no review of the
-# task counted a security or real-data finding or logged no counts (which team-merge refuses both
-# words for), each guarded area and such review named with the word it holds back, and the before
-# notes to queue as follow-ups; for a PR behind its base, "merge base: ..." instead, read with
-# base_merge in the project's primary checkout once the PR's branch and the base are fetched there:
+# project (team-state's pr.standing_word, null for the team's own project), the review found no
+# guarded area and no review of the task counted a security or real-data finding or logged no
+# counts (which team-merge refuses both words for), each guarded area and such review named with
+# the word it holds back, and the before notes to queue as follow-ups; for a PR behind its base,
+# "merge base: ..." instead, read with base_merge in the project's primary checkout once the PR's
+# branch and the base are fetched there:
 # "run team-catch-up T<n>, which needs no rereview" when the reviewed head merges the base cleanly,
 # then "then, once the checks pass on its merge: " and the merge line above for the reviewed head
 # with no checks (its guarded areas, risky reviews and before notes as they are), else the
@@ -101,10 +102,13 @@
 # twice.
 # Any other message is logged, and the last line says it has no hand-off.
 # It never posts to Discord, sends a message, merges, approves a plan or answers a question.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 # Exit codes: 0 done, 1 refused, 2 a malformed command line; when a script it runs fails, that
 # script's own code, 75 (try again later) among them.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "runs no team-next") && die "$why"
 
 bin=$(dirname "$TEAM_LIB")
 usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>'"

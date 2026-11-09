@@ -8,6 +8,7 @@
   "syncClaudeAiSkills": false,
   "disableClaudeAiConnectors": true,
   "isolatePeerMachines": true,
+  "promptCacheTtl": "1h",
   "permissions": {
     "deny": [
       "AskUserQuestion",
@@ -38,6 +39,15 @@
       "Bash(git push origin main*)",
       "Bash(git push origin HEAD:dev*)",
       "Bash(git push origin HEAD:main*)",
+      "Bash(git -C * push --force*)",
+      "Bash(git -C * push -f*)",
+      "Bash(git -C * push * --force*)",
+      "Bash(git -C * push * -f*)",
+      "Bash(git -C * push * +*)",
+      "Bash(git -C * push origin dev*)",
+      "Bash(git -C * push origin main*)",
+      "Bash(git -C * push origin HEAD:dev*)",
+      "Bash(git -C * push origin HEAD:main*)",
       "Bash(*team-lease*--steal*)",
       "Bash(*team-resume*--steal*)",
       "Bash(git push * lease)",
@@ -504,8 +514,8 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "@TEAM_CODE@/bin/hooks/lease-fence" },
-          { "type": "command", "command": "@TEAM_CODE@/bin/hooks/command-guard" }
+          { "type": "command", "command": "@TEAM_CODE@/bin/hooks/lease-fence", "onFailure": "block", "timeout": 60 },
+          { "type": "command", "command": "@TEAM_CODE@/bin/hooks/command-guard", "onFailure": "block", "timeout": 10 }
         ]
       }
     ],

@@ -374,7 +374,8 @@ team-handoff: stow: T1 is not stowed, as team-stow says; fix what it names, then
   assert_equal "$(stack_states)" running
   run_bin -0 --separate-stderr team-handoff
   # The saved logs stay on this machine: the checkpoint leaves them out of the archive.
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: stack-logs (stack logs)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "checkpoint: T1 home: left out of tasks/T1/scratch: stack-logs (stack logs)"
   assert_contains "$output" "stacks: T1 home: stackfix-1 is removed, its logs in $wt/.scratch/task/stack-logs"
   assert_equal "$(stack_states)" ""
   assert_equal "$(lease_json | jq -r .state)" released

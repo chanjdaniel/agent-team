@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Find what the coordinator must not leave unattended, from the ledger, the live session list and
-# the team's stow plan.
+# Find what the coordinator must not leave unattended, from the ledger, the live session list, the
+# team's stow plan and the heartbeat's health view.
 #
 # Usage: team-sweep [--json | --wait]
 # Reads only ledger.jsonl, claude agents --json, team-capacity plan --json (from the stored
-# readings) and, through bin/lib/session-activity, the live sessions' transcripts: their
-# modification times, and from a session's quiet past the default limit only its times, tool
-# names, tool call ids, commands and background task marks (never GitHub, never a tool's output or
-# a message's text, and never a new reading of the machine's load), so it runs in about a second.
+# readings), team-timers health --json (the health view, from the heartbeat's health record, the
+# lease record and the fence file, asked for at most 10 s, and only on a machine with a team
+# name), the registry once the ledger holds a merge-standing (merge-due, below) and, through
+# bin/lib/session-activity, the live sessions' transcripts: their modification times, and from a
+# session's quiet past the default limit only its times, tool names, tool call ids, commands and
+# background task marks (never GitHub, never a tool's output or a message's text, and never a new
+# reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
 # id, no merge-approved whose url its text names), or when its latest paused or waiting has no
@@ -41,13 +44,16 @@
 #                  of it) or a standing word of Daniel's on one of its projects (those of its
 #                  opened and worktree-added events: the latest merge-standing or
 #                  merge-standing-withdrawn of the project or all, logged under any task, is a
-#                  merge-standing), no ask nothing settled, no paused or waiting standing, no
-#                  merge-base round in flight (its latest builder launch or resumed naming a
-#                  merge-base brief, with no review, caught-up or merged since and a worker on it
-#                  live with no done since) and a PR not merged with no review-side reason against
-#                  the word (team-state's: the latest review of the latest head the task logged for
-#                  it a pass that found no guarded area, and no review of the task that counted a
-#                  security or real-data finding or left its counts out), with session null:
+#                  merge-standing) that a standing word may cover (standing_projects in
+#                  bin/lib/team.sh: every registered project but the team's own, whose PRs merge
+#                  only on the per-head word), no ask nothing settled, no paused or waiting
+#                  standing, no merge-base round in flight (its latest builder launch or resumed
+#                  naming a merge-base brief, with no review, caught-up or merged since and a
+#                  worker on it live with no done since) and a PR not merged with no review-side
+#                  reason against the word (team-state's: the latest review of the latest head
+#                  the task logged for it a pass that found no guarded area, and no review of the
+#                  task that counted a security or real-data finding or left its counts out),
+#                  with session null:
 #                  "awaiting the merge of
 #                  <those PRs' URLs> on Daniel's plan-time word on
 #                  <projects>, with no ask open; next: run team-merge T<n>; on a refusal, ask
@@ -55,8 +61,10 @@
 #                  <projects>" for the standing word, or "plan-time word on <projects> and
 #                  standing word on <projects>" for both, and no other finding of the task's; the
 #                  ledger names no PR's project, so any word on one of the task's projects counts,
-#                  and neither the registry nor GitHub is read: team-merge says when a project no
-#                  longer opts in, a PR's own project has no word or a changed path is guarded
+#                  and GitHub is not read: team-merge says when a project no longer opts in, a
+#                  PR's own project has no word or a changed path is guarded. The registry is read
+#                  only once the ledger holds a merge-standing; when it cannot be read, no
+#                  standing word counts and a line on stderr says why
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   activity       after every task finding, with task and session null: session-activity
@@ -82,6 +90,19 @@
 #                  team-retro status computes it (retros scheduled, no retro task open, the due
 #                  time past): "retro due since <time> (every <n>h, last retro <T<n> or none>):
 #                  run the retro skill"
+#   checkpoint-stale  after retro-due, with task and session null: the health view's alerting
+#                  problems whose sweep kind it is (checkpoint: failing two runs in a row or no
+#                  good checkpoint for 15 minutes; heartbeat: no run for 15 minutes), in one
+#                  finding: "checkpoint: <the problem's plain text>; next: fix what it names
+#                  (heartbeat-failures.log has every line), then run team-checkpoint --force"
+#   health         after it, with task and session null: the view's alerting problems whose sweep
+#                  kind is health (login-refused, ledger, a step failing 12 runs in a row), joined
+#                  by "; " in one finding: "health: <their plain texts>; next: fix what each
+#                  names; team-timers health lists them"; or, when the view cannot be read
+#                  (team-timers fails, times out or prints no team-health/1 view), "health: <its
+#                  last line on stderr>: fix what team-timers names". The offline problem and the
+#                  coordinator's own (coordinator, unattended) raise none, and a machine that does
+#                  not hold the lease has no problems
 # With --json, the findings as a list of {task, kind, session, name, next, text}.
 # Exit 0 with no findings (and nothing printed but --json's []), 1 with findings, and 1 with the
 # reason on stderr and nothing on stdout when the session list cannot be read.
@@ -169,22 +190,69 @@ level_plan() {
   rm -f "$out" "$err"
 }
 
+# The most team-timers health may take, in seconds; it reads three files.
+HEALTH_TIMEOUT=10
+
+# The health view as one compact line: team-timers health --json's object (exit 1 with problems is
+# a view all the same), {} on a machine with no team name, which holds no lease and so is not
+# asked, or {error} with the last line team-timers said on stderr (~ for the home directory) when
+# it prints no view: health_view
+health_view() {
+  local out err rc=0 line
+  if ! machine_name >/dev/null 2>&1; then echo '{}'; return; fi
+  out=$(mktemp) err=$(mktemp)
+  TEAM_HOME=$TEAM_HOME bounded "$HEALTH_TIMEOUT" "$(dirname "$TEAM_LIB")/team-timers" health --json >"$out" 2>"$err" </dev/null || rc=$?
+  if ! jq -ce 'select(type == "object" and .schema == "team-health/1" and (.problems | type) == "array")' "$out" 2>/dev/null; then
+    if ((rc == 124)); then
+      line="team-timers health timed out after $HEALTH_TIMEOUT s"
+    else
+      line=$(grep . "$err" | tail -n 1) || line="team-timers health exited $rc with no view"
+    fi
+    jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
+  fi
+  rm -f "$out" "$err"
+}
+
+# The projects a standing word may cover (standing_projects in bin/lib/team.sh: every registered
+# one but the team's own) as one JSON array, read only once the ledger holds a merge-standing,
+# else []; with a registry it cannot read, [], saying why on stderr.
+standing_covered() {
+  local found err
+  if ! grep -qF merge-standing "$ledger"; then echo '[]'; return; fi
+  err=$(mktemp)
+  if found=$(standing_projects 2>"$err"); then
+    jq -cR '[., inputs | select(. != "")]' <<<"$found"
+  else
+    echo "team-sweep: counts no standing word of Daniel's, since the registry cannot be read: $(grep -m 1 . "$err" || echo "team-project failed")" >&2
+    echo '[]'
+  fi
+  rm -f "$err"
+}
+
 # The findings now, as JSON in FINDINGS, from the ledger, a fresh read of the session list, the
 # stow plan and the live sessions' transcripts; fails with the reason on stderr when the session
 # list cannot be read.
 look() {
-  local sessions plan activity plan_file
+  local sessions plan activity plan_file covered health plan_pid health_pid
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
   plan_file=$(mktemp)
   printf '%s\n' "$sessions" >"$plan_file.sessions"
   level_plan "$plan_file.sessions" >"$plan_file" &
+  plan_pid=$!
+  health_view >"$plan_file.health" &
+  health_pid=$!
   activity=$(session_activity "$sessions")
-  wait "$!" || true
+  wait "$plan_pid" || true
+  wait "$health_pid" || true
   plan=$(cat "$plan_file")
-  rm -f "$plan_file" "$plan_file.sessions"
+  health=$(cat "$plan_file.health")
+  rm -f "$plan_file" "$plan_file.sessions" "$plan_file.health"
   [[ -n $plan ]] || plan='{"error": "team-capacity plan printed nothing"}'
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity)' -nRc --argjson sessions "$sessions" \
-    --argjson plan "$plan" --argjson activity "$activity" "$ledger")
+  [[ -n $health ]] || health='{"error": "team-timers health printed nothing"}'
+  covered=$(standing_covered)
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $covered; $health)' -nRc \
+    --argjson sessions "$sessions" --argjson plan "$plan" --argjson activity "$activity" --argjson covered "$covered" \
+    --argjson health "$health" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.

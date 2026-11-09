@@ -11,7 +11,7 @@ A PR merges only through `team-merge T<n>` (`--pr <url>` for each PR of a task i
 | - | - | - | - |
 | Per head | `merge-approved` | `url`, `discord_message`, `head` | One PR at the head the coordinator asked on, and through a merge of the base whose `rereview` passed, a clean one (`team-catch-up`), or the two in turn |
 | Plan time | `merge-preapproved`, withdrawn by `merge-preapproval-withdrawn` | `project`, `ask`, `discord_message`, `scope`; the withdrawal `project`, `discord_message` | The task's PR in that project, any head, within the plan's scope list, for a project that opts in (`merge_with_plan`) and is not agent-team |
-| Standing | `merge-standing`, withdrawn by `merge-standing-withdrawn` | `project` (a registered project, or `all`), `discord_message`, `discord_channel`, the same for both | Any task's ready PR in that project, or in every project for `all`, agent-team included, any head, with no scope list and no opt-in |
+| Standing | `merge-standing`, withdrawn by `merge-standing-withdrawn` | `project` (a registered project, or `all`), `discord_message`, `discord_channel`, the same for both | Any task's ready PR in that project, or in every project for `all`, any head, with no scope list and no opt-in, for every project but agent-team |
 
 The per-head and plan-time words are the task's own.
 The standing word is team-wide: it is read across the whole ledger, and the task it is logged under only names the thread its message may be in.
@@ -45,11 +45,13 @@ The plan-time and standing words are the unattended words, and share one bar, so
 
 The plan-time word also needs its message sent no earlier than the ask it answers, the project to opt in and not be agent-team, and every changed path within its scope list.
 The standing word also needs its `discord_channel` to be `#coordinator`'s channel or the thread of the task it was logged under, and reads Daniel's message there alone, whenever it was sent: it is on no head and answers no ask.
+Like the plan-time word, it never holds for agent-team, the team's own project (`own_project` in `bin/lib/team.sh`: by name, by its path being the code checkout, or by its repo being the code checkout's origin), whose PRs merge only on the per-head word; `team-merge` gives that as the standing word's one reason, reading neither its message nor the reviews and paths, beside the checks every merge gets and any reasons of a word tried before it, and ends with the per-head ask line.
 
 ## What never merges on any word
 
 - A release to `main`: it stays Daniel's own, outside `team-merge`.
 - A PR with a required check missing or not passed, any check failing or pending, or any other check every merge gets unmet.
+- On the unattended words, a PR of agent-team, the team's own project: it merges only on the per-head word.
 - On the unattended words, a PR that touches a guarded area (CI, dependencies, migrations, settings, permissions, secrets, or the team's own guardrails), by its paths or by its reviewer's `guarded` list, or whose task ever counted a security or real-data finding; these come back to Daniel for the per-head word.
 
 ## What the coordinator does
@@ -64,18 +66,19 @@ The standing word also needs its `discord_channel` to be `#coordinator`'s channe
   A per-head merge posts nothing.
 - On a refusal, `team-merge` names every reason it cannot merge, each once, with each word's it tried when the last one does not hold, and merges nothing.
   Under the plan-time or standing word its last line is the ask: "(Daniel's standing word does not hold: ask them for the per-head word on the head <short head> with team-ask, naming <url>)", or the same with "plan-time"; the coordinator asks Daniel for the per-head word with `team-ask`, its text naming the PR's URL.
-  A refusal for attribution lines is fixed first: `team-clean-messages <worktree>` strips them, its push runs only with Daniel's OK, and the new head is reviewed again.
+  A refusal for attribution lines is fixed first: `team-clean-messages <worktree>` strips them, its push, which the coordinator's settings deny it by hand, is the one line of a script it puts to Daniel with `team-ask --script` and runs on their yes with `team-run-approved`, and the new head is reviewed again.
   On a branch the gate's mirror holds, it prints a second step after the push, `team-clean-messages <worktree> --clear-gate-lane`, which runs with the same OK once the push has landed, since the gate's next run would otherwise refuse the old commits.
   That step and the mirrors under `~/.no-mistakes/repos` are the coordinator's: `settings/worker.json` denies every worker the flag and any Bash call naming that path, and `coordinator.settings.json` denies neither.
 - When Daniel withdraws a plan-time word, it logs `team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`, which `team-log` refuses when no `merge-preapproved` of that project stands for the task.
 - After logging any of the merge words or their withdrawals, it runs `team-inbox`, so the Waiting on you message is current: it shows each standing word ("Standing merge word on <projects> since <link>") and leaves out of "PRs ready to merge" a PR a plan-time or standing word stands for, whose refusal comes back as an ask.
 - `team-snapshot` says at session start which projects a standing word stands for, and since which message.
+- No reader offers the standing word for agent-team, the team's own project: `team-state` gives its PR a null `standing_word` (`own_project`), so `team-next` prints the merge ask for it, and `team-sweep`, `team-inbox` and `team-snapshot` take the projects a standing word may cover from `standing_projects` in `bin/lib/team.sh` (every registered one but the team's own), so the sweep gives no `merge-due` on the standing word alone, the inbox lists its ready PRs, and the standing word lines of the inbox and the snapshot name the other projects only.
 
 ## Giving and withdrawing the standing word
 
 - Daniel gives it in one message, in `#coordinator` or a task's thread, such as "merge when ready", for one project or for every project, and withdraws it the same way.
 - The coordinator logs the word with `team-log T<n> merge-standing project=<project or all> discord_message=<id> discord_channel=<id>`, and the withdrawal with `team-log T<n> merge-standing-withdrawn project=<project or all> discord_message=<id> discord_channel=<id>`.
 - `T<n>` is the task in whose thread Daniel said it, or, said in `#coordinator`, the task it came up in or any open task; `discord_channel` is where the message is.
-- `team-log` refuses a project the registry does not name (`all` aside), a `discord_message` that is no Discord id, a `discord_channel` that is neither `#coordinator`'s channel nor the task's thread, and a withdrawal when no standing word stands for its project.
+- `team-log` refuses a project the registry does not name (`all` aside), the team's own project (a word on `all` covers every project but it), a `discord_message` that is no Discord id, a `discord_channel` that is neither `#coordinator`'s channel nor the task's thread, and a withdrawal when no standing word stands for its project.
 - Nothing checks what Daniel's message says, only that it is theirs and where it was logged, so the coordinator logs only a message that gives or withdraws the word, and asks in one line when the message leaves the project unclear.
 - The word stands until Daniel withdraws it; it needs no renewal, and survives any number of heads, fix rounds and tasks.

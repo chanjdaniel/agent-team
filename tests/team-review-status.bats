@@ -141,3 +141,21 @@ SH
   run_bin -1 team-review-status https://github.com/owner/proj/pull/5 "$HEAD_SHA" success x
   assert_contains "$output" "GitHub refused the status"
 }
+
+@test "a planner, builder or ops session is refused with nothing set; a reviewer, the coordinator and a terminal set it" {
+  local role
+  for role in planner builder ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 --separate-stderr team-review-status \
+      https://github.com/owner/proj/pull/5 "$HEAD_SHA" success "no blocking findings"
+    assert_equal "$output" ""
+    assert_equal "$stderr" "team-review-status: a $role session sets no agent-review status: that is a reviewer's or the coordinator's; send the coordinator your message"
+  done
+  assert_equal "$(stub_calls gh)" ""
+  AGENT_TEAM_ROLE=builder run_bin -0 team-review-status --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-review-status")"
+  for role in reviewer coordinator ''; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -0 team-review-status https://github.com/owner/proj/pull/5 "$HEAD_SHA" success "no blocking findings"
+    assert_equal "$output" "agent-review success on Owner/Proj@$HEAD_SHA"
+  done
+  assert_equal "$(stub_calls gh | grep -c statuses)" 3
+}
