@@ -284,6 +284,29 @@ stub_script() {
   cat >"$STUB_FIXTURES/$1.sh"
 }
 
+# fails_on_call <cmd> [<text>]: put on PATH a <cmd> that exits 5, printing nothing, on every call
+# one of whose arguments holds <text> (on every call, without one) and runs the machine's own <cmd>
+# otherwise, for a test of what a script does when a command inside it fails unexpectedly. Each
+# call it failed is one line of its arguments in $STUB_CALLS/<cmd>.failed.
+fails_on_call() {
+  command -v "$1" >"$STUB_FIXTURES/$1.real"
+  printf '%s\n' "${2-}" >"$STUB_FIXTURES/$1.fail-on"
+  shared_make fails-on-call <<'EOF'
+#!/usr/bin/env bash
+name=${0##*/} text='' real=''
+IFS= read -r text <"$STUB_FIXTURES/$name.fail-on" || true
+for arg in "${@-}"; do
+  if [[ $arg == *"$text"* ]]; then
+    printf '%s\n' "$*" >>"$STUB_CALLS/$name.failed"
+    exit 5
+  fi
+done
+IFS= read -r real <"$STUB_FIXTURES/$name.real"
+exec "$real" "$@"
+EOF
+  ln -f "$BATS_RUN_TMPDIR/shared/fails-on-call" "$BATS_TEST_TMPDIR/stubs/$1"
+}
+
 # The calls made to stub <cmd>, one JSON array of arguments per line (nothing if never called).
 stub_calls() {
   cat "$STUB_CALLS/$1.log" 2>/dev/null || true

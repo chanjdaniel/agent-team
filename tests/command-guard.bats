@@ -91,6 +91,33 @@ passes() {
   done
 }
 
+@test "with no team home named, a guarded command is still refused and another passes" {
+  homeless() {
+    run --separate-stderr env -u TEAM_HOME "$REPO_ROOT/bin/hooks/command-guard" <<<"$(jq -cn --arg c "$1" \
+      '{hook_event_name: "PreToolUse", cwd: env.HOME, tool_name: "Bash", tool_input: {command: $c}}')"
+  }
+  [[ ! -e $HOME/.config/agent-team/home ]]
+  homeless 'team-worker T1 ops wt'
+  assert_equal "$status" 2
+  assert_equal "$stderr" "Blocked by command-guard: $OPS; a guardrail, so report it as BLOCKED and do not reach it another way."
+  homeless ls
+  assert_equal "$status:$stderr" 0:
+}
+
+@test "a command failing inside it is a refusal that names the hook and the exit code" {
+  # Every jq and python3 call is checked, so the read of its input fails here.
+  fails_on_call cat
+  guard -2 ls
+  assert_equal "$output" ""
+  assert_equal "$stderr" "Blocked by command-guard: it failed with exit 5 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way."
+  assert_equal "$(wc -l <"$STUB_CALLS/cat.failed")" 1
+}
+
+@test "a wrong argument on its command line refuses every call" {
+  run_bin -2 --separate-stderr hooks/command-guard --bogus <<<'{"tool_name": "Read", "tool_input": {}}'
+  assert_equal "$stderr" "command-guard: usage: command-guard   (the hook's input on stdin)"
+}
+
 # The forms a deny rule matching anywhere refused, which a reading of where a command starts must
 # find too: shell grammar, a shell reading its script from stdin, and the common runners.
 @test "a guarded command after a reserved word or in a brace group is refused" {

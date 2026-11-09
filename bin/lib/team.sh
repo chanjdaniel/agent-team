@@ -18,8 +18,22 @@
 # own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
 # daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
-# Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
+# Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
+# that sets team_guard (below) exits 2 for every exit of its but 0.
 # shellcheck shell=bash
+
+# A guard hook decides or refuses: a PreToolUse hook of bin/hooks/ sets team_guard to its name
+# before sourcing, and any exit of its but 0 and 2, this library's own refusals and a failed
+# command under set -e included, then ends as an exit 2 with one line on stderr saying so, so the
+# call is blocked even where its settings entry does not block on a failure. Read by Bash 3.2 too.
+if [[ -n ${team_guard:-} ]]; then
+  team_guard_exit() {
+    [[ $1 != 0 && $1 != 2 ]] || return 0
+    echo "Blocked by $team_guard: it failed with exit $1 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way." >&2
+    exit 2
+  }
+  trap 'team_guard_exit $?' EXIT
+fi
 
 # PWD names a directory other than ".", or none, once the one the shell is in is deleted. Read by
 # Bash 3.2 too, before platform.sh's version check.
