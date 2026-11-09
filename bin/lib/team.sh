@@ -15,8 +15,8 @@
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
+# daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -1337,6 +1337,54 @@ daniel_message() {
     '{place: $place, channel: $channel, who: $who, message: .}' <<<"$reply"
 }
 
+# Read Discord message <message> as Daniel's answer to <task>'s ask <id>, held to what an answer
+# is held to: sent after the latest asked of <id> in <events> (the task's events, one JSON
+# array), that is after its question's message (the asked's discord_message, which team-ask
+# logs), else no earlier than the asked's ts, as Discord ids order by time; Daniel's
+# (daniel_message), in the task's thread, else #coordinator; and never edited, so its text is
+# the text Daniel sent. With <does>, a machine that is fenced or lost the lease (lease_refusal
+# <does>) is refused after the time check and before Discord is read. Prints daniel_message's
+# {place, channel, who, message}, the text being .message.content; fails with the one reason on
+# stderr. team-answer and team-run-approved hold an answer to it:
+# answer_message <task> <id> <message> <events> [<does>]
+answer_message() {
+  local task=$1 id=$2 message=$3 events=$4 sent asked question asked_ts why thread places=() word edited
+  [[ $message =~ ^[1-9][0-9]{0,18}$ ]] || {
+    echo "$message is not a Discord message id, so it is not Daniel's answer to $task's $id" >&2
+    return 1
+  }
+  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+  sent=$(((10#$message >> 22) / 1000 + 1420070400))
+  asked=$(jq -c --arg id "$id" 'map(select(.event == "asked" and .id == $id)) | last' <<<"$events") || return 1
+  question=$(jq -r '.discord_message // empty | tostring' <<<"$asked") || return 1
+  if [[ $question =~ ^[1-9][0-9]{0,18}$ ]]; then
+    ((10#$message > 10#$question)) || {
+      echo "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $task's question $id (Discord message $question), so it is not Daniel's answer to it" >&2
+      return 1
+    }
+  else
+    asked_ts=$(jq -r .ts <<<"$asked") || return 1
+    ((sent >= $(date -ud "$asked_ts" +%s))) || {
+      echo "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $task asked $id at $asked_ts, so it is not Daniel's answer to it" >&2
+      return 1
+    }
+  fi
+  if [[ -n ${5:-} ]] && why=$(lease_refusal "$5"); then
+    echo "$why" >&2
+    return 1
+  fi
+  thread=$(jq -r 'map(select(.event == "thread") | .discord_thread | strings) | last // empty' <<<"$events") || return 1
+  if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
+  places+=("#coordinator $COORDINATOR_CHANNEL")
+  word=$(daniel_message "$message" "the answer" "${places[@]}") || return 1
+  edited=$(jq -r '.message.edited_timestamp // empty' <<<"$word") || return 1
+  [[ -z $edited ]] || {
+    echo "Discord message $message was edited at $edited, so its text may not be what Daniel first sent: ask them to send the answer again as a new message" >&2
+    return 1
+  }
+  printf '%s\n' "$word"
+}
+
 # Bring the Waiting on you message in #coordinator up to date with this checkout's team-inbox, at
 # the end of a script that changed what waits on Daniel; a failure is one line on stderr, "<script>:
 # the Waiting on you message is not updated: <why>", and never the caller's: refresh_inbox
@@ -1371,6 +1419,18 @@ own_project() {
   [[ $url =~ [:/]([^/:]+/[^/:]+)$ ]] || return 1
   [[ ${BASH_REMATCH[1],,} == "$(jq -r '.repo | ascii_downcase' <<<"$project")" ]]
 }
+
+# The registered projects a standing word of Daniel's may cover, one per line in the registry's
+# order: every one but the team's own (own_project), whose PRs merge only on the per-head word.
+# Fails, with team-project's reasons on stderr, on a registry it cannot read: standing_projects
+standing_projects() (
+  local list project
+  list=$(team_project --list) || exit 1
+  while IFS= read -r project; do
+    [[ -n $project ]] || continue
+    own_project "$project" || printf '%s\n' "$project"
+  done <<<"$list"
+)
 
 # The project, its repo as the registry spells it, and the number of a pull request URL, one
 # per line, refusing any URL but https://github.com/<owner>/<name>/pull/<n> in a registered
@@ -1658,7 +1718,8 @@ task_state_json() (
 
 # The pr part's standing_word: Daniel's standing word on the PR's project, read from every task's
 # events in the ledger, or null when no merge-standing or merge-standing-withdrawn names the
-# project or all; else {word, withdrawn} as standing_word gives them, with covers and reasons.
+# project or all, or the project is the team's own (own_project), which no standing word covers;
+# else {word, withdrawn} as standing_word gives them, with covers and reasons.
 # While the task awaits merge, reasons are why the word would not let team-merge merge the PR
 # unasked, from the pieces team-merge holds it to (the word standing, the task's branch, its
 # reviews and the PR's changed files), and covers is whether there are none; Daniel's message is
@@ -1668,6 +1729,7 @@ pr_standing_word() {
   local events=$1 state=$2 pr=$3 dir=$4 project ledger=$TEAM_HOME/ledger.jsonl standing out rc=0 reasons=()
   project=$(jq -r '.project // empty' <<<"$pr") || return 1
   if [[ -z $project ]]; then echo null; return; fi
+  if (own_project "$project"); then echo null; return; fi
   [[ -e $ledger ]] || ledger=/dev/null
   # Only a line naming the kinds can be one of them, so jq reads those alone.
   standing=$({ grep -F merge-standing "$ledger" || true; } |
