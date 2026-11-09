@@ -37,7 +37,7 @@ By hand, through the machine's heavy-run lock, with Docker running and the lock'
 `--text` prints the tool's answer; without it the script prints one JSON object.
 It exits 0 on `PASS` and 1 on `FAIL` or a refusal; stopped by Ctrl-C, it removes its throwaway and records no verdict.
 It takes only the stamp, never a path or a connection string, and never reaches production.
-A dump of more than 512 MiB on disk is refused, since the throwaway's 2 GiB memory could not hold it.
+A dump whose database held more than 512 MiB of data and indexes, uncompressed, when it was taken (its manifest's `restoredBytes`) is refused, since the throwaway's 2 GiB memory could not hold it restored; the gzipped dump on disk is smaller.
 
 ## Restoring to production
 

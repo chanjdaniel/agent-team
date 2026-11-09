@@ -10,8 +10,10 @@
 //                            the restore-drill tool: runs that script through the server's own
 //                            checkout's bin/team-heavy, and answers { text, isError }
 //   drillAnswer(result)      the tool's answer to the script's JSON: { text, isError }
-//   restoreLimit             512 MiB: the largest dump (its manifest's total bytes) a drill takes,
-//                            since tmpfs in the throwaway's 2 GiB cap could not hold more
+//   restoreLimit             512 MiB: the largest restore a drill takes, read from the manifest's
+//                            restoredBytes (the database's data and indexes, uncompressed, never the
+//                            gzipped dump's size), since tmpfs in the throwaway's 2 GiB cap, beside
+//                            mongod's own cache, could not hold much more
 //
 // The script takes exactly one argument, a backup's stamp (and --text), never a path or a
 // connection string: it reads no credential, so it cannot reach production. Before Docker is
@@ -110,10 +112,10 @@ async function drill({ rest, database, root, shown, state }) {
   const shownFolder = `${shownRoot}/${stamp}`;
   Object.assign(state, { stamp, folder: shownFolder });
   if (manifest.database !== database) throw new Refusal(`${shownFolder} is a dump of ${JSON.stringify(String(manifest.database)).slice(0, 40)}, not of ${database}`);
-  const bytes = Number(manifest.totals?.bytes);
-  if (!Number.isFinite(bytes) || bytes < 0) throw new Refusal(`${shownFolder}'s manifest gives no size`);
-  if (bytes > restoreLimit) {
-    throw new Refusal(`${shownFolder} is ${humanBytes(bytes)}, more than the ${humanBytes(restoreLimit)} a drill restores in memory`);
+  const restoredBytes = Number(manifest.totals?.restoredBytes);
+  if (!Number.isFinite(restoredBytes) || restoredBytes < 0) throw new Refusal(`${shownFolder}'s manifest gives no restored size`);
+  if (restoredBytes > restoreLimit) {
+    throw new Refusal(`${shownFolder} restores to ${humanBytes(restoredBytes)} of data and indexes, more than the ${humanBytes(restoreLimit)} a drill holds in memory`);
   }
   const versionRun = spawnSync("mongorestore", ["--version"], { env: childEnv(), stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 30_000 });
   if (versionRun.error?.code === "ENOENT") throw new Refusal("mongorestore is not installed: team-doctor names the install");

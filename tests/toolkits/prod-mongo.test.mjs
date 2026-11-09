@@ -274,7 +274,15 @@ describe("backup", () => {
     for (const { name, type, bytes } of manifest.collections) {
       if (type === "collection") assert.ok(bytes > 0, `${name} has no bytes`);
     }
-    assert.deepEqual({ ...manifest.totals, bytes: manifest.totals.bytes > 0 }, { collections: 4, views: 1, documents: 10, bytes: true });
+    assert.deepEqual(
+      { ...manifest.totals, bytes: manifest.totals.bytes > 0, restoredBytes: manifest.totals.restoredBytes > 0 },
+      { collections: 4, views: 1, documents: 10, bytes: true, restoredBytes: true },
+    );
+    // The bytes on disk are every file of the folder's, the manifest's own as written.
+    assert.equal(manifest.totals.bytes, walk(folder).filter(({ stat }) => stat.isFile()).reduce((sum, { stat }) => sum + stat.size, 0));
+    // What a restore holds: the database's data and indexes, uncompressed, as dbStats gave them.
+    const stats = await production.client.db("conventioner").command({ dbStats: 1 });
+    assert.equal(manifest.totals.restoredBytes, stats.dataSize + stats.indexSize);
     for (const hidden of [marker, "127.0.0.1", String(production.port), email, "Riverside"]) {
       assert.ok(!manifestText.includes(hidden), `the manifest holds ${hidden}`);
     }
@@ -869,7 +877,12 @@ exit $status
     cpSync(join(root, stamp), join(root, "2025-02-01T000000Z"), { recursive: true });
     const big = join(root, "2025-02-01T000000Z", "manifest.json");
     const bigManifest = JSON.parse(readFileSync(big, "utf8"));
-    writeFileSync(big, JSON.stringify({ ...bigManifest, totals: { ...bigManifest.totals, bytes: restoreLimit + 1 } }));
+    // The limit is on what the restore holds in memory, never the gzipped dump on disk.
+    writeFileSync(big, JSON.stringify({ ...bigManifest, totals: { ...bigManifest.totals, restoredBytes: restoreLimit + 1 } }));
+    cpSync(join(root, stamp), join(root, "2025-03-01T000000Z"), { recursive: true });
+    const sizeless = join(root, "2025-03-01T000000Z", "manifest.json");
+    const { restoredBytes: _dropped, ...sizelessTotals } = bigManifest.totals;
+    writeFileSync(sizeless, JSON.stringify({ ...bigManifest, totals: sizelessTotals }));
     const outside = join(home, "elsewhere", stamp);
     cpSync(join(root, stamp), outside, { recursive: true });
     await drillServer(async (server) => {
@@ -878,7 +891,8 @@ exit $status
         [`../elsewhere/${stamp}`, `"../elsewhere/${stamp}" is not a backup's name, which is its UTC start, as 2026-11-08T142305Z`],
         ["2024-01-01T000000Z", "~/conventioner-backups holds no backup 2024-01-01T000000Z"],
         ["2025-01-01T000000Z", "~/conventioner-backups/2025-01-01T000000Z has no verified manifest.json, so it is not a dump this toolkit took"],
-        ["2025-02-01T000000Z", "~/conventioner-backups/2025-02-01T000000Z is 512.0 MiB, more than the 512.0 MiB a drill restores in memory"],
+        ["2025-02-01T000000Z", "~/conventioner-backups/2025-02-01T000000Z restores to 512.0 MiB of data and indexes, more than the 512.0 MiB a drill holds in memory"],
+        ["2025-03-01T000000Z", "~/conventioner-backups/2025-03-01T000000Z's manifest gives no restored size"],
       ]) {
         const result = await server.callTool("restore-drill", { backup });
         assert.equal(result.isError, true, backup);

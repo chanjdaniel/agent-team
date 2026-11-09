@@ -13,7 +13,9 @@
 // dump into <root>/.<stamp>.partial/dump through a FIFO in that 0700 directory that carries the
 // connection string to `mongodump --config` and is gone once mongodump has read it, count again
 // (after), count the dump's own documents and read its index names, judge each collection, then
-// write manifest.json and rename the folder to <root>/<stamp>/; the answer ends with the
+// write manifest.json (its totals: the folder's bytes on disk, its own included, and restoredBytes,
+// the database's data and indexes at the start, uncompressed, which a restore holds) and rename
+// the folder to <root>/<stamp>/; the answer ends with the
 // retention line (list.mjs). On any failure the partial folder, which this call made, is
 // removed. mongodump's own output never reaches an answer: only its exit and its last stderr
 // line, through `scrubbed`.
@@ -118,12 +120,11 @@ export async function takeBackup({ MongoClient, value, database, root, mongodump
           views: collections.filter(({ type }) => type === "view").length,
           documents,
           bytes: 0,
+          restoredBytes: Number(stats.dataSize ?? 0) + Number(stats.indexSize ?? 0),
         },
         verified: true,
       };
-      writeFileSync(join(partial, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
-      manifest.totals.bytes = bytesUnder(partial);
-      writeFileSync(join(partial, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+      writeFileSync(join(partial, "manifest.json"), withOwnSize(manifest, bytesUnder(partial)), { mode: 0o600 });
       renameSync(partial, folder);
       return [answer({ manifest, folder: shownFolder, took: ended - started }), ...(note ? [note] : []), retentionLine(listRoot(real).dumps)].join("\n");
     } catch (error) {
@@ -196,6 +197,19 @@ function described({ name, before, after, dumped: n, judgement }) {
   if (judgement === "missing") return `${name} is not in the dump (${count(before ?? 0)} in the database)`;
   if (judgement === "extra") return `${name} is in the dump but was not listed (${count(n ?? 0)} in the dump)`;
   return `${name} has ${count(n ?? 0)} in the dump, ${count(before)} in the database before and after`;
+}
+
+// The manifest's text, its totals.bytes being `others` (every other file's bytes) plus the text's
+// own length, which the number's digits change: at most two rounds settle it.
+function withOwnSize(manifest, others) {
+  let text;
+  for (let bytes = others; ; ) {
+    manifest.totals.bytes = bytes;
+    text = `${JSON.stringify(manifest, null, 2)}\n`;
+    const total = others + Buffer.byteLength(text);
+    if (total === bytes) return text;
+    bytes = total;
+  }
 }
 
 function bytesUnder(dir) {
