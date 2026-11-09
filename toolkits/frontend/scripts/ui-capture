@@ -72,7 +72,7 @@
 // A worker session (AGENT_TEAM_ROLE names a role other than the coordinator) meets the gate team-ui
 // holds it to before anything reads the Agent Chrome, capture_refusal in bin/lib/team.sh, and exits
 // 1 with its reason: only a planner of its own task, while that task's walk is on in its interview
-// thread. So a call that spells this script past settings/worker.json's deny rule still stops here.
+// thread. So a call that spells this script past bin/hooks/command-guard's refusal still stops here.
 // It guards this script alone, since any local process can reach the debugging port.
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
