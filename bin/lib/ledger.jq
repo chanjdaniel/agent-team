@@ -1209,10 +1209,11 @@ def inbox_items($plan_repos; $repos; $projects):
 # The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
 # question's message in guild $guild (to the thread when either is unknown), then one line per
 # standing word, linked to Daniel's message in its channel, then the line $resources
-# (resources_line's; none when null), and its last line the time $now (seconds since the epoch) as
-# Discord shows it to each reader. Items past the limit are left out from the end, counted in one
-# line; the standing word lines, the resources line and the last line are never cut.
-def inbox_text($guild; $limit; $now; $resources):
+# (resources_line's; none when null), then the health line $health (team-timers health's; none
+# when null), and its last line the time $now (seconds since the epoch) as Discord shows it to each
+# reader. Items past the limit are left out from the end, counted in one line; the standing word
+# lines, the resources line, the health line and the last line are never cut.
+def inbox_text($guild; $limit; $now; $resources; $health):
   def link:
     if .thread == null then ""
     elif .message != null and $guild != null then " https://discord.com/channels/\($guild)/\(.thread)/\(.message)"
@@ -1225,7 +1226,7 @@ def inbox_text($guild; $limit; $now; $resources):
   | [(.standing // [])[] | "-# Standing merge word on \(.projects | projects_text) since"
       + " https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)"] as $words
   | ["-# team-inbox keeps this current; updated <t:\($now):R>"] as $foot
-  | (if $resources == null then [] else [$resources] end) as $level
+  | [$resources, $health | select(. != null)] as $level
   | def render($n):
       (reduce $sections[] as $s ({left: $n, lines: []};
         $s[1][:.left] as $take

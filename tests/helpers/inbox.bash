@@ -76,14 +76,19 @@ inbox_shown() {
 }
 
 # The message's lines between its title and its time, the items and section headings, without the
-# resources line.
+# resources line and the health line.
 inbox_items_shown() {
-  inbox_shown | sed '1d;$d' | sed '/^Resources: /d'
+  inbox_shown | sed '1d;$d' | sed -E '/^Resources: /d;/^(-# Health|\*\*Health\*\*): /d'
 }
 
 # The message's resources line, none when it has none.
 inbox_resources_shown() {
   inbox_shown | sed -n '/^Resources: /p'
+}
+
+# The message's health line, none when it has none.
+inbox_health_shown() {
+  inbox_shown | sed -nE '/^(-# Health|\*\*Health\*\*): /p'
 }
 
 # team-inbox's calls to the fake Discord, one "<method> <path>" per line.

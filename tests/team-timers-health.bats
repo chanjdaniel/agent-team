@@ -138,6 +138,29 @@ http_origin() {
   jq -e '.ok' <<<"$view"
 }
 
+@test "the Waiting on you message carries the view's line between the resources line and its last line: ok after a good run, the failing checkpoint after two failed runs" {
+  run_bin -0 team-timers run
+  local checkpoint renewed
+  checkpoint=$(date -u -r "$state/last-checkpoint" +%s)
+  renewed=$(lease_json "$origin" | jq '.renewed_at | fromdateiso8601')
+  assert_equal "$(inbox_shown | tail -n 3 | head -n 2)" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget
+-# Health: ok - last checkpoint <t:$checkpoint:R>, lease renewed <t:$renewed:R>"
+  [[ $(inbox_shown | tail -n 1) =~ ^"-# team-inbox keeps this current; updated <t:"[0-9]+":R>"$ ]]
+
+  git -C "$TEAM_HOME" checkout -q --detach
+  checkpoint_due
+  run_bin -1 team-timers run
+  checkpoint_due
+  run_bin -1 team-timers run
+  view
+  local since
+  since=$(jq -r '.problems[] | select(.key == "checkpoint") | .since' <<<"$view")
+  # The message shows this run's line: the record is written before the inbox step.
+  assert_equal "$(inbox_health_shown)" "$(jq -r .line <<<"$view")"
+  assert_equal "$(inbox_health_shown)" \
+    "**Health**: checkpoint failing since <t:$(date -d "$since" +%s):t> (2 runs): team home: not on a branch, so the records are not committed"
+}
+
 @test "a last good checkpoint more than 15 minutes old with no failure recorded is an alerting checkpoint problem saying since when" {
   run_bin -0 team-timers run
   date_record '.last_checkpoint = ago(16)'
