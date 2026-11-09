@@ -758,8 +758,11 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   relaunch
   echo "$token" >"$TEAM_HOME/tasks/T0/notes.txt"
   echo "$token" >"$TEAM_HOME/memory/proj/vercel.md"
-  # And in an MCP log under Claude Code's cache, XDG_CACHE_HOME's when it is set.
-  local log=$HOME/xdg/claude-cli-nodejs/-p/mcp-logs-vercel-read/2026-11-09T10-00-00-000Z.jsonl
+  # And in an MCP log under Claude Code's cache: Library/Caches on macOS, else XDG_CACHE_HOME's
+  # when it is set.
+  local cache=$HOME/xdg/claude-cli-nodejs
+  [[ $(uname -s) != Darwin ]] || cache=$HOME/Library/Caches/claude-cli-nodejs
+  local log=$cache/-p/mcp-logs-vercel-read/2026-11-09T10-00-00-000Z.jsonl
   mkdir -p "${log%/*}"
   echo "{\"debug\":\"$token\"}" >"$log"
   XDG_CACHE_HOME=$HOME/xdg run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read

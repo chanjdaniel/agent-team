@@ -28,6 +28,16 @@ setup() {
   echo env >"$HOME/.claude/session-env/$uuid/hook-1.sh"
 }
 
+# native_cache: Claude Code's cache root on the OS the tests run on, XDG_CACHE_HOME unset, as the
+# library reads it: Library/Caches on macOS, ~/.cache elsewhere.
+native_cache() {
+  if [[ $(uname -s) == Darwin ]]; then
+    echo "$HOME/Library/Caches/claude-cli-nodejs"
+  else
+    echo "$HOME/.cache/claude-cli-nodejs"
+  fi
+}
+
 # mcp_logs <cache root>: the MCP logs a stub session left under Claude Code's cache, and their
 # neighbours. Sets own (the files that are the session's) and kept (the ones that are not).
 mcp_logs() {
@@ -143,7 +153,7 @@ SH
 }
 
 @test "no ops session for the task is refused, nothing stopped or deleted" {
-  mcp_logs "$HOME/.cache/claude-cli-nodejs"
+  mcp_logs "$(native_cache)"
   agents '[{"id": "aaaaaaaa", "sessionId": "aaaaaaaa-1111-4222-8333-944455556666", "name": "T6-ops"}]'
   run_bin -1 team-ops-end T5
   assert_contains "$output" "no session named T5-ops is listed"
@@ -175,7 +185,7 @@ case $1 in
   rm) exit 1 ;;
 esac
 SH
-  mcp_logs "$HOME/.cache/claude-cli-nodejs"
+  mcp_logs "$(native_cache)"
   run_bin -1 team-ops-end T5
   assert_contains "$output" "claude rm 4f2a9c1e failed; its transcript is kept"
   [[ -f $slug/$uuid.jsonl && -d $slug/$uuid && -f $ops_wt/.scratch/answer.md && -d $HOME/.claude/session-env/$uuid ]]
@@ -195,7 +205,7 @@ SH
 }
 
 @test "the session's MCP logs, found by its uuid, and its session directory are deleted, nothing else" {
-  mcp_logs "$HOME/.cache/claude-cli-nodejs"
+  mcp_logs "$(native_cache)"
   agents "$(ops_session)"
   run_bin -0 team-ops-end T5
   assert_logs_ended
@@ -209,28 +219,36 @@ SH
 }
 
 @test "the cache directory is XDG_CACHE_HOME's on Linux, Library/Caches on macOS, and the config directory CLAUDE_CONFIG_DIR's" {
-  # Linux with XDG_CACHE_HOME: ~/.cache is not Claude Code's then.
+  agents "$(ops_session)"
   mcp_logs "$HOME/xdg/claude-cli-nodejs"
   local xdg_own=("${own[@]}") xdg_kept=("${kept[@]}")
-  mcp_logs "$HOME/.cache/claude-cli-nodejs"
-  local home_own=("${own[@]}")
-  agents "$(ops_session)"
-  XDG_CACHE_HOME=$HOME/xdg run_bin -0 team-ops-end T5
-  own=("${xdg_own[@]}") kept=("${xdg_kept[@]}" "${home_own[@]}")
-  assert_logs_ended
-  # macOS: a stub uname and a fake Homebrew drive the library's macOS branch, on Linux too.
-  local dir
-  for dir in coreutils/libexec/gnubin findutils/libexec/gnubin gnu-sed/libexec/gnubin grep/libexec/gnubin flock/bin; do
-    mkdir -p "$BATS_TEST_TMPDIR/brew/opt/$dir"
-  done
-  stub_command uname
-  stub_reply uname Darwin
-  mcp_logs "$HOME/Library/Caches/claude-cli-nodejs"
-  HOMEBREW_PREFIX=$BATS_TEST_TMPDIR/brew run_bin -0 team-ops-end T5
-  kept+=("${home_own[@]}")
-  assert_logs_ended
+  if [[ $(uname -s) == Darwin ]]; then
+    # macOS: Library/Caches, whatever XDG_CACHE_HOME says.
+    mcp_logs "$HOME/Library/Caches/claude-cli-nodejs"
+    XDG_CACHE_HOME=$HOME/xdg run_bin -0 team-ops-end T5
+    kept+=("${xdg_own[@]}" "${xdg_kept[@]}")
+    assert_logs_ended
+  else
+    # Linux with XDG_CACHE_HOME: ~/.cache is not Claude Code's then.
+    mcp_logs "$HOME/.cache/claude-cli-nodejs"
+    local home_own=("${own[@]}")
+    XDG_CACHE_HOME=$HOME/xdg run_bin -0 team-ops-end T5
+    own=("${xdg_own[@]}") kept=("${xdg_kept[@]}" "${home_own[@]}")
+    assert_logs_ended
+    # The library's macOS branch on Linux too, driven by a stub uname and a fake Homebrew.
+    local dir
+    for dir in coreutils/libexec/gnubin findutils/libexec/gnubin gnu-sed/libexec/gnubin grep/libexec/gnubin flock/bin; do
+      mkdir -p "$BATS_TEST_TMPDIR/brew/opt/$dir"
+    done
+    stub_command uname
+    stub_reply uname Darwin
+    mcp_logs "$HOME/Library/Caches/claude-cli-nodejs"
+    HOMEBREW_PREFIX=$BATS_TEST_TMPDIR/brew run_bin -0 team-ops-end T5
+    kept+=("${home_own[@]}")
+    assert_logs_ended
+    stub_reply uname Linux
+  fi
   # CLAUDE_CONFIG_DIR holds the session directory and the transcripts when set.
-  stub_reply uname Linux
   mkdir -p "$HOME/config/session-env/$uuid" "$HOME/config/projects/-p"
   echo '{}' >"$HOME/config/projects/-p/$uuid.jsonl"
   mkdir -p "$HOME/.claude/session-env/$uuid"
@@ -242,8 +260,8 @@ SH
 
 @test "an MCP log it cannot read is named and kept, the rest deleted, and the end fails" {
   [[ $EUID -ne 0 ]] || skip "root reads every file"
-  mcp_logs "$HOME/.cache/claude-cli-nodejs"
-  local locked=$HOME/.cache/claude-cli-nodejs/-home-x-slots-proj-1/mcp-logs-prod-read/locked.jsonl
+  mcp_logs "$(native_cache)"
+  local locked; locked=$(native_cache)/-home-x-slots-proj-1/mcp-logs-prod-read/locked.jsonl
   printf '{"sessionId":"%s"}\n' "$uuid" >"$locked"
   chmod 000 "$locked"
   agents "$(ops_session)"
