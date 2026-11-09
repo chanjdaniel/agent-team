@@ -53,8 +53,9 @@
 #                     300 s with the commands it runs, killed 10 s later ("checkpoint: failed:
 #                     timed out after 300 s"; a git call of its own with its own 60 s limit ends by
 #                     that; given --deadline 120, it begins no worktree past 120 s, so its records
-#                     commit begins inside the limit), and a checkpoint that fails, times out or exits 75 (GitHub
-#                     unreachable, or another checkpoint still running) is a failed step.
+#                     commit begins inside the limit), and a checkpoint that fails, times out or
+#                     exits 75 (GitHub unreachable, or another checkpoint still running) is a
+#                     failed step.
 #              inbox  On the holder, after the checkpoint step: team-inbox, which edits the
 #                     Waiting on you message in #coordinator, so what waits on Daniel shows there
 #                     within five minutes whatever changed it. It logs only a new message
