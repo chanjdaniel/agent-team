@@ -1405,7 +1405,7 @@ capacity_reading() {
        memory: {total: (32 * $gib), available: ((32 - $others) * $gib | round), team: ([$s[].memory] | add // 0),
                 others: ($others * $gib | round)},
        tasks: [$s | group_by(.task)[] | {task: .[0].task, memory: ([.[].memory] | add), cpu: null, cpu_nsec: null,
-                sessions: map({id, role, memory, peak: .memory, cpu_seconds: 1}), stacks: []}],
+                sessions: map({id, role, memory, cpu_seconds: 1}), stacks: []}],
        stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
 }
 

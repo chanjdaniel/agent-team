@@ -80,9 +80,14 @@ With `T` the memory total, `C` the cores, `s` the level's share (0 for none), an
 So none's budget is 0, and no level's is more than what Daniel's programs leave.
 A command that needs the budget takes a reading first when the newest is more than 10 minutes old.
 `team-capacity jobs` is the floor of the CPU budget, at least 1, read from the stored readings without taking one: `tests/run` runs that many bats files at once, and `team-checks` gives it to its commands as `TEAM_JOBS` (`nproc` with no team home, no reading, or a malformed record or settings).
-What the team's live work reserves is said in "Admission" below: a live session its use and one shared spike allowance, a new one, a stack, a heavy run and a gate the larger of their kind's estimate and their use.
+What the team's live work reserves is said in "Admission" below: a live session its use and one shared spike allowance, a new one until a reading holds it, a stack, a heavy run and a gate the larger of their kind's estimate and their use.
 
-Memory is read as RAM alone, as the kernel's `MemAvailable` and each cgroup's `memory.current` count it: swap is left out of the budget, the use and the limits (home-pc has a 33.6 GiB swap partition, much of it in use).
+Memory is read as RAM alone, as the kernel's `MemAvailable` and each cgroup's working set count it: swap is left out of the budget, the use and the limits (home-pc has a 33.6 GiB swap partition, much of it in use).
+
+A cgroup's use is its working set (`bin/lib/working-set.awk`): its `memory.current` less the reclaimable page cache, `memory.stat`'s `file` less `shmem`, never below 0.
+`memory.current` and `MemoryPeak` count that cache too, which the kernel drops first and which outlives the work that read it: on home-pc on 2026-11-09 T239's planner, finished and idle, held 4.7 GiB this way, and its slice, once it stopped, still 4.1 GiB, all `file` and no `anon`, so launches were refused at 16.3 GiB of 17.5 GiB reserved while the team's processes used about 1.3 GiB.
+Every cgroup the team reads is read so: each session's scope, each task's slice, each heavy run's scope and the gate's daemon (`team-capacity`), a heavy run's samples (`team-heavy`), and the team's slice (`team-level`); a cgroup `team-capacity` cannot read counts as off Linux, by its processes' resident memory, a heavy run's look that cannot read its scope reads nothing, and a slice `team-level` cannot read has no known use.
+The reading's `team` total is its processes' resident memory and its stacks' (`docker stats`' use, which leaves the inactive page cache out), and `others` the total less `MemAvailable` less that, so neither counts the cache either.
 A page the slice's limits push to swap frees RAM for Daniel's programs, which is the budget's point, so the slice's swap is not limited.
 
 ## The limits
@@ -92,6 +97,8 @@ On Linux `team-level` sets the slice's limits with `systemctl --user set-propert
 - `CPUQuota` is `max(B_c, min_cores) * 100%`, so the kernel holds the team's CPU at once, whatever a worker runs.
 - `MemoryHigh` is the largest of `min_gib`, the memory budget less the reservations of the team's stacks (which run outside the slice), and, while the slice uses more than that, the lower of its use and its `MemoryHigh` before. So a drop never throttles live sessions into reclaim: the slice is held where it is, and comes down as finished sessions stop and tasks stow.
 - `MemoryMax` is the larger of `MemoryHigh` and the slice's use, plus 1 GiB, so a drop never kills a worker.
+
+The slice's use here is its working set, as every cgroup's is: the kernel holds `memory.current` to these limits by dropping the page cache above it first, so a limit held at the working set reclaims cached reads before a worker's own memory.
 
 Rootful Docker keeps its containers outside every user slice, so their CPU is held by `docker update --cpus <max(B_c, min_cores)>` on every running container labelled `io.github.chanjdaniel.team.owner=agent-team`, with each apply; `team-stack up` gives a stack it starts the `--cpus` of the last apply (`~/.local/state/agent-team/level/applied.json`), so one started between two applies is held too.
 A slice that is not installed is said with its fix, `team-capacity install` (Daniel's yes), and the containers are still held.
@@ -119,7 +126,7 @@ A descendant the team's slice already holds stays where it is, a session already
 `team-worker` runs `place` for its new session right after the launch; a session it cannot place is a warning, and the launch stands.
 Once all of a scope's processes end, systemd removes the scope.
 
-The assumptions, checked on home-pc on 2026-11-01 (T175 build note `01-cgroups.md`): the user manager's cgroup delegates `cpu`, `memory` and `pids`; systemd is 262, so `MemoryPeak` is there; Docker's cgroup driver is `systemd` on cgroup v2; the claude daemon was started from a Konsole tab, and every session it starts sits in that tab's scope under `user@1000.service`; and Daniel's own run of the probe moved such a process into `agent-team-probe.scope`.
+The assumptions, checked on home-pc on 2026-11-01 (T175 build note `01-cgroups.md`): the user manager's cgroup delegates `cpu`, `memory` and `pids`; systemd is 262; Docker's cgroup driver is `systemd` on cgroup v2; the claude daemon was started from a Konsole tab, and every session it starts sits in that tab's scope under `user@1000.service`; and Daniel's own run of the probe moved such a process into `agent-team-probe.scope`.
 Workers' permissions do not allow the `busctl` call by hand: the tests use a stub, and a live check of placement is Daniel's or the coordinator's.
 
 ## Readings
@@ -129,12 +136,13 @@ Each reading goes to `~/.local/state/agent-team/capacity/readings.jsonl`, kept f
 Its machine's part (`bin/lib/reading.sh`) is the memory, what the other programs use, and the team's processes, found by their working directory and their descent, their CPU read against a snapshot of the last reading's, `procs.tsv` beside the readings.
 On top of it, each reading says each task's use:
 
-- On Linux, a task's memory is its slice's `MemoryCurrent`, plus its team processes outside the team's slice, plus its running team stacks (their `task` label), since Docker's containers are outside every user slice.
+- On Linux, a task's memory is its slice's working set, plus its team processes outside the team's slice, plus its running team stacks (their `task` label), since Docker's containers are outside every user slice.
 - Its CPU is its slice's `CPUUsageNSec` since the newest stored reading, plus its processes outside the slice since the snapshot, plus its stacks' share of a core.
 - Elsewhere, or for a task with no slice, it is every process that is the task's: one whose working directory is the task's held worktree or below it, or that descends from one.
-- Each live team session's use is its scope's on Linux (`MemoryCurrent`, `MemoryPeak`, `CPUUsageNSec`), else its process tree's, but the heavy run that holds the lock (the `team-heavy` its holder line names, and what it runs), whose cost is its own `heavy:<kind>`, so a builder's samples never carry its test runs.
-- The running heavy run's use, while a `team-heavy` holds the lock, is its scope's `MemoryCurrent` (`agent-team-heavy-<pid>.scope`) on Linux, else its `team-heavy`'s tree, which admission reserves it at.
-- The gate runs a pipeline while a process works in one of its worktrees, `~/.no-mistakes/worktrees/...`; its use is its daemon unit's on Linux, else the processes in `~/.no-mistakes` and their descendants.
+- Each live team session's use is its scope's on Linux (its working set and `CPUUsageNSec`), else its process tree's, but the heavy run that holds the lock (the `team-heavy` its holder line names, and what it runs), whose cost is its own `heavy:<kind>`, so a builder's samples never carry its test runs.
+- The running heavy run's use, while a `team-heavy` holds the lock, is its scope's working set (`agent-team-heavy-<pid>.scope`) on Linux, else its `team-heavy`'s tree, which admission reserves it at.
+- The gate runs a pipeline while a process works in one of its worktrees, `~/.no-mistakes/worktrees/...`; its use is its daemon unit's working set on Linux, else the processes in `~/.no-mistakes` and their descendants.
+- A gate stack is in use (`in_use`) while a process works in its worktree, the gate run's repository root its `worktree` label names (with no label, while the gate runs a pipeline).
 
 `team-capacity status` says the newest reading, taking one first when the newest is over 10 minutes old.
 A user manager or a session list that does not answer is said in the reading (`"systemd": false`, `"sessions": false`), and the reading still goes in.
@@ -142,27 +150,29 @@ A user manager or a session list that does not answer is said in the reading (`"
 
 ## Learned costs
 
-So that admission can rest on what work costs on this machine, each reading also keeps what it saw running in `capacity/live.json`, and each item that ended adds one line to `capacity/costs.jsonl`: `{at, kind, peak_bytes, cpu_seconds, seconds}`.
+So that admission can rest on what work costs on this machine, each reading also keeps what it saw running in `capacity/live.json`, and each item that ended adds one line to `capacity/costs.jsonl`: `{at, kind, peak_bytes, cpu_seconds, seconds, measure}`, its `measure` `working_set`.
 
 | Kind | Ends when | Its peak |
 | - | - | - |
-| `session:<role>` | the session list no longer has the session | the highest `MemoryPeak` its scope had (its tree's memory elsewhere) |
+| `session:<role>` | the session list no longer has the session | the highest working set the readings saw its scope use (its tree's memory elsewhere) |
 | `stack:<project>` | Docker no longer runs the stack | the highest memory the readings saw it use |
 | `gate` | no gate pipeline runs | the highest memory its daemon used while one ran |
-| `heavy:<kind>` | `team-heavy run` ends | its scope's `MemoryPeak` (its process group's memory, sampled every 10 seconds from the first look that reads any, elsewhere) |
+| `heavy:<kind>` | `team-heavy run` ends | the highest of its scope's working set, sampled every 10 seconds from the first look that reads any and once more inside the scope as the command ends (its process group's resident memory, sampled the same way, elsewhere) |
 
 A session list or a Docker that did not answer ends nothing, so a hiccup never writes a false sample.
-The readings are 5 minutes apart, so a peak is what they saw, and a session or a run shorter than that may never be seen; a session's `MemoryPeak` is the kernel's own, so it is exact.
+The readings are 5 minutes apart, so a session's peak is what they saw, and a session shorter than that may never be seen; a heavy run's samples are 10 seconds apart, so a spike shorter than that may be missed.
+The kernel's own `MemoryPeak` is not used, since it counts the page cache: a builder's learned 3.2 to 3.7 GiB on 2026-11-09 came from it, while the readings saw builders at 0.1 to 0.9 GiB.
 A stack's kind needs its registered project, read from the held worktree its `worktree` label names, so a gate's stack has none and writes no sample.
 
 A heavy run measures itself: `team-heavy run` runs its command in a process group of its own and, on Linux, in a transient scope `agent-team-heavy-<pid>.scope` in its task's slice (`AGENT_TEAM_TASK`'s, else `agent-team.slice`), and writes its line when the command ends.
 Its kind is `heavy:tests-run` for `tests/run`, `heavy:checks:<project>` for `team-checks`, else the label's first word, its file name when it is a path, so a script's kind is one from every checkout and no path goes in `costs.jsonl`.
 When systemd's user manager does not answer, the run says so once and goes in its process group alone, measured as on macOS.
-A run that was stopped, or that ended before its first sample, writes nothing, since its peak would understate the kind's.
+A run that was stopped, or whose memory no look read, writes nothing, since its peak would understate the kind's.
 `team-heavy stop [--task T<n>]` ends a run's whole tree (its scope on Linux, its process group's TERM then KILL after 10 seconds), so a worker blocked in a test returns to read its STOW.
 It never reaches a Docker container the run started, which rootful Docker keeps outside the scope and the process group, and the stopped test's own cleanup never runs: a team stack goes with its task's stack, by `team-stack`, and any other container stays: a stopped `tests/run toolkits` leaves its throwaway MongoDB (`toolkit-test-<hex>`, labelled `agent-team-test=toolkits`) running, which `team-janitor`'s report lists as not the team's and only a hand removal (`docker rm --force --volumes <name>`) takes.
 
 `team-capacity costs` gives each kind's estimate: from 5 samples, the 90th percentile of the last 20 peaks plus 10%; before that, the seed.
+It reads only the lines whose `measure` is `working_set`: the lines from before 2026-11-09 have none, their peaks counting the page cache, so they stay in `costs.jsonl` and count for nothing, and each kind is on its seed again until it has 5 new samples.
 The seeds are `capacity.json`'s `session_gib` (0.5), `heavy_gib` (5) and `gate_gib` (2.2), and for a stack the sum of its services' `mem_limit`s as the readings last saw it running (`team-stack ls --json`'s `memory_limit_bytes`).
 The seeds' evidence: 13 sessions at 0.3 to 0.55 GiB each, one heavy run 4 to 6 GiB and a gate about 2.2 GiB (T19's measure), from the plan's deep dive of 2026-11-01.
 
@@ -175,15 +185,16 @@ CPU is never admitted: the slice's quota holds it.
 It takes a reading first when the newest is over 10 minutes old, as `status` does.
 What is reserved, in the parts `team-capacity status --json` splits it into:
 
-- `sessions_use`: each live team session of the newest reading past its admission window, at its use, its scope's `memory.current` (RAM only);
+- `sessions_use`: each live team session of the newest reading past its admission window, at its use, its scope's working set (RAM only);
 - `spike_allowance`: one for the team, the largest of those sessions' estimates less their use, at 0 at least, and 0 with no session past its window, which keeps room reserved for one worker's spike at a time;
 - `admissions`: each admission of the last 10 minutes, but a heavy run's, at its estimate then, since a new session or stack has not grown yet and the next reading may not hold it; they are kept in `capacity/admitted.json`.
   One whose session's launch was logged a minute or more before `claude agents --json` was read, and whose session that list does not hold, is released, and that session is left out of the stored reading too, so stopping a worker frees its room.
-  A session the reading holds of an admission's kind and task is in its window, reserved once, at the larger of that estimate and its use; of several such sessions, the ones using least are, since a new session uses little yet.
-- `stacks` and `gates`: each running team or gate stack, and the gate while it runs a pipeline, at the larger of its kind's estimate and its use; a stack the reading holds that an admission names (`team-stack up` gives its Compose project name, `--name`) is reserved once, among the stacks, at the larger of that and the admission's estimate, so an instance admitted while its task's own stack runs is reserved beside that stack until the reading holds it;
+  A session admission's window ends at the first reading that holds the session its logged launch names (the ledger's `launch`, paired as the release pairs it): from then on that session is in `sessions_use` at its use, the spike allowance covering its growth, and the admission reserves nothing more; on 2026-11-09 five launches in a few minutes filled full's budget, each held at a builder's 2.8 GiB for 10 minutes though the readings held their sessions at a tenth of it.
+  A session the reading holds of an admission's kind and task that no admission's launch names (its launch not logged yet) is in the window of one whose session the reading does not hold, reserved once, at the larger of that estimate and its use; of several such sessions, the ones using least are, since a new session uses little yet.
+- `stacks` and `gates`: each running team or gate stack, and the gate while it runs a pipeline, at the larger of its kind's estimate and its use, but a gate stack no process works in (`in_use` false, its gate run over) at its use, since only a run grows it; a stack the reading holds that an admission names (`team-stack up` gives its Compose project name, `--name`) is reserved once, among the stacks, at the larger of that and the admission's estimate, so an instance admitted while its task's own stack runs is reserved beside that stack until the reading holds it;
 - `heavy_runs`: the running heavy run, while a `team-heavy` holds its lock, at the larger of its estimate and its use, at its admission's kind, its use the reading's (its scope's on Linux) when the reading saw it; a run holding the lock in another form, Conventioner's, at `heavy_gib`.
 
-A session's estimate is its scope's peak, tests it runs in the foreground included, while it idles at a fraction of it: on home-pc on 2026-11-01 seven builders used 0.1 to 0.3 GiB each against the learned 2.4 GiB, so reserving each at its estimate left full's 16.4 GiB budget no room for an eighth or a heavy run.
+A session's estimate is its scope's peak, tests it runs in the foreground included, while it idles at a fraction of it: on home-pc on 2026-11-01 seven builders used 0.1 to 0.3 GiB each against the learned 2.4 GiB (a peak that counted the page cache then), so reserving each at its estimate left full's 16.4 GiB budget no room for an eighth or a heavy run.
 Daniel chose the use and one shared allowance (2026-11-01), so the team keeps its parallelism, and the slice's `MemoryHigh` holds a rare pile-up of spikes.
 
 A heavy run asking is never counted beside itself: it asks while it holds the heavy-run lock, so the running heavy run is the asker.
