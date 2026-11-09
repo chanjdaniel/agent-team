@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "prod-mongo": {
+      "command": "node",
+      "args": ["@TEAM_CODE@/toolkits/prod-mongo/scripts/start-server.mjs"],
+      "timeout": 5400000
+    }
+  }
+}
