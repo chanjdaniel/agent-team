@@ -44,7 +44,9 @@
 # It runs a copy of the bytes it hashed, so the file changing after the check changes nothing:
 # bash <the copy>, in the script's own directory, with no input. Its output and errors, together,
 # go to the log and to stdout; then it logs ran id=<id> exit=<the script's exit code>, whatever
-# that is, and prints "T<n> ran <id> (<script>), exit <code>; its output is in <log>".
+# that is, commits the ledger and pushes it to the team home's origin at once (ledger_push in
+# bin/lib/team.sh, which says on stderr when it is not on origin yet, the exit standing), and
+# prints "T<n> ran <id> (<script>), exit <code>; its output is in <log>".
 # Exit codes: the script's own once it ran; before that, 1 refused and 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -131,5 +133,6 @@ rc=0
 exec {out}>&-
 ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" --arg id "$id" --argjson rc "$rc" \
   '{ts: $ts, task: $task, event: "ran", id: $id, exit: $rc}')"
+ledger_push
 echo "$task ran $id ($script), exit $rc; its output is in $log"
 exit "$rc"

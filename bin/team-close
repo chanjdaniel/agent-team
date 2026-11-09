@@ -37,6 +37,9 @@
 # copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
 # checkout, one that cannot be deleted reported on stderr with the command that deletes it; and
 # closed with archive, returned and kept. Prints {task, stopped, removed, archive, returned, kept}.
+# Then the ledger, its closed and worktree-returned lines with it, is committed and pushed to the
+# team home's origin at once (ledger_push in bin/lib/team.sh, which says on stderr when it is not
+# on origin yet, the task staying closed).
 # Last, team-inbox takes the task's asks, PRs and interview out of the Waiting on you message;
 # when that fails, a line on stderr says so, and the task stays closed.
 # A legacy task (events but no opened) has no worktrees in the ledger: its sessions are stopped
@@ -355,4 +358,5 @@ jq -n --arg task "$task" --argjson stopped "$(json_list "${stopped[@]}")" --argj
   --argjson archive "$(json_list "${archived[@]}")" --argjson returned "$(json_list "${returned[@]}")" \
   --argjson kept "$(json_list "${kept_paths[@]}")" \
   '{task: $task, stopped: $stopped, removed: $removed, archive: $archive, returned: $returned, kept: $kept}'
+ledger_push
 refresh_inbox

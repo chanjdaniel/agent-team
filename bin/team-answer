@@ -16,7 +16,9 @@
 # team-run-approved holds the answer it runs on to as well); and it must have text. Then it logs
 # answered id=<id> answer=<the message's text, verbatim> discord_message=<its id>, and resumed
 # when the task's standing park is the ask's own wait (the latest waiting, blocked, paused, held,
-# resumed or launch is waiting on=Daniel reason="ask <id>", as team-ask logs it). Then team-inbox
+# resumed or launch is waiting on=Daniel reason="ask <id>", as team-ask logs it), and commits the
+# ledger and pushes it to the team home's origin at once (ledger_push in bin/lib/team.sh, which
+# says on stderr when it is not on origin yet, the answer standing). Then team-inbox
 # takes the ask out of the Waiting on you message; when that fails, a line on stderr says so, and
 # the answer stands.
 # It refuses on a machine that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh),
@@ -54,5 +56,6 @@ if jq -e --arg id "$id" '
   | . != null and .event == "waiting" and .on == "Daniel" and .reason == "ask \($id)"' <<<"$events" >/dev/null; then
   ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" '{ts: $ts, task: $task, event: "resumed"}')"
 fi
+ledger_push
 refresh_inbox
 jq -r '.message.content' <<<"$word"

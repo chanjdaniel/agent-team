@@ -9,7 +9,7 @@
 # exported, so every script and every session it starts runs with that one PATH. It sets
 # TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
-# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append,
+# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append, ledger_push,
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
@@ -17,7 +17,8 @@
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
 # daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
-# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
+# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, and LEDGER_TASKS,
+# LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -197,25 +198,35 @@ ledger_refused_data() {
   printf '%s' "$out"
 }
 
+# The tasks and kinds this script appended to the ledger, in order, and whether one of them makes a
+# push due (ledger_append), for ledger_push.
+LEDGER_TASKS=() LEDGER_KINDS=() LEDGER_PUSH_DUE=''
+
 # Append one JSON object as one line to the ledger, under an exclusive lock beside it, so two
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
 # script must be its kind's writer, and no string in it may hold what the records hook refuses (an
 # address at a public provider), since the ledger is append-only and that line would fail every
 # later commit of it. With <seconds>, the lock is waited on at most that long, and a lock still
-# held then is a refusal: ledger_append <event> [<seconds>]
+# held then is a refusal. An event of a kind the contract marks push (Daniel's word, or an outside
+# fact) makes a push due, which the script's ledger_push makes: ledger_append <event> [<seconds>]
 ledger_append() {
-  local out line problems lock_wait=()
-  # One jq run: the object's compact line, then its problems ("none" when the input holds no object
-  # or is not JSON, "many" when it holds more than one). Any other failure (an unreadable contract,
-  # an error in ledger.jq) is jq's own, and its message is shown.
+  local out line problems push task event lock_wait=()
+  # One jq run: the object's compact line, then "<push> <task> <event>", then its problems ("none"
+  # when the input holds no object or is not JSON, "many" when it holds more than one). Any other
+  # failure (an unreadable contract, an error in ledger.jq) is jq's own, and its message is shown.
   out=$(ledger_jq '(try [inputs | select(type == "object")] catch []) as $objects
       | if ($objects | length) == 0 then "none" elif ($objects | length) > 1 then "many"
-        else ($objects[0] | tojson), ([$objects[0] | append_problems($contract; $writer)] | join("; ")) end' \
+        else ($objects[0] | tojson),
+          ($objects[0] | ((.event | strings) // "") as $event
+            | "\(($contract.kinds[$event] // {}).push == true) \((.task | strings) // "") \($event)"),
+          ([$objects[0] | append_problems($contract; $writer)] | join("; ")) end' \
     -nr --arg writer "${0##*/}" <<<"$1") || die "cannot check the event against the ledger contract: $1"
   line=${out%%$'\n'*} problems=''
-  [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
   [[ $line != none ]] || die "not a JSON object for the ledger: $1"
   [[ $line != many ]] || die "not one JSON object for the ledger: $1"
+  out=${out#*$'\n'}
+  read -r push task event <<<"${out%%$'\n'*}"
+  [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
   [[ ! $line =~ $DATA_EMAIL ]] || problems=$(ledger_refused_data "$line")
   [[ -z $problems ]] ||
@@ -225,6 +236,39 @@ ledger_append() {
     flock -x "${lock_wait[@]}" 9 || die "could not take the ledger's lock${2:+ within ${2}s}"
     printf '%s\n' "$line" >>"$TEAM_HOME/ledger.jsonl"
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
+  [[ " ${LEDGER_TASKS[*]} " == *" $task "* ]] || LEDGER_TASKS+=("$task")
+  [[ " ${LEDGER_KINDS[*]} " == *" $event "* ]] || LEDGER_KINDS+=("$event")
+  [[ $push != true ]] || LEDGER_PUSH_DUE=1
+}
+
+# Commit and push the ledger at once when this script appended an event of a kind the contract
+# marks push (ledger_append notes it), so Daniel's word and outside facts are on origin the moment
+# they are logged; else do nothing. It commits ledger.jsonl alone as "chore: ledger <tasks>
+# <kinds>", the tasks and kinds this script appended, and pushes the team home's branch through
+# commit_records, each network call limited to 20 s. It prints nothing on stdout and never fails
+# its caller: a commit that fails (the records hook refuses it) or a push that fails is one line
+# on stderr, "<script>: the ledger is not on origin yet (<why>); the next checkpoint pushes it",
+# and a machine that is fenced or lost the lease (lease_refusal) commits and pushes nothing,
+# saying so in the same form. A team home that is no git checkout with an origin is left as it
+# is, silently. Each script that writes a push kind calls it once, after its last event:
+# ledger_push
+ledger_push() {
+  local why err
+  [[ -n ${LEDGER_PUSH_DUE:-} ]] || return 0
+  LEDGER_PUSH_DUE=''
+  [[ -e $TEAM_HOME/.git ]] && git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 0
+  if why=$(lease_refusal "commits and pushes no ledger"); then
+    echo "${0##*/}: the ledger is not on origin yet ($why)" >&2
+    return 0
+  fi
+  err=$(mktemp) || return 0
+  if ! (NET_ERR=$err.net NET_TIMEOUT=20 commit_records "chore: ledger ${LEDGER_TASKS[*]} ${LEDGER_KINDS[*]}" ledger.jsonl \
+    >/dev/null 2>"$err"); then
+    why=$(grep -m1 . "$err" | sed -E "s/^${0##*/}: team home: //; s/^committed [0-9a-f]+ [^;]*; //; s/:$//")
+    echo "${0##*/}: the ledger is not on origin yet (${why:-commit_records failed with no reason}); the next checkpoint pushes it" >&2
+  fi
+  rm -f "$err" "$err.net"
+  return 0
 }
 
 # All of a task's events, in ledger order, one compact object per line (lines that are not JSON
@@ -1170,7 +1214,9 @@ follow_base() {
 
 # Replay the commits on the team home's <branch> that origin's lacks onto origin's, moving the
 # branch, index and working tree as a branch switch would (commit_records); fails with the reason
-# in REPLAY_REASON.
+# in REPLAY_REASON. The commits are built outside the ledger's lock, so inside it the branch head
+# is read again, and one that moved meanwhile (another script's commit) is refused, moving
+# nothing: the next push replays it with that commit.
 replay_records() {
   local branch=$1 base old onto commit tree conflicts way rc=0
   local -a replayed replay_author
@@ -1202,6 +1248,10 @@ replay_records() {
   done
   {
     flock -x 9
+    if [[ $(git -C "$TEAM_HOME" rev-parse HEAD) != "$old" ]]; then
+      REPLAY_REASON="the branch moved meanwhile; the next push replays it"
+      return 1
+    fi
     git -C "$TEAM_HOME" update-index -q --refresh || true
     way=$(in_the_way "$TEAM_HOME" "$onto")
     if [[ -n $way ]]; then
@@ -1212,7 +1262,12 @@ replay_records() {
       REPLAY_REASON="moving the working tree failed: $(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')"
       return 1
     fi
-    git -C "$TEAM_HOME" update-ref -m "${0##*/}: replayed onto origin/$branch" "refs/heads/$branch" "$onto" "$old"
+    if ! git -C "$TEAM_HOME" update-ref -m "${0##*/}: replayed onto origin/$branch" "refs/heads/$branch" "$onto" "$old" 2>"$NET_ERR"; then
+      REPLAY_REASON="moving the branch failed: $(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')"
+      # The working tree goes back to the branch it stayed on.
+      git -C "$TEAM_HOME" read-tree -m -u "$onto" "$old" 2>/dev/null || true
+      return 1
+    fi
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
 }
 

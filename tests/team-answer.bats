@@ -272,3 +272,18 @@ resumed"
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-answer")"
   assert_contains "$output" "Usage: team-answer T<n> <id> <discord message id>"
 }
+
+@test "the answered and the resumed logged with it are pushed to origin at once, in one commit" {
+  printf 'ledger.jsonl.lock\n' >"$TEAM_HOME/.gitignore"
+  local team_origin tip
+  team_origin=$(hold_lease home-pc)
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-answer T7 sign-in 1564000000000000001
+  assert_equal "$output" $'Five a minute.\n\n  Keep "ten an hour" for the API, `not` the site.  '
+  assert_equal "$stderr" ""
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T7 answered resumed"
+  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | tail -n 2 | jq -r .event)" "answered
+resumed"
+}
