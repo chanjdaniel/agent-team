@@ -2,8 +2,8 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the machine, team home, git hooks, records hooks, logins and Claude config lines, --json,
-# and the checks of bin/lib/doctor.d/ in name order;
+# This file: the machine, team home, git hooks, guard hooks, records hooks, logins and Claude config
+# lines, --json, and the checks of bin/lib/doctor.d/ in name order;
 # team-doctor-*.bats hold the other lines.
 
 load helpers/common
@@ -50,6 +50,44 @@ setup() {
   CODE_CHECKOUT=$HOME/agent-team run_bin -1 team-doctor
   assert_equal "$(line_of 'git hooks')" \
     "FAIL git hooks: core.hooksPath is unset, so git runs none of bin/hooks/git; fix: Daniel runs git -C ~/agent-team config core.hooksPath bin/hooks/git"
+}
+
+# Put <hook> of the code checkout's bin/hooks/ in place of its shared copy, as the Bash read from
+# stdin: guard_is <hook>
+guard_is() {
+  local hook=$CODE_CHECKOUT/bin/hooks/$1
+  rm "$hook"
+  { echo '#!/usr/bin/env bash'; cat; } >"$hook"
+  chmod +x "$hook"
+}
+
+@test "the guard hooks line runs each guard on a harmless Bash call and fails naming each one that does not pass" {
+  only_checks 092-guard-hooks.sh
+  tools_at arch
+  local passes="PASS guard hooks: scratch-only-edits, command-guard, lease-fence and lease-fence --coordinator each pass a harmless Bash call (ls)"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'guard hooks')" "$passes"
+  # --json gives the line too.
+  run_bin -0 --separate-stderr team-doctor --json
+  jq -e '.[] | select(.check == "guard hooks") | .verdict == "PASS" and .fix == ""' <<<"$output"
+  # With no team home named, each still decides on ls: lease-fence refuses only what the lease decides.
+  rm "$HOME/.config/agent-team/home"
+  run env -u TEAM_HOME "$CODE_CHECKOUT/bin/team-doctor"
+  assert_equal "$(line_of 'guard hooks')" "$passes"
+  echo "$TEAM_HOME" >"$HOME/.config/agent-team/home"
+  # A command of its own that fails inside scratch-only-edits (its read of the cwd) ends as the
+  # guard's refusal, which the line quotes; the other guards still pass.
+  fails_on_call jq '.cwd // empty'
+  run_bin -1 team-doctor
+  local fix="fix: fix each hook named in $CODE_CHECKOUT/bin/hooks, then run team-doctor again"
+  assert_equal "$(line_of 'guard hooks')" "FAIL guard hooks: on a harmless Bash call (ls), scratch-only-edits exited 2 (\"Blocked by scratch-only-edits: it failed with exit 5 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way.\"), so each blocks every call it guards; $fix"
+  rm "$BATS_TEST_TMPDIR/stubs/jq"
+  # A guard that dies on its own, with or without a word on stderr, and one past its timeout.
+  guard_is scratch-only-edits <<<'echo "line 3: broken" >&2; echo more >&2; exit 1'
+  guard_is command-guard <<<'exit 127'
+  guard_is lease-fence <<<'[[ $# -eq 0 ]] || exit 124; exit 0'
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'guard hooks')" "FAIL guard hooks: on a harmless Bash call (ls), scratch-only-edits exited 1 (\"line 3: broken\"); command-guard exited 127; lease-fence --coordinator did not answer within its 60 s, so each blocks every call it guards; $fix"
 }
 
 @test "the team home line names the team home and what named it: TEAM_HOME or ~/.config/agent-team/home" {

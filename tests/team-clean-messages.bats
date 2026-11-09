@@ -165,9 +165,10 @@ $three docs: message only
 
   run_bin -0 --separate-stderr team-clean-messages "$wt"
   new=$(git -C "$wt" rev-parse HEAD)
-  assert_equal "$output" "git push --force-with-lease=feat/T7-thing:$old origin feat/T7-thing"
+  assert_equal "$output" "git -C $wt push --force-with-lease=feat/T7-thing:$old origin feat/T7-thing"
   push=$output
   assert_contains "$stderr" "rewrote the messages of 2 of 4 commits"
+  assert_contains "$stderr" "feat/T7-thing moved from ${old:0:7} to ${new:0:7}; nothing is pushed. The push, on stdout, is the one line of a script: write it to a file in the team home's tasks/T7/, put it to Daniel with team-ask T7 <id> --file <question> --script <file>, and on their yes run it with team-run-approved T7 <id>:"
   [[ $new != "$old" ]]
   assert_equal "$(git -C "$wt" symbolic-ref --short HEAD)" feat/T7-thing
 
@@ -192,8 +193,11 @@ $three docs: message only
     "{\"task\":\"T7\",\"event\":\"history-rewritten\",\"project\":\"proj\",\"branch\":\"feat/T7-thing\",\"old_head\":\"$old\",\"head\":\"$new\"}"
   run_bin -0 team-log --check
 
-  # The printed push is the one to run.
-  run bash -c "cd '$wt' && $push"
+  # The printed push is the one line of a script Daniel approves, which team-run-approved runs
+  # with bash in the script's own directory, with no input.
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  printf '%s\n' "$push" >"$TEAM_HOME/tasks/T7/clean.sh"
+  run bash -c "cd '$TEAM_HOME/tasks/T7' && bash clean.sh </dev/null"
   assert_equal "$status" 0
   assert_equal "$(git -C "$primary" ls-remote origin refs/heads/feat/T7-thing | cut -f1)" "$new"
   run_bin -0 team-clean-messages "$wt" --check
@@ -499,7 +503,7 @@ sign_head() {
 @test "the push leases what origin has: no branch, or a head behind the old one" {
   commit $'feat: one\n\nClaude-Session: x' a
   run_bin -0 --separate-stderr team-clean-messages "$wt"
-  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
+  assert_equal "$output" "git -C $wt push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
   run bash -c "cd '$wt' && $output"
   assert_equal "$status" 0
 
@@ -507,7 +511,7 @@ sign_head() {
   pushed=$(git -C "$wt" rev-parse HEAD)
   commit $'feat: two\n\nClaude-Session: y' b
   run_bin -0 --separate-stderr team-clean-messages "$wt"
-  assert_equal "$output" "git push --force-with-lease=feat/T7-thing:$pushed origin feat/T7-thing"
+  assert_equal "$output" "git -C $wt push --force-with-lease=feat/T7-thing:$pushed origin feat/T7-thing"
 }
 
 @test "refused, with nothing changed, when origin's branch has commits the worktree lacks" {
@@ -554,7 +558,7 @@ rewrite_and_land() {
   local refs
   refs=$(mirror_refs)
   run_bin -0 --separate-stderr team-clean-messages "$wt"
-  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing
+  assert_equal "$output" "git -C $wt push --force-with-lease=feat/T7-thing: origin feat/T7-thing
 $REPO_ROOT/bin/team-clean-messages $wt --clear-gate-lane"
   assert_contains "$stderr" "the gate's mirror still holds the old commits of feat/T7-thing"
   assert_equal "$(mirror_refs)" "$refs"
@@ -564,12 +568,12 @@ $REPO_ROOT/bin/team-clean-messages $wt --clear-gate-lane"
 @test "no mirror's step when the project has no gate or the mirror has no such branch" {
   commit $'feat: one\n\nClaude-Session: x' a
   run_bin -0 --separate-stderr team-clean-messages "$wt"
-  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
+  assert_equal "$output" "git -C $wt push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
 
   gate_mirror
   commit $'feat: two\n\nClaude-Session: y' b
   run_bin -0 --separate-stderr team-clean-messages "$wt"
-  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
+  assert_equal "$output" "git -C $wt push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
   [[ $stderr != *"gate's mirror"* ]]
 }
 
@@ -655,7 +659,7 @@ refused_remote() {
   git -C "$wt" push -q "$elsewhere" HEAD:refs/heads/feat/T7-thing
   git -C "$primary" remote set-url no-mistakes "$elsewhere"
   run_bin -0 --separate-stderr team-clean-messages "$wt"
-  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
+  assert_equal "$output" "git -C $wt push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
 }
 
 @test "the printed step runs no hook of the mirror's" {

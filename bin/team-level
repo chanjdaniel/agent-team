@@ -98,6 +98,9 @@
 # so none's budget is 0, and a level's never more than what Daniel's programs leave.
 # Every subcommand but status refuses on a machine that does not hold the lease. A level.jsonl
 # line that is not a level record is refused, naming its number.
+# Refused, exit 1, before it reads or changes anything: every subcommand but status in a worker
+# session (an AGENT_TEAM_ROLE but coordinator; worker_refusal in bin/lib/team.sh); status stays
+# open, since team-stack and team-capacity, which workers run, read it.
 # Test seams: TEAM_READING_CPUS stands for the machine's cores, as for team-capacity,
 # TEAM_CGROUP_ROOT for / where the slice's cgroup is read, as team-capacity's does, and
 # TEAM_DOCKER_SECONDS for the 30 seconds each docker call is given.
@@ -134,6 +137,8 @@ case $command in
     ;;
   *) usage_error "unknown subcommand '$command'; $USAGE" ;;
 esac
+# status stays open: team-stack and team-capacity, which workers run, read it (machine_level).
+if [[ $command != status ]] && why=$(worker_refusal "" "changes no resource level"); then die "$why"; fi
 
 BIN=$(dirname "${BASH_SOURCE[0]}")
 RECORD=$TEAM_HOME/level.jsonl

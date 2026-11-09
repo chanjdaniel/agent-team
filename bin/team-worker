@@ -73,8 +73,11 @@
 # end it with team-ops-end). An ops session runs with --restricted and only the built-in tools
 # Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents and Skill (for its toolkits'
 # skills): no shell, no web.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "launches no session") && die "$why"
 
 # Roles, settings, toolkits and hooks are code: they come from this checkout, beside bin/.
 code=$(dirname "$(dirname "$TEAM_LIB")")

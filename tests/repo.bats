@@ -677,6 +677,47 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   done
 }
 
+# Each PreToolUse hook object of each settings or hooks file <file> that lacks onFailure "block"
+# or a whole-number timeout from 1 to 120, one "<file>: <command>: <what>" line each, the file
+# as given: pretooluse_problems <file>...
+pretooluse_problems() {
+  local file
+  for file; do
+    jq -r --arg file "$file" '.hooks.PreToolUse // [] | .[].hooks[]
+      | (.command + ([.args // [] | .[]] | map(" " + .) | join(""))) as $hook
+      | (if .onFailure != "block" then "\($file): \($hook): onFailure is \(.onFailure // "unset"), not \"block\"" else empty end),
+        (if (.timeout | type) != "number" or .timeout != (.timeout | floor) or .timeout < 1 or .timeout > 120
+         then "\($file): \($hook): timeout is \(.timeout // "unset"), not a whole number of seconds from 1 to 120" else empty end)' "$file"
+  done
+}
+
+# A guard hook blocks the call on any failure only when its entry says so, and Claude Code waits
+# 600 seconds on one that hangs by default (T248, R1): every PreToolUse entry fails closed, soon.
+@test "every PreToolUse hook blocks on its failure and has a timeout, in every settings and toolkit hooks file" {
+  local files=() file bad=$BATS_TEST_TMPDIR/bad.json
+  for file in "$REPO_ROOT"/settings/*.json "$REPO_ROOT"/coordinator.settings.json "$REPO_ROOT"/toolkits/*/hooks/hooks.json; do
+    files+=("${file#"$REPO_ROOT/"}")
+  done
+  assert_equal "$(cd "$REPO_ROOT" && pretooluse_problems "${files[@]}")" ""
+  # Each of the four guards, at its timeout.
+  assert_equal "$(cd "$REPO_ROOT" && jq -r '.hooks.PreToolUse // [] | .[].hooks[] | "\(.command | sub("^\"?@TEAM_CODE@/bin/hooks/"; "") | sub("\""; "")) \(.timeout)"' "${files[@]}" | LC_ALL=C sort -u)" \
+    "command-guard 10
+lease-fence --coordinator 60
+lease-fence 60
+ops-log 30
+scratch-only-edits 30"
+  # The check names the file and the hook of each entry left open.
+  jq -n '{hooks: {PreToolUse: [{matcher: "Bash", hooks: [
+      {type: "command", command: "a-guard", timeout: 10},
+      {type: "command", command: "b-guard", args: ["x"], onFailure: "block", timeout: 1.5},
+      {type: "command", command: "c-guard", onFailure: "block", timeout: 121},
+      {type: "command", command: "d-guard", onFailure: "block", timeout: 120}]}],
+    PostToolUse: [{hooks: [{type: "command", command: "e-hook"}]}]}}' >"$bad"
+  assert_equal "$(pretooluse_problems "$bad")" "$bad: a-guard: onFailure is unset, not \"block\"
+$bad: b-guard x: timeout is 1.5, not a whole number of seconds from 1 to 120
+$bad: c-guard: timeout is 121, not a whole number of seconds from 1 to 120"
+}
+
 # Whether one of the Bash deny rules in <settings file> matches <command> in one of its
 # deny_forms, a rule's * matching any text as Claude Code's does: denied <settings file> <command>
 denied() {
@@ -1125,6 +1166,71 @@ git reset --soft HEAD~1
 git reset -- file
 git status
 COMMANDS
+}
+
+# The families of commands whose plain spelling the coordinator's deny rules stop, as the header
+# of bin/claude-coordinator names them and in its order, each with commands of it the rules must
+# refuse: "<family>|<command>|<command>...", one per line.
+coordinator_families() {
+  cat <<'FAMILIES'
+a force push|git push --force origin feat/T1-x|git push -f origin feat/T1-x|git push --force-with-lease origin feat/T1-x|git push -u origin feat/T1-x --force|git push origin +feat/T1-x|git -C ~/wt push --force-with-lease=feat/T1-x:abc1234 origin feat/T1-x|git -C ~/wt push -f origin feat/T1-x|git -C ~/wt push origin +feat/T1-x
+a push to dev or main|git push origin dev|git push origin main|git push origin HEAD:dev|git push origin HEAD:main|git -C ~/wt push origin dev|git -C ~/wt push origin HEAD:main
+git reset --hard|git reset --hard origin/dev|git reset -q --hard HEAD~1
+git clean|git clean -fdx|git clean -n
+git branch -D|git branch -D feat/T1-x
+a Docker prune|docker system prune -af|docker --context default volume prune -f|/usr/bin/docker image prune -a|docker buildx prune
+a merge outside team-merge|gh pr merge https://github.com/me/shop/pull/5 --squash|gh-axi pr merge 5|gh api -X PUT repos/me/shop/pulls/5/merge
+FAMILIES
+}
+
+# One line per gap between the header of the launcher <launcher> and the deny rules of the settings
+# <settings>: the header's sentence naming the families, when it lacks it, and each command of a
+# family the rules allow; nothing when they agree: coordinator_deny_gaps <settings> <launcher>
+coordinator_deny_gaps() {
+  local settings=$1 header family rest command names=() sentence
+  header=$(sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$2" | tr -s ' \n' '  ')
+  while IFS='|' read -r family rest; do
+    names+=("$family")
+    IFS='|' read -r -a commands <<<"$rest"
+    for command in "${commands[@]}"; do
+      denied_in "$settings" "$command" || echo "$family: allowed: $command"
+    done
+  done < <(coordinator_families)
+  sentence="deny rules stop the plain spelling of $(printf '%s, ' "${names[@]:0:${#names[@]}-1}" | sed 's/, $//') and ${names[-1]},"
+  [[ $header == *"$sentence"* ]] || echo "the header does not say: $sentence"
+}
+
+# The coordinator runs in bypass mode, so its deny rules, the workers' own for these families, and
+# dev's protection on GitHub are all that stop it; its launcher's header names only what holds.
+@test "the coordinator's settings deny each family of commands its launcher's header names, in the workers' rules" {
+  local coordinator=$REPO_ROOT/coordinator.settings.json launcher=$REPO_ROOT/bin/claude-coordinator
+  local rules missing command bad=$BATS_TEST_TMPDIR/settings.json
+  assert_equal "$(coordinator_deny_gaps "$coordinator" "$launcher")" ""
+  # The workers' 43 rules of these families, in their own text, with and without git -C.
+  rules=$(jq -r '.permissions.deny[] | select(test("^Bash\\((git (-C \\* )?push (--force|-f|\\* --force|\\* -f|\\* \\+|origin (HEAD:)?(dev|main))|git reset (\\* )?--hard|git clean|git branch -D|(\\*/)?docker (\\* )?[a-z]+ prune)"))' \
+    "$REPO_ROOT/settings/worker.json")
+  assert_equal "$(wc -l <<<"$rules")" 43
+  missing=$(jq -r --arg rules "$rules" '($rules | split("\n")) - .permissions.deny | .[]' "$coordinator")
+  assert_equal "$missing" ""
+  # The commands it still runs.
+  for command in "team-checkpoint --force" "$REPO_ROOT/bin/team-checkpoint --force" \
+    "git push origin feat/T248-guard-hardening" "git push -u origin fix/T1-fix-it" \
+    "git -C ~/wt push origin fix/T1-fix-it" "git -C ~/wt-fix push -u origin fix/T1-fix-it" \
+    "team-clean-messages ~/wt --clear-gate-lane" "$REPO_ROOT/bin/team-clean-messages ~/wt --clear-gate-lane" \
+    "docker ps" "git branch -d feat/T1-x" "git reset --soft HEAD~1" "team-merge https://github.com/me/shop/pull/5"; do
+    if denied_in "$coordinator" "$command"; then echo "denies: $command" >&2; return 1; fi
+  done
+  # The header claims no control the team lacks.
+  if grep -qi ruleset "$launcher"; then echo "bin/claude-coordinator names rulesets" >&2; return 1; fi
+  grep -qF "GitHub's protection of agent-team's dev refuses a direct push and a merge with a red check" \
+    <<<"$(sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$launcher" | tr -s ' \n' '  ')"
+  # A family whose rules are gone is named, each of its commands.
+  jq '.permissions.deny -= ["Bash(git clean*)"]' "$coordinator" >"$bad"
+  assert_equal "$(coordinator_deny_gaps "$bad" "$launcher")" "git clean: allowed: git clean -fdx
+git clean: allowed: git clean -n"
+  # So is a header that names a family the list does not hold, or leaves one out.
+  sed 's/git clean, git branch -D, /git branch -D, /' "$launcher" >"$BATS_TEST_TMPDIR/launcher"
+  assert_contains "$(coordinator_deny_gaps "$coordinator" "$BATS_TEST_TMPDIR/launcher")" "the header does not say: deny rules stop"
 }
 
 # Only the coordinator launches an ops session, on Daniel's request: a worker's command-guard hook

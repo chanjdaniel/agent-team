@@ -1155,3 +1155,11 @@ launched T7-builder c0000001"
   grep -E '^\| `PAUSED stowed` \|.*`team-next`' "$manual"
   (($(wc -l <"$manual") <= 120))
 }
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  worker_refused team-next "runs no team-next" T7 -- 'T7 DONE 01 abc1234 the ticket'
+  AGENT_TEAM_ROLE=reviewer run_bin -0 team-next --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-next")"
+  AGENT_TEAM_ROLE=coordinator run_bin -2 team-next 7
+  assert_contains "$output" "usage: team-next T<n>"
+}
