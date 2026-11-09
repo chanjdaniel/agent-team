@@ -6,12 +6,13 @@ Usage: python3 -I command_text.py   (the command on stdin; prints the text on st
 bin/hooks/command-guard runs this file on a Bash call's command, and team-tokens imports
 without_heredocs from it. It reads the command far enough to know its quotes ('...', "..." and
 $'...'), backslashes, comments, arithmetic ($[, and $(( or (( whose two closing parentheses are
-adjacent, matched past quotes, as Bash takes it: ((cmd) ) is two subshells), groups ((, $(, a
-backtick, ${ in which quotes nest up to its first }, [[ ... ]], in which a comment and a
-newline's heredoc bodies are read as outside it, a { ... }, and after = an array assignment's
-list, a word's part in which no word is reserved), case's patterns, pipelines, here-strings and
-heredocs, whose marker is its word up to a blank or an operator with its quotes removed, as Bash
-takes it; a << inside quotes, a comment, arithmetic, ${ or [[ opens none.
+adjacent, matched as Bash's parse_matched_pair does, past quotes, backticks, ${...} and a $(...)
+read by this scan: ((cmd) ) is two subshells), groups ((, $(, a backtick, ${ in which quotes
+nest up to its first }, [[ ... ]], in which a comment and a newline's heredoc bodies are read as
+outside it, a { ... }, and after = an array assignment's list, a word's part in which no word is
+reserved), case's patterns, pipelines, here-strings and heredocs, whose marker is its word up to
+a blank or an operator with its quotes removed, as Bash takes it; a << inside quotes, a comment,
+arithmetic, ${ or [[ opens none.
 A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it as one, as its
 reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
 a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time, its -p or the -- after
@@ -93,11 +94,13 @@ class Heredoc:
 @dataclass
 class Reading:
     """A command's pipelines (each its parent's pipeline and segment, or None, and its segments'
-    spans), its closed heredocs, and its here-strings (each its pipeline, its segment and its word)."""
+    spans), its closed heredocs, its here-strings (each its pipeline, its segment and its word),
+    and where its reading ended: past the ) that closes a group's reading, else the text's end."""
 
     pipelines: list
     heredocs: list
     strings: list
+    end: int
 
 
 def _word(text, i):
@@ -154,46 +157,51 @@ def _past_blanks(text, i):
     return i
 
 
-def _quoted_end(text, i):
-    """The end of the quoted string or backtick whose opening character is at i ('...', $'...',
-    "..." or `...`), past its closing one; a "..." skips the $( groups in it whole."""
-    n, close = len(text), text[i + (text[i] == "$")]
-    j = i + 1 + (text[i] == "$")
+def _pair_end(text, j, open_, close, flags=""):
+    """Past the close that matches open_, read from j, just after open_, as Bash's
+    parse_matched_pair reads it, or len(text) when none does. flags "esc" lets a backslash quote
+    in '...' ($'...'), and "first" ends at the first close (${...}). In a group ((...), ${...} or
+    $[...]) a quote or backtick nests and a $(, ${ or $[ is read whole, a $( by the scan, as
+    Bash's parse_comsub; in "..." a backtick, $(, ${ and $[ do; elsewhere only a backslash."""
+    n, count, dollar = len(text), 1, False
     while j < n:
-        if text[j] == close:
-            return j + 1
-        if text[j] == "\\" and (close != "'" or text[i] == "$"):
-            j += 2
-        elif close == '"' and text.startswith("$(", j):
-            j = _matching(text, j + 1)
+        ch = text[j]
+        if open_ == "'":
+            if ch == "'":
+                return j + 1
+            j += 2 if ch == "\\" and flags == "esc" else 1
+            continue
+        if ch == "\\":
+            j, dollar = j + 2, False
+            continue
+        if ch == close:
+            count -= 1
+            if count == 0:
+                return j + 1
+        elif ch == open_ and flags != "first" and open_ != close:
+            count += 1
+        if open_ != close and ch in "'\"`":
+            j = _pair_end(text, j + 1, ch, ch, "esc" if dollar and ch == "'" else "")
+        elif open_ == '"' and ch == "`":
+            j = _pair_end(text, j + 1, "`", "`")
+        elif open_ != "`" and dollar and ch in "({[":
+            # Bash undoes the count its open added, which a ${...} never does.
+            count -= open_ == ch and flags != "first"
+            if ch == "(":
+                j = read_command(text, j + 1, group=True).end
+            else:
+                j = _pair_end(text, j + 1, ch, "}" if ch == "{" else "]", "first" if ch == "{" else "")
         else:
-            j += 1
-    return n
-
-
-def _matching(text, i, pair="()"):
-    """The end of the group whose opening pair[0] is at i, past its matching pair[1], skipping
-    quotes, backticks and backslashes as Bash's parse_matched_pair does."""
-    depth, j, n = 0, i, len(text)
-    while j < n:
-        c = text[j]
-        if c == "\\":
-            j += 2
+            dollar, j = ch == "$" and not dollar, j + 1
             continue
-        if c in "'\"`" or text.startswith("$'", j):
-            j = _quoted_end(text, j)
-            continue
-        depth += {pair[0]: 1, pair[1]: -1}.get(c, 0)
-        if depth == 0:
-            return j + 1
-        j += 1
+        dollar = False
     return n
 
 
 def _arith_end(text, i):
     """The end of the arithmetic whose (( starts at i, or None when the ) closing its second ( is
-    not right before another, as in ((cmd) ), which Bash reads as two subshells."""
-    end = _matching(text, i + 1)
+    not right before another, as in ((cmd) ), which Bash reads as two subshells (parse_arith_cmd)."""
+    end = _pair_end(text, i + 2, "(", ")")
     return end + 1 if text[end : end + 1] == ")" else None
 
 
@@ -209,8 +217,9 @@ def _closing(text, pos, word, tabs):
         pos = end + 1
 
 
-def read_command(text):
-    """The command's reading, as Reading says, from one pass over its text."""
+def read_command(text, start=0, group=False):
+    """The command's reading, as Reading says, from one pass over its text from start; with group,
+    the reading of a group whose ( is just before start, ended by its )."""
     pipelines, heredocs, strings, pending = [], [], [], []
     # Each group open at i: its kind (root, (, `, {, ${, [[, an array assignment's list, or a
     # case's case-word, case-pattern or case-body), its pipeline, where its segment starts,
@@ -219,7 +228,7 @@ def read_command(text):
     # time's -p), and that state for its parent once it ends: a compound command's end lets one
     # come, a word's part does not.
     frames = []
-    quote, i, n = None, 0, len(text)
+    quote, i, n = None, start, len(text)
 
     def here():
         return frames[-1][1], len(pipelines[frames[-1][1]][1])
@@ -267,8 +276,8 @@ def read_command(text):
         if at == 0 or text[at - 1] in METACHARACTERS:
             frames[-1][5] = frames[-1][5] in ("name", "coproc")
 
-    push("root", 0)
-    while i < n:
+    push("(" if group else "root", start)
+    while i < n and frames:
         c, kind = text[i], frames[-1][0]
         if quote in ("'", "$'"):
             if c == "\\" and quote == "$'":
@@ -281,8 +290,8 @@ def read_command(text):
             i += 2
             continue
         if quote == '"':
-            if text.startswith("$((", i) and _arith_end(text, i + 1):
-                i = _arith_end(text, i + 1)
+            if text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
+                i = arith
             elif text.startswith("$(", i) or text.startswith("${", i) or c == "`":
                 push("`" if c == "`" else "(" if text[i + 1] == "(" else "${", i + 1 + (c == "$"), '"')
                 quote, i = None, i + 1 + (c == "$")
@@ -292,12 +301,12 @@ def read_command(text):
         if c in "'\"" or text.startswith("$'", i):
             word_at(i)
             quote, i = "$'" if c == "$" else c, i + 1 + (c == "$")
-        elif text.startswith("$((", i) and _arith_end(text, i + 1) or text.startswith("$[", i):
+        elif text.startswith("$((", i) and (arith := _arith_end(text, i + 1)) or text.startswith("$[", i):
             word_at(i)
-            i = _arith_end(text, i + 1) if text[i + 1] == "(" else _matching(text, i + 1, "[]")
-        elif kind not in ("${", "[[") and text.startswith("((", i) and _arith_end(text, i):
+            i = arith if text[i + 1] == "(" else _pair_end(text, i + 2, "[", "]")
+        elif kind not in ("${", "[[") and text.startswith("((", i) and (arith := _arith_end(text, i)):
             # An arithmetic command, a compound one.
-            i = _arith_end(text, i)
+            i = arith
             frames[-1][5] = True
         elif text.startswith("$(", i) or text.startswith("${", i):
             word_at(i)
@@ -420,9 +429,10 @@ def read_command(text):
                     word_at(i)
                 word = None
             i += len(word) if word else 1
+    end = n if frames else i
     while frames:
         pop(n)
-    return Reading(pipelines, heredocs, strings)
+    return Reading(pipelines, heredocs, strings, end)
 
 
 def without_heredocs(command):

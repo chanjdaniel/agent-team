@@ -148,7 +148,12 @@ passes() {
     "echo \"\$((echo 'team-worker T1 ops wt' | bash) )\"" "echo \$((echo 'team-worker T1 ops wt' | bash) )" \
     "{ a=(case in) ; echo 'team-worker T1 ops wt'; } | bash" $'{ a=(\ncase in) ; echo \'team-worker T1 ops wt\'; } | bash' \
     "((echo \"))\"; echo 'team-worker T1 ops wt' ) | bash)" "((echo '))'; echo 'team-worker T1 ops wt' ) | bash)" \
-    "echo \$((echo \"))\"; echo 'team-worker T1 ops wt' ) | bash)"
+    "echo \$((echo \"))\"; echo 'team-worker T1 ops wt' ) | bash)" \
+    "((echo \"\`echo \"))\"\`\"; echo 'team-worker T1 ops wt' ) | bash)" \
+    "echo \$((echo \"\`echo \"))\"\`\"; echo 'team-worker T1 ops wt' ) | bash)" \
+    "((echo \"\${x:-\"))\"}\"; echo 'team-worker T1 ops wt' ) | bash)" \
+    "echo \"\$((echo \"\${x:-\"))\"}\"; echo 'team-worker T1 ops wt' ) | bash)\"" \
+    "((echo \$(case x in x) echo;; esac)); echo 'team-worker T1 ops wt' ) | bash"
 }
 
 # Bash takes } and esac as reserved words after every compound command's end, so each form below
