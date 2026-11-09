@@ -58,12 +58,13 @@ SH
 }
 
 # registry [<proj's pool block>]: projects.toml with a git pool project, site, and, when given,
-# proj, with that pool, listing prod-read and prod-write
+# proj, with that pool, listing prod-read, prod-write and vercel-read (T0 takes no production
+# toolkit its project does not list)
 registry() {
   {
     project site
     printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'
-    if [[ -n ${1:-} ]]; then project proj '["prod-read", "prod-write"]' && echo "$1"; fi
+    if [[ -n ${1:-} ]]; then project proj '["prod-read", "prod-write", "vercel-read"]' && echo "$1"; fi
   } >"$TEAM_HOME/projects.toml"
 }
 
@@ -491,7 +492,7 @@ oplog_lines() {
 
 @test "the ops form in a worktree whose project does not list the toolkit is refused by team-worker, starting no session" {
   ops_setup
-  sed -i 's/^toolkits = \["prod-read", "prod-write"\]$/toolkits = ["prod-read"]/' "$TEAM_HOME/projects.toml"
+  sed -i 's/^toolkits = \["prod-read", "prod-write", "vercel-read"\]$/toolkits = ["prod-read"]/' "$TEAM_HOME/projects.toml"
   run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
   assert_contains "$output" "team-worker: toolkit 'prod-write' is not one of proj's toolkits in projects.toml (prod-read): a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
   assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg")')" ""
