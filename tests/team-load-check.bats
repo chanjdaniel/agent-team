@@ -6,8 +6,9 @@
 # checkout (a sandbox repo, TEAM_LOAD_CHECK_CHECKOUT) at .claude/worktrees/load-check, reports its
 # MCP tools and skills, and the check fails on anything production or coordinator-only. The session
 # is a claude stub that writes the inventory from $STUB_FIXTURES/inventory.txt, notes in
-# $BATS_TEST_TMPDIR/launch where it started, and writes outside.txt where it started when
-# $STUB_FIXTURES/write-outside exists. Before it, each treehouse project's
+# $BATS_TEST_TMPDIR/launch where it started, writes outside.txt where it started when
+# $STUB_FIXTURES/write-outside exists, and reports its shell's import of prod-mongo's server body
+# refused unless $STUB_FIXTURES/import-ran exists. Before it, each treehouse project's
 # lease is rehearsed on a fake pool (helpers/treehouse); the registry has no treehouse project
 # unless a test adds one.
 
@@ -39,6 +40,7 @@ case $1 in
       ls -A | grep -vx -e .git -e .gitignore -e README.md -e .scratch || true; } >"$BATS_TEST_TMPDIR/launch"
     [[ ! -e $STUB_FIXTURES/write-outside ]] || echo planner >outside.txt
     cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt
+    if [[ -e $STUB_FIXTURES/import-ran ]]; then echo 'prod-mongo-server: ran'; else echo 'prod-mongo-server: refused'; fi >.scratch/probe.txt
     echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
     ;;
   agents) echo '[]' ;;
@@ -228,6 +230,21 @@ left_nothing() {
   touch "$STUB_FIXTURES/write-outside"
   run_bin -1 team-load-check
   assert_contains "$output" "FAIL: the planner wrote outside .scratch/"
+  left_nothing
+}
+
+@test "a planner whose shell may import prod-mongo's server body fails the check" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  local prompt
+  prompt=$(stub_calls claude | jq -r 'select(.[0] == "--bg") | .[-1]')
+  assert_contains "$prompt" "3. Then run this one command with Bash, which is expected to be refused"
+  assert_contains "$prompt" "node --input-type=module -e \"await import('$REPO_ROOT/servers/prod-mongo/server.mjs')\""
+  assert_contains "$prompt" "4. Then stop."
+
+  touch "$STUB_FIXTURES/import-ran"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: the planner's shell was not refused an import of prod-mongo's server body"
   left_nothing
 }
 
@@ -543,6 +560,7 @@ transcript() {
   for call in "$@"; do
     tool=${call%%:*} outcome=${call#*:} i=$((i + 1)) server=prod-write
     [[ $tool != list-collections ]] || server=prod-read
+    [[ " ${mongo_tools[*]} " != *" $tool "* ]] || server=prod-mongo
     jq -nc --arg name "mcp__${server}__$tool" --arg id "toolu_$i" \
       '{type: "assistant", message: {content: [{type: "text", text: "calling"}, {type: "tool_use", id: $id, name: $name, input: {}}]}}'
     jq -nc --arg id "toolu_$i" --arg kind "$outcome" \
@@ -803,8 +821,225 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   [[ $prompt != *prod-write* ]]
 }
 
-@test "the ops form takes vercel-read alone or beside prod-read, and refuses any other set, naming the four" {
-  local sets="--role ops checks --toolkit prod-read, alone or with --toolkit prod-write; --toolkit vercel-read; or --toolkit prod-read with --toolkit vercel-read"
+# The backup form: prod-mongo alone, beside prod-read, or beside prod-read and prod-write, with its
+# one list-backups and the probes of its backups folder, $HOME/conventioner-backups in the sandbox.
+
+# prod-mongo's tools and skills, from the toolkit's own files, as the load check reads them
+mapfile -t mongo_tools < <(jq -r '.tools[].name' "$REPO_ROOT/toolkits/prod-mongo/evals/mocks/prod-mongo/_tools.json" | sort)
+mapfile -t mongo_skills < <(cd "$REPO_ROOT/toolkits/prod-mongo/skills" && printf '%s\n' */SKILL.md | sed 's|/SKILL.md$||' | sort)
+backups_root=conventioner-backups
+
+# mongo_session [prod-read [prod-write]]: a session that passes with prod-mongo, alone or beside the
+# toolkits given
+mongo_session() {
+  local s=$STUB_FIXTURES/session kit skill kits=("$@" prod-mongo) root=$HOME/$backups_root
+  for kit in "${kits[@]}"; do printf '%s\n' "$kit: connected" 'notice: connected'; done >"$s/connect.txt"
+  {
+    echo "tools: Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents, Skill, EndConversation"
+    [[ $# -eq 0 ]] || printf 'mcp__prod-read__%s\n' "${prod_read_tools[@]}"
+    [[ $# -lt 2 ]] || printf 'mcp__prod-write__%s\n' "${prod_write_tools[@]}"
+    printf 'mcp__prod-mongo__%s\n' "${mongo_tools[@]}"
+    printf '%s: absent\n' Bash WebFetch WebSearch Agent Artifact
+  } >"$s/tools.txt"
+  {
+    [[ $# -eq 0 ]] || echo prod-read:querying-production-data
+    [[ $# -lt 2 ]] || echo prod-write:changing-production-data
+    for skill in "${mongo_skills[@]}"; do echo "prod-mongo:$skill"; done
+  } >"$s/skills.txt"
+  printf '%s\n' 'list-backups: ok' "first: ~/$backups_root holds no dump taken by this toolkit." >"$s/backups.txt"
+  printf '%s\n' "read-backups: refused: File is in a directory that is denied by your permission settings." \
+    'grep-above: 3 files' >"$s/root.txt"
+  if [[ $# -eq 0 ]]; then
+    rm -f "$s/query.txt"
+    : >"$STUB_FIXTURES/ops-log"
+    transcript list-backups:result >"$STUB_FIXTURES/transcript.jsonl"
+  else
+    oplog_lines requested ran
+    transcript list-collections:result list-backups:result >"$STUB_FIXTURES/transcript.jsonl"
+  fi
+  if [[ $# -ge 2 ]]; then
+    local tool
+    for tool in "${prod_write_tools[@]}"; do
+      echo "$tool: denied: The user doesn't want to proceed with this tool use."
+    done >"$s/writes.txt"
+    transcript list-collections:result list-backups:result "${prod_write_tools[@]/%/:user-rejected}" >"$STUB_FIXTURES/transcript.jsonl"
+    for tool in "${prod_write_tools[@]}"; do write_line requested "$tool"; done >>"$STUB_FIXTURES/ops-log"
+  fi
+  mongo_lines requested ran >>"$STUB_FIXTURES/ops-log"
+  mkdir -p "$root"
+}
+
+# mongo_lines <kind>...: what the session's hook appends, one list-backups line per kind
+mongo_lines() {
+  local kind
+  for kind in "$@"; do echo "- 2026-11-09T12:28:58Z $kind \`prod-mongo\` \`list-backups\` \`{}\`"; done
+}
+
+@test "an ops session with prod-mongo passes on its one list-backups and refused Read, keeps its inventory and is ended" {
+  ops_setup
+  mongo_session
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
+  assert_contains "$output" "load check: a Grep from $HOME proved nothing: $HOME/$backups_root holds no file it would match"
+  assert_contains "$output" "load check: ${#mongo_tools[@]} MCP tools, 10 built-in tools"
+  assert_equal "${lines[-1]}" "PASS"
+  local inventory=$TEAM_HOME/tasks/T0/inventory-prod-mongo.txt
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep '^mcp__')" "$(printf 'mcp__prod-mongo__%s\n' "${mongo_tools[@]}")"
+  assert_contains "$(<"$inventory")" $'\nskill: prod-mongo:backing-up-production-data'
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "rm")')" '["rm","6f93fe38"]'
+
+  # The prompt waits for prod-mongo, calls list-backups once, and Reads a dump's manifest when the
+  # folder holds one, a name no file has when it holds none.
+  local prompt root=$HOME/$backups_root
+  prompt=$(last_prompt)
+  assert_contains "$prompt" "1. Wait for prod-mongo: "
+  assert_contains "$prompt" "4. Call mcp__prod-mongo__list-backups exactly once, with no arguments"
+  assert_contains "$prompt" "Call no other prod-mongo tool, and never backup or restore-drill."
+  assert_contains "$prompt" "5. Two probes of the backups folder $root, "
+  assert_contains "$prompt" "Use Read on '$root/load-check-probe.json'."
+  assert_contains "$prompt" "Then use Grep with output_mode 'files_with_matches', pattern '\"collectionName\"|\"verified\": true', glob '{manifest.json,*.metadata.json}' and path '$HOME'."
+  assert_contains "$prompt" "6. Write done.txt with the line 'done'."
+  [[ $prompt != *list-collections* && $prompt != *prod-write* ]]
+
+  relaunch
+  mkdir -p "$root/2026-11-09T081502Z" "$root/2026-11-08-2104/conventioner"
+  echo '{}' >"$root/2026-11-09T081502Z/manifest.json"
+  echo '{}' >"$root/2026-11-08-2104/conventioner/markets.metadata.json"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$(last_prompt)" "Use Read on '$root/2026-11-09T081502Z/manifest.json'."
+  assert_contains "$output" "load check: a Grep from $HOME listed none of the 2 files in $root it would match"
+}
+
+@test "an ops session with prod-mongo beside prod-read, or beside prod-read and prod-write, passes and names its inventory by its toolkits" {
+  ops_setup
+  mongo_session prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo --toolkit prod-read
+  assert_contains "$output" "load check: Daniel, two 1Password prompts are coming on the PC: approve them"
+  assert_contains "$output" "load check: $((11 + ${#mongo_tools[@]})) MCP tools, 10 built-in tools"
+  assert_equal "${lines[-1]}" "PASS"
+  local prompt inventory=$TEAM_HOME/tasks/T0/inventory-prod-mongo-prod-read.txt
+  prompt=$(last_prompt)
+  assert_contains "$prompt" "1. Wait for prod-mongo and prod-read: "
+  assert_contains "$prompt" "4. Call mcp__prod-mongo__list-backups exactly once"
+  assert_contains "$prompt" "5. Call mcp__prod-read__list-collections exactly once"
+  assert_contains "$prompt" "6. Two probes of the backups folder"
+  assert_contains "$prompt" "7. Write done.txt with the line 'done'."
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-mongo__')" "${#mongo_tools[@]}"
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-read__')" 11
+
+  relaunch
+  mongo_session prod-read prod-write
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write --toolkit prod-mongo
+  assert_contains "$output" "load check: Daniel, three 1Password prompts are coming on the PC: approve them; then decline each of the five write prompts on the phone"
+  assert_equal "${lines[-1]}" "PASS"
+  prompt=$(last_prompt)
+  assert_contains "$prompt" "6. Two probes of the backups folder"
+  assert_contains "$prompt" "7. Five write calls, each expected to raise a permission prompt that Daniel declines."
+  assert_contains "$prompt" " b. mcp__prod-write__update-many with filter {\"check\": \"load-check\"} and update {\"\$set\": {\"checked\": true}}"
+  assert_contains "$prompt" "8. After the fifth call, write writes.txt"
+  assert_contains "$prompt" "9. Write done.txt with the line 'done'."
+  inventory=$TEAM_HOME/tasks/T0/inventory-prod-mongo-prod-read-prod-write.txt
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-write__')" 5
+  assert_contains "$(<"$inventory")" $'\nskill: prod-write:changing-production-data\nskill: prod-mongo:backing-up-production-data'
+}
+
+@test "a prod-mongo session that called backup, lost an ops-log line, or whose Read in the backups folder was not refused fails" {
+  ops_setup
+  mongo_session
+  local s=$STUB_FIXTURES/session
+  transcript list-backups:result backup:result >"$STUB_FIXTURES/transcript.jsonl"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: the session called prod-mongo's backup, beyond its one list-backups"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+
+  # list-backups twice, or not at all, by the transcript.
+  relaunch
+  transcript list-backups:result list-backups:result >"$STUB_FIXTURES/transcript.jsonl"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: list-backups was not called once (transcript: 2 call(s))"
+  relaunch
+  transcript >"$STUB_FIXTURES/transcript.jsonl"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: list-backups was not called once (transcript: 0 call(s))"
+
+  # Its ops-log ran line lost, and the logged backup a line too many.
+  relaunch
+  mongo_session
+  mongo_lines requested >"$STUB_FIXTURES/ops-log"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-backups"
+  assert_contains "$output" "FAIL: the ops log gained 1 event lines, not one per call made"
+  relaunch
+  mongo_session
+  echo "- 2026-11-09T12:29:00Z requested \`prod-mongo\` \`backup\` \`{}\`" >>"$STUB_FIXTURES/ops-log"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: the ops log gained 3 event lines, not one per call made"
+
+  # A Read the rules let through, one refused for another reason, and one never tried.
+  relaunch
+  mongo_session
+  sed -i 's/^read-backups: .*/read-backups: allowed/' "$s/root.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: the Read in $HOME/$backups_root was not refused by the permission settings"
+  relaunch
+  sed -i 's/^read-backups: .*/read-backups: refused: File does not exist./' "$s/root.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: the Read in $HOME/$backups_root was not refused by the permission settings"
+  relaunch
+  sed -i 's/^read-backups: .*/read-backups: not tried: the role never reads that folder/' "$s/root.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: the session did not try the Read in $HOME/$backups_root"
+  assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
+}
+
+@test "a Grep from above the backups folder that lists files in it is a WARN, never a FAIL" {
+  ops_setup
+  mongo_session
+  local s=$STUB_FIXTURES/session root=$HOME/$backups_root
+  mkdir -p "$root/2026-11-09T081502Z"
+  echo '{}' >"$root/2026-11-09T081502Z/manifest.json"
+  printf '%s\n' "$root/2026-11-09T081502Z/manifest.json" "$HOME/elsewhere/manifest.json" >>"$s/root.txt"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "WARN: a Grep from $HOME listed 1 of the 1 files in $root it would match: the Read deny rules do not hold a search from above the folder"
+  assert_equal "${lines[-1]}" "PASS"
+
+  relaunch
+  sed -i 's/^grep-above: .*/grep-above: refused: denied/' "$s/root.txt"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "load check: a Grep from $HOME was refused"
+  [[ $output != *WARN:* ]]
+}
+
+@test "the ops form reads each toolkit's tools from its eval mocks and its skills from its skills directory" {
+  # A checkout whose prod-mongo lists one more tool and one more skill: the session must then show both.
+  local checkout=$BATS_TEST_TMPDIR/checkout
+  mkdir -p "$checkout"
+  cp -R "$REPO_ROOT/bin" "$REPO_ROOT/settings" "$REPO_ROOT/roles" "$REPO_ROOT/templates" "$checkout/"
+  mkdir -p "$checkout/toolkits"
+  cp -R "$REPO_ROOT/toolkits/prod-mongo" "$checkout/toolkits/"
+  jq '.tools += [{name: "check-integrity"}]' "$REPO_ROOT/toolkits/prod-mongo/evals/mocks/prod-mongo/_tools.json" \
+    >"$checkout/toolkits/prod-mongo/evals/mocks/prod-mongo/_tools.json"
+  mkdir -p "$checkout/toolkits/prod-mongo/skills/checking-production-integrity"
+  echo '---' >"$checkout/toolkits/prod-mongo/skills/checking-production-integrity/SKILL.md"
+  ops_setup
+  mongo_session
+  run "$checkout/bin/team-load-check" --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_equal "$status" 1
+  assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  < mcp__prod-mongo__check-integrity"
+  assert_contains "$output" "FAIL: the session cannot invoke checking-production-integrity"
+
+  relaunch
+  echo mcp__prod-mongo__check-integrity >>"$STUB_FIXTURES/session/tools.txt"
+  echo prod-mongo:checking-production-integrity >>"$STUB_FIXTURES/session/skills.txt"
+  run "$checkout/bin/team-load-check" --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_equal "$status" 0
+  assert_equal "${lines[-1]}" "PASS"
+}
+
+@test "the ops form takes exactly the sets team-worker launches, and refuses any other, naming them" {
+  local sets="--role ops checks --toolkit prod-read, alone or with --toolkit prod-write; --toolkit vercel-read, alone or with --toolkit prod-read; or --toolkit prod-mongo, alone, with --toolkit prod-read, or with --toolkit prod-read and --toolkit prod-write"
   run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit vercel-read --toolkit prod-write
   assert_contains "$output" "$sets"
   run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read --toolkit prod-write --toolkit vercel-read
@@ -813,7 +1048,35 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   assert_contains "$output" "$sets"
   run_bin -2 team-load-check --role ops --worktree "$HOME"
   assert_contains "$output" "$sets"
+  # prod-mongo never beside vercel-read, nor beside prod-write without prod-read, nor twice.
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-mongo --toolkit vercel-read
+  assert_contains "$output" "$sets"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read --toolkit prod-mongo --toolkit vercel-read
+  assert_contains "$output" "$sets"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-mongo --toolkit prod-write
+  assert_contains "$output" "$sets"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-mongo --toolkit prod-mongo
+  assert_contains "$output" "$sets"
   assert_equal "$(stub_calls claude)" ""
+
+  # Every set the ops form takes, team-worker launches, and every set it refuses team-worker refuses.
+  local set kit args
+  for set in prod-read 'prod-read prod-write' vercel-read 'prod-read vercel-read' prod-mongo 'prod-read prod-mongo' \
+    'prod-read prod-write prod-mongo' 'prod-mongo vercel-read' 'prod-mongo prod-write' 'prod-write vercel-read' \
+    'prod-read prod-write vercel-read' 'prod-read prod-mongo vercel-read' prod-write; do
+    args=()
+    for kit in $set; do args+=(--toolkit "$kit"); done
+    # Each stops at the missing worktree once it has taken the set.
+    run_bin team-load-check --role ops --worktree "$HOME/none" "${args[@]}"
+    local ours=$status taken=$output
+    run_bin team-worker T0 ops "$HOME/none" "${args[@]}" --request x -- go
+    if [[ $ours -eq 2 ]]; then
+      [[ $status -ne 0 && $output != *"$HOME/none"* ]] || { echo "team-worker takes the set $set the ops form refuses: $output" >&2; return 1; }
+    else
+      [[ $taken == *"$HOME/none does not exist"* ]] || { echo "the ops form refuses the set $set: $taken" >&2; return 1; }
+      [[ $output == *"$HOME/none"* ]] || { echo "team-worker refuses the set $set the ops form takes: $output" >&2; return 1; }
+    fi
+  done
 }
 
 @test "the ops form needs a worktree and prod-read, alone or with prod-write, and the planner form takes no worktree" {

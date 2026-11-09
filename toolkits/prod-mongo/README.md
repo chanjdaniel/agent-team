@@ -15,7 +15,7 @@ mcp__prod-mongo__restore-drill
 
 Nothing else: no tool writes to the database, restores to production, takes a path or a connection string, or reads a dump back.
 The skill is `backing-up-production-data` (`skills/`), the only one this toolkit adds.
-This list is the server's, not yet a live session's: the ops load check's inventory, once it has run on Daniel's real credential, replaces it.
+This list is the server's, not yet a live session's: the ops load check's inventory (`team-load-check --role ops --toolkit prod-mongo`), once it has run on Daniel's real credential, replaces it.
 `docs/access.md` says what the toolkit can and cannot reach, and `docs/restoring.md`, for Daniel, where the dumps are, how to drill one by hand, and how to restore one to production or delete it.
 
 ## Its credential
@@ -35,7 +35,7 @@ Each launch raises one 1Password prompt, even for a session that only drills or 
 - `restore-drill` runs `bin/team-heavy run --wait 20 --kind restore-drill -- node scripts/restore-drill.mjs <stamp>`, so a drill queues behind the machine's other heavy runs; the script starts the throwaway MongoDB with `docker` (`servers/prod-mongo/throwaway.mjs`), restores the dump into it with `mongorestore --config=<fifo>`, compares, records, and removes the throwaway.
   The script reads no credential and takes no connection string.
 - Every child process gets an environment built from a short list (`childEnv`, `servers/prod-mongo/children.mjs`), never the server's own, and every child's error reaches an answer only scrubbed of connection strings, the secret and its hosts.
-- Only an ops launch starts it: every other session's settings deny a shell command that runs a `start-server.mjs` (with `node`, `bun`, `deno` or `env`, or by its path, though no file here is executable), while reading them stays allowed, or a `claude` given a production toolkit by `--plugin-dir` or `--mcp-config`.
+- Only an ops launch starts it: every other session's settings deny a shell command that runs a `start-server.mjs` (with `node`, `bun`, `deno` or `env`, or by its path, though no file here is executable), one that names the server's body (`servers/prod-mongo/server.mjs`, whose start a `node -e` import could call) or the launcher's settings (`scripts/settings.mjs`) after `node`, or behind `env`, `bun` or `deno`, and a `claude` given a production toolkit by `--plugin-dir` or `--mcp-config`; reading the files stays allowed, and the planner load check proves a shell is refused the body's import.
   These are speed bumps (`tests/repo.bats`): Daniel's rule of approving a 1Password prompt only right after an announced launch is what holds.
 - An ops launch takes it alone, beside `prod-read`, or beside `prod-read` and `prod-write`, never beside `vercel-read` (`bin/team-worker`).
   The ops settings (`settings/ops.json`) allow its tools with no prompt, and deny the session's own file tools the backups folder (`Read(~/conventioner-backups/**)` and `Edit(~/conventioner-backups/**)`, which cover Grep, Glob and Write too).

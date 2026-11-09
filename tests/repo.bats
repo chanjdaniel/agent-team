@@ -1062,6 +1062,19 @@ COMMANDS
   assert_denies 'Bash(env *vercel-mcp*)' 'env VERCEL_READ_API=http://127.0.0.1:1 servers/vercel-mcp.mjs'
   assert_denies 'Bash(bun *vercel-mcp*)' 'bun servers/vercel-mcp.mjs'
   assert_denies 'Bash(deno *vercel-mcp*)' 'deno run -A servers/vercel-mcp.mjs'
+  # prod-mongo's server body exports its start, which a shell's import could call with the
+  # launcher's settings, raising the launch's 1Password prompt.
+  assert_denies 'Bash(*node *prod-mongo/server*)' \
+    'node --input-type=module -e "await import(\"/home/me/agent-team/servers/prod-mongo/server.mjs\")"' \
+    'cd servers && node -e "import(\"./prod-mongo/server.mjs\").then((m) => m.startProdMongo({}))"'
+  assert_denies 'Bash(env *prod-mongo/server*)' 'env PROD_MONGO_ROOT=/x node -e "import(\"./servers/prod-mongo/server.mjs\")"'
+  assert_denies 'Bash(bun *prod-mongo/server*)' 'bun -e "await import(\"./servers/prod-mongo/server.mjs\")"'
+  assert_denies 'Bash(deno *prod-mongo/server*)' 'deno eval "await import(\"./servers/prod-mongo/server.mjs\")"'
+  assert_denies 'Bash(*node *prod-mongo/scripts/settings*)' \
+    'node -e "import(\"/home/me/agent-team/toolkits/prod-mongo/scripts/settings.mjs\")"'
+  assert_denies 'Bash(env *prod-mongo/scripts/settings*)' 'env node toolkits/prod-mongo/scripts/settings.mjs'
+  assert_denies 'Bash(bun *prod-mongo/scripts/settings*)' 'bun toolkits/prod-mongo/scripts/settings.mjs'
+  assert_denies 'Bash(deno *prod-mongo/scripts/settings*)' 'deno run -A toolkits/prod-mongo/scripts/settings.mjs'
   assert_denies 'Bash(*--plugin-dir*vercel-read*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/vercel-read' \
     'claude --bg --plugin-dir=toolkits/vercel-read'
   assert_denies 'Bash(*--mcp-config*vercel-read*)' 'claude -p hi --mcp-config toolkits/vercel-read/.mcp.json' \
@@ -1183,6 +1196,13 @@ claude plugin validate --strict toolkits/vercel-read
 git add toolkits/vercel-read servers/vercel-mcp.mjs tests/toolkits/vercel-read.test.mjs
 git diff origin/dev -- toolkits/vercel-read servers/vercel-mcp.mjs
 git log --oneline -- servers/vercel-mcp.mjs
+node --test tests/toolkits/prod-mongo.test.mjs
+node --test tests/toolkits/prod-mongo.test.mjs --test-name-pattern 'list-backups'
+git add servers/prod-mongo toolkits/prod-mongo tests/toolkits/prod-mongo.test.mjs
+git diff origin/dev -- servers/prod-mongo/server.mjs toolkits/prod-mongo/scripts/settings.mjs
+sed -n 1,40p servers/prod-mongo/server.mjs
+cat toolkits/prod-mongo/scripts/settings.mjs
+claude plugin validate --strict toolkits/prod-mongo
 COMMANDS
 }
 
