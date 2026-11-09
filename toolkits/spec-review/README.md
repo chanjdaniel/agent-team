@@ -29,9 +29,11 @@ Before its first launch, the coordinator runs `team-load-check --toolkit spec-re
 
 - The skill's description, about 60 tokens, in the starting context of every session that lists the toolkit, and the two agents' descriptions, about 60 tokens each, in its Agent tool's list.
 - Per review, as T240's replay measured it (`tasks/T240/scratch/replay.md` in the team home once T240 closes) on six archived specs (five tasks whose builders asked 14 questions, 5 of them a spec could have settled, and a control whose builder asked none), each reviewed once per model:
+  - Each spec, its tickets and its `scope.txt` were taken as the task's builders first read them, from the team home's history at the earliest checkpoint with no ticket box ticked, since the final archive's tickets carry the builders' ticks and notes and would show the readers the answers.
   - Opus readers (`high` effort): 1 of the 5 questions found (20%), $w 1.60 and 3.4 minutes per spec on average.
   - Sonnet readers (`medium`, Sonnet 5.5's default): 1 of the 5 found (20%), $w 0.20 and 0.5 minutes per spec.
   - Neither reached the third of the questions the go line asked for, so the replay said `stop`: no brief names the toolkit, and the readers stay on `model: inherit`.
+    The sample is 5 questions, so one judgment moves the rate by 20 points: counting as hits one task's near misses, findings on where a setting is read from when the builder asked for the value it holds, would give both models 2 of 5 (40%) and `go sonnet`; the replay's file gives the reasoning for counting them as misses.
   - Neither model raised a `blocking` finding on the control spec.
     Opus's readiness reader raised seven `blocking` gaps that the builders settled alone or that reviews caught later, which the go line does not count; Sonnet's raised none of those.
 
