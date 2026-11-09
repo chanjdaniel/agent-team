@@ -76,6 +76,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
   - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill, which sends the session to the installed `effect`'s sources, names the v3 and beta traps beside their GA names and gives the check, and a hook giving Effect's findings on each TypeScript file edited.
+  - `spec-review/`: the `spec-review` skill, which has two fresh, read-only reader agents read a task's spec and tickets in parallel, as a stranger and as its builder, and writes their findings to `spec-review.md` for the spec's author to sort.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 
@@ -134,6 +135,7 @@ It holds:
   `servers-ftp.test.mjs` runs get-uri's `ftp://` fetch, as mongodb-mcp-server's proxy support installs it, against a minimal FTP server on the loopback, on the basic-ftp 6.x that `servers/package.json`'s `overrides` puts in place of get-uri's `^5`; `tests/repo.bats` holds the lock to 6.2.1 or later.
   `effect.test.mjs` checks the effect toolkit's layout, its README and evals, and its `effect-v4` skill's limits and order, and holds the skill's trap table to the pinned `effect`'s exports: every GA name exists and every v3 or beta name is gone.
   It runs the toolkit's post-edit hook as Claude Code runs a plugin's, against the pinned `effect-tsgo` on a copy of `tests/toolkits/fixtures/effect-project/` whose `node_modules` links to `servers/node_modules`, and again inside `unshare -rn`, with no network, on a Linux machine that lets an unprivileged user make that namespace, which CI's Ubuntu runner does not.
+  `spec-review.test.mjs` checks the spec-review toolkit's layout, its two reader agents' read-only tools, `omitClaudeMd` and model, the skill's limits and the order of its steps, its README's sections and attribution line, and each eval case's graders.
   `servers-hono.test.mjs` checks that @modelcontextprotocol/sdk and @modelcontextprotocol/node (under mongodb-mcp-server) resolve @hono/node-server 2.1.3 or later, and that each one's Streamable HTTP server transport, served on the loopback inside the test, still answers an MCP `initialize` POST on it with a 200 and the server's result, within a deadline that fails a stream which never sends its event; `tests/repo.bats` holds the lock to 2.1.3 or later.
   No test reaches 1Password or production: the test `PATH` refuses to start if a real `op` is on it.
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
