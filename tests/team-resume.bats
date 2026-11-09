@@ -41,17 +41,18 @@ TOML
   mkdir -p "$HOME/.claude"
   echo "Shared instructions." >"$HOME/.claude/CLAUDE.md"
 
-  # claude: each machine's sessions in its own HOME's sessions.json; --bg adds one, but in a root
-  # listed in $BATS_TEST_TMPDIR/untrusted; stop marks it stopped, rm takes it off; no plugins,
-  # no marketplaces and no MCP servers.
+  # claude: each machine's sessions in its own HOME's sessions.json, with --all too; --bg adds
+  # one, but in a root listed in $BATS_TEST_TMPDIR/untrusted; stop marks it stopped (its status
+  # and its state, as --all reports it), rm takes it off; no plugins, no marketplaces and no MCP
+  # servers.
   echo '[{"id": "3169fcbd", "name": "coordinator", "status": "busy"},
     {"id": "81f08540", "name": "T1-builder", "status": "idle"}]' >"$HOME/sessions.json"
   stub_script claude <<'SH'
 list=$HOME/sessions.json
 [[ -e $list ]] || echo '[]' >"$list"
 case "$*" in
-  'agents --json') cat "$list" ;;
-  'stop '*) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list" ;;
+  'agents --json' | 'agents --json --all') cat "$list" ;;
+  'stop '*) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" | .state = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   'rm '*) jq --arg id "$2" 'map(select(.id != $id))' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   'plugin list --json' | 'plugin marketplace list --json') echo '[]' ;;
   'mcp list') echo 'No MCP servers configured. Use `claude mcp add` to add a server.' ;;

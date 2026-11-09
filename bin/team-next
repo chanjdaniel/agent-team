@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Take a worker's message to the task's next step: log its events, then hand the work on.
 #
-# Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>]
+# Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>]
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
 #   --from       the sender, as team-log --from-message takes it, when the message cannot tell it
+#   --relay      with an ops session's DONE, the Discord id of the message that relayed its answer,
+#                logged as its done's relay, as team-log --from-message takes it
 #   --sent-back  with a DONE findings message, required, the numbers sent back (none for none), logged
 #                as the review's sent_back; with a DONE pass, the findings it counts that go back
 #                before the merge, required while it counts any
@@ -20,7 +22,8 @@
 # reads it (its refusal is team-log's, with its exit code).
 # Then it logs, through team-log, each of the message's events that the ledger does not already
 # hold since the sending worker's launch (the session its events name, else the task's latest
-# launch): a ticket-done of the same ticket, a done of the same session and report, a pr of the
+# launch): a ticket-done of the same ticket, a done of the same session and report (an ops
+# session's: of the same report_chars, its relay aside), a pr of the
 # same url and head, a review of the same head and verdict, any other event with the same fields;
 # so a rerun never logs one twice. Each line it prints is one step: "logged <event> <key=value>..."
 # or "already logged <event> ...", then the hand-off's.
@@ -100,7 +103,9 @@
 # are logged, then team-worker launches it, and the last line is "launched T<n>-<role> <session
 # id>". A launch that fails is finished by running the same command again, which logs nothing
 # twice.
-# Any other message is logged, and the last line says it has no hand-off.
+# Any other message is logged, and the last line says it has no hand-off: an ops session's DONE
+# among them, whatever its first word, which team-log logs as its length and never its text, as
+# it does the ops session's QUESTION.
 # It never posts to Discord, sends a message, merges, approves a plan or answers a question.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
@@ -111,7 +116,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "runs no team-next") && die "$why"
 
 bin=$(dirname "$TEAM_LIB")
-usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>'"
+usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>'"
 
 [[ $# -ge 1 && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"
 task=$1
@@ -120,7 +125,7 @@ log_opts=() next='' checks='' since='' template_opt=''
 declare -A given=()
 while (($#)) && [[ $1 != -- ]]; do
   case $1 in
-    --from | --sent-back | --next | --checks | --since | --template)
+    --from | --sent-back | --relay | --next | --checks | --since | --template)
       [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
       [[ $# -ge 2 && -n $2 ]] || usage_error "$1 needs a value"
       given[$1]=1
@@ -128,6 +133,10 @@ while (($#)) && [[ $1 != -- ]]; do
         --next)
           [[ $2 =~ ^[0-9]{2}$ ]] || usage_error "--next takes a two-digit ticket number, got '$2'"
           next=$2
+          ;;
+        --relay)
+          [[ $2 =~ ^[1-9][0-9]{0,18}$ ]] || usage_error "--relay takes the Discord id of the relay's message, got '$2'"
+          log_opts+=("$1" "$2")
           ;;
         --checks) checks=$2 ;;
         --since) since=$2 ;;
@@ -180,6 +189,7 @@ parsed="[${parsed%,}]"
 same_def='def same($p): .event == $p.event and
   if $p.event == "ticket-done" then .ticket == $p.ticket
   elif $p.event == "done" then .session == $p.session and .role == $p.role and .report == $p.report
+    and .report_chars == $p.report_chars
   elif $p.event == "pr" then .url == $p.url and same_head(.head; $p.head)
   elif $p.event == "review" then .verdict == $p.verdict and same_head(.head; $p.head)
   else del(.ts) == ($p | del(.ts)) end;'
@@ -206,7 +216,8 @@ kind='' back='' held='' briefs='' builder_kits='' reviewer_kits='' sender_wt='' 
 review='' latest=''
 json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3]
   | (.[1] // "") as $sub
-  | if .[0] == "DONE" and ($sub | test("^[0-9]{2}$")) then "DONE <NN>"
+  | if .[0] == "DONE" and any($parsed[]; .event == "done" and .role == "ops") then "DONE"
+    elif .[0] == "DONE" and ($sub | test("^[0-9]{2}$")) then "DONE <NN>"
     elif .[0] == "DONE" and ($sub | IN("review-ready", "merged", "pass", "findings", "gate")) then join(" ")
     else .[0] end
   | if . == "PAUSED" and (try any($parsed[]; .event == "paused" and (.reason | test("^stowed(\\W|$)"))) catch false)

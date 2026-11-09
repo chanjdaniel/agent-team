@@ -341,7 +341,7 @@ export async function startVercelMcp({ name, teamIdReference, projects: config }
       }
     };
     const served = await named(() => get(key, `/v13/deployments/${domain}`));
-    const serving = deploymentRecord(served);
+    const serving = deploymentRecord(served, { lookup: true });
     if (served?.projectId !== id) {
       const other = owners.get(served?.projectId) ?? (/^prj_[A-Za-z0-9]+$/.test(served?.projectId) ? served.projectId : "another project");
       throw new Refusal(`${domain} serves ${shown(serving.id)}, a deployment of ${other}, not of ${key}`);
@@ -408,7 +408,7 @@ export async function startVercelMcp({ name, teamIdReference, projects: config }
         const answer = await get(key, `/v13/deployments/${deployment}`, { withGitRepoInfo: true });
         if (answer?.projectId !== projects[key].id) throw new Refusal(`${deployment} is not a deployment of ${key}`);
         const record = {
-          ...deploymentRecord(answer, { gitSource: true }),
+          ...deploymentRecord(answer, { gitSource: true, lookup: true }),
           aliases: Array.isArray(answer.alias) ? answer.alias.filter((alias) => typeof alias === "string" && hostname.test(alias)) : [],
           aliasAssigned: iso(answer.aliasAssigned),
           errorCode: text(answer.errorCode),
@@ -708,8 +708,10 @@ function iso(ms) {
 }
 
 // A deployment as the tools answer it, from the named fields of Vercel's. Its commit is meta's,
-// or, with `gitSource`, the gitSource withGitRepoInfo asked for when meta has none.
-function deploymentRecord(deployment, { gitSource = false } = {}) {
+// or, with `gitSource`, the gitSource withGitRepoInfo asked for when meta has none. With `lookup`
+// (an answer of GET /v13/deployments/<id or host>, which has no isRollbackCandidate, only the
+// list has) it leaves isRollbackCandidate out, rather than answer a null beside the list's true.
+function deploymentRecord(deployment, { gitSource = false, lookup = false } = {}) {
   const meta = deployment?.meta ?? {};
   const fromMeta = { sha: text(meta.githubCommitSha), ref: text(meta.githubCommitRef), message: firstLine(meta.githubCommitMessage, 200) };
   const source = gitSource && deployment?.gitSource && typeof deployment.gitSource === "object" ? deployment.gitSource : {};
@@ -724,7 +726,7 @@ function deploymentRecord(deployment, { gitSource = false } = {}) {
     state: text(deployment?.state ?? deployment?.readyState),
     readySubstate: text(deployment?.readySubstate),
     target: text(deployment?.target),
-    isRollbackCandidate: flag(deployment?.isRollbackCandidate),
+    ...(lookup ? {} : { isRollbackCandidate: flag(deployment?.isRollbackCandidate) }),
     commit: none(commit) ? null : commit,
     aliasError: aliasError && typeof aliasError === "object"
       ? { code: text(aliasError.code), message: firstLine(aliasError.message, 200) }

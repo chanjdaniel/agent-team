@@ -2,7 +2,7 @@
 # Record an event the coordinator writes by hand in the ledger, against the ledger contract.
 #
 # Usage: team-log T<n> <event> [key=value]...
-#        team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print]
+#        team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print]
 #        team-log --check [<file>]
 #        team-log --fix-sent-back [<file>]
 # Appends {ts (now, UTC), task, event, key: value...}, each value typed as the contract types its field.
@@ -76,7 +76,12 @@
 # reviewer's done, either taking --sent-back's list as sent_back (a pass's being the notes that go
 # back before the merge, which make it a findings review, as above; no other message takes it);
 # DONE gate <key=value>... a gate-run;
-# any other DONE the sender's done, report the rest. A review's head is the head of the brief record
+# any other DONE the sender's done, report the rest. An ops session's DONE, whatever its first word
+# when --from names that session, and its QUESTION, whose text may hold production data, log its
+# length in characters and never its text: the done report_chars=<n>, the question chars=<n>; its
+# BLOCKED, PAUSED, FAILED and INJECTION are logged as every role's. --relay <id>, the Discord id of
+# the coordinator's message that relayed an ops answer, is logged as that done's relay, and refused
+# with any other message; an id that is not one is a malformed command line. A review's head is the head of the brief record
 # (tasks/T<n>/<brief>.json) that the reviewer's latest launch read, else a pass's own head, else
 # it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's
 # launch (its session name T<n>-<role>, or its session id), else that of the only latest launch of a
@@ -106,7 +111,7 @@ help_more() {
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "runs no team-log") && die "$why"
 
-usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print] | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
+usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print] | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
 
 if [[ ${1:-} == --check ]]; then
   [[ $# -le 2 ]] || usage_error "$usage"
@@ -450,16 +455,29 @@ fi
 
 # A worker's message, read whole (bin/lib/messages.jq) into its events, each checked by
 # check_event before any is logged.
-message='' from='' sent_back='' print=''
+message='' from='' sent_back='' relay='' print=''
 declare -A given=()
 while (($#)); do
   case $1 in
-    --from-message | --from | --sent-back)
+    --from-message | --from | --sent-back | --relay)
       [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
-      case $1 in --from-message) what="a message" ;; --from) what="a session name or id" ;; *) what="a list" ;; esac
+      case $1 in
+        --from-message) what="a message" ;;
+        --from) what="a session name or id" ;;
+        --relay) what="a Discord message id" ;;
+        *) what="a list" ;;
+      esac
       [[ $# -ge 2 && -n $2 ]] || usage_error "$1 needs $what"
       given[$1]=1
-      case $1 in --from-message) message=$2 ;; --from) from=$2 ;; *) sent_back=$2 ;; esac
+      case $1 in
+        --from-message) message=$2 ;;
+        --from) from=$2 ;;
+        --relay)
+          [[ $2 =~ ^[1-9][0-9]{0,18}$ ]] || usage_error "--relay takes the Discord id of the relay's message, got '$2'"
+          relay=$2
+          ;;
+        *) sent_back=$2 ;;
+      esac
       shift 2
       ;;
     --print) print=1 && shift ;;
@@ -467,7 +485,7 @@ while (($#)); do
   esac
 done
 if [[ -z ${given[--from-message]:-} ]]; then
-  for option in --from --sent-back; do
+  for option in --from --sent-back --relay; do
     [[ -z ${given[$option]:-} ]] || usage_error "$option is taken only with --from-message"
   done
   usage_error "--print is taken only with --from-message"
@@ -485,8 +503,9 @@ fi
 
 task_events_once
 parsed=$(jq -L "$TEAM_LIB" -c --arg task "$task" --arg message "$message" --arg from "$from" \
-  --arg sent_back "$sent_back" --argjson records "$brief_records" \
-  'include "messages"; include "ledger"; . as $events | $message | parse_message($task; $events; $records; $from; $sent_back)' <<<"$TASK_EVENTS")
+  --arg sent_back "$sent_back" --arg relay "$relay" --argjson records "$brief_records" \
+  'include "messages"; include "ledger"; . as $events
+    | $message | parse_message($task; $events; $records; $from; $sent_back) | message_relay($task; $message; $relay)' <<<"$TASK_EVENTS")
 problem=$(jq -r '.problems // empty | join("; ")' <<<"$parsed")
 [[ -z $problem ]] || die "$problem"
 

@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # End a task's ops session: stop and remove the background session named <task>-ops, then delete
-# its transcript, which holds production query results that claude rm keeps:
-# ~/.claude/projects/<project slug>/<session uuid>.jsonl and the <session uuid>/ directory beside it,
-# and the answer file in its worktree, <cwd>/.scratch/answer.md, which the coordinator has relayed.
+# what it left on this machine, which holds production query results that claude rm keeps:
+# - its transcript, <config>/projects/<project slug>/<session uuid>.jsonl, and the <session uuid>/
+#   directory beside it, <config> being $CLAUDE_CONFIG_DIR or ~/.claude;
+# - its MCP servers' logs: each file of any project's mcp-logs-<server>/ directory under Claude
+#   Code's cache (<$XDG_CACHE_HOME or ~/.cache>/claude-cli-nodejs/, on macOS
+#   ~/Library/Caches/claude-cli-nodejs/) with a line whose sessionId is the session's uuid;
+# - its session directory, <config>/session-env/<session uuid>/;
+# - its file checkpoints, <config>/file-history/<session uuid>/, where Claude Code keeps earlier
+#   texts of the files the session edited, the answer file among them;
+# - and the answer file in its worktree, <cwd>/.scratch/answer.md, which the coordinator has
+#   relayed.
 #
 # It cannot delete the session's copy on claude.ai. An ops session runs with Remote Control, which
 # Daniel's phone approvals need, and while it is connected claude.ai stores its conversation, tool
@@ -14,9 +22,13 @@
 # Usage: team-ops-end <task>
 #   task  T<n>, e.g. T5 (T0 for the load check)
 #
-# The transcript is found only by the session's full uuid, read from claude agents --json --all,
-# never by a pattern. Refuses, deleting nothing, when no <task>-ops session is listed, when one
-# has no full uuid, or when claude rm fails. Prints each path it deleted.
+# Each path is found only by the session's full uuid, read from claude agents --json --all, never
+# by a pattern over names: the transcript, the session directory and the checkpoints are named by
+# it, and an MCP log is one whose JSON lines name it as their sessionId, so a log of another
+# session that quotes the uuid is kept. Refuses, deleting nothing, when no <task>-ops session is listed, when one has
+# no full uuid, or when claude rm fails. Prints each path it deleted as "deleted <path>", then
+# "ended <task>-ops (<id>)". An MCP log it cannot read is named on stderr and kept, and it fails
+# once it has deleted the rest.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -39,6 +51,37 @@ for entry in "${found[@]}"; do
   [[ $uuid =~ $uuid_re && $uuid == "$id"* ]] || die "cannot resolve the full session uuid of $name ($id); nothing deleted"
 done
 
+config=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+cache=$(claude_cache_dir)
+
+# own_mcp_logs <uuid>: sets session_logs to the files of every project's mcp-logs-*/ directory under the
+# cache with a JSON line whose sessionId is the uuid. grep finds the files that hold the uuid at
+# all, and jq keeps those whose own lines name it. A file either cannot read is named on stderr and
+# kept, and the end fails once everything else is deleted, since the session is removed by then.
+unread_logs=0
+own_mcp_logs() {
+  local dir log_dirs=() file found_logs status=0
+  session_logs=()
+  for dir in "$cache"/*/mcp-logs-*/; do
+    [[ -d $dir && ! -L ${dir%/} ]] && log_dirs+=("${dir%/}")
+  done
+  ((${#log_dirs[@]})) || return 0
+  found_logs=$(mktemp)
+  grep -rlZF -- "$1" "${log_dirs[@]}" >"$found_logs" || status=$?
+  ((status < 2)) || unread_logs=1
+  while IFS= read -r -d '' file; do
+    [[ -f $file && ! -L $file ]] || continue
+    status=0
+    jq -nRe --arg u "$1" 'any(inputs | fromjson? | objects | .sessionId; . == $u)' "$file" >/dev/null || status=$?
+    if ((status == 0)); then
+      session_logs+=("$file")
+    elif ((status != 1)); then
+      unread_logs=1
+    fi
+  done <"$found_logs"
+  rm -f -- "$found_logs"
+}
+
 for entry in "${found[@]}"; do
   IFS=$'\x1f' read -r id uuid cwd <<<"$entry"
   # A session that already finished has nothing to stop.
@@ -47,7 +90,18 @@ for entry in "${found[@]}"; do
   while IFS= read -r -d '' path; do
     rm -rf -- "$path"
     echo "deleted $path"
-  done < <(find "$HOME/.claude/projects" -mindepth 2 -maxdepth 2 \( -name "$uuid.jsonl" -o -name "$uuid" \) -print0 2>/dev/null)
+  done < <(find "$config/projects" -mindepth 2 -maxdepth 2 \( -name "$uuid.jsonl" -o -name "$uuid" \) -print0 2>/dev/null)
+  own_mcp_logs "$uuid"
+  for path in "${session_logs[@]}"; do
+    rm -f -- "$path"
+    echo "deleted $path"
+  done
+  for path in "$config/session-env/$uuid" "$config/file-history/$uuid"; do
+    if [[ -e $path || -L $path ]]; then
+      rm -rf -- "$path"
+      echo "deleted $path"
+    fi
+  done
   answer=$cwd/.scratch/answer.md
   if [[ $cwd == /* && -f $answer ]]; then
     rm -f -- "$answer"
@@ -55,3 +109,4 @@ for entry in "${found[@]}"; do
   fi
   echo "ended $name ($id)"
 done
+((unread_logs == 0)) || die "an MCP log above could not be read and is kept; delete it by hand if it is the session's"
