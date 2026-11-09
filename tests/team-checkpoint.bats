@@ -396,14 +396,28 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   echo "change 1" >"$HOME/slots/site/1/change.txt"
   echo "change 2" >"$HOME/slots/home/1/change.txt"
   echo "change 3" >"$HOME/slots/home/2/change.txt"
-  # site's repository may not read a local origin; the team home's origin refuses wip/home/T2.
-  git -C "$site" config protocol.file.allow never
+  # The read of the team home's origin fails for site's objects alone (the checkpoint reads none
+  # of site's repository config, so a git that refuses it stands in); the origin refuses wip/home/T2.
+  local real_git
+  real_git=$(command -v git)
+  cat >"$BATS_TEST_TMPDIR/stubs/git" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case \$arg in --git-dir=*) dir=\${arg#--git-dir=} ;; ls-remote) read=1 ;; esac
+done
+if [[ -n \${read:-} && -n \${dir:-} ]] && grep -q "/site/" "\$dir/objects/info/alternates" 2>/dev/null; then
+  echo "fatal: the test refuses site's read" >&2
+  exit 128
+fi
+exec "$real_git" "\$@"
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/stubs/git"
   printf '#!/bin/sh\nwhile read -r old new ref; do [ "$ref" != refs/heads/wip/home/T2 ] || { echo "the test refuses T2" >&2; exit 1; }; done\n' \
     >"$team_origin/hooks/pre-receive"
   chmod +x "$team_origin/hooks/pre-receive"
 
   run_bin -1 --separate-stderr team-checkpoint
-  [[ $stderr =~ ^"team-checkpoint: T1 site: cannot read wip/site/T1 on the team home's origin: "[^$'\n']+$'\n'"team-checkpoint: T2 home: cannot push wip/home/T2 to the team home's origin: "[^$'\n']+$ ]]
+  [[ $stderr =~ ^"team-checkpoint: T1 site: cannot read wip/site/T1 on the team home's origin: the test refuses site's read"$'\n'"team-checkpoint: T2 home: cannot push wip/home/T2 to the team home's origin: "[^$'\n']+$ ]]
   assert_contains "$output" "T3 home: pushed wip/home/T3"
   assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T3"
   assert_contains "$output" "team home: committed"
@@ -469,6 +483,36 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   git -C "$one" status --short >/dev/null
   git -C "$two" hash-object --path change.txt change.txt >/dev/null
   [[ -e $BATS_TEST_TMPDIR/fsmonitor.ran && -e $BATS_TEST_TMPDIR/clean.ran ]]
+}
+
+@test "the wip ref goes to the team home's origin whatever URL rewrite the worktree's repository config names" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open site feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/site/1 elsewhere=$BATS_TEST_TMPDIR/elsewhere.git url
+  git init -q --bare "$elsewhere"
+  url=$(git -C "$TEAM_HOME" remote get-url origin)
+  git -C "$home" config "url.$elsewhere.insteadOf" "$url"
+  git -C "$site" config "url.$elsewhere.pushInsteadOf" "$url"
+  echo "change 1" >"$one/change.txt"
+  echo "change 2" >"$two/change.txt"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_contains "$output" "T2 site: pushed wip/site/T2"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "change 1"
+  assert_equal "$(git -C "$team_origin" show wip/site/T2:change.txt)" "change 2"
+  assert_equal "$(git -C "$elsewhere" for-each-ref)" ""
+  # The worktree's config is untouched, and a second run sees both up to date.
+  assert_equal "$(git -C "$home" config "url.$elsewhere.insteadOf")" "$url"
+  run_bin -0 team-checkpoint --force
+  assert_contains "$output" "T1 home: wip/home/T1 is up to date"
+  assert_contains "$output" "T2 site: wip/site/T2 is up to date"
+
+  # The rewrite is live: a plain push from either worktree goes elsewhere.
+  git -C "$one" push -q "$url" HEAD:refs/heads/probe-1
+  git -C "$two" push -q "$url" HEAD:refs/heads/probe-2
+  assert_equal "$(git -C "$elsewhere" for-each-ref --format='%(refname)' | paste -sd ' ')" "refs/heads/probe-1 refs/heads/probe-2"
 }
 
 @test "worktrees not begun by the worktree deadline are skipped as failures, the records still committed, and taken first next time" {

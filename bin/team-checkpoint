@@ -45,7 +45,12 @@
 #      filter driver's clean or process command, so a file a filter such as Git LFS's would
 #      clean is kept as it is on disk), since a worker may write that config. The push runs
 #      none of the project's hooks (hooks off for that one command, its output kept out of the
-#      checkpoint's), since it is the team's own plumbing to a private repository.
+#      checkpoint's), since it is the team's own plumbing to a private repository. It and the read
+#      of the wip ref before it run in a temporary bare repository that borrows the worktree's
+#      objects (objects/info/alternates), never in the worktree's repository, so none of that
+#      repository's config is read (a url.<x>.insteadOf or pushInsteadOf that would send the
+#      task's work elsewhere, a credential helper or core.sshCommand that would run a command):
+#      only Daniel's global and the system config.
 # Then team-tokens export writes this machine's usage of each complete UTC day into usage/<machine>/
 # (its lines prefixed "usage: "); a failed export is a warning and fails nothing, since the
 # transcripts stay and the next checkpoint exports what this one could not.
@@ -173,13 +178,27 @@ reason_in() {
   printf '%s\n' "${why:-exit $2}"
 }
 
+# A bare repository of the checkpoint's own, with no template and no config but what git init
+# writes, whose objects/info/alternates names the objects of the worktree <wt>'s repository (and
+# its shallow file, when it has one), so a call to the team home's origin sends that worktree's
+# work reading none of its repository's config; its path in REPLY: borrow_objects <wt>
+borrow_objects() {
+  local common
+  REPLY=$scratch/borrow.git
+  [[ -d $REPLY ]] || git init -q --bare --template= "$REPLY" || return 1
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir) || return 1
+  printf '%s\n' "$common/objects" >"$REPLY/objects/info/alternates" || return 1
+  rm -f "$REPLY/shallow"
+  [[ ! -f $common/shallow ]] || cp "$common/shallow" "$REPLY/shallow"
+}
+
 # Keep the work of the worktree <wt> of <task> in <project> on the team home's origin as
 # wip/<project>/<task>: its branch head, or a snapshot of its uncommitted changes on that head.
 # Every command's status is checked, so a failure is this worktree's alone, one line with git's
 # reason, and the next worktree still runs: snapshot <task> <project> <wt> <label>
 snapshot() {
   local task=$1 project=$2 wt=$3 label=$4 wip=wip/$2/$1 err=$scratch/snapshot-err tree head head_tree remote old \
-    commit what left out rc=0
+    commit what left out borrow rc=0
   tree=$(worktree_tree "$wt" 2>"$err") || rc=$?
   if ((rc)); then
     fail "$label: cannot snapshot $wip: $(reason_in "$err" "$rc")"
@@ -196,7 +215,13 @@ snapshot() {
     fail "$label: cannot read the head of $wt: $(reason_in "$err" "$rc")"
     return
   fi
-  remote=$(origin_git -C "$wt" ls-remote "$wip_url" "refs/heads/$wip") || rc=$?
+  borrow_objects "$wt" 2>"$err" || rc=$?
+  if ((rc)); then
+    fail "$label: cannot snapshot $wip: $(reason_in "$err" "$rc")"
+    return
+  fi
+  borrow=$REPLY
+  remote=$(origin_git --git-dir="$borrow" ls-remote "$wip_url" "refs/heads/$wip") || rc=$?
   if ((rc)); then
     fail "$label: cannot read $wip on the team home's origin: $(origin_reason "$rc")"
     return
@@ -222,10 +247,11 @@ snapshot() {
     fi
     what="uncommitted changes on ${head:0:7}"
   fi
-  # The team's own plumbing to a private repository, so none of the project's hooks runs (its
-  # pre-push still guards each push to the project's own origin), and the push's stdout goes with
-  # its stderr, so no hook's text is ever a line of the checkpoint's.
-  out=$(origin_git -C "$wt" -c core.hooksPath=/dev/null push --no-verify -q "$wip_url" "+$commit:refs/heads/$wip") ||
+  # The team's own plumbing to a private repository, from the borrowing repository, so none of the
+  # project's hooks or config is read (its pre-push still guards each push to the project's own
+  # origin), and the push's stdout goes with its stderr, so no hook's text is ever a line of the
+  # checkpoint's.
+  out=$(origin_git --git-dir="$borrow" -c core.hooksPath=/dev/null push --no-verify -q "$wip_url" "+$commit:refs/heads/$wip") ||
     rc=$?
   [[ -z $out ]] || printf '%s\n' "$out" >>"$NET_ERR"
   if ((rc)); then
