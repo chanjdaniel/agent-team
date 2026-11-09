@@ -944,6 +944,7 @@ EOF
     "back-end/migrations/migrate_roles.py:migrations, permissions" db/migration/0001.py:migrations
     "scripts/migrate_users.py:ci, migrations" "db/add_roles_migration.py:migrations, permissions" schema/init.sql:migrations
     .vscode/launch.json:settings .mcp.json:settings CLAUDE.md:settings front-end/AGENTS.md:settings
+    CLAUDE.local.md:settings front-end/CLAUDE.local.md:settings
     front-end/.env.example:settings .env:settings back-end/settings.py:settings treehouse.toml:settings
     back-end/api/permissions.py:permissions src/rbac/roles.py:permissions src/ACL.py:permissions
     docs/CODEOWNERS:permissions

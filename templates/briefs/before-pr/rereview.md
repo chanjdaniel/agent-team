@@ -10,6 +10,10 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, and `rev
 
 {{since}}
 
+## Instruction and settings files
+
+{{instruction_files}}
+
 ## Check
 
 1. Every finding in `{{task_dir}}/review.md` that went back to the builder (each `blocking`, `note: correctness`, `note: security` and `note: real-data`, and each plain `note` whose scope is `change`) is fixed at `{{head}}`, or the task records Daniel's decision to keep it; a plain `note` whose scope is `before`, on code the branch did not change, is queued as a follow-up, not for this task.

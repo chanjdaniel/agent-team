@@ -7,6 +7,10 @@ No PR yet: reviewed at `{{reviewed}}`, now at the local head `{{head}}`.
 Task directory: `{{task_dir}}/` in the worktree: `review.md` with the last review's findings.
 Sent back: the notes numbered {{findings}} in `{{task_dir}}/review.md`, each a plain `note` whose scope is `change`.
 
+## Instruction and settings files
+
+{{instruction_files}}
+
 ## Check
 
 1. Run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `{{task_dir}}/rereview.md` says which local checks passed (they set no GitHub status, and with no PR there are no GitHub checks to wait for).
