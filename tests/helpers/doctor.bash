@@ -184,7 +184,7 @@ EOF
   export TEAM_CHROME=$BATS_TEST_TMPDIR/chrome
   touch "$TEAM_CHROME"
   # The heartbeat runs, as it should on the holder.
-  "$REPO_ROOT/bin/team-timers" enable >/dev/null
+  "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
   # The user manager delegates cpu and memory, as home-pc's does, the team's slice is installed,
   # and the level's limits applied, as team-level apply leaves them: manual full, its CPU quota
   # on the slice.
@@ -396,7 +396,7 @@ tools_at() {
 on_macos() {
   as_macos
   echo arm64 >"$STUB_FIXTURES/uname-m.out"
-  "$REPO_ROOT/bin/team-timers" enable >/dev/null
+  "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
 }
 
 # The ids of the manifest's enabled secrets, in order.

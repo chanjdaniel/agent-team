@@ -988,6 +988,29 @@ team-close: ${conv_slots[0]}/.scratch/task is empty, so nothing was archived fro
   assert_equal "$(events closed | jq -c '[.archive, (.returned | length)]')" '[[],2]'
 }
 
+@test "a mirror that fails stops the close half closed with rsync's reason, and a second close after the fix completes" {
+  [[ $(id -u) != 0 ]] || skip "root reads a file whatever its mode"
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  local dir=$slot/.scratch/task
+  echo "spec" >"$dir/spec.md"
+  echo "unreadable" >"$dir/locked.md"
+  chmod 000 "$dir/locked.md"
+  work_and_push "$slot" feature.txt
+
+  run_bin -1 --separate-stderr team-close T1
+  assert_equal "$output" ""
+  [[ $(head -n 1 <<<"$stderr") =~ ^"team-close: cannot mirror $dir into tasks/T1/scratch: rsync".*"locked.md".*"Permission denied" ]]
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-close: T1 is half closed; fix the cause above and run team-close T1 again"
+  assert_equal "$(events worktree-returned)$(events closed)" ""
+  [[ -d $slot ]]
+
+  chmod 644 "$dir/locked.md"
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .archive <<<"$output")" '["tasks/T1/scratch"]'
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/locked.md")" "unreadable"
+}
+
 @test "a closed, unknown or malformed task is refused" {
   run_bin -0 team-open home research research look "Look"
   run_bin -0 team-close T1

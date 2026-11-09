@@ -45,17 +45,19 @@
 # read, pr carries error instead of GitHub's facts, the text says "GitHub unavailable", and the exit
 # is still 0.
 # standing_word is Daniel's standing merge word on the PR's project, read from every task's events
-# in the ledger: null when no merge-standing or merge-standing-withdrawn names that project or
-# all, else {word, withdrawn, covers, reasons}, word the latest merge-standing that applies and
-# withdrawn the latest event when it is a withdrawal, each as {project (as logged), task, ts,
-# discord_message, discord_channel}, else null. Only while the phase is awaiting-merge, reasons
-# are why team-merge would not merge the PR on the word (the word withdrawn, the PR from a branch
-# not the task's, the review-side reasons and the changed-file reasons it holds the word to, or
-# GitHub unreadable), read from GitHub's list of the PR's files, and covers is whether there are
-# none; Daniel's message is not read back and the checks are not judged. Otherwise covers is null,
-# reasons empty and no file list is read. While awaiting merge, the text form says the first that
-# holds of "standing word withdrawn", "standing word covers it" and "standing word does not cover
-# it: <the first reason>" (with " (and <n> more)" for more), before any waiting.
+# in the ledger: null when no merge-standing or merge-standing-withdrawn names that project or all,
+# or the project is the team's own (own_project in bin/lib/team.sh), whose PRs merge only on the
+# per-head word, so no standing word covers them; else {word, withdrawn, covers, reasons}, word the
+# latest merge-standing that applies and withdrawn the latest event when it is a withdrawal, each
+# as {project (as logged), task, ts, discord_message, discord_channel}, else null. Only while the
+# phase is awaiting-merge, reasons are why team-merge would not merge the PR on the word (the word
+# withdrawn, the PR from a branch not the task's, the review-side reasons and the changed-file
+# reasons it holds the word to, or GitHub unreadable), read from GitHub's list of the PR's files,
+# and covers is whether there are none; Daniel's message is not read back and the checks are not
+# judged. Otherwise covers is null, reasons empty and no file list is read. While awaiting merge,
+# the text form says the first that holds of "standing word withdrawn", "standing word covers it"
+# and "standing word does not cover it: <the first reason>" (with " (and <n> more)" for more),
+# before any waiting.
 # waiting is the task's latest waiting (on, reason, since) until a later launch or resumed, or
 # null; the text form ends with "waiting on <on>: <reason>".
 # walk is the task's manual QC walk (team-ui T<n> --walk), {"since": "<ts>"} while it is on, from

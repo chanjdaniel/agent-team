@@ -76,18 +76,101 @@ standing_post() {
     "standing Discord message 1562661774950400000 in T9's thread 1999, from daniel (757)"
 }
 
-@test "a standing word on the team's own project merges its PR, whatever its merge_with_plan" {
-  standing_word
+# The reason the standing word gives on a PR of the team's own project <project> (proj).
+own_reason() {
+  echo "${1:-proj} is the team's own project, whose PRs merge only on Daniel's word per head"
+}
+
+@test "the team's own project is refused on the standing word, by repo, by name and by path, without asking Discord" {
+  # By repo: proj's repo is the origin of the code checkout team-merge runs from.
+  standing_word all
   code_checkout
   git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  refused "$(own_reason)" "$(ask_standing)"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
+  # Its reason alone: no check of the word, the reviews or the paths, and no per-head reason.
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+  assert_equal "$(reads)" ""
+  # A standing word naming the project itself, as a ledger may hold from before, is refused the same.
+  standing merge-standing proj 1562661774950400000 "$COORDINATOR"
+  refused "$(own_reason)" "$(ask_standing)"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+}
+
+@test "the team's own project by name is refused on the standing word, whatever its repo" {
+  standing_word all
+  sed -i 's/^\[proj/[agent-team/' "$TEAM_HOME/projects.toml"
+  jq -c 'if .project == "proj" then .project = "agent-team" else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  standing merge-standing all 1562661774950400000 "$COORDINATOR"
+  refused "$(own_reason agent-team)" "$(ask_standing)"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+}
+
+@test "the team's own project by path is refused on the standing word" {
+  merging_the_code
+  standing_word all
+  refused "$(own_reason)" "$(ask_standing)"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+}
+
+@test "the team's own project is refused on the standing word after a per-head or plan-time word that does not hold" {
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  # A per-head word whose message is not Daniel's: its reason, then the standing word's.
+  approved_by 999
+  standing_too all
+  refused "Discord message 1562661774950400000 is by" "$(own_reason)" "$(ask_standing)"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
+  [[ $(reads) != *1562691973939200000* ]]
+
+  # A plan-time word, refused for the same reason: it is named once.
+  plan_word
+  refused "$(own_reason)" "$(ask_standing)"
+  once "$stderr" "$(own_reason)"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
+  [[ $stderr != *"$(ask_per_head)"* ]]
+}
+
+@test "the team's own project still merges on the per-head word, with a standing word for every project logged" {
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  standing merge-standing all 1562691973939200000 "$COORDINATOR"
   run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" standing
+  assert_equal "$(merged_events | jq -r '[.approval, .discord_message] | join(" ")')" "head 1562661774950400000"
+  # Only the per-head word's message is read, never the standing word's.
+  assert_equal "$(reads | jq -r '.[-1]' | sort -u)" "https://discord.com/api/v10/channels/1563/messages/1562661774950400000"
+  assert_equal "$(posts)" ""
+}
+
+@test "another project merges on the standing word for every project, with the team's own registered beside it" {
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/agent-team.git
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+
+[agent-team]
+repo = "owner/agent-team"
+path = "agent-team"
+base = "dev"
+delivery = "direct-pr"
+merge_method = "squash"
+required_checks = ["test"]
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+
+[agent-team.pool]
+provider = "git"
+slots = ["slots/agent-team/1"]
+TOML
+  standing_word all
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r '[.project, .approval, .discord_message] | join(" ")')" "proj standing 1562661774950400000"
+  assert_equal "$(jq -r .content "$discord/posts" | grep -c 'on your standing word')" 2
 }
 
 @test "a change to the team's guardrail files is refused on the standing word, naming the guardrails area" {
   standing_word
-  code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
   local guardrails=(bin/lib/guarded bin/team-merge bin/team-checks bin/lib/team.sh bin/lib/platform.sh
     bin/lib/ledger.jq bin/lib/ledger-contract.json bin/hooks/git/pre-push bin/hooks/records-git/pre-commit
     bin/hooks/lease-fence bin/lib/data-check bin/lib/records bin/team-heavy settings/worker.json settings/reviewer.json
@@ -250,11 +333,12 @@ said() {
     content: "merge when ready", author: {id: $author, username: "daniel"}}' >"$discord/$2-$1.json"
 }
 
-# Daniel's standing word on proj beside the earlier word: a passing review of the head, and their
-# merge-standing in message 1562691973939200000 (05:00) in #coordinator, which Discord shows there.
+# Daniel's standing word on <project> (proj) beside the earlier word: a passing review of the head,
+# and their merge-standing in message 1562691973939200000 (05:00) in #coordinator, which Discord
+# shows there: standing_too [<project>]
 standing_too() {
   passed
-  standing merge-standing proj 1562691973939200000 "$COORDINATOR"
+  standing merge-standing "${1:-proj}" 1562691973939200000 "$COORDINATOR"
   said 1562691973939200000 "$COORDINATOR"
 }
 

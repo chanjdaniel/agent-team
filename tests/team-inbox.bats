@@ -246,7 +246,7 @@ standing() {
     --arg task "${5:-T4}" '{task: $task, event: $kind, project: $project, discord_message: $message, discord_channel: $channel}')"
 }
 
-@test "a standing word on every project names each registered project above the footer, and leaves out their ready PRs" {
+@test "a standing word on every project names each registered project but the team's own above the footer, and leaves out their ready PRs" {
   plan_registry
   ready_pr T4 proj 4
   ready_pr T5 conv 5
@@ -255,8 +255,9 @@ standing() {
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
   assert_equal "$(inbox_shown | sed '$d')" "**Waiting on you**
-Nothing waits on you.
--# Standing merge word on proj, conv, agent-team since https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001
+**PRs ready to merge**
+- T6 Task T6: https://github.com/owner/agent-team/pull/6
+-# Standing merge word on proj, conv since https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
   [[ $(inbox_shown | tail -n 1) =~ ^"-# team-inbox keeps this current; updated <t:"[0-9]+":R>"$ ]]
 
@@ -265,7 +266,26 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
   run_bin -0 team-inbox
   assert_equal "$(inbox_items_shown)" "**Asks**
 - T4 merge-4: Merge https://github.com/owner/proj/pull/4 at abc1234?
--# Standing merge word on proj, conv, agent-team since https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001"
+**PRs ready to merge**
+- T6 Task T6: https://github.com/owner/agent-team/pull/6
+-# Standing merge word on proj, conv since https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001"
+}
+
+@test "the team's own project is left out of a standing word by its repo or its path as well as by its name" {
+  plan_registry
+  ready_pr T4 proj 4
+  ready_pr T5 conv 5
+  standing merge-standing all 1564100000000000001
+  # conv's path is the code checkout run_bin runs from, whose origin is proj's repo.
+  export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo conv)
+  copy_bin "$CODE_CHECKOUT/bin"
+  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/Owner/proj/
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
+- T4 Task T4: https://github.com/owner/proj/pull/4
+- T5 Task T5: https://github.com/owner/conv/pull/5"
 }
 
 @test "only the projects a standing word stands for are named, one line per word, and only their PRs are left out" {
@@ -289,13 +309,23 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
 - T6 Task T6: https://github.com/owner/agent-team/pull/6
 -# Standing merge word on proj since https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001"
 
-  # A word on every project, withdrawn for one, stands for the others under its own message.
+  # A word on every project, withdrawn for one, stands for the others but the team's own under
+  # its own message.
   standing merge-standing all 1564100000000000004
-  standing merge-standing-withdrawn agent-team 1564100000000000005
+  standing merge-standing-withdrawn conv 1564100000000000005
   run_bin -0 team-inbox
   assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
+- T5 Task T5: https://github.com/owner/conv/pull/5
 - T6 Task T6: https://github.com/owner/agent-team/pull/6
--# Standing merge word on proj, conv since https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000004"
+-# Standing merge word on proj since https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000004"
+
+  # An old ledger's word on the team's own project names it nowhere and leaves its PR listed.
+  standing merge-standing agent-team 1564100000000000006
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
+- T5 Task T5: https://github.com/owner/conv/pull/5
+- T6 Task T6: https://github.com/owner/agent-team/pull/6
+-# Standing merge word on proj since https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000004"
 }
 
 @test "with every standing word withdrawn no standing line shows and every ready PR is listed" {
