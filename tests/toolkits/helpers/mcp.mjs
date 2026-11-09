@@ -14,7 +14,7 @@
 //
 // startServer({ command, args, env }, options) starts any server entry the same way.
 import { spawn } from "node:child_process";
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,10 +34,16 @@ export function serverConfig(toolkit) {
   return config.mcpServers[toolkit];
 }
 
-// A directory driving the op stub (helpers/op): its value, its mode, and the calls it logs.
-export function opStub({ value, mode = "ok" }) {
+// A directory driving the op stub (helpers/op): its value, each reference's own value in
+// `values` (a reference to its value, read in place of `value`), its mode, and the calls it logs.
+export function opStub({ value, values = {}, mode = "ok" }) {
   const dir = tempDir("op-stub");
   if (value !== undefined) writeFileSync(join(dir, "value"), value);
+  const entries = Object.entries(values);
+  if (entries.length) mkdirSync(join(dir, "values"));
+  for (const [reference, referenceValue] of entries) {
+    writeFileSync(join(dir, "values", reference.replaceAll(/[/:]/g, "_")), referenceValue);
+  }
   writeFileSync(join(dir, "mode"), mode);
   return {
     dir,

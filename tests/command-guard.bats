@@ -202,6 +202,8 @@ passes() {
   refuses "$OPS" \
     '/home/me/agent-team/bin/team-worker T5 ops /home/me/slots/proj-1 --toolkit prod-read --request https://discord.com/channels/1/2/3 -- "$(cat /home/me/agent-team/tasks/T5/brief-ops.md)"' \
     'team-worker "T5" ops /home/me/slots/proj-1 --toolkit prod-read --request x -- go' \
+    '/home/me/agent-team/bin/team-worker T5 ops /home/me/slots/proj-1 --toolkit vercel-read --request https://discord.com/channels/1/2/3 -- "$(cat /home/me/agent-team/tasks/T5/brief-ops.md)"' \
+    'team-worker T5 ops /home/me/slots/proj-1 --toolkit prod-read --toolkit vercel-read --request x -- go' \
     'team-worker T1 ops' "team-worker T1 'ops' wt -- go" 'cd x && team-worker T1 ops wt -- go' \
     '~/agent-team/bin/team-worker T1 ops wt' '"$HOME/agent-team/bin/team-worker" T1 ops wt' \
     'nohup ~/agent-team/bin/team-worker T1 ops wt -- go &' 'env A=1 timeout -s KILL 10s team-worker T1 ops wt' \
@@ -217,6 +219,8 @@ passes() {
   refuses "$OPS" \
     '/home/me/agent-team/bin/team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit prod-read' \
     'team-load-check --role=ops --worktree /home/me/slots/proj-1 --toolkit prod-read --toolkit prod-write' \
+    '/home/me/agent-team/bin/team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit vercel-read' \
+    'team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit prod-read --toolkit vercel-read' \
     'team-load-check ops' 'timeout 600 team-load-check --role "ops" --worktree wt --toolkit prod-read'
 }
 
