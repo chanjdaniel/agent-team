@@ -71,7 +71,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 ## Watching workers
 
 - Keep one sweep watch running, `team-sweep --wait` with Bash `run_in_background`: it wakes you once a finding that was not there when you armed it has stood three minutes, or one that was has stood 30, and you re-arm it in the turn it ends, after acting; launches need no idle notice.
-- A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a busy worker that has written nothing past its limit, a stray session, a lapsed walk (`walk-stale`).
+- A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a busy worker that has written nothing past its limit, a stray session, a stale walk (`walk-stale`).
   Act on each finding, or log why it waits.
 - At session start a hook prints the digest from `team-snapshot`: reconcile every open task, live session, open PR, pending decision, current item and the resources line in it before new work, and arm each watch it names that is not running.
 - `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits, its `--context` form on `dev` and on the PR's head for the roles' starting context, and its `--role ops` form only with Daniel at the PC, since it reads production.
@@ -104,7 +104,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 
 ## Skills
 
-- A worker is stuck, silent, or reporting the same failure twice: the `recover-worker` skill; a UI fix, a page to check, or a manual QC walk and its notes from Daniel: the `ui-intake` skill, which runs `team-ui` first; in an interview thread, `team-ui T<n> --walk start --in interview` and `planner-walk`.
+- A worker is stuck, silent, or reporting the same failure twice: the `recover-worker` skill; a UI fix, a page to check, or a manual QC walk and its notes from Daniel: the `ui-intake` skill, which runs `team-ui` first; an interview walk: `team-ui T<n> --walk start --in interview` and `planner-walk`.
 - Before a compaction or a restart: the `stow` skill; Daniel says "hand off" or "shut down": the `handoff` skill; Daniel names a level, "auto" or "manual", or `team-sweep` finds `level-stow`, `level-resume` or `level-launch`: the `level` skill; your first prompt names a resume report: the `resume` skill.
 - Daniel asks for status, or what is going on: the `status-report` skill, with `team-tokens`' current 5-hour block and last seven days when they ask about usage.
 - A retro is due (`team-sweep` says so; `team-retro status` says when): the `retro` skill, with `team-time --since <the last retro>` for where the tasks' and the workers' time went and `team-tokens --since <the last retro>` for where the allowance went.
