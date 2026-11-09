@@ -8,7 +8,7 @@ A project that chose CodeGraph tracks a `.codegraph/` directory, but a fresh wor
 
 To the builders and reviewers of a setup trial's arm: `team-worker T<n> builder <worktree> --toolkit codegraph -- ...`, and the same for the reviewer, which `team-next` carries forward from the task's first builder, so a whole task is in one arm.
 How a trial gives it to alternate tasks of one project, what it measures and how it ends are in the "Trialling a setup change" section of `sops/model-trials.md`; the first such trial is CodeGraph on Conventioner.
-The coordinator gives it on a project only once that project lists `codegraph` in its `toolkits` in `projects.toml`, though `team-worker` loads it wherever it is asked for.
+The coordinator gives it on a project only once that project lists `codegraph` in its `toolkits` in `projects.toml`, and `team-worker` refuses it in any other project's worktree (T0, the load check, aside).
 
 ## When it prints
 

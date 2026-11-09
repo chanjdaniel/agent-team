@@ -869,6 +869,118 @@ SH
   assert_equal "$(events worktree-returned)" ""
 }
 
+# ops_session <status>: T1's ops session, launched in $wt and listed with <status>, with the
+# transcript and the answer file team-ops-end deletes; sets ops_transcript and ops_answer.
+ops_session() {
+  local uuid=6f93fe38-1111-4222-8333-444455556666
+  launch T1 ops 6f93fe38 "$wt"
+  ops_transcript=$HOME/.claude/projects/-slots-home-1/$uuid.jsonl
+  ops_answer=$wt/.scratch/answer.md
+  mkdir -p "$(dirname "$ops_transcript")"
+  echo '{"query": "results"}' >"$ops_transcript"
+  echo "42 documents" >"$ops_answer"
+  sessions "$(jq -c --arg wt "$wt" '.cwd = $wt' <<<"$(session 6f93fe38 T1-ops "$1" "done")")" \
+    "$(session 4f2a9c1e T1-builder idle blocked)"
+  remember_before
+}
+
+@test "an ops session is ended through team-ops-end before the other sessions stop, and the close goes on" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session idle
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c '[.stopped, .removed]' <<<"$output")" '[["4f2a9c1e"],["6f93fe38","4f2a9c1e"]]'
+  assert_contains "$stderr" "deleted $ops_transcript"
+  assert_contains "$stderr" "deleted $ops_answer"
+  assert_contains "$stderr" "ended T1-ops (6f93fe38)"
+  [[ ! -e $ops_transcript ]]
+  # team-ops-end's own stop and rm come first; the close stops and removes no ops session itself.
+  assert_equal "$(claude_actions)" '["stop","6f93fe38"]
+["rm","6f93fe38"]
+["stop","4f2a9c1e"]
+["rm","4f2a9c1e"]'
+  assert_equal "$(events closed)" "$(jq -cn --arg wt "$wt" \
+    '{task: "T1", event: "closed", archive: ["tasks/T1/scratch"], returned: [$wt], kept: []}')"
+}
+
+@test "a failed team-ops-end stops the close half closed with its reason, and a second close after the fix completes" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session idle
+  touch "$BATS_TEST_TMPDIR/rm-fails"
+  stub_script claude <<'SH'
+case $1 in
+  agents) cat "$BATS_TEST_TMPDIR/sessions.json" ;;
+  stop) ;;
+  rm) [[ ! -e $BATS_TEST_TMPDIR/rm-fails ]] ;;
+  *) exit 64 ;;
+esac
+SH
+
+  run_bin -1 --separate-stderr team-close T1
+  assert_contains "$stderr" "team-ops-end: claude rm 6f93fe38 failed; its transcript is kept"
+  assert_contains "$stderr" "team-close: cannot end T1-ops with team-ops-end; its reason is above"
+  assert_contains "$stderr" "team-close: T1 is half closed"
+  [[ -f $ops_transcript ]]
+  # The builder was never stopped, nothing was archived, and the slot is still held.
+  assert_equal "$(claude_actions)" '["stop","6f93fe38"]
+["rm","6f93fe38"]'
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+  assert_equal "$(home_worktrees)" "$(cat "$BATS_TEST_TMPDIR/worktrees.before")"
+
+  rm "$BATS_TEST_TMPDIR/rm-fails"
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .removed <<<"$output")" '["6f93fe38","4f2a9c1e"]'
+  [[ ! -e $ops_transcript ]]
+  assert_equal "$(events closed | jq -r .event)" closed
+}
+
+@test "a busy ops session refuses the close; --stop-busy ends it through team-ops-end" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session busy
+
+  run_bin -1 team-close T1
+  assert_contains "$output" "  T1-ops 6f93fe38 is busy"
+  assert_equal "$(grep -c 'is busy' <<<"$output")" 1
+  assert_contains "$output" "--stop-busy"
+  assert_unchanged
+  [[ -f $ops_transcript ]]
+
+  run_bin -0 --separate-stderr team-close T1 --stop-busy
+  assert_contains "$stderr" "ended T1-ops (6f93fe38)"
+  [[ ! -e $ops_transcript && ! -e $ops_answer ]]
+  assert_equal "$(claude_actions | grep -c 6f93fe38)" 2
+  assert_equal "$(jq -c '[.stopped, .removed]' <<<"$output")" '[["4f2a9c1e"],["6f93fe38","4f2a9c1e"]]'
+}
+
+@test "an ops session listed with no launch of its own is ended too, and a launched one no longer listed is left alone" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  # A launch of an ops session that team-ops-end already ended: it is not removed again.
+  launch T1 ops 0a0b0c0d "$wt"
+  # As Claude Code lists them, a background session that has finished only with --all; a busy one
+  # listed there alone still refuses the close.
+  stub_script claude <<'SH'
+case $1 in
+  agents) if [[ ${3:-} == --all ]]; then cat "$BATS_TEST_TMPDIR/sessions.json"; else jq -c 'map(select(.state != "done"))' "$BATS_TEST_TMPDIR/sessions.json"; fi ;;
+  stop | rm) ;;
+  *) exit 64 ;;
+esac
+SH
+  sessions "$(session 7e7e7e7e T1-ops busy "done")" "$(session 4f2a9c1e T1-builder idle blocked)"
+  run_bin -1 team-close T1
+  assert_contains "$output" "  T1-ops 7e7e7e7e is busy"
+  sessions "$(session 7e7e7e7e T1-ops idle "done")" "$(session 4f2a9c1e T1-builder idle blocked)"
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_contains "$stderr" "ended T1-ops (7e7e7e7e)"
+  assert_equal "$(jq -c .removed <<<"$output")" '["7e7e7e7e","4f2a9c1e"]'
+  [[ $(claude_actions) != *0a0b0c0d* ]]
+}
+
 @test "a two-project task archives both task directories and returns both slots through their pools" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 team-open --task T1 --add conv feat move

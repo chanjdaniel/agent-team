@@ -359,6 +359,16 @@ Live team sessions: none"
   T12 d15: The November spread question for the organizer"
 }
 
+@test "an ops session's pending ask shows by its fixed line, and its question with no text breaks nothing" {
+  opened T5
+  event T5 question '{role: "ops", chars: 71, discord_message: "1564000000000000001"}'
+  event T5 asked '{id: "write-1", text: "An ops question of 71 characters, in T5'"'"'s thread.", discord_message: "1564000000000000001"}'
+  event T5 question '{role: "ops", chars: 28}'
+  run_bin -0 team-snapshot
+  assert_equal "$(section "Pending asks")" "Pending asks (1):
+  T5 write-1: An ops question of 71 characters, in T5's thread."
+}
+
 @test "an empty ledger shows every part as none" {
   reserve_agent_team
   open_prs owner/proj '[]'

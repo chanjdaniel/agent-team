@@ -13,6 +13,11 @@
 # it; asked id=<id> text=<the question's first line> discord_message=<the question's first
 # message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask in the Waiting on
 # you message; when that fails, a line on stderr says so, and the ask stands.
+# --from ops, an ops session's question, which may hold production data, is posted whole in the
+# thread, but its first line is the fixed line "An ops question of <n> characters, in T<n>'s
+# thread." in the ping and the asked's text, n its length in characters, and its question is
+# logged as question role=ops chars=<n> discord_message=<the question's first message>, never
+# its text.
 # --script asks Daniel to OK running a script, which team-run-approved T<n> <id> then runs only
 # while the file hashes the same: before anything is posted it hashes the file (a regular file,
 # its path made absolute, its links resolved), ends the question with the lines "Script: <path>"
@@ -70,7 +75,13 @@ if [[ -n $script ]]; then
   question=$(printf '%s\n\nScript: %s\nsha256: %s\n%s' "$question" "$script" "$sha256" \
     "It runs only on a reply in Discord with a line that starts with yes.")
 fi
-line=$(jq -nr --arg q "$question" '$q | split("\n")[0] | sub("\\s+\\z"; "")')
+# An ops session's question may hold production data, so the ledger and the ping carry only its
+# length and where it is; any other's first line.
+if [[ $role == ops ]]; then
+  line=$(jq -nr --arg q "$question" --arg task "$task" '"An ops question of \($q | length) characters, in \($task)'"'"'s thread."')
+else
+  line=$(jq -nr --arg q "$question" '$q | split("\n")[0] | sub("\\s+\\z"; "")')
+fi
 # Daniel's ids, each a Discord snowflake, so the ping holds nothing but mentions of them.
 mentions=$(jq -r '.allowFrom | arrays | map(tostring | select(test("^[0-9]+$")) | "<@\(.)>") | join(" ")' \
   "$HOME/.claude/channels/discord/access.json" 2>/dev/null) || mentions=''
@@ -83,7 +94,8 @@ now=$(date -u +%FT%TZ)
 mapfile -t lines < <(jq -nc --arg ts "$now" --arg task "$task" --arg id "$id" --arg role "$role" \
   --arg question "$question" --arg line "$line" --arg script "$script" --arg sha256 "$sha256" '
   {ts: $ts, task: $task} as $e
-  | (if $role != "" then $e + {event: "question", role: $role, text: $question} else empty end),
+  | (if $role == "ops" then $e + {event: "question", role: $role, chars: ($question | length)}
+     elif $role != "" then $e + {event: "question", role: $role, text: $question} else empty end),
     $e + {event: "asked", id: $id, text: $line}
       + (if $script != "" then {script: $script, sha256: $sha256} else {} end),
     $e + {event: "waiting", on: "Daniel", reason: "ask \($id)"}')
@@ -114,7 +126,7 @@ fi
 
 for event in "${lines[@]}"; do
   ledger_append "$(jq -c --arg ts "$(date -u +%FT%TZ)" --arg message "$(head -n 1 <<<"$asked")" \
-    '.ts = $ts | if .event == "asked" then .discord_message = $message else . end' <<<"$event")"
+    '.ts = $ts | if .event == "asked" or (.event == "question" and .role == "ops") then .discord_message = $message else . end' <<<"$event")"
 done
 refresh_inbox
 jq -nc --arg task "$task" --arg id "$id" --arg asked "$asked" --arg ping "$ping" \

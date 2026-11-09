@@ -10,13 +10,15 @@
 #              opened by team-open, one of its open worktrees (opened or added, not returned)
 #   --model    not for ops: the model alias or name to launch on instead of the registry's, such
 #              as opus for a model trial's paired review (sops/model-trials.md)
-#   --request  ops only, and required for it: the link to Daniel's Discord message asking
+#   --request  ops only, and required for it: the link to Daniel's Discord message asking for
+#              this launch, https://discord.com/channels/<guild>/<channel>/<message>; any other
+#              value is a malformed command line (exit 2)
 #
 # Refuses a closed task, a task with no Discord thread, and a launch on a machine that does not
 # hold the lease (`team-lease check`, confirmed against origin) or cannot reach GitHub. Prints the
 # background session id and logs the launch to ledger.jsonl, with the worktree's project and
 # branch when the task was opened by team-open, the machine's team name
-# (~/.config/agent-team/machine), and the request for ops. T0, the load check, needs no thread and
+# (~/.config/agent-team/machine), and for ops the request's link and message id. T0, the load check, needs no thread and
 # no lease, and is not logged. Recorded worktrees are compared as paths on this machine: one
 # recorded under another machine's home is the same path under this HOME.
 # Before anything starts, it refuses a prompt naming a brief that is missing or unreadable, and a
@@ -73,6 +75,25 @@
 # end it with team-ops-end). An ops session runs with --restricted and only the built-in tools
 # Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents and Skill (for its toolkits'
 # skills): no shell, no web.
+# A worker gets only the toolkits its worktree's project lists in the registry (team-project's
+# toolkits): after those refusals and the worktree's and task's checks, and before the lease is
+# checked, any other is refused (exit 1, nothing started or logged), naming the project, its list
+# and the fix, Daniel's yes and then the toolkit's name in that project's toolkits line in
+# projects.toml. The project is the one the task's open worktree names in the ledger, else (T0, a
+# task from before team-open) the registered project whose primary checkout is the worktree's main
+# checkout; a worktree of no registered project gets no toolkit. T0, the load check, measures a
+# toolkit before any project lists it, so it takes any toolkit unlisted but a production one.
+# An ops launch runs on one message of Daniel's, the one --request links, and is refused (exit 1,
+# nothing started or logged, before the session list is read) unless that message is in
+# #coordinator or the task's latest thread (T0's, which has no thread, in #coordinator only), was
+# sent at most OPS_REQUEST_MAX_AGE seconds (an hour, bin/lib/team.sh) before the launch by the
+# time in its id, was asked for by no other ops launch, and is Daniel's: read back from that
+# channel with daniel_message, its author in allowFrom. A message is used by any task's launch of
+# role ops that names it, as its discord_message or at the end of its request (a launch logged
+# before discord_message was), and by a line of ~/.local/state/agent-team/ops-requests, to which
+# T0's ops launch, which logs nothing, appends "<message id> <UTC time> <session>" once its session
+# starts; so a relaunch needs a new message. The launch logs request (the link) and
+# discord_message (its id).
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
@@ -118,6 +139,13 @@ prompt="$*"
 [[ -n $prompt ]] || usage_error "missing first prompt"
 [[ -z $request || $role == ops ]] || usage_error "--request is for the ops role only"
 [[ -z $model || $role != ops ]] || usage_error "--model is not for the ops role, which runs on the default model"
+# Daniel's message, by its link: its channel and its id.
+request_channel='' request_message=''
+if [[ -n $request ]]; then
+  link=$(discord_link "$request") ||
+    usage_error "--request must link Daniel's Discord message, https://discord.com/channels/<guild>/<channel>/<message>, got '$request'"
+  read -r request_channel request_message <<<"$link"
+fi
 
 # Production reaches only the ops role, and only on Daniel's recorded request.
 for kit in "${toolkits[@]}"; do
@@ -191,9 +219,71 @@ if [[ $task != T0 ]]; then
     done <<<"$worktrees"
     [[ -n $worktree_event ]] || die "$worktree is not one of $task's open worktrees:${open:- it has none}"
   fi
+fi
 
+# A worker gets only the toolkits its worktree's project lists in the registry: the project its
+# open worktree names in the ledger, else (T0, a task from before team-open) the registered project
+# whose primary checkout is the worktree's main checkout. T0, the load check, measures a toolkit
+# before any project lists it, so it may take unlisted any but a production one, which
+# toolkit_refusal holds to the ops role.
+if ((${#toolkits[@]})); then
+  kit_project=$project
+  if [[ -z $kit_project ]]; then
+    main_checkout=$(git -C "$worktree" worktree list --porcelain | sed -n '1s/^worktree //p')
+    kit_project=$(team_project --find path "$main_checkout" | head -n 1) || exit 1
+    [[ -n $kit_project ]] ||
+      die "$worktree is a worktree of $main_checkout, which is no registered project's primary checkout in projects.toml, so a worker there gets no toolkit (asked for: ${toolkits[*]})"
+  fi
+  kit_list=$(team_project "$kit_project" toolkits) || exit 1
+  for kit in "${toolkits[@]}"; do
+    [[ $task != T0 ]] || toolkit_refusal "$kit" builder >/dev/null || continue
+    jq -e --arg kit "$kit" 'index([$kit])' <<<"$kit_list" >/dev/null ||
+      die "toolkit '$kit' is not one of $kit_project's toolkits in projects.toml ($(jq -r 'if . == [] then "it lists none" else join(", ") end' <<<"$kit_list")): a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
+  done
+fi
+
+if [[ $task != T0 ]]; then
   lease_gate "a worker"
   machine=$(machine_name) || exit 1
+fi
+
+# An ops launch runs on one message of Daniel's, the one --request links: in #coordinator or the
+# task's latest thread (T0's in #coordinator only), sent at most OPS_REQUEST_MAX_AGE seconds ago by
+# the time in its id, asked for by no other ops launch (a launch of role ops in the ledger naming
+# it, as its discord_message or at the end of an older one's request, or a line of T0's record,
+# since T0 logs nothing), and Daniel's by Discord's own word (daniel_message). Each refusal comes
+# before the session list is read, the session's settings are written or anything is started.
+ops_requests=$HOME/.local/state/agent-team/ops-requests
+if [[ $role == ops ]]; then
+  thread_channel=''
+  if [[ $task != T0 ]]; then
+    thread_channel=$(jq -r 'map(select(.event == "thread") | .discord_thread | values | tostring) | last // empty' <<<"$events")
+  fi
+  if [[ $request_channel == "$COORDINATOR_CHANNEL" ]]; then
+    place="#coordinator $request_channel"
+  elif [[ -n $thread_channel && $request_channel == "$thread_channel" ]]; then
+    place="the task's thread $request_channel"
+  elif [[ $task == T0 ]]; then
+    die "the request links a message in channel $request_channel, not #coordinator ($COORDINATOR_CHANNEL): T0, the load check, has no thread, so its ops launch needs Daniel's message there"
+  else
+    die "the request links a message in channel $request_channel, which is neither #coordinator ($COORDINATOR_CHANNEL) nor $task's thread ($thread_channel): an ops launch needs Daniel's message in one of them"
+  fi
+  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+  sent=$(((10#$request_message >> 22) / 1000 + 1420070400))
+  (($(date +%s) - sent <= OPS_REQUEST_MAX_AGE)) ||
+    die "Discord message $request_message was sent at $(date -ud "@$sent" +%FT%TZ), more than $((OPS_REQUEST_MAX_AGE / 60)) minutes before this launch, the limit for an ops request: ask Daniel for a new message"
+  used=''
+  if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
+    used=$(jq -rnR --arg m "$request_message" 'first(inputs | fromjson?
+      | select(type == "object" and .event == "launch" and .role == "ops")
+      | select((.discord_message | tostring) == $m or (.request | strings | test("(^|[^0-9])" + $m + "$"))))
+      | "\(.task)\u0027s ops launch \(.session) at \(.ts)"' "$TEAM_HOME/ledger.jsonl")
+  fi
+  if [[ -z $used && -f $ops_requests ]]; then
+    used=$(awk -v m="$request_message" '$1 == m { print "T0\047s ops launch " $3 " at " $2 " (~/.local/state/agent-team/ops-requests)"; exit }' "$ops_requests")
+  fi
+  [[ -z $used ]] || die "Discord message $request_message asked for $used already: each ops launch needs a new message of Daniel's"
+  reason=$(daniel_message "$request_message" "the ops request" "$place" 2>&1 >/dev/null) || die "$reason"
 fi
 
 # The project's model for the role, from the registry, unless --model named one; ops stays on the
@@ -356,14 +446,21 @@ out=$(cd "$worktree" && claude --bg "${restricted[@]}" \
 [[ $out != *"send a prompt to start"* ]] || die "the session started without its prompt: $out"
 id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read the session id from: $out"
 
+# T0 logs nothing, so its ops launch records the message it ran on in the machine's state.
+if [[ $task == T0 && $role == ops ]]; then
+  mkdir -p "$(dirname "$ops_requests")"
+  printf '%s %s %s\n' "$request_message" "$(date -u +%FT%TZ)" "$id" >>"$ops_requests"
+fi
+
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --arg machine "$machine" --arg model "$model" --arg request "$request" --arg brief "$brief" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
+    --arg machine "$machine" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
       event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
       + ($at // {} | {project, branch} | with_entries(select(.value != null)))
       + {machine: $machine}
       + (if $model == "" then {} else {model: $model} end)
       + (if $request == "" then {} else {request: $request} end)
+      + (if $discord_message == "" then {} else {discord_message: $discord_message} end)
       + (if $brief == "" then {} else {brief: $brief} end)' "${toolkits[@]}")"
 fi
 

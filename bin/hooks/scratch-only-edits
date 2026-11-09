@@ -2,14 +2,21 @@
 # PreToolUse hook for planners and reviewers: they write files only inside the worktree's .scratch/
 # directory. Exit 2 blocks the tool call and shows stderr to the agent; exit 0 passes it.
 #
-# Usage: scratch-only-edits   (the hook's input on stdin)
+# Usage: scratch-only-edits [<file>]   (the hook's input on stdin)
+#   file  the one file, relative to the worktree, an edit tool may write (the ops session's
+#         .scratch/answer.md): plain names joined by /, none of them . or .., the first not
+#         starting with a -
 #
 # It reads nothing of the team home, so it decides on a machine that names none. When it cannot
 # decide it refuses, saying so: input that is not a JSON object with a tool_name string, a wrong
 # argument on its command line (which so blocks every call), and any command of its own that fails,
 # which ends as an exit 2 naming the hook and the exit code (team_guard in bin/lib/team.sh).
 #
-# An Edit, Write, MultiEdit or NotebookEdit call is judged by its path, resolved with its symlinks.
+# An Edit, Write, MultiEdit or NotebookEdit call is judged by its path, resolved with its symlinks:
+# it must lie under .scratch/, or, given <file>, be that file under the worktree, its path resolved
+# with its symlinks being the path as written, so a write is refused when the file or a directory
+# between the worktree and it is a link. A Bash call is judged the same with or without <file>, against .scratch/ (the ops
+# session that passes one has no Bash).
 #
 # A Bash call is allowed unread when it holds no > and not the letters tee once every ', " and \ is
 # taken out of it (and every \ that ends a line, with its newline), and holds no ANSI-C string
@@ -250,7 +257,12 @@ team_guard=scratch-only-edits team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 
 # A wrong argument in the settings blocks every call the hook sees, the fail-closed side.
-[[ $# -eq 0 ]] || usage_error "usage: scratch-only-edits   (the hook's input on stdin)"
+one=''
+if (($#)); then
+  [[ $# -eq 1 && $1 =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ && $1 != -* && /$1/ != */./* && /$1/ != */../* ]] ||
+    usage_error "usage: scratch-only-edits [<the one file a session may write, relative to the worktree>]   (the hook's input on stdin)"
+  one=$1
+fi
 input=$(cat)
 tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<"$input" 2>/dev/null) || {
   echo "Blocked: scratch-only-edits could not read the hook's input (JSON with a tool_name); a guard that cannot decide refuses, so report it as BLOCKED and do not reach it another way." >&2
@@ -273,6 +285,12 @@ if [[ $tool != Bash ]]; then
   [[ -n $path ]] || exit 0
   [[ $path == /* ]] || path="$cwd/$path"
   target=$(realpath -m -- "$path")
+  if [[ -n $one ]]; then
+    one=$(realpath -m -- "$root")/$one
+    [[ $target == "$one" ]] && exit 0
+    echo "Blocked: this session may edit one file only, $one (tried $target)." >&2
+    exit 2
+  fi
   under "$target" "$scratch" && exit 0
   echo "Blocked: this role may edit files only under $scratch (tried $target)." >&2
   exit 2

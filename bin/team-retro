@@ -20,7 +20,8 @@
 #   blocks      every blocked and failed, a denial when its reason says denied, denies, refused,
 #               refuses or auto mode, in any case, and every denied (a denial the worker went
 #               past), always a denial, its reason "<role> <what>: <why>"
-#   questions   each task's question and asked events, repeated with two or more
+#   questions   each task's question and asked events, repeated with two or more, an ops
+#               session's question, logged as its length, by a line saying so
 #   reviews     each task's review verdicts, reopened when a findings is followed by another review
 #   waits       each span that parks a task: waiting (on its on), paused and blocked until the next
 #               resumed or launch, held until the next resumed, asked (on Daniel) until the

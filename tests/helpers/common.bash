@@ -186,8 +186,9 @@ sandbox() {
   # Docker's answers (TEAM_DOCKER_SECONDS).
   unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
   unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS
-  # The state directory is HOME's, as the sandbox's HOME is.
-  unset XDG_STATE_HOME
+  # The state and cache directories and Claude Code's config directory are HOME's, as the
+  # sandbox's HOME is.
+  unset XDG_STATE_HOME XDG_CACHE_HOME CLAUDE_CONFIG_DIR
   guard_sandbox
 }
 

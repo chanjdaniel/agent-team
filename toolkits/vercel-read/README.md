@@ -3,6 +3,7 @@
 Read-only access to Conventioner's two Vercel projects, `makers-market-management-front-end` and `makers-market-management-back-end`, for the `ops` role only.
 `team-worker` refuses it for any other role, and the planner load check fails if any `vercel-read` tool or skill reaches a non-ops worker.
 An ops session takes it alone (`--toolkit vercel-read`) for a Vercel question, or beside `prod-read` for one that spans the database too.
+`team-worker` also refuses it, the ops load check's launch included, in a worktree of a project whose `toolkits` in `projects.toml` do not list it, so it runs in a worktree of Conventioner, whose Vercel it reads, once Daniel's yes has put it in that project's line.
 
 ## What loads
 

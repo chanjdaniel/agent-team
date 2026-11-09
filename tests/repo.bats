@@ -344,6 +344,22 @@ role_matrix() {
     "$HOME/.local/bin/claude agents"
 }
 
+# A worker reads no other session's conversation: claude attach and claude logs would show it an
+# ops session's production results, or any session's text it was never given. The coordinator
+# attaches to sessions and reads their logs, so its settings deny neither.
+@test "every worker role's settings deny attaching to a session and reading its logs, and the coordinator's do not" {
+  local command
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  role_matrix "git log --oneline -5" "git log -p bin/team-close" "grep -rn 'claude logs' bin" \
+    "grep -n \"claude attach\" bin/team-close" "claude --version" "git commit -m 'deny claude logs'" -- \
+    "claude attach T7-ops" "claude attach abc12345" "claude logs abc12345" "claude logs T7-ops --follow" \
+    "/usr/bin/claude logs abc12345" "$HOME/.local/bin/claude attach T7-ops" "~/.local/bin/claude logs abc12345" \
+    "cd ~/wt && claude attach T7-ops" "true; /usr/bin/claude logs abc12345"
+  for command in "claude attach T7-ops" "/usr/bin/claude logs abc12345" "claude logs abc12345"; do
+    if denied coordinator.settings.json "$command"; then echo "the coordinator may not run: $command" >&2; return 1; fi
+  done
+}
+
 @test "every worker role's settings deny Docker's prune commands, in every spelling, and nothing else of Docker" {
   local object denied=()
   for object in system volume image network builder container buildx; do

@@ -13,13 +13,19 @@
 #
 # Usage: team-load-check [--toolkit <name>]...
 #        team-load-check --context [--role planner|builder|reviewer] [--toolkit <name>]...
-#        team-load-check --role ops --worktree <path> --toolkit <name>...
+#        team-load-check --role ops --worktree <path> --request <link> --toolkit <name>...
 # The ops form takes four toolkit sets: prod-read, prod-read with prod-write, vercel-read, or
 # prod-read with vercel-read (in any order); any other is a malformed command line (exit 2). A
 # toolkit team-worker refuses one of the form's roles (toolkit_refusal in bin/lib/team.sh: the
 # coordinator and frontend toolkits, and prod-* and vercel-read outside the ops form) is refused
 # at once, with team-worker's message, as a malformed command line (exit 2), before the doctor
 # runs.
+# The ops form needs --request <link>, the link to Daniel's message in #coordinator asking for this
+# load check, which it passes to team-worker as the launch's request: team-worker holds it to an
+# ops launch's rules (Daniel's, at most an hour old, used by no other ops launch), so each load
+# check of the ops role needs a new message. Without it, or with a value that is not a Discord
+# message link (discord_link in bin/lib/team.sh), the ops form is a malformed command line (exit
+# 2), and so is --request in any other form, before the doctor runs.
 #
 # The planner form first rehearses a lease of each project whose pool is treehouse: the project's
 # lease command leases a slot from the primary checkout to a holder of this run's own,
@@ -80,7 +86,7 @@
 #
 # The ops form reads production, so Daniel must be at the PC to approve its 1Password prompts (one
 # per toolkit) and, with prod-write, to decline its five write prompts on the phone.
-# It launches an ops session through bin/team-worker (request load-check) in <path>, a linked
+# It launches an ops session through bin/team-worker (on --request) in <path>, a linked
 # worktree in a trusted path outside the protected .claude/ (a .claude/worktrees/ slot is the
 # exception), and checks that
 #   - each toolkit connects (FAIL: a production server did not connect: <the notices it saw>),
@@ -117,8 +123,8 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 home=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-usage="usage: team-load-check [--toolkit <name>]... | team-load-check --context [--role <role>] [--toolkit <name>]... | team-load-check --role ops --worktree <path> --toolkit <name>..."
-role='' context='' worktree='' toolkit_args=() expected=() writes=
+usage="usage: team-load-check [--toolkit <name>]... | team-load-check --context [--role <role>] [--toolkit <name>]... | team-load-check --role ops --worktree <path> --request <link> --toolkit <name>..."
+role='' context='' worktree='' request='' toolkit_args=() expected=() writes=
 while [[ $# -gt 0 ]]; do
   if [[ $1 == --context ]]; then context=1; shift; continue; fi
   [[ $# -ge 2 ]] || usage_error "$usage"
@@ -126,6 +132,7 @@ while [[ $# -gt 0 ]]; do
     --toolkit) toolkit_args+=(--toolkit "$2"); expected+=("$2") ;;
     --role) role=$2 ;;
     --worktree) worktree=$2 ;;
+    --request) request=$2 ;;
     *) usage_error "$usage" ;;
   esac
   shift 2
@@ -162,6 +169,11 @@ if [[ $role == ops && -z $context ]]; then
     'prod-read prod-write') writes=1 ;;
     *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write; --toolkit vercel-read; or --toolkit prod-read with --toolkit vercel-read" ;;
   esac
+  [[ -n $request ]] || usage_error "--role ops needs --request <the link to Daniel's Discord message in #coordinator asking for this load check>"
+  discord_link "$request" >/dev/null ||
+    usage_error "--request must link Daniel's Discord message, https://discord.com/channels/<guild>/<channel>/<message>, got '$request'"
+elif [[ -n $request ]]; then
+  usage_error "--request is for --role ops only"
 fi
 
 # main_checkout <dir>: the main checkout of the git checkout <dir> is in, or nothing when it is none
@@ -563,7 +575,7 @@ ops_prompt() {
   local servers kit n=4
   servers=$(printf '%s\n' "${kits[@]}" | paste -sd '|' | sed 's/|/ and /g')
   cat <<EOF
-This is an automated load check of the ops role on task T0, request 'load-check'. It stands in for a brief: read no data docs, and message no one; the check reads the files you write. Write every file with the Write tool in $1/. Do each step in order.
+This is an automated load check of the ops role on task T0, on Daniel's request $request. It stands in for a brief: read no data docs, and message no one; the check reads the files you write. Write every file with the Write tool in $1/. Do each step in order.
 1. Wait for $servers: search with ToolSearch for each, and repeat while it says a server is still connecting, about 30 searches at most. Write connect.txt with, for each of $servers, a line '<server>: connected', '<server>: failed', '<server>: timed out' or '<server>: still connecting after <n> searches', then a line 'notice: ' followed by the exact text of the last thing ToolSearch or the system told you about it. If any of them is not connected, write done.txt with the line 'not connected' and stop.
 2. Write tools.txt: a line 'tools: ' followed by every tool name you have, built-in and MCP, deferred ones included, comma-separated; then every name starting with mcp__ on its own line; then one line each 'Bash: present' or 'Bash: absent', and the same for WebFetch, WebSearch, Agent and Artifact. Then write skills.txt with every skill name you can invoke with the Skill tool, exactly as it is listed to you, one per line (an empty file if none); invoke none of them.
 3. Two probes that are expected to be refused; a refusal here is not a reason to send BLOCKED. Use Grep with output_mode 'count', pattern '.', path '/proc/self/environ'. Then use Read on '/proc/self/status'. Never Read /proc/self/environ. Write probes.txt with a line 'grep-environ: refused: <first line of the refusal>' or 'grep-environ: allowed: <the count only>', and a line 'read-status: refused: <first line of the refusal>' or 'read-status: allowed'. Never copy any file's content.
@@ -712,7 +724,7 @@ ops_check() {
     fi
   }
   trap end_session EXIT
-  id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 ops "$worktree" "${toolkit_args[@]}" --request load-check -- \
+  id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 ops "$worktree" "${toolkit_args[@]}" --request "$request" -- \
     "$(ops_prompt .scratch/load-check-ops)")
   echo "load check: ops session $id started"
   automode_check ops "$worktree"
@@ -750,7 +762,7 @@ ops_check() {
   for kit in "${kits[@]}"; do
     [[ -z ${scanned[${leak_name[$kit]}]:-} ]] || continue
     scanned[${leak_name[$kit]}]=1
-    hits=$(grep -rlE "${leak_re[$kit]}" "${own[@]}" "$HOME/.cache/claude-cli-nodejs" "$HOME/.mongodb" \
+    hits=$(grep -rlE "${leak_re[$kit]}" "${own[@]}" "$(claude_cache_dir)" "$HOME/.mongodb" \
       "$TEAM_HOME/tasks/T0" "$TEAM_HOME/memory" 2>/dev/null || true)
     if [[ -n $hits ]]; then
       echo "FAIL: ${leak_name[$kit]} in:"

@@ -3,6 +3,7 @@
 # its task's open worktrees, with its role's settings, and logging the launch.
 
 load helpers/common
+load helpers/ops-request
 
 setup() {
   sandbox
@@ -59,7 +60,8 @@ opened() {
 }
 
 # registry [--first <TOML line>] <project>...: a registry holding each project, a git pool of
-# slots/<project>/1 and 2, with the TOML line, if any, in the first project's table.
+# slots/<project>/1 and 2, listing every toolkit the tests give, with the TOML line, if any, in the
+# first project's table.
 registry() {
   local extra='' name
   if [[ $1 == --first ]]; then extra=$2 && shift 2; fi
@@ -75,7 +77,7 @@ merge_method = "merge"
 required_checks = []
 task_dir = ".scratch/task"
 docs = []
-toolkits = ["prod-read", "prod-write"]
+toolkits = ["prod-read", "prod-write", "vercel-read", "browser", "codegraph", "effect", "spec-review", "kit-a", "kit-b", "kit-c"]
 $extra
 pool = { provider = "git", slots = ["slots/$name/1", "slots/$name/2"] }
 
@@ -86,6 +88,16 @@ TOML
 
 launches() {
   jq -c 'select(.event == "launch") | del(.ts)' "$TEAM_HOME/ledger.jsonl"
+}
+
+# ops_refused <message> <argument>...: the launcher run with those arguments exits 1 with
+# <message> and nothing else on stderr, starts no session, reads no session list and logs nothing.
+ops_refused() {
+  run_bin team-worker "${@:2}"
+  assert_equal "$status" 1
+  assert_equal "$output" "team-worker: $1"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
 }
 
 # A copy of bin/ in a checkout with roles, settings and toolkits written by the test, so the
@@ -337,7 +349,7 @@ run_fake() {
   local role settings
   for role in planner builder reviewer ops; do
     if [[ $role == ops ]]; then
-      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
@@ -419,7 +431,7 @@ $REPO_ROOT/bin/hooks/command-guard"
   local role settings expected
   for role in planner builder reviewer ops; do
     if [[ $role == ops ]]; then
-      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
@@ -432,6 +444,13 @@ command-guard block 10"
     esac
     assert_equal "$(jq -r '.hooks.PreToolUse[].hooks[] | "\(.command | ltrimstr("'"$REPO_ROOT"'/bin/hooks/")) \(.onFailure) \(.timeout)"' "$settings" | sort)" \
       "$(sort <<<"$expected")"
+    # The write hook holds ops to its one file, and planners and reviewers to .scratch/.
+    case $role in
+      planner | reviewer) expected=null ;;
+      ops) expected='[".scratch/answer.md"]' ;;
+      *) expected='' ;;
+    esac
+    assert_equal "$(jq -c '.hooks.PreToolUse[].hooks[] | select(.command | endswith("/scratch-only-edits")) | .args' "$settings")" "$expected"
   done
 }
 
@@ -738,7 +757,7 @@ role_texts() {
   local role settings worker=$REPO_ROOT/settings/worker.json texts
   for role in planner builder reviewer ops; do
     if [[ $role == ops ]]; then
-      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
@@ -764,7 +783,7 @@ role_texts() {
   local role settings
   for role in planner builder reviewer ops; do
     if [[ $role == ops ]]; then
-      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
@@ -821,6 +840,122 @@ role_texts() {
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/spec-review"]')"
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["spec-review"]'
+}
+
+# fixture_projects: the registry fixture (tests/fixtures/projects.toml), in which conventioner lists
+# prod-read and prod-write and agent-team none, with a git checkout at both primary checkouts and
+# linked worktrees of them: $conv_wt and $conv_wt2 of conventioner's, $at_wt of agent-team's.
+fixture_projects() {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  conv=$HOME/Documents/projects/personal/Conventioner at=$HOME/agent-team
+  conv_wt=$HOME/wt/conventioner-1 conv_wt2=$HOME/wt/conventioner-2 at_wt=$HOME/wt/agent-team-1
+  local repo
+  for repo in "$conv" "$at"; do
+    git init -q -b main "$repo"
+    git -C "$repo" commit -q --allow-empty -m "chore: start"
+  done
+  git -C "$conv" worktree add -q -b feat/T8-conv "$conv_wt"
+  git -C "$conv" worktree add -q -b feat/T9-conv "$conv_wt2"
+  git -C "$at" worktree add -q -b feat/T7-team "$at_wt"
+}
+
+# The tail of every refusal of a toolkit its project does not list.
+UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
+
+@test "a toolkit the worktree's project does not list is refused, naming the project, its list and Daniel's yes, with nothing started or logged" {
+  fixture_projects
+  ops_stub
+  thread T7
+  opened T7 agent-team feat/T7-team "$at_wt"
+  ops_refused "toolkit 'browser' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T7 builder "$at_wt" --toolkit browser -- go
+  thread T8
+  opened T8 conventioner feat/T8-conv "$conv_wt"
+  ops_refused "toolkit 'effect' is not one of conventioner's toolkits in projects.toml (prod-read, prod-write): $UNLISTED" \
+    T8 reviewer "$conv_wt" --toolkit effect -- go
+  # One toolkit listed and one not: the launch is refused, before Discord is read.
+  ops_refused "toolkit 'vercel-read' is not one of conventioner's toolkits in projects.toml (prod-read, prod-write): $UNLISTED" \
+    T8 ops "$conv_wt" --toolkit prod-read --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(stub_calls curl)" ""
+  # The project is the one the ledger's open worktree names, whichever checkout the worktree is of.
+  thread T9
+  opened T9 agent-team feat/T9-conv "$conv_wt2"
+  ops_refused "toolkit 'prod-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T9 ops "$conv_wt2" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  run_bin -0 team-worker --help
+  assert_contains "$output" "A worker gets only the toolkits its worktree's project lists in the registry (team-project's"
+  run_bin -0 team-project --help
+  assert_contains "$output" "an allow list"$'\n'"                   team-worker enforces"
+}
+
+@test "a toolkit the worktree's project lists launches as today, and so does a launch with no toolkit" {
+  fixture_projects
+  ops_stub
+  thread T8
+  opened T8 conventioner feat/T8-conv "$conv_wt"
+  run_bin -0 team-worker T8 ops "$conv_wt" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(launches | jq -c '{task, role, project, toolkits}')" \
+    '{"task":"T8","role":"ops","project":"conventioner","toolkits":["prod-read","prod-write"]}'
+  thread T7
+  opened T7 agent-team feat/T7-team "$at_wt"
+  run_bin -0 team-worker T7 builder "$at_wt" -- go
+  assert_equal "$(launches | tail -n 1 | jq -c '{task, role, project, toolkits}')" \
+    '{"task":"T7","role":"builder","project":"agent-team","toolkits":[]}'
+  assert_equal "$(bg_calls | wc -l)" 2
+  run_bin -0 team-log --check
+}
+
+@test "T0 and a task with no opened event take the registered project at the worktree's main checkout; a worktree of no registered project gets no toolkit" {
+  fixture_projects
+  ops_stub
+  thread T8
+  # proj, the setup's repository, is no project of the fixture's.
+  local task
+  for task in T8 T0; do
+    ops_refused "$(realpath "$wt1") is a worktree of $(realpath "$primary"), which is no registered project's primary checkout in projects.toml, so a worker there gets no toolkit (asked for: browser effect)" \
+      "$task" builder "$wt1" --toolkit browser --toolkit effect -- go
+  done
+  ops_refused "toolkit 'browser' is not one of conventioner's toolkits in projects.toml (prod-read, prod-write): $UNLISTED" \
+    T8 builder "$conv_wt" --toolkit browser -- go
+
+  run_bin -0 team-worker T8 ops "$conv_wt" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(launches | jq -c '{task, role, toolkits}')" '{"task":"T8","role":"ops","toolkits":["prod-read"]}'
+  run_bin -0 team-worker T8 builder "$wt1" -- go
+  run_bin -0 team-worker T0 ops "$conv_wt" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
+}
+
+@test "T0 takes any toolkit but a production one whatever its worktree's project lists; a production one needs the project to list it" {
+  fixture_projects
+  ops_stub
+  run_bin -0 team-worker T0 builder "$at_wt" --toolkit browser --toolkit effect -- go
+  assert_equal "$(bg_calls | jq -c '[.[index("--plugin-dir") + 1], .[index("--plugin-dir") + 3]]')" \
+    "$(jq -cn --arg k "$REPO_ROOT/toolkits" '["\($k)/browser", "\($k)/effect"]')"
+  : >"$STUB_CALLS/claude.log"
+  ops_refused "toolkit 'vercel-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T0 ops "$at_wt" --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  ops_refused "toolkit 'prod-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T0 ops "$at_wt" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  ops_refused "toolkit 'vercel-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T0 ops "$at_wt" --toolkit vercel-read --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+}
+
+@test "the existing toolkit refusals come first and unchanged, on a project that lists none" {
+  fixture_projects
+  ops_stub
+  thread T7
+  opened T7 agent-team feat/T7-team "$at_wt"
+  run_bin -2 team-worker T7 builder "$at_wt" --toolkit coordinator -- go
+  assert_contains "$output" "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)"
+  run_bin -2 team-worker T7 builder "$at_wt" --toolkit frontend -- go
+  assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  run_bin -1 team-worker T7 builder "$at_wt" --toolkit prod-read -- go
+  assert_equal "$output" "team-worker: toolkit 'prod-read' is for the ops role only"
+  run_bin -1 team-worker T7 ops "$at_wt" --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$output" "team-worker: prod-write needs --toolkit prod-read beside it"
+  run_bin -1 team-worker T7 ops "$at_wt" --toolkit prod-read -- go
+  assert_equal "$output" "team-worker: the ops role needs --request <the link to Daniel's Discord message>"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
 }
 
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
@@ -967,8 +1102,6 @@ echo "Started background session 5b3c0d2f (${*: -2:1}). Attach with: claude atta
 SH
 }
 
-request=https://discord.com/channels/1/2/3
-
 # The claude --bg calls made, without claude agents.
 bg_calls() {
   stub_calls claude | jq -c 'select(.[0] == "--bg")'
@@ -1002,10 +1135,12 @@ assert_prod_write_gated() {
   jq -e '.permissions.ask | index("mcp__*prod-write*") != null' "$1" >/dev/null
 }
 
-@test "an ops launch is restricted to the allowlisted tools and logs Daniel's request" {
+@test "an ops launch is restricted to the allowlisted tools and logs Daniel's request, its link and its message" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"
   ops_stub
+  local request
+  request=$(ops_request "$OPS_COORDINATOR")
   run_bin -0 --separate-stderr team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- Answer the request
   assert_equal "$output" "5b3c0d2f"
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$wt1"
@@ -1019,16 +1154,150 @@ assert_prod_write_gated() {
     "--settings", "\($t)/settings.ops.json",
     "--append-system-prompt-file", "\($code)/roles/ops.md",
     "--permission-mode", "auto", "--name", "T7-ops", "Answer the request"]')"
+  # The message is read back from #coordinator, the one place its link names.
+  assert_equal "$(stub_calls curl | jq -r '.[-1]')" "https://discord.com/api/v10/channels/$OPS_COORDINATOR/messages/${request##*/}"
   assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" --arg r "$request" '{task: "T7", event: "launch",
     role: "ops", session: "5b3c0d2f", worktree: $wt, toolkits: ["prod-read"], project: "proj",
-    branch: "feat/T7-one", machine: "home-pc", request: $r}')"
+    branch: "feat/T7-one", machine: "home-pc", request: $r, discord_message: ($r | split("/") | last)}')"
   run_bin -0 team-log --check
+}
+
+@test "an ops launch on Daniel's message in the task's latest thread passes and logs it, one sent just inside the hour too" {
+  thread T7
+  ops_stub
+  local request
+  request=$(ops_request 1563)
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$(stub_calls curl | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1563/messages/${request##*/}"
+  assert_equal "$(launches | jq -c '[.request, .discord_message]')" "$(jq -cn --arg r "$request" '[$r, ($r | split("/") | last)]')"
+  request=$(ops_request --ago 3540 1563)
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  run_bin -0 team-log --check
+}
+
+@test "an ops --request that is not a Discord message link is a malformed command line" {
+  thread T7
+  ops_stub
+  local bad
+  for bad in load-check 3 https://discord.com/channels/1/2 https://discord.com/channels/1/2/3/4 \
+    https://discord.com/channels/1/2/x http://discord.com/channels/1/2/3 https://example.com/channels/1/2/3 \
+    'https://discord.com/channels/1/2/3?x' ' https://discord.com/channels/1/2/3' https://discord.com/channels/@me/2/3 \
+    https://discord.com/channels/1/2/0123; do
+    run_bin -2 team-worker T7 ops "$wt1" --toolkit prod-read --request "$bad" -- go
+    assert_equal "$output" "team-worker: --request must link Daniel's Discord message, https://discord.com/channels/<guild>/<channel>/<message>, got '$bad'"
+  done
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(launches)" ""
+}
+
+@test "an ops request outside #coordinator and the task's latest thread is refused naming both; T0's outside #coordinator" {
+  thread T7
+  ledger_line '{ts: (now | todate), task: "T7", event: "thread", discord_thread: "1564"}'
+  ops_stub
+  local request
+  request=$(ops_request 1565)
+  ops_refused "the request links a message in channel 1565, which is neither #coordinator ($OPS_COORDINATOR) nor T7's thread (1564): an ops launch needs Daniel's message in one of them" T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  # The task's earlier thread is not its thread now.
+  request=$(ops_request 1563)
+  ops_refused "the request links a message in channel 1563, which is neither #coordinator ($OPS_COORDINATOR) nor T7's thread (1564): an ops launch needs Daniel's message in one of them" T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  ops_refused "the request links a message in channel 1563, not #coordinator ($OPS_COORDINATOR): T0, the load check, has no thread, so its ops launch needs Daniel's message there" T0 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "an ops request Discord cannot show, or by an author not in allowFrom, is refused with its reason" {
+  thread T7
+  ops_stub
+  local request id
+  request=$(ops_request "$OPS_COORDINATOR")
+  id=${request##*/}
+  rm "$BATS_TEST_TMPDIR/ops-request/$OPS_COORDINATOR-$id.json"
+  ops_refused "Discord message $id cannot be fetched from #coordinator $OPS_COORDINATOR: curl: (22) The requested URL returned error: 404" T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  request=$(ops_request --author 999 1563)
+  id=${request##*/}
+  ops_refused "Discord message $id is by daniel (999), who is not in allowFrom of ~/.claude/channels/discord/access.json" T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  echo '{"allowFrom": "757"}' >"$HOME/.claude/channels/discord/access.json"
+  request=$(ops_request 1563)
+  ops_refused "cannot read allowFrom from ~/.claude/channels/discord/access.json, so the ops request cannot be checked" T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+}
+
+@test "an ops request sent more than an hour before the launch is refused naming when, before Discord is read" {
+  thread T7
+  ops_stub
+  local request id sent
+  grep -qx 'OPS_REQUEST_MAX_AGE=3600' "$REPO_ROOT/bin/lib/team.sh"
+  request=$(ops_request --ago 3660 "$OPS_COORDINATOR")
+  id=${request##*/}
+  sent=$(date -ud "@$(((id >> 22) / 1000 + 1420070400))" +%FT%TZ)
+  ops_refused "Discord message $id was sent at $sent, more than 60 minutes before this launch, the limit for an ops request: ask Daniel for a new message" T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  ops_refused "Discord message $id was sent at $sent, more than 60 minutes before this launch, the limit for an ops request: ask Daniel for a new message" T0 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "an ops request another ops launch used is refused naming that launch: in the ledger, an older launch's request, or T0's record" {
+  thread T7
+  thread T5
+  ops_stub
+  local request id at used
+  request=$(ops_request "$OPS_COORDINATOR")
+  id=${request##*/}
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  at=$(jq -r 'select(.event == "launch") | .ts' "$TEAM_HOME/ledger.jsonl")
+  : >"$STUB_CALLS/claude.log"
+  # A relaunch, of this task, another or T0, needs a new message.
+  used="Discord message $id asked for T7's ops launch 5b3c0d2f at $at already: each ops launch needs a new message of Daniel's"
+  run_bin team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$status" 1
+  assert_equal "$output" "team-worker: $used"
+  run_bin team-worker T5 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$output" "team-worker: $used"
+  run_bin team-worker T0 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$output" "team-worker: $used"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(jq -c 'select(.event == "launch") | .session' "$TEAM_HOME/ledger.jsonl")" '"5b3c0d2f"'
+
+  # A launch from before discord_message was logged names the id at the end of its request; a
+  # builder's launch, or a request whose id only ends in the same digits, used none.
+  request=$(ops_request "$OPS_COORDINATOR")
+  id=${request##*/}
+  ledger_line --arg r "$request" '{ts: "2026-11-01T10:00:00Z", task: "T5", event: "launch", role: "ops", session: "0d0d0d0d", worktree: "/w", toolkits: ["prod-read"], request: $r}'
+  run_bin team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$output" "team-worker: Discord message $id asked for T5's ops launch 0d0d0d0d at 2026-11-01T10:00:00Z already: each ops launch needs a new message of Daniel's"
+  request=$(ops_request "$OPS_COORDINATOR")
+  id=${request##*/}
+  ledger_line --arg r "https://discord.com/channels/1/2/9$id" '{ts: "2026-11-01T10:00:00Z", task: "T5", event: "launch", role: "ops", session: "0e0e0e0e", worktree: "/w", toolkits: ["prod-read"], request: $r}'
+  ledger_line --arg r "$request" '{ts: "2026-11-01T10:00:00Z", task: "T5", event: "launch", role: "builder", session: "0f0f0f0f", worktree: "/w", toolkits: [], request: $r}'
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+
+  # T0 logs nothing, so its launch records its message in the machine's state, which counts too.
+  local record=$HOME/.local/state/agent-team/ops-requests
+  request=$(ops_request "$OPS_COORDINATOR")
+  id=${request##*/}
+  run_bin -0 team-worker T0 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$(wc -l <"$record")" 1
+  [[ $(cat "$record") =~ ^$id\ ([0-9T:-]+Z)\ 5b3c0d2f$ ]]
+  at=${BASH_REMATCH[1]}
+  : >"$STUB_CALLS/claude.log"
+  used="Discord message $id asked for T0's ops launch 5b3c0d2f at $at (~/.local/state/agent-team/ops-requests) already: each ops launch needs a new message of Daniel's"
+  run_bin team-worker T0 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$status" 1
+  assert_equal "$output" "team-worker: $used"
+  run_bin team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_equal "$output" "team-worker: $used"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(wc -l <"$record")" 1
+
+  run_bin -0 team-worker --help
+  assert_contains "$output" "https://discord.com/channels/<guild>/<channel>/<message>"
+  assert_contains "$output" "OPS_REQUEST_MAX_AGE seconds (an hour, bin/lib/team.sh)"
+  assert_contains "$output" "a line of ~/.local/state/agent-team/ops-requests"
+  assert_contains "$output" "so a relaunch"
 }
 
 @test "the generated ops MCP config starts the real prod-read launcher and holds no secret" {
   thread T7
   ops_stub
-  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   local mcp=$TEAM_HOME/tasks/T7/mcp.ops.json
   assert_equal "$(jq -c . "$mcp")" "$(jq -cn --arg code "$REPO_ROOT" '{mcpServers: {"prod-read": {command: "node",
     args: ["\($code)/toolkits/prod-read/scripts/start-server.mjs"]}}}')"
@@ -1038,12 +1307,16 @@ assert_prod_write_gated() {
     <(jq 'del(.permissions.deny)' "$TEAM_HOME/tasks/T7/settings.ops.json")
 }
 
-@test "the generated ops settings allow only prod-read, vercel-read and .scratch edits, ask for every prod-write tool, and deny every outbound tool" {
+@test "the generated ops settings allow only prod-read, vercel-read and the answer file's edits, ask for every prod-write tool, and deny every outbound tool" {
   thread T7
   ops_stub
-  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   local s=$TEAM_HOME/tasks/T7/settings.ops.json rule
-  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/answer.md)"]'
+  # The write hook holds the session to that one file, and blocks when it fails.
+  assert_equal "$(jq -c '[.hooks.PreToolUse[].hooks[] | select(.command | endswith("/scratch-only-edits"))
+    | [.command, .args, .onFailure, .timeout]]' "$s")" \
+    "$(jq -cn --arg c "$REPO_ROOT/bin/hooks/scratch-only-edits" '[[$c, [".scratch/answer.md"], "block", 30]]')"
   # The write rules hold even in a read session, where prod-write is not loaded.
   assert_prod_write_gated "$s"
   assert_equal "$(jq '.permissions.ask | length' "$s")" 11
@@ -1091,6 +1364,8 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   thread T7
   opened T7 proj feat/T7-one "$wt1"
   ops_stub
+  local request
+  request=$(ops_request "$OPS_COORDINATOR")
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --request "$request" -- Make the change
   local t=$TEAM_HOME/tasks/T7
   assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" '["--bg",
@@ -1109,7 +1384,7 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
 
   local s=$t/settings.ops.json
   assert_prod_write_gated "$s"
-  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/answer.md)"]'
   # The ops log's hooks cover both toolkits' tools, and block a write whose line is lost.
   assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/ops-log"))
     | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" '^mcp__.*(prod-(read|write)|vercel-read).*__ block'
@@ -1138,7 +1413,7 @@ matcher_matches() {
     local kits args=() plugins=() kit
     read -ra kits <<<"$set"
     for kit in "${kits[@]}"; do args+=(--toolkit "$kit"); plugins+=(--plugin-dir "$REPO_ROOT/toolkits/$kit"); done
-    run_bin -0 team-worker T7 ops "$wt1" "${args[@]}" --request "$request" -- Answer the request
+    run_bin -0 team-worker T7 ops "$wt1" "${args[@]}" --request "$(ops_request "$OPS_COORDINATOR")" -- Answer the request
     assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" \
       --argjson plugins "$(printf '%s\n' "${plugins[@]}" | jq -R . | jq -sc .)" '["--bg",
       "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents,Skill",
@@ -1155,7 +1430,7 @@ matcher_matches() {
     run -1 grep -Eq '@TEAM_CODE@|@TASK@|vcp_|VERCEL|op://|token|mongodb(\+srv)?://|password' "$mcp"
 
     local s=$t/settings.ops.json
-    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/answer.md)"]'
     assert_prod_write_gated "$s"
     matcher_matches "$s" mcp__vercel-read__list-deployments mcp__plugin_vercel-read_vercel-read__runtime-logs \
       mcp__prod-read__find mcp__plugin_prod-write_prod-write__delete-many
@@ -1170,7 +1445,7 @@ matcher_matches() {
   thread T7
   opened T7 proj feat/T7-one "$wt1"
   ops_stub
-  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- Answer the request
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- Answer the request
   assert_equal "$(bg_calls | jq -c 'index("--model")')" "null"
   assert_equal "$(launches | jq -c 'has("model")')" "false"
 }
@@ -1197,7 +1472,7 @@ matcher_matches() {
     run_bin -1 team-worker T7 "$role" "$wt1" --toolkit vercel-read -- go
     assert_contains "$output" "toolkit 'vercel-read' is for the ops role only"
   done
-  run_bin -2 team-worker T7 builder "$wt1" --request "$request" -- go
+  run_bin -2 team-worker T7 builder "$wt1" --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_contains "$output" "--request is for the ops role only"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
@@ -1209,20 +1484,20 @@ matcher_matches() {
   cp "$REPO_ROOT/roles/ops.md" "$code/roles/" && cp "$REPO_ROOT/settings/ops.json" "$code/settings/"
   thread T7
   ops_stub
-  run_fake T7 ops "$wt1" --request "$request" -- go
+  run_fake T7 ops "$wt1" --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "the ops role needs --toolkit prod-read or --toolkit vercel-read"
-  run_fake T7 ops "$wt1" --toolkit kit-a --request "$request" -- go
+  run_fake T7 ops "$wt1" --toolkit kit-a --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "the ops role needs --toolkit prod-read or --toolkit vercel-read"
-  run_fake T7 ops "$wt1" --toolkit prod-write --request "$request" -- go
+  run_fake T7 ops "$wt1" --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
-  run_fake T7 ops "$wt1" --toolkit vercel-read --toolkit prod-write --request "$request" -- go
+  run_fake T7 ops "$wt1" --toolkit vercel-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
   # The ops load check proves no write session with vercel-read, so none launches.
-  run_fake T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --toolkit vercel-read --request "$request" -- go
+  run_fake T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write takes no --toolkit vercel-read beside it"
   run_fake T7 ops "$wt1" --toolkit vercel-read -- go
@@ -1241,14 +1516,14 @@ matcher_matches() {
 @test "an ops launch is refused while any task's ops session is listed" {
   thread T7
   ops_stub '[{"id": "11111111", "name": "T7-builder"}, {"id": "22222222", "name": "T5-ops", "state": "done"}]'
-  run_bin -1 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  run_bin -1 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_contains "$output" "an ops session is already listed: T5-ops (22222222); end it with team-ops-end first"
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
 
   stub_reply claude "not json"
   rm "$STUB_FIXTURES/claude.sh"
-  run_bin -1 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  run_bin -1 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_contains "$output" "cannot read the live session list"
   assert_equal "$(bg_calls)" ""
 }
@@ -1261,7 +1536,7 @@ matcher_matches() {
     run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.$role.json" "$TEAM_HOME/tasks/T7/mcp.$role.json"
   done
   ops_stub
-  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --request "$request" -- go
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
   grep -q "$REPO_ROOT/bin/hooks/ops-log" "$TEAM_HOME/tasks/T7/settings.ops.json"
   grep -q "$REPO_ROOT/toolkits/prod-write/" "$TEAM_HOME/tasks/T7/mcp.ops.json"
   run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.ops.json" "$TEAM_HOME/tasks/T7/mcp.ops.json"
@@ -1416,11 +1691,11 @@ T9 {event: "paused", reason: "offline"}
 LINES
   echo '[{"id": "6a6a6a6a", "name": "T9-reviewer", "status": "idle"}]' >"$STUB_FIXTURES/agents.json"
   stop_stub
-  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request https://discord.com/channels/1/2/3 -- go
+  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$(stops)" ""
   assert_contains "$stderr" "team-worker: left T9-reviewer 6a6a6a6a: idle with no event of its own since its launch"
   log_lines <<<'T9 {event: "resumed"}'
-  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request https://discord.com/channels/1/2/3 -- go
+  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$(stops)" ""
   assert_contains "$stderr" "team-worker: left T9-reviewer 6a6a6a6a: idle with no event of its own since its launch"
 }
@@ -1511,7 +1786,7 @@ LINES
   # The ops session of the fixture has ended.
   jq 'map(select(.id != "66666666"))' "$STUB_FIXTURES/agents.json" >"$STUB_FIXTURES/agents.next"
   mv "$STUB_FIXTURES/agents.next" "$STUB_FIXTURES/agents.json"
-  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request https://discord.com/channels/1/2/3 -- go
+  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$output" "9a8b7c6d"
   assert_equal "$(stops)" $'11111111\n33333333'
   [[ $stderr != *22222222* && $stderr != *44444444* ]]
@@ -1544,7 +1819,7 @@ LINES
   assert_equal "$(bg_calls)" ""
   run_bin -0 team-worker T0 planner "$wt1" -- go
   ops_stub
-  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$(launches | jq -r .role)" ops
   [[ ! -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
 
