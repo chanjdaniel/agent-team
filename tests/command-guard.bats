@@ -142,7 +142,10 @@ passes() {
     "echo 'team-worker T1 ops wt' | b\\ash" "echo 'team-worker T1 ops wt' | \$'bash'" \
     "echo 'team-worker T1 ops wt' | /bin/ba''sh" "{ echo 'team-worker T1 ops wt'; ((1)) } | bash" \
     "{ echo 'team-worker T1 ops wt'; [[ -n x ]] } | bash" "{ echo 'team-worker T1 ops wt'; f() (:) } | bash" \
-    "{ echo 'team-worker T1 ops wt'; function f (:) } | bash"
+    "{ echo 'team-worker T1 ops wt'; function f (:) } | bash" \
+    "a=(x) [[ ; echo 'team-worker T1 ops wt' | bash" "a+=(x) [[ ; echo 'team-worker T1 ops wt' | bash" \
+    "declare -a a=(x) [[ ; echo 'team-worker T1 ops wt' | bash" "((echo 'team-worker T1 ops wt' | bash) )" \
+    "echo \"\$((echo 'team-worker T1 ops wt' | bash) )\"" "echo \$((echo 'team-worker T1 ops wt' | bash) )"
 }
 
 # Bash takes } and esac as reserved words after every compound command's end, so each form below
@@ -153,9 +156,10 @@ passes() {
   local compounds=('((1))' '[[ -n x ]]' '[[ a < b && ( c ) ]]' '(:)' '{ :; }' 'if :; then :; fi'
     'while false; do :; done' 'until :; do :; done' 'for i in 1; do :; done' 'for ((i=0; i<1; i++)); do :; done'
     'for i in 1; { :; }' 'select x in; do break; done' 'case x in x) ;; esac' 'f() (:)' 'f() { :; }'
-    'function f (:)' 'function f { :; }' 'function f() { :; }' 'coproc (:)' 'coproc c { :; }' 'coproc { :; }')
+    'function f (:)' 'function f { :; }' 'function f() { :; }' 'coproc (:)' 'coproc c { :; }' 'coproc { :; }'
+    $'[[ a &&\n b ]]' $'[[ a && # ]]\n b ]]')
   for compound in "${compounds[@]}"; do
-    for prefix in '' '! ' 'time ' 'time -p '; do
+    for prefix in '' '! ' 'time ' 'time -p ' 'time -- ' 'time -p -- '; do
       [[ $prefix == '' || $compound != f* && $compound != coproc* ]] || continue
       for command in "{ echo 'team-worker T1 ops wt'; $prefix$compound } | bash" \
         "(case x in x) $prefix$compound esac; echo 'team-worker T1 ops wt') | bash" \
@@ -188,7 +192,8 @@ passes() {
     $'echo "$(case x in x) echo "<<X";; esac)"\nteam-worker T1 ops wt\nX' \
     $'echo "$(case x in x) echo "<<X ";; esac)"\nteam-worker T1 ops wt\nX' \
     $'echo "${x:-"<<X"}"\nteam-worker T1 ops wt\nX' $'echo "${x:-"<<X "}"\nteam-worker T1 ops wt\nX' \
-    $'echo $[1<<X]\nteam-worker T1 ops wt\nX' $'echo $[1<<X ]\nteam-worker T1 ops wt\nX'
+    $'echo $[1<<X]\nteam-worker T1 ops wt\nX' $'echo $[1<<X ]\nteam-worker T1 ops wt\nX' \
+    $'cat <<X; [[ a &&\nX\nb ]]\nteam-worker T1 ops wt\nX'
 }
 
 @test "a guarded command after a pipe, in a backtick, in a subshell or through xargs is refused" {

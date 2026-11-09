@@ -5,14 +5,17 @@ Usage: python3 -I command_text.py   (the command on stdin; prints the text on st
 
 bin/hooks/command-guard runs this file on a Bash call's command, and team-tokens imports
 without_heredocs from it. It reads the command far enough to know its quotes ('...', "..." and
-$'...'), backslashes, comments, arithmetic ($((, (( and $[), groups ((, $(, a backtick, ${ in
-which quotes nest up to its first }, [[ ... ]] and a { ... }), case's patterns, pipelines,
-here-strings and heredocs, whose marker is its word up to a blank or an operator with its quotes
-removed, as Bash takes it; a << inside quotes, a comment, arithmetic, ${ or [[ opens none.
+$'...'), backslashes, comments, arithmetic ($[, and $(( or (( whose two closing parentheses are
+adjacent, as Bash takes it: ((cmd) ) is two subshells), groups ((, $(, a backtick, ${ in which
+quotes nest up to its first }, [[ ... ]], in which a comment and a newline's heredoc bodies are
+read as outside it, and a { ... }; a ( right after = is an array assignment's, a word's part),
+case's patterns, pipelines, here-strings and heredocs, whose marker is its word up to a blank or
+an operator with its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic,
+${ or [[ opens none.
 A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it as one, as its
 reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
-a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time or its -p, coproc, or
-coproc's or function's name; after any other word it is a word.
+a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time, its -p or the -- after
+either, coproc, or coproc's or function's name; after any other word it is a word.
 The text it prints is the command with:
   - each heredoc's body left out, through its closing line, its marker's line kept. A body is kept
     whole, as code, when a shell may read it as its script: the heredoc is a shell's own, or its
@@ -57,7 +60,8 @@ SHELL_START = re.compile(
 # A word, from where it starts to a metacharacter.
 WORD = re.compile(r"[^\s;&|()<>]+")
 # The reserved words after which another may come, each with the state it leaves: function's and
-# coproc's name lets one follow, as does time's -p (Bash's reserved_word_acceptable).
+# coproc's name lets one follow, as do time's -p and the -- after either (Bash's
+# reserved_word_acceptable).
 OPENS = {word: True for word in ("!", "if", "then", "else", "elif", "do", "while", "until", "fi", "done")}
 OPENS.update(function="name", coproc="coproc", time="time")
 # Where a heredoc body's line starts a command substitution.
@@ -150,14 +154,21 @@ def _past_blanks(text, i):
     return i
 
 
-def _arith_end(text, i, pair="()"):
-    """The end of the arithmetic whose (( starts at i, or with pair "[]" whose $[ does."""
+def _matching(text, i, pair="()"):
+    """The end of the group whose opening pair[0] is at i, past its matching pair[1]."""
     depth = 0
     for j in range(i, len(text)):
         depth += {pair[0]: 1, pair[1]: -1}.get(text[j], 0)
         if depth == 0:
             return j + 1
     return len(text)
+
+
+def _arith_end(text, i):
+    """The end of the arithmetic whose (( starts at i, or None when the ) closing its second ( is
+    not right before another, as in ((cmd) ), which Bash reads as two subshells."""
+    end = _matching(text, i + 1)
+    return end + 1 if text[end : end + 1] == ")" else None
 
 
 def _closing(text, pos, word, tabs):
@@ -177,9 +188,9 @@ def read_command(text):
     pipelines, heredocs, strings, pending = [], [], [], []
     # Each group open at i: its kind (root, (, `, {, ${, [[, or a case's case-word, case-pattern
     # or case-body), its pipeline, where its segment starts, whether a pipe began that segment,
-    # the quote it sits in, whether a reserved word may come next (True, False, or after
-    # function's or coproc's name or time, "name", "coproc" or "time"), and that state for its
-    # parent once it ends: a compound command's end lets one come, a word's part does not.
+    # the quote it sits in, whether a reserved word may come next (True, False, or "name",
+    # "coproc", "time" or "time -p" after function, coproc, time or time's -p), and that state for
+    # its parent once it ends: a compound command's end lets one come, a word's part does not.
     frames = []
     quote, i, n = None, 0, len(text)
 
@@ -208,7 +219,20 @@ def read_command(text):
 
     def reserved():
         """Whether a reserved word may come here."""
-        return frames[-1][5] in (True, "coproc", "time")
+        return frames[-1][5] in (True, "coproc", "time", "time -p")
+
+    def bodies(pos):
+        """Read the pending heredocs' bodies from pos on, each up to its closing line, and return
+        where the last closing line ends, or None when the first has none."""
+        last = None
+        for pipeline, segment, start, marker_end, word, quoted, tabs in pending:
+            found = _closing(text, pos, word, tabs) if pos <= n else None
+            if found is None:
+                break
+            heredocs.append(Heredoc(pipeline, segment, (start, marker_end), (pos, found[0]), found[1], quoted))
+            pos, last = found[1] + 1, found[1]
+        pending.clear()
+        return last
 
     def word_at(at):
         """A word that is no reserved word starts at at, or goes on there: one may follow it only
@@ -230,7 +254,7 @@ def read_command(text):
             i += 2
             continue
         if quote == '"':
-            if text.startswith("$((", i):
+            if text.startswith("$((", i) and _arith_end(text, i + 1):
                 i = _arith_end(text, i + 1)
             elif text.startswith("$(", i) or text.startswith("${", i) or c == "`":
                 push("`" if c == "`" else "(" if text[i + 1] == "(" else "${", i + 1 + (c == "$"), '"')
@@ -241,10 +265,10 @@ def read_command(text):
         if c in "'\"" or text.startswith("$'", i):
             word_at(i)
             quote, i = "$'" if c == "$" else c, i + 1 + (c == "$")
-        elif text.startswith("$((", i) or text.startswith("$[", i):
+        elif text.startswith("$((", i) and _arith_end(text, i + 1) or text.startswith("$[", i):
             word_at(i)
-            i = _arith_end(text, i + 1, "()" if text[i + 1] == "(" else "[]")
-        elif kind not in ("${", "[[") and text.startswith("((", i):
+            i = _arith_end(text, i + 1) if text[i + 1] == "(" else _matching(text, i + 1, "[]")
+        elif kind not in ("${", "[[") and text.startswith("((", i) and _arith_end(text, i):
             # An arithmetic command, a compound one.
             i = _arith_end(text, i)
             frames[-1][5] = True
@@ -264,21 +288,27 @@ def read_command(text):
             if c == "}":
                 quote = pop(i)
             i += 1
-        elif kind == "[[":
-            # In [[ ... ]] nothing is an operator but its ]].
-            if text.startswith("]]", i) and text[i - 1] in METACHARACTERS and text[i + 2 : i + 3] in METACHARACTERS | {""}:
-                pop(i)
-                i += 1
-            i += 1
         elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
             end = text.find("\n", i)
             i = n if end < 0 else end
+        elif kind == "[[":
+            # In [[ ... ]] nothing is an operator but its ]]; a newline reads the pending bodies.
+            if text.startswith("]]", i) and text[i - 1] in METACHARACTERS and text[i + 2 : i + 3] in METACHARACTERS | {""}:
+                pop(i)
+                i += 1
+            elif c == "\n" and pending:
+                last = bodies(i + 1)
+                if last is not None:
+                    i = last
+                    continue
+            i += 1
         elif kind == "case-pattern" and c in "(|":
             # A pattern's opening parenthesis or its alternatives' bar.
             i += 1
         elif c == "(":
-            # A subshell, a function's () or body, or a process substitution, a word's part.
-            substitution = text[i - 1 : i] in ("<", ">")
+            # A subshell, a function's () or body, or a word's part: a process substitution or an
+            # array assignment's list.
+            substitution = text[i - 1 : i] in ("<", ">", "=")
             if substitution:
                 frames[-1][5] = False
             push("(", i + 1, ends=not substitution)
@@ -333,14 +363,7 @@ def read_command(text):
             if not (c == "\n" and frames[-1][3] and not text[frames[-1][2] : i].strip()):
                 next_pipeline(i, i + step)
             if c == "\n" and pending:
-                pos, last = i + 1, None
-                for pipeline, segment, start, marker_end, word, quoted, tabs in pending:
-                    found = _closing(text, pos, word, tabs) if pos <= n else None
-                    if found is None:
-                        break
-                    heredocs.append(Heredoc(pipeline, segment, (start, marker_end), (pos, found[0]), found[1], quoted))
-                    pos, last = found[1] + 1, found[1]
-                pending = []
+                last = bodies(i + 1)
                 if last is not None:
                     # The next segment starts after the bodies.
                     frames[-1][2], frames[-1][5], i = last, True, last
@@ -362,6 +385,8 @@ def read_command(text):
             elif word in OPENS and reserved():
                 frames[-1][5] = OPENS[word]
             elif word == "-p" and frames[-1][5] == "time":
+                frames[-1][5] = "time -p"
+            elif word == "--" and frames[-1][5] in ("time", "time -p"):
                 frames[-1][5] = True
             else:
                 if word:
