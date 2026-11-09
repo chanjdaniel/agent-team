@@ -1476,7 +1476,7 @@ LINES
   : >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
   capacity_room $((819 * 1048576))
   jq -c '.tasks = [{task: "T9", memory: 429496730, cpu: null, cpu_nsec: null, stacks: [],
-                    sessions: [{id: "6c6c6c6c", role: "reviewer", memory: 429496730, peak: 429496730, cpu_seconds: 1}]}]' \
+                    sessions: [{id: "6c6c6c6c", role: "reviewer", memory: 429496730, cpu_seconds: 1}]}]' \
     "$HOME/.local/state/agent-team/capacity/readings.jsonl" >"$BATS_TEST_TMPDIR/reading"
   mv "$BATS_TEST_TMPDIR/reading" "$HOME/.local/state/agent-team/capacity/readings.jsonl"
   run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go
