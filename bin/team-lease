@@ -41,8 +41,9 @@
 #   release  The holder only: state released. A released lease is left as it is (exit 0).
 #
 # Needs this machine's team name (~/.config/agent-team/machine). In ~/.local/state/agent-team/:
-# lease.json is the lease this machine last wrote, with its commit; lease.lock serialises lease
-# commands on this machine; fenced (renew writes it) and offline (the heartbeat's), JSON objects
+# lease.json is the lease this machine last wrote, with its commit, its taken_at (when this
+# holding began, kept by a renewal) and its written_at; lease.lock serialises lease commands on
+# this machine; fenced (renew writes it) and offline (the heartbeat's), JSON objects
 # with a since, are read by status, check and renew.
 # The steal's terminal is /dev/tty, or the file or device TEAM_LEASE_TTY names (the tests' seam):
 # the prompt is appended to it and the name is its first line.
@@ -226,7 +227,7 @@ push_lease() {
   out=$(net_git push --porcelain origin "$commit:refs/heads/lease") || rc=$?
   if ((rc == 0)); then
     home_git update-ref refs/remotes/origin/lease "$commit" || exit 1
-    jq -c --arg commit "$commit" '{commit: $commit, holder, epoch, state, written_at: (now | floor | todate)}' \
+    jq -c --arg commit "$commit" '{commit: $commit, holder, epoch, state, taken_at, written_at: (now | floor | todate)}' \
       <<<"$1" >"$record.$$" || exit 1
     mv -f "$record.$$" "$record"
     TIP=$commit

@@ -184,17 +184,20 @@ scope_use() {
 # Sample the memory of process group <pgid>, as <measure> <argument>... prints it in bytes, into
 # <file> (the highest) while the group lives, every SAMPLE_SECONDS once a look has read any and
 # every tenth of a second until then, since on macOS a process just forked can read as none and a
-# scope's cgroup is there only once systemd-run has made it; TERM ends it with its sleep:
+# scope's cgroup is there only once systemd-run has made it; TERM ends it with its sleep, once a
+# look in flight has kept its sample:
 # sample_peak <pgid> <file> <measure> [<argument>...]
 sample_peak() {
-  local pgid=$1 file=$2 peak=0 now nap=''
+  local pgid=$1 file=$2 peak=0 now nap='' ended=''
   shift 2
-  trap '[[ -z $nap ]] || kill "$nap" 2>/dev/null; exit 0' TERM
-  while kill -0 -- "-$pgid" 2>/dev/null; do
+  trap 'ended=1; [[ -z $nap ]] || kill "$nap" 2>/dev/null' TERM
+  while [[ -z $ended ]] && kill -0 -- "-$pgid" 2>/dev/null; do
     now=$("$@")
     if ((now > peak)); then peak=$now && echo "$peak" >"$file"; fi
+    [[ -z $ended ]] || break
     if ((peak > 0)); then sleep "$SAMPLE_SECONDS" & else sleep 0.1 & fi
     nap=$!
+    [[ -z $ended ]] || kill "$nap" 2>/dev/null || true
     wait "$nap" || true
     nap=''
   done

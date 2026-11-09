@@ -319,6 +319,18 @@ function alive(group) {
   }
 }
 
+// Whether a process group is gone within ms: a member killed with SIGKILL still answers a signal
+// until whoever it was reparented to reaps it, which on a loaded machine takes a moment.
+function goneWithin(group, ms) {
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const end = Date.now() + ms;
+  while (alive(group)) {
+    if (Date.now() >= end) return false;
+    Atomics.wait(pause, 0, 0, 20);
+  }
+  return true;
+}
+
 const findings = (text) => text.split("\n").slice(1);
 
 describe("the effect toolkit's post-edit hook", () => {
@@ -444,7 +456,7 @@ describe("the effect toolkit's post-edit hook", () => {
     assert.ok(text.includes(checkCommand), text);
     const group = Number(readFileSync(join(cwd, "group"), "utf8"));
     assert.ok(group > 1);
-    assert.ok(!alive(group), `process group ${group} is still alive`);
+    assert.ok(goneWithin(group, 2000), `process group ${group} is still alive 2 s after the hook ended`);
   });
 
   test("keeps the deadline its README records when no seam is set", () => {

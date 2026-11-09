@@ -874,6 +874,13 @@ standing() {
   event "$1" "$2" "{project: \"$3\", discord_message: \"$4\", discord_channel: \"1562000000000000000\"}"
 }
 
+# Register <project> beside proj, at owner/<project>: register <project>
+register() {
+  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "direct-pr"' \
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
+    "[$1.pool]" 'provider = "git"' "slots = [\"slots/$1/1\"]" >>"$TEAM_HOME/projects.toml"
+}
+
 standing_due() {
   echo "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's $1, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
 }
@@ -898,6 +905,7 @@ standing_due() {
   # for it again, named by the task's projects (its opened and worktree-added events').
   standing T3 merge-standing-withdrawn proj 1563000000000000002
   run_bin -0 team-sweep
+  register conv
   event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
   standing T3 merge-standing all 1563000000000000003
   run_bin -1 team-sweep
@@ -908,6 +916,67 @@ standing_due() {
   run_bin -1 team-sweep
   assert_equal "$output" "$(standing_due "standing word on conv")"
   no_github
+}
+
+@test "merge-due: none on the standing word for the team's own project, by name, repo or path, and still for another's" {
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  standing T2 merge-standing all 1563000000000000001
+  register agent-team
+  event T3 worktree-added '{project: "agent-team", branch: "feat/T3-work", worktree: "/w/2"}'
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+  assert_equal "$stderr" ""
+
+  # An old ledger's word on the team's own project by name is no word.
+  : >"$TEAM_HOME/ledger.jsonl"
+  event T3 opened '{project: "agent-team", path: "feature", type: "feat", title: "Work",
+    branch: "feat/T3-work", base: "main", base_sha: "0123456", worktree: "/w/1"}'
+  launch T3 reviewer 11111111
+  passed_pr T3
+  standing T2 merge-standing agent-team 1563000000000000002
+  run_bin -0 team-sweep
+  standing T2 merge-standing all 1563000000000000003
+  run_bin -0 team-sweep
+
+  # proj is the team's own by the code checkout's repo, and conv by its path.
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  standing T2 merge-standing all 1563000000000000001
+  register conv
+  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj, conv")"
+  export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo conv)
+  copy_bin "$CODE_CHECKOUT/bin"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  run_bin -0 team-sweep
+}
+
+@test "merge-due: with the registry unreadable, no standing word counts, and stderr says why" {
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  standing T2 merge-standing proj 1563000000000000001
+  rm "$TEAM_HOME/projects.toml"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-sweep: counts no standing word of Daniel's, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
+  # Nor is it read with no standing word in the ledger.
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
 }
 
 @test "merge-due: the plan-time and standing words both named, the plan-time word alone as before" {
@@ -1038,6 +1107,7 @@ standing_due() {
   passed_pr T3
 
   # A word on a project that is none of the task's leaves it parked.
+  register conv
   standing T3 merge-standing conv 1563000000000000001
   run_bin -0 team-sweep
   standing T3 merge-standing proj 1563000000000000002

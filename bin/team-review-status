@@ -9,10 +9,15 @@
 #   description   one line of at most 140 characters, GitHub's limit
 # The status goes on exactly the reviewed sha, with context agent-review, so it never approves a
 # commit pushed after the review.
+# Refused, exit 1 before anything is read: a planner, builder or ops session (AGENT_TEAM_ROLE), so
+# only a reviewer, the coordinator (team-catch-up runs it) and a terminal set a status.
 # Refused, exit 2 with nothing set: any other command line; exit 1: a repo no project has, a PR
 # whose head is no longer the reviewed sha, and a status GitHub refuses.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+if [[ -n ${AGENT_TEAM_ROLE:-} && $AGENT_TEAM_ROLE != @(reviewer|coordinator) ]]; then
+  die "a $AGENT_TEAM_ROLE session sets no agent-review status: that is a reviewer's or the coordinator's; send the coordinator your message"
+fi
 
 [[ $# -eq 4 ]] || usage_error "usage: team-review-status <pr url> <reviewed sha> <success|failure> <description>"
 url=$1 reviewed=$2 state=$3 description=$4

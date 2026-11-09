@@ -24,6 +24,9 @@
 #   checkpoint  team-checkpoint --force, once per run: task directories archived, wip/<project>/T<n>
 #               snapshots pushed, the records committed and pushed. None when every task left
 #               was stowed already and no session was stopped, so a run again changes nothing.
+#               One that fails stops the run, exit 1, with each of its failure lines on stderr
+#               as "team-stow: checkpoint: <line>"; one that answers 75 (GitHub unreachable, or
+#               another checkpoint still running) stops it with that line, exit 75.
 #   branches    Each task's branches pushed to their project's origin when strictly ahead of
 #               origin's (a plain push), checked again first; one that cannot be pushed refuses
 #               its task.
@@ -253,12 +256,16 @@ else
   rc=0
   out=$(team team-checkpoint --force 2>"$err") || rc=$?
   [[ -z $out ]] || prefixed checkpoint <<<"$out"
-  ((rc)) || cat "$err" >&2
-  if ((rc == 75)); then
+  if ((rc == 0)); then
+    cat "$err" >&2
+  elif ((rc == 75)); then
     echo "team-stow: checkpoint: $(first_error); run team-stow again" >&2
     exit 75
-  elif ((rc)); then
-    die "checkpoint: $(first_error); fix it and run team-stow again"
+  elif grep -q . "$err"; then
+    grep . "$err" | prefixed "team-stow: checkpoint" >&2
+    die "checkpoint: failed; fix what each line above names and run team-stow again"
+  else
+    die "checkpoint: team-checkpoint exited $rc with no reason; fix it and run team-stow again"
   fi
 fi
 
