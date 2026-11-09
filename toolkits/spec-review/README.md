@@ -22,6 +22,7 @@ Before its first launch, the coordinator runs `team-load-check --toolkit spec-re
 - Both agents have only Read, Grep and Glob, and `omitClaudeMd: true`, since the session's `CLAUDE.md` is the worktree's, which in a replay is not the archived project's: the readiness reader reads the code root's own instead.
   Both run on `model: inherit`, the session's model, unless the skill is given `--model`; T240's replay chooses the model they will name.
   Both are told never to read the task directory beyond their inputs: no plan, brief, interview, memory, handoff, build note or other review.
+  The readiness reader keeps its searches out of the task directory when it lies under the code root.
 - No MCP server, hook or script.
 
 ## What it costs
@@ -39,6 +40,8 @@ No file or text of it is vendored or installed: the skill's and the agents' prom
 
 `tests/toolkits/spec-review.test.mjs` checks the plugin's layout (its manifest, two agents, one skill, `spec-review`, the only skill of that name in any toolkit or the coordinator's plugin, and no `.mcp.json`, `hooks/` or `scripts/`), both agents' frontmatter (`tools` exactly Read, Grep and Glob, `omitClaudeMd: true`, a `model`), the task files they are told never to read and their return shapes, the skill's description under 250 characters and its file under 8 kB, that its eight steps come in order, this README's sections, its "When the coordinator gives it" and its attribution line, and each eval case's graders.
 `tests/team-worker.bats` holds that `--toolkit spec-review` adds the plugin directory and no MCP server.
-`evals/` holds two cases, each a `case.yaml` whose `scaffold.sh` writes its fixture into the run's empty workspace: `review-a-spec` plants an open choice and a function the code does not have in a small spec, and passes when the skill fires, both readers are dispatched and the reply has both faults as `blocking` findings of the right kinds; `review-a-code-diff` asks for a review of a shell diff and passes when the skill does not fire.
+`evals/` holds four cases, each a `case.yaml` whose `scaffold.sh` writes its fixture into the run's empty workspace: `review-a-spec` plants an open choice and a function the code does not have in a small spec, and passes when the skill fires, both readers are dispatched and the reply has both faults as `blocking` findings of the right kinds; `review-a-code-diff` asks for a review of a shell diff and passes when the skill does not fire.
+`planner-notes-stay-out` puts a planner's `memory.md` and `plan.md` beside its spec in a git checkout's gitignored `.scratch/task/`, and passes when no reader's own message in the trace holds their paths or their text, since Glob lists gitignored files.
+`replay-an-ignored-tree` reviews an archived spec against a project copied under that gitignored `.scratch/`, as T240's replay does, and passes when the readiness reader finds the function the copy has in a file no line names, and reports missing only the one it lacks.
 Run them from the code checkout with `claude plugin eval toolkits/spec-review --no-publish --scaffold --ablation none --trust-plugin`, and check the plugin with `claude plugin validate --strict toolkits/spec-review`.
 Results go to `evals/results/`, which is gitignored.

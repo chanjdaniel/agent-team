@@ -156,9 +156,11 @@ const caseOf = (name) => read("evals", name, "case.yaml");
 const gradersOf = (text) => text.split(/^graders:\n/m)[1].split(/^(?=  - name: )/m).filter((block) => block.trim());
 
 describe("the spec-review evals", () => {
-  test("are two cases, each a case.yaml and its scaffold script", () => {
-    assert.deepEqual(readdirSync(evals).filter((name) => name !== "results").sort(), ["review-a-code-diff", "review-a-spec"]);
-    for (const name of ["review-a-code-diff", "review-a-spec"]) {
+  const cases = ["planner-notes-stay-out", "replay-an-ignored-tree", "review-a-code-diff", "review-a-spec"];
+
+  test("are four cases, each a case.yaml and its scaffold script", () => {
+    assert.deepEqual(readdirSync(evals).filter((name) => name !== "results").sort(), cases);
+    for (const name of cases) {
       assert.deepEqual(readdirSync(join(evals, name)).sort(), ["case.yaml", "scaffold.sh"]);
       const text = caseOf(name);
       assert.match(text, /^schema_version: "1\.1"$/m);
@@ -187,6 +189,44 @@ describe("the spec-review evals", () => {
     assert.match(judged, /missing/);
     assert.match(judged, /blocking/);
     assert.equal(graders.length, 4);
+  });
+
+  test("planner-notes-stay-out dispatches the readiness reader and fails on the planner's notes in the trace", () => {
+    const graders = gradersOf(caseOf("planner-notes-stay-out"));
+    assert.equal(graders.length, 2);
+    const dispatched = graders.find((block) => /tool: Agent/.test(block));
+    assert.match(dispatched, /spec-review:spec-readiness/);
+    assert.match(dispatched, /arm: with-only/);
+    const unseen = graders.find((block) => /type: regex/.test(block));
+    assert.match(unseen, /target: trace/);
+    assert.match(unseen, /match: not_contains/);
+    // The pattern names the notes' marker and their paths, on a reader's own line of the trace.
+    const pattern = unseen.match(/pattern: '([^']+)'/)[1];
+    const marker = pattern.match(/^\(([A-Z][A-Z-]+)\|/)[1];
+    assert.ok(pattern.includes("(memory|plan)"), "the pattern does not name both notes");
+    assert.ok(pattern.endsWith('"parent_tool_use_id":"toolu_'), "the pattern is not held to a reader's lines");
+    const scaffold = read("evals", "planner-notes-stay-out", "scaffold.sh");
+    for (const note of ["memory.md", "plan.md"]) {
+      const body = scaffold.split(`cat >.scratch/task/${note} <<'EOF'\n`)[1].split("\nEOF\n")[0];
+      assert.ok(body.includes(marker), `${note} lacks the marker`);
+      assert.ok(body.includes("archive_notes"), `${note} lacks the function the spec extends`);
+    }
+    assert.match(scaffold, /^\.scratch\/$/m);
+    assert.match(scaffold, /^git init -q$/m);
+  });
+
+  test("replay-an-ignored-tree fires the skill, dispatches the readiness reader and judges the tree's search", () => {
+    const graders = gradersOf(caseOf("replay-an-ignored-tree"));
+    assert.equal(graders.length, 3);
+    assert.match(graders.find((block) => /tool: Skill/.test(block)), /spec-review/);
+    assert.match(graders.find((block) => /tool: Agent/.test(block)), /spec-review:spec-readiness/);
+    const judged = graders.find((block) => /type: llm/.test(block));
+    assert.match(judged, /prune_notes/);
+    assert.match(judged, /rotate_notes/);
+    const scaffold = read("evals", "replay-an-ignored-tree", "scaffold.sh");
+    assert.match(scaffold, /^tree=\.scratch\/task\/replay\/T9\/tree$/m);
+    assert.match(scaffold, /^\.scratch\/$/m);
+    assert.match(scaffold, /^git init -q$/m);
   });
 
   test("review-a-code-diff never fires the skill", () => {
