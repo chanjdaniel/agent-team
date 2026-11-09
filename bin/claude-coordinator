@@ -75,7 +75,7 @@ flock -n "$lock_fd" || die "another claude-coordinator is launching right now (i
 # Every session the daemon may run again: without --all, the list leaves out a background session
 # with no process that is neither working nor blocked, as one is once its turn ends (done) or it
 # failed and the daemon settles its process, though a message or a finished shell of its wakes it.
-# --all lists every job this machine has run, so only a stopped one, which nothing wakes, is gone.
+# --all lists every job the daemon still keeps, so only a stopped one, which nothing wakes, is gone.
 sessions=$(claude agents --json --all {lock_fd}>&- | jq -ce 'select(type == "array")' 2>/dev/null) ||
   die "cannot read the session list (claude agents --json --all)"
 live=$(jq -r 'map(select(.name == "coordinator" and .state != "stopped")) | first
