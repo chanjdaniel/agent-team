@@ -539,10 +539,8 @@ EOF
   # The next checkpoint, with no deadline (as team-stow and team-handoff run it), takes the
   # skipped first, in their order, then the rest, and every one runs, however long: T2's archive,
   # the first, now takes 4 s, so T3 and T1 begin past those 3 s and are still taken.
-  printf '#!/usr/bin/env bash
-[[ "$*" != *"/slots/home/2/"* ]] || command -p sleep 4
-exec "%s" "$@"
-' "$real_rsync"     >"$BATS_TEST_TMPDIR/stubs/rsync"
+  printf '#!/usr/bin/env bash\n[[ "$*" != *"/slots/home/2/"* ]] || command -p sleep 4\nexec "%s" "$@"\n' "$real_rsync" \
+    >"$BATS_TEST_TMPDIR/stubs/rsync"
   run_bin -0 --separate-stderr team-checkpoint --force
   assert_equal "$stderr" ""
   assert_equal "$(grep -oE '^T[0-9] home: (pushed|wip/home/T[0-9] is up to date)' <<<"$output" | cut -c1-2 | paste -sd ' ')" "T2 T3 T1"
