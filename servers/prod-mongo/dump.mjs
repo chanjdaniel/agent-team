@@ -7,7 +7,10 @@
 //                            `documents` is null for a view, which mongodump dumps as metadata only
 //   await countBsonGz(path)  the documents in a gzipped BSON file: a sequence of documents, each
 //                            starting with its little-endian 32-bit length
-//   humanBytes(n), duration(ms), count(n)   the answers' forms of a size, a time and a number
+//   humanBytes(n), duration(ms), count(n), plural(n, word)
+//                            the answers' forms of a size, a time, a number and a count of things
+//   dumped(name)             whether mongodump dumps a collection of that name: every one but those
+//                            under system., except system.js
 import { createReadStream, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -86,3 +89,7 @@ export function duration(ms) {
 }
 
 export const count = (n) => n.toLocaleString("en-US");
+
+export const plural = (n, word) => `${count(n)} ${word}${n === 1 ? "" : "s"}`;
+
+export const dumped = (name) => !name.startsWith("system.") || name === "system.js";

@@ -30,17 +30,15 @@
 // The JSON forms: { refused }; { failed, stamp, folder, container, removed, cleanup }; and
 // { verdict, stamp, folder, at, record, seconds, mongorestore, container, collections,
 // restoreError?, removed, cleanup }, every path written from ~/.
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync, writeSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stampOf } from "./backup.mjs";
-import { childEnv, lastLine, run, runWithConfig, scrubber, yamlConfig } from "./children.mjs";
-import { count, duration, humanBytes } from "./dump.mjs";
+import { childEnv, lastLine, run, runWithConfig, scrubber, toolVersion, yamlConfig } from "./children.mjs";
+import { count, dumped, duration, humanBytes, plural } from "./dump.mjs";
 import { listRoot } from "./list.mjs";
 import { Refusal } from "./refusal.mjs";
-import { checkRoot, dumpByStamp } from "./root.mjs";
+import { backupsRoot, checkRoot, dumpByStamp } from "./root.mjs";
 import { removeExpired, removeThrowaway, startThrowaway, throwawayImage, throwawayName } from "./throwaway.mjs";
 
 export const restoreLimit = 512 * 1024 ** 2;
@@ -51,21 +49,11 @@ const teamHeavy = join(checkout, "bin", "team-heavy");
 const script = join(checkout, "toolkits", "prod-mongo", "scripts", "restore-drill.mjs");
 const signals = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 };
 
-const plural = (n, word) => `${count(n)} ${word}${n === 1 ? "" : "s"}`;
-// mongodump dumps every collection but those under system., except system.js.
-const dumped = (name) => !name.startsWith("system.") || name === "system.js";
-
-function shownFrom(home) {
-  return (path) => (path === home ? "~" : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path);
-}
-
 export async function restoreDrill({ argv, database, root: configuredRoot }) {
   process.umask(0o077);
   const asText = argv.includes("--text");
   const rest = argv.filter((arg) => arg !== "--text");
-  const home = homedir();
-  const shown = shownFrom(home);
-  const root = process.env.PROD_MONGO_ROOT ?? configuredRoot.replace(/^~(?=\/)/, home);
+  const { root, shown } = backupsRoot(configuredRoot);
   const state = { name: undefined, removed: [], stamp: undefined, folder: undefined };
 
   const print = (result) => {
@@ -117,10 +105,8 @@ async function drill({ rest, database, root, shown, state }) {
   if (restoredBytes > restoreLimit) {
     throw new Refusal(`${shownFolder} restores to ${humanBytes(restoredBytes)} of data and indexes, more than the ${humanBytes(restoreLimit)} a drill holds in memory`);
   }
-  const versionRun = spawnSync("mongorestore", ["--version"], { env: childEnv(), stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 30_000 });
-  if (versionRun.error?.code === "ENOENT") throw new Refusal("mongorestore is not installed: team-doctor names the install");
-  const mongorestore = /^mongorestore version: (\S+)$/m.exec(versionRun.stdout ?? "")?.[1];
-  if (!mongorestore) throw new Refusal("mongorestore --version gave no version: team-doctor names the install");
+  const { version: mongorestore, reason } = toolVersion("mongorestore");
+  if (reason) throw new Refusal(reason);
   let MongoClient;
   try {
     ({ MongoClient } = await import("mongodb"));

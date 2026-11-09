@@ -21,6 +21,10 @@
 //                            a path) directly under the root, a folder with a verified manifest.json;
 //                            a Refusal for anything else
 //   stampPattern, partialPattern   a dump's folder name, and a backup's unfinished one
+//   backupsRoot(configured)  { root, home, shown }: the root `configured` names from ~/ (PROD_MONGO_ROOT
+//                            replaces it, for the tests only), the home, and shown(path), a path
+//                            written from ~/ when it is under the home, since the home's own path
+//                            holds the account's name
 //
 // Every rule applies to the path as given and to its real path, so a symlink never takes the
 // backups into a place a rule keeps them out of.
@@ -177,6 +181,13 @@ export function rootContext(path, { env = process.env, platform = process.platfo
     if (env[name]) pickedEnv[name] = env[name];
   }
   return { real, home, teamHome, tmpdir: nodeTemp, env: pickedEnv, platform, holding, resolved };
+}
+
+export function backupsRoot(configured) {
+  const home = homedir();
+  const root = process.env.PROD_MONGO_ROOT ?? configured.replace(/^~(?=\/)/, home);
+  const shown = (path) => (path === home ? "~" : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path);
+  return { root, home, shown };
 }
 
 export function checkRoot(root, { create = false, shown = (path) => path } = {}) {

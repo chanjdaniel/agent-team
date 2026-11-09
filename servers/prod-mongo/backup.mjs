@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { lastLine, runWithConfig, yamlConfig } from "./children.mjs";
-import { count, duration, humanBytes, readDump } from "./dump.mjs";
+import { count, dumped, duration, humanBytes, plural, readDump } from "./dump.mjs";
 import { listRoot, retentionLine, writing } from "./list.mjs";
 import { Refusal } from "./refusal.mjs";
 import { checkRoot } from "./root.mjs";
@@ -39,9 +39,6 @@ export function roomRefusal(free, dataSize) {
   if (free >= need) return undefined;
   return `the backups folder's disk has ${humanBytes(free)} free, less than the ${humanBytes(need)} a dump needs (1 GiB plus twice the database's ${humanBytes(dataSize)} of data)`;
 }
-
-// mongodump dumps every collection but those under system., except system.js.
-const dumped = (name) => !name.startsWith("system.") || name === "system.js";
 
 export async function takeBackup({ MongoClient, value, database, root, mongodump, scrubbed, shown, progress }) {
   const started = new Date();
@@ -223,7 +220,6 @@ function bytesUnder(dir) {
 function answer({ manifest, folder, took }) {
   const { collections, totals } = manifest;
   const changed = collections.filter(({ judgement }) => judgement === "changed");
-  const plural = (n, word) => `${count(n)} ${word}${n === 1 ? "" : "s"}`;
   const kinds = [plural(totals.collections, "collection"), ...(totals.views ? [plural(totals.views, "view")] : [])].join(" and ");
   const lines = [
     `Backup taken: ${folder} (${humanBytes(totals.bytes)} on disk, ${duration(took)}), mongodump ${manifest.mongodump}`,

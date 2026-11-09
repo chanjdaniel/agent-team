@@ -21,6 +21,8 @@
 //                            Error whose `mkfifo` is true
 //   yamlConfig(key, value)   one YAML line `<key>: '<value>'`, the value a single-quoted scalar
 //   lastLine(text)           the last non-empty line of a child's output, for scrubbed
+//   toolVersion(name)        a Database Tool's version, from `<name> --version` on PATH: { version },
+//                            or { reason } when it is not installed or gave none, naming the install
 //
 // Node's stdio "pipe" is a socketpair on Linux, which a child cannot open as /dev/stdin, so a
 // secret goes to a Database Tool through a FIFO it opens by path.
@@ -161,6 +163,13 @@ async function feed(fifo, text, child) {
     }
     return;
   }
+}
+
+export function toolVersion(name) {
+  const ran = spawnSync(name, ["--version"], { env: childEnv(), stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 30_000 });
+  if (ran.error?.code === "ENOENT") return { reason: `${name} is not installed: team-doctor names the install` };
+  const version = new RegExp(`^${name} version: (\\S+)$`, "m").exec(ran.stdout ?? "")?.[1];
+  return version ? { version } : { reason: `${name} --version gave no version: team-doctor names the install` };
 }
 
 export function lastLine(text) {

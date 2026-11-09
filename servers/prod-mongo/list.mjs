@@ -15,13 +15,11 @@
 // The toolkit never deletes a dump: the ones past the rule are named for Daniel to delete by hand.
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { count, humanBytes } from "./dump.mjs";
+import { count, humanBytes, plural } from "./dump.mjs";
 import { partialPattern, stampPattern } from "./root.mjs";
 
 export const kept = 5;
 export const writing = new Set();
-
-const plural = (n, word) => `${count(n)} ${word}${n === 1 ? "" : "s"}`;
 
 // The bytes of every file under `path` (itself when a file), never following a symlink.
 function bytesOf(path) {

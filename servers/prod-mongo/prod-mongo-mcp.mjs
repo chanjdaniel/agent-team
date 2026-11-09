@@ -20,16 +20,14 @@
 // restore-drill while either runs is refused at once; list-backups takes no such lock. A long tool
 // sends a progress notification per step when the call carries a progressToken. A tool's run gives
 // its answer's text, or { text, isError } for an answer that is an error in its own form.
-import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
 import { connectionStringRefusal } from "../mongodb-mcp.mjs";
 import { readSecrets } from "../op-secret.mjs";
-import { childEnv, scrubber } from "./children.mjs";
+import { scrubber, toolVersion } from "./children.mjs";
 import { takeBackup } from "./backup.mjs";
 import { drillTool } from "./drill.mjs";
 import { kept, listing } from "./list.mjs";
 import { Refusal } from "./refusal.mjs";
-import { checkRoot } from "./root.mjs";
+import { backupsRoot, checkRoot } from "./root.mjs";
 
 export async function startProdMongo({ name, reference, database, root: configuredRoot }) {
   const fail = (reason) => {
@@ -40,10 +38,8 @@ export async function startProdMongo({ name, reference, database, root: configur
   if (process.argv.length > 2) fail("takes no arguments");
   process.umask(0o077);
 
-  const version = spawnSync("mongodump", ["--version"], { env: childEnv(), stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 30_000 });
-  if (version.error?.code === "ENOENT") fail("mongodump is not installed: team-doctor names the install");
-  const mongodumpVersion = /^mongodump version: (\S+)$/m.exec(version.stdout ?? "")?.[1];
-  if (!mongodumpVersion) fail("mongodump --version gave no version: team-doctor names the install");
+  const { version: mongodumpVersion, reason } = toolVersion("mongodump");
+  if (reason) fail(reason);
 
   let sdk;
   try {
@@ -54,9 +50,7 @@ export async function startProdMongo({ name, reference, database, root: configur
 
   const [value] = readSecrets(name, [reference], connectionStringRefusal);
   const scrubbed = scrubber(value);
-  const home = homedir();
-  const root = process.env.PROD_MONGO_ROOT ?? configuredRoot.replace(/^~(?=\/)/, home);
-  const shown = (path) => (path === home ? "~" : path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path);
+  const { root, home, shown } = backupsRoot(configuredRoot);
 
   const tools = [
     {
