@@ -17,17 +17,15 @@
 // retention line (list.mjs). On any failure the partial folder, which this call made, is
 // removed. mongodump's own output never reaches an answer: only its exit and its last stderr
 // line, through `scrubbed`.
-import { spawnSync } from "node:child_process";
-import { closeSync, constants, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statSync, statfsSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { childEnv, lastLine, run } from "./children.mjs";
+import { lastLine, runWithConfig, yamlConfig } from "./children.mjs";
 import { count, duration, humanBytes, readDump } from "./dump.mjs";
 import { listRoot, retentionLine, writing } from "./list.mjs";
 import { Refusal } from "./refusal.mjs";
 import { checkRoot } from "./root.mjs";
 
 const mongodumpTimeoutMs = 20 * 60_000;
-const fifoOpenTimeoutMs = 30_000;
 const gib = 1024 ** 3;
 
 export function stampOf(date) {
@@ -150,59 +148,19 @@ async function countAll(client, database, listed) {
 // mongodump --config=<fifo>: the connection string goes into the FIFO as one YAML line once
 // mongodump has opened it, and the FIFO is unlinked before mongodump has done anything else.
 async function dump({ value, database, partial, mongodump, scrubbed }) {
-  const fifo = join(partial, "config.fifo");
-  const made = spawnSync("mkfifo", ["-m", "600", fifo], { env: childEnv(), stdio: ["ignore", "ignore", "pipe"], encoding: "utf8" });
-  if (made.error || made.status !== 0) throw new Refusal(`mkfifo failed: ${scrubbed(lastLine(made.stderr) || made.error?.message)}`);
-  const args = [`--config=${fifo}`, "--db", database, "--gzip", "--out", join(partial, "dump"), "--quiet"];
-  let fed;
+  const args = (fifo) => [`--config=${fifo}`, "--db", database, "--gzip", "--out", join(partial, "dump"), "--quiet"];
   let result;
   try {
-    result = await run(mongodump.command, args, {
-      timeoutMs: mongodumpTimeoutMs,
-      onSpawn: (child) => {
-        fed = feed(fifo, `uri: '${value.replaceAll("'", "''")}'\n`, child).finally(() => rmSync(fifo, { force: true }));
-        fed.catch(() => child.kill("SIGKILL"));
-      },
-    });
+    result = await runWithConfig(mongodump.command, args, { fifo: join(partial, "config.fifo"), config: yamlConfig("uri", value), timeoutMs: mongodumpTimeoutMs });
   } catch (error) {
+    if (error.mkfifo) throw new Refusal(`mkfifo failed: ${scrubbed(error.message)}`);
     throw new Refusal(`mongodump could not start: ${scrubbed(error.message)}`);
-  } finally {
-    rmSync(fifo, { force: true });
   }
-  try {
-    await fed;
-  } catch (error) {
-    throw new Refusal(`mongodump never read its config: ${scrubbed(error.message)}`);
-  }
+  if (result.fedError) throw new Refusal(`mongodump never read its config: ${scrubbed(result.fedError.message)}`);
   if (result.timedOut) throw new Refusal(`mongodump did not finish in ${duration(mongodumpTimeoutMs)}, so it was killed and the partial dump removed`);
   if (result.code !== 0) {
     const why = scrubbed(lastLine(result.stderr));
     throw new Refusal(`mongodump ${result.signal ? `was killed (${result.signal})` : `exited ${result.code}`}${why ? `: ${why}` : ""}, so the partial dump was removed`);
-  }
-}
-
-// Open the FIFO for writing without blocking, which fails with ENXIO until mongodump opens its
-// end: retry every 10 ms until it does, it exits, or 30 seconds pass.
-async function feed(fifo, text, child) {
-  const start = Date.now();
-  for (;;) {
-    let fd;
-    try {
-      fd = openSync(fifo, constants.O_WRONLY | constants.O_NONBLOCK);
-    } catch (error) {
-      if (error.code !== "ENXIO") throw error;
-      if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) throw new Error("mongodump exited first");
-      if (Date.now() - start > fifoOpenTimeoutMs) throw new Error(`not opened in ${duration(fifoOpenTimeoutMs)}`);
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      continue;
-    }
-    try {
-      writeSync(fd, text);
-    } finally {
-      closeSync(fd);
-      unlinkSync(fifo);
-    }
-    return;
   }
 }
 

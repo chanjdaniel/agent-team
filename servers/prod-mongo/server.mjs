@@ -13,16 +13,19 @@
 // mongodump, through the FIFO backup.mjs feeds it. Every child is started with childEnv()
 // (children.mjs), and every child's or the driver's error text reaches an answer only through
 // scrubbed. The umask is 077, so every file and directory it or a child makes is its user's alone.
-// Its tools: backup (backup.mjs) and list-backups (list.mjs), each checking the root against
-// root.mjs's rules before it touches it. One long call runs at a time: a second backup while one
-// runs is refused at once; list-backups takes no such lock. A long tool sends a progress
-// notification per step when the call carries a progressToken.
+// Its tools: backup (backup.mjs), list-backups (list.mjs) and restore-drill (drill.mjs, which runs
+// toolkits/prod-mongo/scripts/restore-drill.mjs through bin/team-heavy), each checking the root
+// against root.mjs's rules before it touches it. One long call runs at a time: a backup or a
+// restore-drill while either runs is refused at once; list-backups takes no such lock. A long tool
+// sends a progress notification per step when the call carries a progressToken. A tool's run gives
+// its answer's text, or { text, isError } for an answer that is an error in its own form.
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { connectionStringRefusal } from "../mongodb-mcp.mjs";
 import { readSecrets } from "../op-secret.mjs";
 import { childEnv, scrubber } from "./children.mjs";
 import { takeBackup } from "./backup.mjs";
+import { drillTool } from "./drill.mjs";
 import { kept, listing } from "./list.mjs";
 import { Refusal } from "./refusal.mjs";
 import { checkRoot } from "./root.mjs";
@@ -82,6 +85,25 @@ export async function startProdMongo({ name, reference, database, root: configur
         return listing({ real, shownRoot: shown(root), note, missing });
       },
     },
+    {
+      name: "restore-drill",
+      description:
+        `Prove a dump under ${shown(root)} restores: restore it into a throwaway local MongoDB (in memory, on the loopback only, ` +
+        "behind a password of its own, removed at the end on every path), compare each collection's document count and index names " +
+        "with the dump's manifest, and record the verdict in the dump's folder. Answers PASS or FAIL, each collection that did not " +
+        "match, the time taken and that nothing was left running; never a document. Never reaches the production database. It runs " +
+        "through the machine's heavy-run lock, waiting up to 20 minutes for it, and answers that the machine is busy when it is still held.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          backup: { type: "string", description: "The backup's name, its UTC start as list-backups gives it (2026-11-08T142305Z); the newest verified backup when left out." },
+        },
+        additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      long: true,
+      run: ({ input, progress }) => drillTool({ input, root, shown, scrubbed, progress }),
+    },
   ];
 
   let running = null;
@@ -108,7 +130,9 @@ export async function startProdMongo({ name, reference, database, root: configur
     };
     if (tool.long) running = tool.name;
     try {
-      return { content: [{ type: "text", text: await tool.run({ input, progress }) }] };
+      const answer = await tool.run({ input, progress });
+      if (typeof answer === "string") return { content: [{ type: "text", text: answer }] };
+      return { content: [{ type: "text", text: answer.text.replaceAll(`${home}/`, "~/") }], ...(answer.isError ? { isError: true } : {}) };
     } catch (error) {
       if (error instanceof Refusal) return refuse(`failed: ${error.message}`);
       return refuse(`failed: ${error?.message ?? error}`);

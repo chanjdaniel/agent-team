@@ -10,7 +10,8 @@
 //   db.client                                a driver client as root, for checking the data
 //   await db.stop();                         after()
 // startMongo waits for the server with connectWhenReady, and stop() removes the container with
-// removeContainer; both are exported for their own tests.
+// removeContainer; both are exported for their own tests. mongoImage and perThreadCaches are the
+// pin and the environment the prod-mongo toolkit's throwaway is held to.
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
@@ -26,7 +27,7 @@ export const mongoImage = "mongo:8.0.34@sha256:4a4ab5d4834207389e0d7270fac988e21
 // on leaves tcmalloc on per-thread caches, which mongod's startup check lets start
 // (docs/v8.0/administration/tcmalloc-performance). Drop this once GitHub's runners are on 7.0.14
 // or later, where 8.0.30 and newer start with per-CPU caches.
-const perThreadCaches = ["--env", "GLIBC_TUNABLES=glibc.pthread.rseq=1"];
+export const perThreadCaches = ["--env", "GLIBC_TUNABLES=glibc.pthread.rseq=1"];
 
 // The image declares /data/db and /data/configdb as volumes, so a container with nothing mounted
 // there gets two anonymous volumes, about 0.3 GB a pair, which a run killed before its after() and

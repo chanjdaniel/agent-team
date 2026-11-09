@@ -11,16 +11,18 @@ Every Docker object the team makes says whose it is, in labels under `io.github.
 
 | Key | Value | Set by |
 | - | - | - |
-| `owner` | `agent-team`, or empty: not the team's | `team-stack`; a gate run (Conventioner's `nm-test.sh`) only when `TEAM_TASK` is in its environment |
-| `task` | `T<n>`, or empty | `team-stack`, from the ledger; a gate run passes `TEAM_TASK` through |
-| `kind` | `dev`, `e2e` or `gate` | `team-stack` (`dev`, or `e2e` for an extra instance); a gate run always `gate` |
-| `worktree` | the worktree's absolute path | `team-stack`; a gate run its repository root |
-| `expires` | ISO 8601 UTC time after which the reaper may remove the stack, or empty | a gate run: its start plus 2 hours; `team-stack` leaves it empty |
+| `owner` | `agent-team`, or empty: not the team's | `team-stack`; a gate run (Conventioner's `nm-test.sh`) only when `TEAM_TASK` is in its environment; the `prod-mongo` toolkit always |
+| `task` | `T<n>`, or empty | `team-stack`, from the ledger; a gate run passes `TEAM_TASK` through; the `prod-mongo` toolkit from `AGENT_TEAM_TASK`, when set |
+| `kind` | `dev`, `e2e`, `gate` or `drill` | `team-stack` (`dev`, or `e2e` for an extra instance); a gate run always `gate`; the `prod-mongo` toolkit always `drill` |
+| `toolkit` | `prod-mongo`, or empty | the `prod-mongo` toolkit, on every object it makes |
+| `worktree` | the worktree's absolute path | `team-stack`; a gate run its repository root; the `prod-mongo` toolkit leaves it empty |
+| `expires` | ISO 8601 UTC time after which the reaper may remove the stack, or empty | a gate run: its start plus 2 hours; the `prod-mongo` toolkit: its start plus 1 hour; `team-stack` leaves it empty |
 
 - The labels are on every container, named volume and network of a stack, and fixed for the object's life: a named volume keeps the labels it was created with even when a later `up` passes others.
   So a stack of another task is removed before a new task's starts, never relabelled.
 - Compose hashes labels into its config, so a call with other label values recreates containers and networks and can leave the stack half stopped: every call for an existing stack passes the labels read back from its containers, never recomputed ones.
 - Images carry no ownership labels: the shared images are known by repository name, the `stack` block's `images`.
+- The `prod-mongo` toolkit's throwaway MongoDB (`toolkits/prod-mongo/`, its restore drill) is a lone container, no Compose project's, named `prod-mongo-drill-<12 hex>`, labelled `owner=agent-team`, `kind=drill`, `toolkit=prod-mongo` and `expires`.
 - Anonymous volumes carry no Compose labels, only Docker's own `com.docker.volume.anonymous`.
   Each Conventioner stack makes two: the frontend's `/app/node_modules` (about 210 MB) and MongoDB's `/data/configdb` (empty).
 
@@ -30,7 +32,7 @@ Every Docker object the team makes says whose it is, in labels under `io.github.
 
 - **gate**: `kind=gate`, whatever its `owner` (a gate run from a shell with `team-stack env`'s exports is labelled `owner=agent-team` too); or, with no team label set to a value, a Compose project that Compose started inside the gate's worktrees, `~/.no-mistakes/worktrees/` (any of its containers' `com.docker.compose.project.working_dir` there or below it), or whose name matches a project's `legacy_gate` (gate runs from before the labels).
   So a stack started inside a gate worktree outside `nm-test.sh`, by hand or by the gate's test agent, with every team label empty, is the gate's, and the reaper removes it once its newest object is over 2 hours old; an unlabelled stack anywhere else stays unowned.
-- **team**: `owner=agent-team`, and not `kind=gate`.
+- **team**: `owner=agent-team`, and not `kind=gate`; the `prod-mongo` toolkit's `kind=drill` objects are of this class.
 - **unowned**: everything else, Daniel's primary stack and stacks started by hand included.
   A slot stack started with `th-compose.sh up` and no `TEAM_*` variables has every team label empty, so it is unowned.
 - **anonymous**: an anonymous volume no container mounts; one a container mounts takes that container's class.
@@ -177,6 +179,10 @@ The janitor runs it daily with `--apply` ("The daily report and its alerts") onc
 | team-labelled named volume or network | no container uses it, and it is no part of a stack removed above | `docker volume rm`, `docker network rm` |
 | everything else | never | listed as kept, with its size and age |
 
+- The `prod-mongo` toolkit's objects (`toolkit=prod-mongo`) are the toolkit's own to remove.
+  The reaper never removes a team container of no stack, and lists it nowhere, since it lists as kept only what is not the team's; it removes such a network once no container uses it (the team network rule), and an image is of its repository's class, as every image is.
+  The toolkit removes its own: its throwaway at the drill's end, on an error and on SIGINT, SIGTERM and SIGHUP; and each drill first removes, by id, every container, network and image labelled `toolkit=prod-mongo` whose `expires` has passed, naming each in its answer.
+  A throwaway whose maker was killed with SIGKILL ends itself: its command is the image's entrypoint under `timeout 3600`, and `--rm` removes it then.
 - It never runs `docker system prune`, `docker volume prune`, `docker image prune`, `docker network prune`, `docker builder prune` or `docker container prune`: every removal names its object, so this table is the whole of what it can do, and a test checks that `bin/team-stack` holds none of them.
 - "No container uses it" counts containers in every state: a stopped container is on no network's list of containers, but its own settings still name its networks, and Docker would remove such a network under it.
 - A team stack's logs, the last 1 MiB of each service's, go to its worktree's task directory as `stack-logs/<task>-<project>-<service>.log` for the project's `log_services` while the worktree is still a project's linked worktree, and otherwise to `~/.local/state/agent-team/stacks/logs/<project>-<local date>/`, for every service it has, since no `stack` block can be found for a worktree that is gone.

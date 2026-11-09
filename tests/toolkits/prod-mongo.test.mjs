@@ -7,19 +7,22 @@
 // Every backups folder lives under ~/.cache/agent-team-tests/, since a dump of real data is never
 // kept in a temporary directory, and is removed when the file exits.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { accessSync, chmodSync, constants, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { roomRefusal, stampOf } from "../../servers/prod-mongo/backup.mjs";
 import { childEnv, scrubber } from "../../servers/prod-mongo/children.mjs";
 import { humanBytes } from "../../servers/prod-mongo/dump.mjs";
+import { restoreLimit } from "../../servers/prod-mongo/drill.mjs";
 import { kept } from "../../servers/prod-mongo/list.mjs";
 import { destinationRefusal, dumpByStamp } from "../../servers/prod-mongo/root.mjs";
+import { perThreadCaches as throwawayCaches, startThrowaway, teamLabel, throwawayImage, throwawayName } from "../../servers/prod-mongo/throwaway.mjs";
 import { opStub, repoRoot, startToolkitServer, stubDir, tempDir, testPath } from "./helpers/mcp.mjs";
-import { startMongo } from "./helpers/mongo.mjs";
+import { mongoImage, perThreadCaches, startMongo } from "./helpers/mongo.mjs";
 import { assertNoLeak, launcherRefusalTests } from "./helpers/toolkit.mjs";
 
 const reference = "op://agent-team/conventioner-prod-read/uri";
@@ -137,9 +140,9 @@ async function seed() {
 // refusal given with it came before any connection.
 const unreachable = () => `mongodb://ops-read:${marker}@127.0.0.1:1/?authSource=admin&serverSelectionTimeoutMS=2000`;
 
-async function withServer(body, { value = production.uri("ops-read", marker), env = {} } = {}) {
+async function withServer(body, { value = production.uri("ops-read", marker), env = {}, path = serverPath(spy)() } = {}) {
   const op = opStub({ value });
-  const server = startToolkitServer("prod-mongo", { home, opDir: op.dir, path: serverPath(spy)(), env: { PROD_MONGO_ROOT: root, ...env } });
+  const server = startToolkitServer("prod-mongo", { home, opDir: op.dir, path, env: { PROD_MONGO_ROOT: root, ...env } });
   try {
     await server.initialize();
     await body(server, op);
@@ -191,12 +194,17 @@ test("no file of the toolkit or its server is executable", () => {
   }
 });
 
-test("the tools are backup and list-backups, each taking no input", async () => {
+test("the tools are backup and list-backups, taking no input, and restore-drill, taking a backup's name or nothing", async () => {
   await withServer(async (server) => {
     const tools = await server.listTools();
-    assert.deepEqual(tools.map((tool) => tool.name), ["backup", "list-backups"]);
-    for (const tool of tools) assert.deepEqual(tool.inputSchema, { type: "object", properties: {}, additionalProperties: false }, tool.name);
+    assert.deepEqual(tools.map((tool) => tool.name), ["backup", "list-backups", "restore-drill"]);
+    for (const tool of tools.slice(0, 2)) assert.deepEqual(tool.inputSchema, { type: "object", properties: {}, additionalProperties: false }, tool.name);
     assert.equal(tools[1].annotations.readOnlyHint, true);
+    const { inputSchema } = tools[2];
+    assert.deepEqual(Object.keys(inputSchema.properties), ["backup"]);
+    assert.equal(inputSchema.properties.backup.type, "string");
+    assert.equal(inputSchema.required, undefined);
+    assert.equal(inputSchema.additionalProperties, false);
   });
 });
 
@@ -598,6 +606,432 @@ describe("list-backups", () => {
       assert.ok(!result.isError, result.text);
       assert.match(result.text.split("\n").at(-1), /^The folder holds 6 dumps \(\S+ \S+\); the newest 5 are kept, so 1 is past that, for Daniel to delete by hand: 2025-01-01T000000Z\.$/);
     });
+  });
+});
+
+describe("restore-drill", () => {
+  const realDocker = (process.env.PATH ?? "").split(delimiter).map((dir) => join(dir, "docker")).find((path) => existsSync(path));
+  const { MongoClient } = createRequire(join(repoRoot, "servers", "package.json"))("mongodb");
+  const environOf = process.platform === "linux" ? "tr '\\0' '\\n' </proc/$$/environ" : "ps -E -ww -o command= -p $$";
+  const cmdlineOf = process.platform === "linux" ? "tr '\\0' '\\n' </proc/$$/cmdline" : "ps -ww -o command= -p $$";
+
+  // The spy docker: each call's arguments, one per line and ended by "--- end", in `calls`, and
+  // the environment `docker run` starts with, in `run-environ`; then the real docker, but for
+  // `docker port`, which fails while `fail-port` exists.
+  function spyDocker() {
+    const dir = tempDir("docker-spy");
+    writeFileSync(join(dir, "docker"), `#!/bin/sh
+dir='${dir}'
+{ printf '%s\\n' "$@"; echo '--- end'; } >>"$dir/calls"
+if [ "$1" = run ]; then ${environOf} >"$dir/run-environ"; fi
+if [ "$1" = port ] && [ -f "$dir/fail-port" ]; then echo 'Error: no port, as the test asked' >&2; exit 1; fi
+exec '${realDocker}' "$@"
+`, { mode: 0o755 });
+    const read = (name) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), "utf8") : "");
+    const calls = () => read("calls").split("--- end\n").filter(Boolean).map((call) => call.split("\n").filter(Boolean));
+    return { dir, read, calls, set: (name) => writeFileSync(join(dir, name), "") };
+  }
+
+  // The spy mongorestore: its argument list, environment and the kind of its --config file, then
+  // the real one; with `hold` it waits after the restore until `go` exists or its parent is gone,
+  // and with `fail` it then exits 1 with a line naming the throwaway's connection string.
+  function spyMongorestore() {
+    const dir = tempDir("mongorestore-spy");
+    writeFileSync(join(dir, "mongorestore"), `#!/bin/sh
+dir='${dir}'
+real='${join(toolsDir, "mongorestore")}'
+[ "$1" = --version ] && exec "$real" "$@"
+${cmdlineOf} >"$dir/cmdline"
+${environOf} >"$dir/environ"
+config=\${1#--config=}
+if [ -p "$config" ]; then echo fifo >"$dir/config-kind"; else echo other >"$dir/config-kind"; fi
+"$real" "$@"
+status=$?
+if [ -f "$dir/hold" ]; then
+  : >"$dir/held"
+  while [ ! -f "$dir/go" ] && kill -0 $PPID 2>/dev/null; do sleep 0.1; done
+fi
+if [ -f "$dir/fail" ]; then echo "Failed: restoring into $(sed -n 's/^uri: //p' "$config" 2>/dev/null)mongodb://root:x@127.0.0.1 {\"doc\": 1}" >&2; exit 1; fi
+exit $status
+`, { mode: 0o755 });
+    const read = (name) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), "utf8") : null);
+    return { dir, read, set: (name, text = "") => writeFileSync(join(dir, name), text) };
+  }
+
+  let docker;
+  let restorer;
+  const drillPath = () => [spy.dir, restorer.dir, docker.dir, toolsDir, testPath()].join(":");
+  // Under tests/run the heavy-run lock is held, so the server's team-heavy runs the drill at once;
+  // run alone, this file holds none, and the drill runs at once all the same (the lock test holds
+  // one in the test's HOME).
+  const held = { TEAM_HEAVY_HELD: process.env.TEAM_HEAVY_HELD ?? "1" };
+  const drillServer = (body, options = {}) => withServer(body, { path: drillPath(), ...options, env: { ...held, ...options.env } });
+  beforeEach(() => {
+    docker = spyDocker();
+    restorer = spyMongorestore();
+  });
+
+  async function takeBackup() {
+    await withServer(async (server) => {
+      const result = await server.callTool("backup", {});
+      assert.ok(!result.isError, result.text);
+    });
+    return backups().filter((name) => /^\d{4}-\d{2}-\d{2}T\d{6}Z$/.test(name)).sort().at(-1);
+  }
+  const gone = (name) => {
+    const inspected = spawnSync(realDocker, ["container", "inspect", name], { encoding: "utf8" });
+    return inspected.status !== 0 && /no such (container|object)/i.test(inspected.stderr);
+  };
+  const timed = (text) => text.replace(/: (PASS|FAIL) in \d+( min \d+)? s, /, ": $1 in <time>, ");
+  const drillsOf = (stamp) => (existsSync(join(root, stamp, "drills")) ? readdirSync(join(root, stamp, "drills")) : []);
+
+  test("the throwaway's image and its environment are the test helpers' own", () => {
+    assert.equal(throwawayImage, mongoImage);
+    assert.deepEqual(throwawayCaches, perThreadCaches);
+  });
+
+  // The rehearsal's form: the throwaway on the default bridge and on the caller's network too.
+  test("the throwaway is a loopback-only, tmpfs, 2 GiB, self-ending --rm container that joins a network under an alias", async () => {
+    const network = `prod-mongo-test-${randomBytes(4).toString("hex")}`;
+    execFileSync(realDocker, ["network", "create", "--internal", network], { stdio: "pipe" });
+    const name = throwawayName("drill");
+    try {
+      const throwaway = await startThrowaway({ name, kind: "drill", join: { network, alias: "mongodb" }, MongoClient });
+      const [inspected] = JSON.parse(execFileSync(realDocker, ["container", "inspect", name], { encoding: "utf8" }));
+      const { HostConfig: host, Config: config } = inspected;
+      assert.ok(inspected.NetworkSettings.Networks[network]?.Aliases?.includes("mongodb"), JSON.stringify(inspected.NetworkSettings.Networks));
+      assert.ok(inspected.NetworkSettings.Networks.bridge, "not on the default bridge");
+      assert.equal(host.AutoRemove, true);
+      assert.equal(host.Memory, 2 * 1024 ** 3);
+      assert.equal(host.MemorySwap, 2 * 1024 ** 3);
+      assert.deepEqual(host.PortBindings, { "27017/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }] });
+      assert.deepEqual(Object.keys(host.Tmpfs).sort(), ["/data/configdb", "/data/db"]);
+      assert.deepEqual(inspected.Mounts.filter(({ Type }) => Type === "volume"), [], "it has a volume");
+      assert.deepEqual(config.Entrypoint, ["timeout"]);
+      assert.deepEqual(config.Cmd, ["3600", "docker-entrypoint.sh", "mongod"]);
+      assert.equal(config.Labels[teamLabel("toolkit")], "prod-mongo");
+      assert.equal(config.Labels[teamLabel("expires")], throwaway.expires);
+      await throwaway.client.db("admin").command({ ping: 1 });
+      assert.deepEqual(await throwaway.stop(), { gone: true });
+      assert.ok(gone(name));
+    } finally {
+      spawnSync(realDocker, ["rm", "--force", name]);
+      spawnSync(realDocker, ["network", "rm", network]);
+    }
+  });
+
+  test("passes on a backup the test took, records its verdict beside it, and leaves nothing running", async () => {
+    const stamp = await takeBackup();
+    let text;
+    await drillServer(async (server) => {
+      const result = await server.callTool("restore-drill", {});
+      assert.ok(!result.isError, result.text);
+      text = result.text;
+      const listed = await server.callTool("list-backups", {});
+      assert.match(listed.text, new RegExp(`^- ${stamp}: .*, verified; 1 drill \\(newest PASS\\), 0 rehearsals, 0 undos, 0 diffs$`, "m"));
+    });
+    const [file] = drillsOf(stamp);
+    assert.deepEqual(drillsOf(stamp), [file]);
+    assert.match(file, /^\d{4}-\d{2}-\d{2}T\d{6}Z\.json$/);
+    assert.deepEqual(timed(text).split("\n"), [
+      `Restore drill of ~/conventioner-backups/${stamp}: PASS in <time>, mongorestore ${mongodumpVersion}`,
+      "4 collections and 1 view, 10 documents, each collection's count and index names as its manifest gives them.",
+      `Recorded in ~/conventioner-backups/${stamp}/drills/${file}; nothing was left running.`,
+    ]);
+    assert.equal(statSync(join(root, stamp, "drills")).mode & 0o777, 0o700);
+    assert.equal(statSync(join(root, stamp, "drills", file)).mode & 0o777, 0o600);
+    const record = JSON.parse(readFileSync(join(root, stamp, "drills", file), "utf8"));
+    assert.equal(record.verdict, "PASS");
+    assert.equal(record.stamp, stamp);
+    assert.equal(record.image, mongoImage);
+    assert.deepEqual(record.collections.map(({ name, match }) => [name, match]), [["accounts", true], ["applications", true], ["archived", true], ["markets", true], ["open_markets", true]]);
+    assert.deepEqual(record.collections.find(({ name }) => name === "markets").restored, { type: "collection", documents: 3, indexes: ["_id_", "name_unique"] });
+
+    // The throwaway: started once, as the spec says, and gone.
+    const runs = docker.calls().filter(([command]) => command === "run");
+    assert.equal(runs.length, 1);
+    const [run] = runs;
+    const name = run[run.indexOf("--name") + 1];
+    assert.match(name, /^prod-mongo-drill-[0-9a-f]{12}$/);
+    assert.ok(gone(name), `${name} is still there`);
+    for (const part of ["--rm", "--detach"]) assert.ok(run.includes(part), part);
+    const pairs = run.slice(0, -4).flatMap((arg, n) => (arg.startsWith("--") ? [`${arg} ${run[n + 1]}`] : []));
+    for (const pair of [
+      "--memory 2g", "--memory-swap 2g", "--publish 127.0.0.1::27017", "--tmpfs /data/db", "--tmpfs /data/configdb",
+      "--env GLIBC_TUNABLES=glibc.pthread.rseq=1", "--env MONGO_INITDB_ROOT_USERNAME=root", "--env MONGO_INITDB_ROOT_PASSWORD", "--entrypoint timeout",
+      `--label ${teamLabel("owner")}=agent-team`, `--label ${teamLabel("kind")}=drill`, `--label ${teamLabel("toolkit")}=prod-mongo`,
+    ]) {
+      assert.ok(pairs.includes(pair), `docker run has no ${pair}`);
+    }
+    assert.deepEqual(run.slice(-4), [mongoImage, "3600", "docker-entrypoint.sh", "mongod"]);
+    const expires = Date.parse(pairs.find((pair) => pair.startsWith(`--label ${teamLabel("expires")}=`)).split("=")[1]);
+    assert.ok(Math.abs(expires - (Date.parse(record.started) + 3600_000)) < 60_000, "expires is not its start plus an hour");
+
+    // The password: in docker run's own environment, and nowhere else.
+    const password = /^MONGO_INITDB_ROOT_PASSWORD=([0-9a-f]{48})$/m.exec(docker.read("run-environ"))?.[1];
+    assert.ok(password, "docker run's environment holds no password");
+    for (const call of docker.calls()) assert.ok(!call.join(" ").includes(password), `the password is in docker ${call[0]}'s argument list`);
+    for (const what of ["cmdline", "environ"]) assert.ok(!restorer.read(what).includes(password), `the password is in mongorestore's ${what}`);
+    assert.doesNotMatch(restorer.read("cmdline"), /mongodb:\/\//);
+    assert.equal(restorer.read("config-kind"), "fifo\n");
+    assert.match(restorer.read("cmdline"), new RegExp(`^--config=\\S*/${stamp}/drills/\\.\\S+\\.config\\.fifo$`, "m"));
+    assert.ok(!text.includes(password));
+    for (const { path, stat } of walk(home)) {
+      assert.ok(!stat.isFIFO(), `${path} is a FIFO`);
+      if (stat.isFile()) assert.ok(!readFileSync(path).includes(password), `${path} holds the password`);
+    }
+  });
+
+  test("fails on a manifest altered to a wrong count, naming the collection, records FAIL and leaves nothing running", async () => {
+    const stamp = await takeBackup();
+    const path = join(root, stamp, "manifest.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    manifest.collections.find(({ name }) => name === "markets").dumped = 4;
+    writeFileSync(path, JSON.stringify(manifest));
+    await drillServer(async (server) => {
+      const result = await server.callTool("restore-drill", { backup: stamp });
+      assert.equal(result.isError, true);
+      const [file] = drillsOf(stamp);
+      assert.deepEqual(timed(result.text).split("\n"), [
+        `Restore drill of ~/conventioner-backups/${stamp}: FAIL in <time>, mongorestore ${mongodumpVersion}`,
+        "1 of 5 did not match the manifest:",
+        "- markets: 3 documents restored, 4 in its manifest",
+        `Recorded in ~/conventioner-backups/${stamp}/drills/${file}; nothing was left running.`,
+      ]);
+      const listed = await server.callTool("list-backups", {});
+      assert.match(listed.text, new RegExp(`^- ${stamp}: .*; 1 drill \\(newest FAIL\\),`, "m"));
+    });
+    const [file] = drillsOf(stamp);
+    assert.equal(JSON.parse(readFileSync(join(root, stamp, "drills", file), "utf8")).verdict, "FAIL");
+    const [run] = docker.calls().filter(([command]) => command === "run");
+    assert.ok(gone(run[run.indexOf("--name") + 1]));
+  });
+
+  test("fails a dump mongorestore cannot restore, with its scrubbed reason, and removes the throwaway on an error with no verdict", async () => {
+    const stamp = await takeBackup();
+    restorer.set("fail");
+    await drillServer(async (server) => {
+      const failed = await server.callTool("restore-drill", { backup: stamp });
+      assert.equal(failed.isError, true);
+      const lines = timed(failed.text).split("\n");
+      assert.equal(lines[0], `Restore drill of ~/conventioner-backups/${stamp}: FAIL in <time>, mongorestore ${mongodumpVersion}`);
+      assert.equal(lines[1], "mongorestore exited 1: Failed: restoring into [uri], so the dump did not restore.");
+      assert.match(lines.at(-1), /; nothing was left running\.$/);
+    });
+    assert.equal(drillsOf(stamp).length, 1);
+    docker.set("fail-port");
+    await drillServer(async (server) => {
+      const result = await server.callTool("restore-drill", { backup: stamp });
+      assert.equal(result.isError, true);
+      assert.equal(
+        result.text,
+        `restore-drill: failed: docker gave no loopback port for the throwaway MongoDB: Error: no port, as the test asked, so ~/conventioner-backups/${stamp} has no verdict; nothing was left running.`,
+      );
+    });
+    assert.equal(drillsOf(stamp).length, 1, "a Docker failure recorded a verdict");
+    const names = docker.calls().filter(([command]) => command === "run").map((run) => run[run.indexOf("--name") + 1]);
+    assert.equal(names.length, 2);
+    for (const name of names) assert.ok(gone(name), `${name} is still there`);
+  });
+
+  test("refuses before Docker is touched: no backup, a stamp not under the root, a dump not verified or too big", async () => {
+    await drillServer(async (server) => {
+      const none = await server.callTool("restore-drill", {});
+      assert.equal(none.text, "restore-drill: failed: ~/conventioner-backups does not exist yet, so it holds no backup to drill");
+    });
+    const stamp = await takeBackup();
+    cpSync(join(root, stamp), join(root, "2025-01-01T000000Z"), { recursive: true });
+    const unverified = join(root, "2025-01-01T000000Z", "manifest.json");
+    writeFileSync(unverified, JSON.stringify({ ...JSON.parse(readFileSync(unverified, "utf8")), verified: false }));
+    cpSync(join(root, stamp), join(root, "2025-02-01T000000Z"), { recursive: true });
+    const big = join(root, "2025-02-01T000000Z", "manifest.json");
+    const bigManifest = JSON.parse(readFileSync(big, "utf8"));
+    writeFileSync(big, JSON.stringify({ ...bigManifest, totals: { ...bigManifest.totals, bytes: restoreLimit + 1 } }));
+    const outside = join(home, "elsewhere", stamp);
+    cpSync(join(root, stamp), outside, { recursive: true });
+    await drillServer(async (server) => {
+      for (const [backup, reason] of [
+        [outside, `"${outside.slice(0, 40)}..." is not a backup's name, which is its UTC start, as 2026-11-08T142305Z`],
+        [`../elsewhere/${stamp}`, `"../elsewhere/${stamp}" is not a backup's name, which is its UTC start, as 2026-11-08T142305Z`],
+        ["2024-01-01T000000Z", "~/conventioner-backups holds no backup 2024-01-01T000000Z"],
+        ["2025-01-01T000000Z", "~/conventioner-backups/2025-01-01T000000Z has no verified manifest.json, so it is not a dump this toolkit took"],
+        ["2025-02-01T000000Z", "~/conventioner-backups/2025-02-01T000000Z is 512.0 MiB, more than the 512.0 MiB a drill restores in memory"],
+      ]) {
+        const result = await server.callTool("restore-drill", { backup });
+        assert.equal(result.isError, true, backup);
+        assert.equal(result.text, `restore-drill: failed: ${reason}`, backup);
+      }
+      const typed = await server.callTool("restore-drill", { backup: 7 });
+      assert.equal(typed.text, "restore-drill: failed: that is not a backup's name, which is its UTC start, as 2026-11-08T142305Z");
+      const other = await server.callTool("restore-drill", { root: "/tmp" });
+      assert.equal(other.text, "restore-drill: takes no root");
+    });
+    assert.deepEqual(docker.calls(), [], "docker ran");
+    assert.equal(restorer.read("cmdline"), null, "mongorestore ran");
+    assert.deepEqual(drillsOf(stamp), []);
+  });
+
+  test("removes the toolkit's container, network and image past their expiry, naming each, and keeps the rest", async () => {
+    const stamp = await takeBackup();
+    const tag = randomBytes(4).toString("hex");
+    const labels = (expires, toolkit = "prod-mongo") => ["--label", `${teamLabel("owner")}=agent-team`, "--label", `${teamLabel("kind")}=drill`, "--label", `${teamLabel("toolkit")}=${toolkit}`, "--label", `${teamLabel("expires")}=${expires}`];
+    const made = { containers: [], networks: [], images: [] };
+    const make = (name, labelArgs) => {
+      execFileSync(realDocker, ["run", "--detach", "--name", name, ...labelArgs, "--entrypoint", "sleep", mongoImage, "600"], { stdio: "pipe" });
+      made.containers.push(name);
+    };
+    try {
+      make(`prod-mongo-drill-expired-${tag}`, labels("2020-01-01T00:00:00Z"));
+      make(`prod-mongo-drill-live-${tag}`, labels("2999-01-01T00:00:00Z"));
+      make(`not-prod-mongo-${tag}`, labels("2020-01-01T00:00:00Z", "other"));
+      execFileSync(realDocker, ["commit", `prod-mongo-drill-expired-${tag}`, `prod-mongo-expired-test:${tag}`], { stdio: "pipe" });
+      made.images.push(`prod-mongo-expired-test:${tag}`);
+      execFileSync(realDocker, ["network", "create", ...labels("2020-01-01T00:00:00Z"), `prod-mongo-expired-${tag}`], { stdio: "pipe" });
+      made.networks.push(`prod-mongo-expired-${tag}`);
+      await drillServer(async (server) => {
+        const result = await server.callTool("restore-drill", { backup: stamp });
+        assert.ok(!result.isError, result.text);
+        assert.match(
+          result.text.split("\n").at(-1),
+          new RegExp(`^Removed what an earlier run left past its expiry: (\\S+ \\S+, )*container prod-mongo-drill-expired-${tag}(, \\S+ \\S+)*\\.$`),
+        );
+        for (const part of [`network prod-mongo-expired-${tag}`, `image prod-mongo-expired-test:${tag}`]) assert.ok(result.text.includes(part), part);
+        assert.ok(!result.text.includes(`live-${tag}`) && !result.text.includes(`not-prod-mongo-${tag}`), result.text);
+      });
+      assert.ok(gone(`prod-mongo-drill-expired-${tag}`));
+      assert.ok(!gone(`prod-mongo-drill-live-${tag}`));
+      assert.ok(!gone(`not-prod-mongo-${tag}`));
+      assert.notEqual(spawnSync(realDocker, ["network", "inspect", `prod-mongo-expired-${tag}`]).status, 0, "the expired network is still there");
+      assert.notEqual(spawnSync(realDocker, ["image", "inspect", `prod-mongo-expired-test:${tag}`]).status, 0, "the expired image is still there");
+      // Each expired one removed by its id; the drill's own by its name.
+      const [run] = docker.calls().filter(([command]) => command === "run");
+      const own = run[run.indexOf("--name") + 1];
+      const removals = docker.calls().filter(([command, sub]) => command === "rm" || (["network", "image"].includes(command) && sub === "rm"));
+      assert.equal(removals.filter((call) => call.at(-1) !== own).length, 3, JSON.stringify(removals));
+      for (const call of removals.filter((args) => args.at(-1) !== own)) assert.match(call.at(-1), /^(sha256:)?[0-9a-f]{64}$/, call.join(" "));
+    } finally {
+      for (const name of made.containers) spawnSync(realDocker, ["rm", "--force", name]);
+      for (const name of made.networks) spawnSync(realDocker, ["network", "rm", name]);
+      for (const name of made.images) spawnSync(realDocker, ["image", "rm", "--force", name]);
+    }
+  });
+
+  test("answers that the machine is busy while another run holds the heavy-run lock, and runs nothing", async () => {
+    const stamp = await takeBackup();
+    const lock = join(home, ".local", "state", "agent-team", "heavy.lock");
+    mkdirSync(dirname(lock), { recursive: true });
+    writeFileSync(lock, "the test's own run (pid 1) since now\n");
+    const holder = spawn("flock", [lock, "sleep", "300"], { stdio: "ignore" });
+    try {
+      await until(() => spawnSync("flock", ["-n", lock, "true"]).status !== 0);
+      await withServer(async (server) => {
+        const result = await server.callTool("restore-drill", { backup: stamp });
+        assert.equal(result.isError, true);
+        assert.equal(result.text, "restore-drill: the machine is busy: the heavy-run lock is held by the test's own run (pid 1) since now; ask again later");
+      }, { path: drillPath(), env: { PROD_MONGO_HEAVY_WAIT_MINUTES: "0" } });
+    } finally {
+      holder.kill();
+    }
+    assert.deepEqual(docker.calls(), [], "docker ran");
+    assert.deepEqual(drillsOf(stamp), []);
+  });
+
+  test("shares the one-long-call lock with backup", async () => {
+    spy.set("hold");
+    await drillServer(async (server) => {
+      const first = server.callTool("backup", {});
+      await until(() => spy.read("held") !== null);
+      const drill = await server.callTool("restore-drill", {});
+      assert.equal(drill.text, "restore-drill: a backup is already running");
+      spy.set("go");
+      assert.ok(!(await first).isError);
+    });
+    assert.deepEqual(docker.calls(), []);
+  });
+
+  // The script as Daniel runs it: through team-heavy (this test's HOME has a lock of its own),
+  // with no MCP server and no op.
+  const byHand = (args, { path = [toolsDir, testPath()].join(":") } = {}) =>
+    spawn(join(repoRoot, "bin", "team-heavy"), ["run", "--kind", "restore-drill", "--", process.execPath, join(repoRoot, "toolkits", "prod-mongo", "scripts", "restore-drill.mjs"), ...args], {
+      env: { HOME: home, PATH: path, PROD_MONGO_ROOT: root },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  const ended = (child) =>
+    new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
+      child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+      child.on("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+    });
+
+  test("run by hand through team-heavy: --text prints the tool's answer, and without it one JSON object", async () => {
+    const stamp = await takeBackup();
+    const text = await ended(byHand([stamp, "--text"]));
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(text.stdout, new RegExp(`^Restore drill of ~/conventioner-backups/${stamp}: PASS in \\d+ s, mongorestore `));
+    assert.match(text.stdout, /; nothing was left running\.\n$/);
+    const json = await ended(byHand([stamp]));
+    assert.equal(json.code, 0, json.stderr);
+    assert.equal(json.stdout.split("\n").filter(Boolean).length, 1, json.stdout);
+    const result = JSON.parse(json.stdout);
+    assert.equal(result.verdict, "PASS");
+    assert.deepEqual(result.cleanup, { gone: true });
+    assert.ok(gone(result.container));
+    assert.equal(drillsOf(stamp).length, 2);
+    const refused = await ended(byHand(["--uri=mongodb://x", stamp]));
+    assert.equal(refused.code, 1);
+    assert.deepEqual(JSON.parse(refused.stdout), { refused: "takes exactly one argument, a backup's name, its UTC start as 2026-11-08T142305Z (and --text for the answer as text)" });
+  });
+
+  test("restoring.md's commands: the drill by hand as the tests run it, and the restore to production, run as Daniel would", async () => {
+    const doc = readFileSync(join(repoRoot, "toolkits", "prod-mongo", "docs", "restoring.md"), "utf8");
+    assert.ok(doc.includes("\n~/agent-team/bin/team-heavy run --kind restore-drill -- node ~/agent-team/toolkits/prod-mongo/scripts/restore-drill.mjs <stamp> --text\n"));
+    const blocks = [...doc.matchAll(/^```bash\n([\s\S]*?)^```$/gm)].map(([, body]) => body);
+    const restore = blocks.find((body) => body.startsWith("read -rs PROD_URI\n"));
+    assert.ok(restore, "restoring.md has no restore command");
+    const stamp = await takeBackup();
+    await target.client.db("conventioner").dropDatabase();
+    await target.client.db("conventioner").collection("markets").insertOne({ name: "written since the dump" });
+    const restored = spawnSync("bash", ["-c", restore.replaceAll("<stamp>", stamp)], {
+      input: `${targetUri}\n`,
+      env: { HOME: home, PATH: [restorer.dir, toolsDir, testPath()].join(":") },
+      encoding: "utf8",
+    });
+    assert.equal(restored.status, 0, restored.stderr);
+    assert.deepEqual(await collectionsOf(target.client), await collectionsOf(production.client));
+    assert.equal(await target.client.db("conventioner").collection("markets").countDocuments({ name: "written since the dump" }), 0);
+    const { password } = new URL(targetUri);
+    assert.ok(!restorer.read("cmdline").includes(password), "the password is in mongorestore's argument list");
+    assert.doesNotMatch(restorer.read("cmdline"), /mongodb:\/\//);
+    assert.ok(!restorer.read("environ").includes(password), "the password is in mongorestore's environment");
+    assert.equal(restorer.read("config-kind"), "fifo\n");
+  });
+
+  test("removes its throwaway when stopped by SIGINT, SIGTERM or SIGHUP mid-drill, and records no verdict", async () => {
+    const stamp = await takeBackup();
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+    const script = join(repoRoot, "toolkits", "prod-mongo", "scripts", "restore-drill.mjs");
+    // One copy of the dump and one holding mongorestore spy per drill, all three at once.
+    const runs = signals.map((signal, n) => {
+      const copy = `2025-0${n + 1}-01T000000Z`;
+      cpSync(join(root, stamp), join(root, copy), { recursive: true });
+      const holding = spyMongorestore();
+      holding.set("hold");
+      const child = spawn(process.execPath, [script, copy], { env: { HOME: home, PATH: [holding.dir, toolsDir, testPath()].join(":"), PROD_MONGO_ROOT: root }, stdio: ["ignore", "pipe", "pipe"] });
+      return { signal, copy, holding, child, done: ended(child) };
+    });
+    await until(() => runs.every(({ holding }) => holding.read("held") !== null), 180_000);
+    for (const { child, signal } of runs) child.kill(signal);
+    for (const { signal, copy, done } of runs) {
+      const result = await done;
+      assert.equal(result.code, 128 + { SIGINT: 2, SIGTERM: 15, SIGHUP: 1 }[signal], result.stderr);
+      const out = JSON.parse(result.stdout);
+      assert.equal(out.failed, `the drill was stopped (${signal})`);
+      assert.deepEqual(out.cleanup, { gone: true });
+      assert.ok(gone(out.container), out.container);
+      assert.deepEqual(drillsOf(copy), []);
+    }
   });
 });
 
