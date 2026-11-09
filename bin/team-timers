@@ -119,7 +119,7 @@
 #                       step-<name>  any other step failing 12 runs in a row: "The heartbeat's
 #                         <name> step has failed <n> runs in a row on <machine>, since <HH:MM>:
 #                         <reason>."
-#              inbox  On the holder, after the ledger step: team-inbox, which edits the
+#              inbox  On the holder, after the alert step: team-inbox, which edits the
 #                     Waiting on you message in #coordinator, so what waits on Daniel shows there
 #                     within five minutes whatever changed it. It logs only a new message
 #                     ("posted <link>", when the old one is gone) and a failure, and a failure
