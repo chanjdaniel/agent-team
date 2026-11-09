@@ -56,6 +56,13 @@ out of git; take each out, then commit again:
   [[ $stderr != *notes.md* ]]
 }
 
+@test "a commit made with literal pathspecs (commit_records' GIT_LITERAL_PATHSPECS) is scanned all the same" {
+  record tasks/T1/notes.md "write to bo@$provider"
+  git -C "$TEAM_HOME" add tasks
+  run -1 --separate-stderr env GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "chore: records" --only -- tasks/T1/notes.md
+  assert_contains "${stderr%%$'\n'*}" "refused: tasks/T1/notes.md adds an email address at a public provider"
+}
+
 @test "a screenshot is refused, and git's own address is not" {
   git -C "$TEAM_HOME" config user.email "Daniel@$provider"
   record tasks/T1/notes.md "signed in as daniel@$provider"

@@ -23,7 +23,8 @@
 # this machine and are never archived;
 # each worktree's task directory mirrored to tasks/T<n>/scratch/ (the opened project) or
 # tasks/T<n>/scratch-<project>/ (an added one), less what archive_left_out (bin/lib/team.sh)
-# leaves out, each named on stderr, a missing or empty one reported on stderr; claude rm <id>
+# leaves out, each named on stderr, a missing or empty one reported on stderr, a mirror that
+# fails stopping the close with rsync's reason, the task half closed; claude rm <id>
 # for each of the task's sessions; each landed worktree returned through its pool (git: git
 # worktree remove, never --force; treehouse: its task directory emptied, then the project's
 # return command run from the primary checkout with the path), each first losing .scratch/shots/,
@@ -256,7 +257,14 @@ archived=()
 for wt in "${worktrees[@]}"; do
   project=$(field project "$wt") path=$(field worktree "$wt") archive=$(field archive "$wt")
   task_dir=$path/$(team_project "$project" task_dir)
-  if archive_task_dir "$task_dir" "$project" "tasks/$task/$archive"; then archived+=("tasks/$task/$archive"); fi
+  rc=0
+  notes=$(archive_task_dir "$task_dir" "$project" "tasks/$task/$archive" 2>"$scratch/error") || rc=$?
+  while IFS= read -r line; do echo "team-close: $line" >&2; done < <(grep . <<<"$notes")
+  case $rc in
+    0) archived+=("tasks/$task/$archive") ;;
+    1) ;;
+    *) die "$(grep -m1 . "$scratch/error" || echo "cannot archive $task_dir (exit $rc)")" ;;
+  esac
 done
 
 # Remove every session of the task, live or not, now that the archive is made.

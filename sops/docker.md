@@ -219,21 +219,24 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
 
 | Step | Key in `~/.config/agent-team/stack.json` | What it runs | When |
 | - | - | - | - |
-| `stacks` | `heartbeat_sweep` | `team-stack sweep` | every run, before the checkpoint |
-| `janitor` | `heartbeat_janitor` | `team-janitor` | after the checkpoint, while no report of today's local date is there yet (a dry run's is none) |
+| `stacks` | `heartbeat_sweep` | `team-stack sweep` | every run, after the checkpoint and the level step |
+| `janitor` | `heartbeat_janitor` | `team-janitor` | last, after the pack step, while no report of today's local date is there yet (a dry run's is none) |
 
 - To turn a step on, Daniel sets its key to `true` in `stack.json`, keeping any other key there, for example `{"heartbeat_sweep": true}`; turning the sweep on first and the janitor a day later lets each be checked on its own.
   The next run picks it up: there is nothing to restart.
 - To turn it off, they set the key to `false` or remove it; a missing file is every key off.
 - Both run only where the checkpoint runs: on the lease holder, after the lease step (or the back step, after an outage), never on a fenced machine, while GitHub is unreachable, on a machine that does not hold the lease, or while another run holds the heartbeat's lock.
+  The checkpoint is the first step after the lease step, so no slower step widens the window of records not yet on origin; the inbox, finished, capacity, level, stacks, pack and janitor steps follow it in that order.
 - Each logs one line in `~/.local/state/agent-team/heartbeat.log` per line its command prints, and nothing while it is off.
   A step that fails, or whose `stack.json` is malformed, is logged as `<step>: failed: <reason>`; the steps after it still run, and the run exits 1.
-  A checkpoint that fails ends the run before the janitor, which then runs on the next one.
+  That line, like every heartbeat line that reports a problem, goes to `heartbeat-failures.log` beside it too, which keeps 30 days, while the heartbeat log keeps its last 1000 to 2000 lines.
+  The checkpoint is such a step too: one that fails, is stopped at its limit or exits 75 (GitHub unreachable, or another checkpoint still running) leaves the sweep and the janitor to run as usual.
 - A hung Docker never holds the heartbeat's lock past the lease's renewals: the sweep is stopped after 5 minutes and the janitor after 20, each with every command it started, and logged as `<step>: failed: timed out after <seconds> s`.
+  The checkpoint before them is stopped after 5 minutes too, logged the same way, and a whole run after 70 minutes, with everything it started, logged as `run: failed: timed out after 4200 s`, so one hang never ends the renewals and checkpoints for good; the systemd service's `TimeoutStartSec`, 75 minutes, stands behind that, and on the holder the doctor's heartbeat line warns when the installed job is not the one the checkout defines (`team-timers enable` rewrites it).
   A janitor stopped so wrote no report, so the next run starts it again, and its reaper goes on where the last one stopped.
   The `capacity` step, which runs every run before them and is no setting's, gives `team-stack ls --json` 30 seconds for its reading of the machine's load (`team-capacity sample`), then takes the reading without Docker; each of its commands is stopped after 60 seconds.
   The `level` step after it, no setting's either, runs `team-level tick`, which holds every running team container to the level's CPU with `docker update --cpus` (`sops/resources.md`), and is stopped after 5 minutes.
-  While Docker stays hung a run takes up to about 33 minutes (these steps' limits, each command killed 10 seconds after its stop), so the lease is still renewed well inside its hour, and a checkpoint comes about every 33 minutes instead of every 5.
+  While Docker stays hung a run takes up to about 33 minutes (these steps' limits, each command killed 10 seconds after its stop), so the lease is still renewed well inside its hour, and a checkpoint, each run's first step, comes about every 33 minutes instead of every 5.
 - A janitor run that fails (Docker not answering, a removal that failed) still writes the day's report, so the heartbeat runs it again only the next day; `~/agent-team/bin/team-janitor` by hand runs it again at once.
 - The job runs with the `PATH` that `team-timers enable` captured, and both steps need `docker` on it (the sweep `claude` too): on macOS Docker Desktop's `docker` is in `/usr/local/bin`.
   When Docker was installed after the heartbeat was enabled, or `docker` was not on the `PATH` of the shell that enabled it, run `team-timers enable` again, with Daniel's yes as every enable needs, from a shell where `command -v docker` answers; it rewrites the job with that `PATH`.
