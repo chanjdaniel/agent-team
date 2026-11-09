@@ -7,11 +7,15 @@
 # Refuses unless team-lease check says this machine holds the lease (exit 1), and exits 75 when
 # GitHub is unreachable; either way nothing changes. Without --force, a checkpoint less than 5
 # minutes (less a minute for the timer's slack) after the last does nothing but say so.
-# For each open task, in task number order, for each of its open worktrees, each contained: any
-# step of one worktree that fails, from the registry lookup to the push, is that worktree's
-# failure, with the first error line it gave (git's, rsync's or the registry's), and stops no
-# other worktree nor any later step; its archive and its snapshot are made apart, so either is
-# still made when the other failed.
+# First, before any worktree, commits ledger.jsonl and level.jsonl alone as "chore: checkpoint
+# ledger" and pushes the branch, as the records commit below does, so no worktree, however slow or
+# broken, keeps the ledger from origin; nothing new in either is a line saying so, and a failure is
+# the team home's, after which the rest still runs.
+# Then, for each open task, in task number order, for each of its open worktrees, each
+# contained: any step of one worktree that fails, from the registry lookup to the push, is that
+# worktree's failure, with the first error line it gave (git's, rsync's or the registry's), and
+# stops no other worktree nor any later step; its archive and its snapshot are made apart, so
+# either is still made when the other failed.
 #   1. A worktree that is missing, on another branch than its recorded one, or locked by a running
 #      git command (index.lock) is skipped with a line saying why.
 #   2. Its task directory is mirrored into tasks/T<n>/scratch/ (the project the task was opened
@@ -40,8 +44,13 @@
 # (the ledger, level.jsonl, tasks/ with the scratch archives, plans, briefs and their records and
 # tasks/current.md or its removal, projects/, projects.toml, memory/, machine/, usage/ and
 # manual-steps.md), less what git ignores, as "chore: checkpoint" on the branch checked out (dev),
-# leaving whatever else is staged as it was, and pushes the branch when it is ahead of origin's;
-# a path the team home's hook refuses (an image) fails the commit, named. A rejected push fetches
+# leaving whatever else is staged as it was, and pushes the branch when it is ahead of origin's.
+# When that one commit fails (a path the team home's hook refuses: an image, an address at a
+# public provider), it commits group by group instead, the ledger's (ledger.jsonl and level.jsonl)
+# first, then each other in name order, each alone as "chore: checkpoint <group>", a group being a
+# top-level records entry, or under tasks/ the entry one level down (tasks/T5/, tasks/current.md):
+# a group still refused is one failure naming it and the hook's first line, and stays uncommitted
+# for the next checkpoint, and every other is committed and pushed. A rejected push fetches
 # and replays the commits origin lacks onto origin's branch when they apply cleanly and no local
 # change is in the way (what is staged stays staged), then pushes again; else they stay unpushed
 # and it says why. No change, no commit and no push.
@@ -211,6 +220,15 @@ snapshot() {
   say "$label: pushed $wip ${commit:0:7} ($what)"
 }
 
+# The ledger first, alone, so no worktree, however slow or broken, keeps it from origin.
+rc=0
+out=$(commit_records "chore: checkpoint ledger" ledger.jsonl level.jsonl) || rc=$?
+while IFS= read -r line; do
+  line=${line/#"team home: nothing to commit"/"team home: nothing new in the ledger"}
+  say "$line"
+done < <(grep . <<<"$out")
+((rc == 0)) || failed=1
+
 # Each open worktree of each open task, as {task, project, branch, worktree, archive}.
 worktrees=()
 if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
@@ -251,8 +269,9 @@ out=$(TEAM_HOME=$TEAM_HOME "$bin/team-tokens" export 2>"$scratch/tokens-err" {lo
 while IFS= read -r line; do say "usage: $line"; done < <(grep . <<<"$out")
 ((rc == 0)) || warn usage "$(sed -n '1s/^team-tokens: //p' "$scratch/tokens-err"); the next checkpoint exports it"
 
-# The team home's records, every one: commit them, then push the branch when it is ahead of origin's.
-commit_records "chore: checkpoint" || failed=1
+# The team home's records, every one: commit them, group by group should the one commit fail, then
+# push the branch when it is ahead of origin's.
+records_by_group=1 commit_records "chore: checkpoint" || failed=1
 
 ((failed == 0)) || exit 1
 date -u -d "@$start" +%FT%TZ >"$last"

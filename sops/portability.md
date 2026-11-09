@@ -63,6 +63,7 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 
 `team-checkpoint` makes a dead machine lose at most 5 minutes:
 
+- first, before any worktree, `ledger.jsonl` and `level.jsonl` alone are committed as `chore: checkpoint ledger` and pushed, so no worktree, however slow or broken, keeps the ledger from origin;
 - each open task's task directory is mirrored into its archive in the team home, less what `archive_left_out` (`bin/lib/team.sh`) leaves out, each named on a line of the checkpoint's output, which is no failure: its stderr holds problems only, and the heartbeat logs each of them.
   `team-close` archives the same way, and `team-open --resume` leaves those paths in the worktree as they are;
 - each worktree's work is kept on the team home's origin as `wip/<project>/T<n>`, pushed from the worktree to that origin's URL and never to the project's origin, which may be public (Conventioner's is): the branch head, or, with uncommitted changes, a snapshot commit on it built from a temporary index (untracked files included), never touching the worktree's files, index or stash;
@@ -70,6 +71,7 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
   A secret has no place in git even in a private repository, and a project's `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
 - `team-tokens export` writes this machine's usage of each complete UTC day into `usage/<machine>/`, and its launched workers' time rows into `usage/<machine>/time/` (a failed export is a warning on stderr and fails nothing).
 - every records path `bin/lib/records` lists (the ledger, `tasks/` with the archives, plans, briefs and `tasks/current.md`, the coordinator's current items, `projects/`, `projects.toml`, `memory/`, `machine/`, `usage/` and `manual-steps.md`), less what git ignores, is committed as `chore: checkpoint` and pushed, so the coordinator never commits records by hand; `team-handoff` commits the same set.
+  When the team home's hook refuses a path in that one commit, the checkpoint commits each group alone instead, as `chore: checkpoint <group>`, the ledger's first, then the others in name order, so a refused path keeps only its own group out until it is fixed; a group is a top-level records entry, or under `tasks/` the entry one level down (`tasks/T5/`, `tasks/current.md`).
 
 Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`, and the copy of it that `team-open --resume` fetched into the primary checkout.
 

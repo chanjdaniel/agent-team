@@ -870,17 +870,19 @@ origin_reason() {
 # out, then push the branch when it is ahead of origin's (or origin's is unknown). The commit is made
 # under the ledger's lock and holds the changed records alone, what git ignores left out, so
 # whatever else is staged stays staged; the team home's hooks run, and a path they refuse fails the
-# commit. A push origin rejects fetches its branch and replays the commits it lacks onto it, when
-# they apply cleanly and no local change is in the way (a branch switch's two-tree merge, so what
-# is staged stays staged), then pushes again once. Prints one line on stdout, like
-# "team home: committed <sha> <message> and pushed dev" or "team home: nothing to commit"; a
-# failure adds its reason on stderr and returns 1. Given <path>s (records, relative to the team
-# home), it commits those alone. When the caller sets records_edit to a command, it runs first,
-# under the same lock, so the change it makes and its commit are one step; when it fails, nothing
-# is committed and its status is returned. Network calls go through origin_git, so NET_ERR must
-# name a file: commit_records <message> [<path>...]
+# commit. When the caller sets records_by_group and that one commit fails, it commits group by
+# group instead (records_commit_groups), so a refused path keeps only its own group out, and
+# pushes what it committed. A push origin rejects fetches its branch and replays the commits it
+# lacks onto it, when they apply cleanly and no local change is in the way (a branch switch's
+# two-tree merge, so what is staged stays staged), then pushes again once. Prints one line on
+# stdout, like "team home: committed <sha> <message> and pushed dev" or "team home: nothing to
+# commit"; a failure adds its reason on stderr and returns 1. Given <path>s (records, relative to
+# the team home), it commits those alone. When the caller sets records_edit to a command, it runs
+# first, under the same lock, so the change it makes and its commit are one step; when it fails,
+# nothing is committed and its status is returned. Network calls go through origin_git, so NET_ERR
+# must name a file: commit_records <message> [<path>...]
 commit_records() {
-  local message=$1 branch committed upstream out rc=0
+  local message=$1 branch committed upstream out rc=0 split=0
   local -a record_paths records
   if (($# > 1)); then records=("${@:2}"); else mapfile -t records < <(records_pathspecs); fi
   if ! branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
@@ -895,11 +897,14 @@ commit_records() {
     ((${#record_paths[@]} == 0)) || GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" add -A -- "${record_paths[@]}"
     mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" diff --cached -z --name-only --no-renames HEAD -- "${records[@]}")
     if ((${#record_paths[@]})); then
-      if GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "$message" --only -- "${record_paths[@]}" >"$NET_ERR" 2>&1; then
+      if records_commit "$message" "${record_paths[@]}"; then
         committed="committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) $message"
+      elif [[ -n ${records_by_group:-} ]]; then
+        records_commit_groups "$message" "${record_paths[@]}" || split=1
+        committed=$RECORDS_COMMITTED
       else
         committed=''
-        echo "${0##*/}: team home: cannot commit the records: $(grep -m1 . "$NET_ERR" || echo "git commit failed")" >&2
+        echo "${0##*/}: team home: cannot commit the records: $RECORDS_WHY" >&2
       fi
     fi
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
@@ -908,12 +913,12 @@ commit_records() {
   if git -C "$TEAM_HOME" rev-parse -q --verify "$upstream" >/dev/null &&
     [[ -z $(git -C "$TEAM_HOME" rev-list -n 1 "$upstream..HEAD") ]]; then
     echo "team home: $committed"
-    return 0
+    return "$split"
   fi
   out=$(origin_git -C "$TEAM_HOME" push --porcelain origin "refs/heads/$branch:refs/heads/$branch") || rc=$?
   if ((rc == 0)); then
     echo "team home: $committed and pushed $branch"
-    return 0
+    return "$split"
   fi
   if ! grep -q '^!' <<<"$out"; then
     echo "${0##*/}: team home: $committed; cannot push $branch: $(origin_reason "$rc")" >&2
@@ -931,6 +936,62 @@ commit_records() {
     return 1
   fi
   echo "team home: $committed; origin's $branch had moved; replayed onto it and pushed $branch"
+  return "$split"
+}
+
+# Commit the staged records <path>... alone as <message>; on a failure RECORDS_WHY holds git's or
+# the hook's first line: records_commit <message> <path>...
+records_commit() {
+  if GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "$1" --only -- "${@:2}" >"$NET_ERR" 2>&1; then
+    return 0
+  fi
+  RECORDS_WHY=$(grep -m1 . "$NET_ERR" || echo "git commit failed")
+  return 1
+}
+
+# The group the records path <path> is committed in when the one commit fails, in REPLY: ledger
+# for ledger.jsonl and level.jsonl, the entry one level down under tasks/ (tasks/T5/,
+# tasks/current.md), else the top-level entry (usage/, projects.toml): record_group <path>
+record_group() {
+  case $1 in
+    ledger.jsonl | level.jsonl) REPLY=ledger ;;
+    tasks/*/*)
+      REPLY=${1#tasks/}
+      REPLY=tasks/${REPLY%%/*}/
+      ;;
+    tasks/*) REPLY=$1 ;;
+    */*) REPLY=${1%%/*}/ ;;
+    *) REPLY=$1 ;;
+  esac
+}
+
+# Commit the staged records <path>... group by group (record_group), the ledger's first, then the
+# rest in name order, each alone as "<message> <group>", under the caller's lock (commit_records).
+# Says "team home: committed <sha> <message> <group>" for each group committed but the last, which
+# RECORDS_COMMITTED holds, in commit_records' form, for its push line (empty when none was
+# committed); a group that fails is one line on stderr naming it and the hook's first line, stays
+# staged and uncommitted, and makes it return 1: records_commit_groups <message> <path>...
+records_commit_groups() {
+  local message=$1 group path rc=0
+  local -a groups paths
+  RECORDS_COMMITTED=''
+  mapfile -t groups < <(for path in "${@:2}"; do record_group "$path" && printf '%s\n' "$REPLY"; done |
+    LC_ALL=C sort -u | awk '$0 == "ledger" { print; next } { rest[++n] = $0 } END { for (i = 1; i <= n; i++) print rest[i] }')
+  for group in "${groups[@]}"; do
+    paths=()
+    for path in "${@:2}"; do
+      record_group "$path"
+      [[ $REPLY != "$group" ]] || paths+=("$path")
+    done
+    if records_commit "$message $group" "${paths[@]}"; then
+      [[ -z $RECORDS_COMMITTED ]] || echo "team home: $RECORDS_COMMITTED"
+      RECORDS_COMMITTED="committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) $message $group"
+    else
+      echo "${0##*/}: team home: cannot commit $group: $RECORDS_WHY" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
 }
 
 # The local paths in the way of moving <checkout> from HEAD to <commit>: changed there and here

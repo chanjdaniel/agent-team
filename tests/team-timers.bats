@@ -372,10 +372,11 @@ SH
   [[ $(grep ' failed: ' <<<"$output") != *"left out"* ]]
   [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
 
-  # Two failures are two lines, in the checkpoint's order.
+  # More failures are more lines, in the checkpoint's order: a detached team home fails its
+  # ledger commit, first, and its last commit.
   git -C "$TEAM_HOME" checkout -q --detach
   run_bin -1 team-timers run
-  [[ $(grep ' checkpoint: failed: ' <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: T1 home: cannot push wip/home/T1 to the team home's origin: "[^$'\n']+$'\n'[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
+  [[ $(grep ' checkpoint: failed: ' <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$'\n'[0-9T:Z-]+" checkpoint: failed: T1 home: cannot push wip/home/T1 to the team home's origin: "[^$'\n']+$'\n'[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
 }
 
 @test "a checkpoint with more than 20 problem lines logs 20 of them and a count of the rest" {
@@ -950,8 +951,9 @@ EOF
   mkdir -p "${log%/*}"
   seq 1 2500 | sed 's/^/2026-10-01T00:00:00Z old line /' >"$log"
   run_bin -0 team-timers run
-  # The kept lines, then the run's lease and checkpoint lines (its usage export and its commit).
-  assert_equal "$(wc -l <"$log")" 1003
+  # The kept lines, then the run's lease and checkpoint lines (its ledger commit, its usage export
+  # and its last commit).
+  assert_equal "$(wc -l <"$log")" 1004
   assert_equal "$(head -n 1 "$log")" "2026-10-01T00:00:00Z old line 1501"
 
   local tip
