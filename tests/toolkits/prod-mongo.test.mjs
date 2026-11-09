@@ -57,7 +57,7 @@ const newHome = () => {
 
 // The spy mongodump: it records its argument list, its environment and the kind of file its
 // --config names, then runs the real one; with `hold` it waits after the dump until `go` exists,
-// and with `lose` (a collection's name) it empties that collection's dump. It runs no command the
+// and with `lose` (collections' names, one per line) it empties each one's dump. It runs no command the
 // helpers spy on (cat, head, hostname).
 function spyMongodump() {
   const dir = tempDir("mongodump-spy");
@@ -74,8 +74,9 @@ if [ -p "$config" ]; then echo fifo >"$dir/config-kind"; else echo other >"$dir/
 "$real" "$@"
 status=$?
 if [ -f "$dir/lose" ]; then
-  read -r lost <"$dir/lose"
-  : | gzip >"$(dirname "$config")/dump/conventioner/$lost.bson.gz"
+  while read -r lost; do
+    : | gzip >"$(dirname "$config")/dump/conventioner/$lost.bson.gz"
+  done <"$dir/lose"
 fi
 if [ -f "$dir/hold" ]; then
   : >"$dir/held"
@@ -351,6 +352,22 @@ describe("backup", () => {
       assert.equal(result.text.split("\n").length, 1, result.text);
       assert.match(result.text, /^backup: failed: the dump does not match the database, so it was removed: markets has 0 in the dump, 3 in the database before and after$/);
       for (const hidden of ["127.0.0.1", String(production.port), "ops-read"]) assert.ok(!result.text.includes(hidden), hidden);
+    });
+    assert.deepEqual(backups(), []);
+  });
+
+  test("names every collection the dump is short of, with its counts, however long the answer", async () => {
+    spy.set("lose", "accounts\napplications\nmarkets\n");
+    await withServer(async (server) => {
+      const result = await server.callTool("backup", {});
+      assert.equal(result.isError, true);
+      assert.equal(
+        result.text,
+        "backup: failed: the dump does not match the database, so it was removed: " +
+          "accounts has 0 in the dump, 2 in the database before and after; " +
+          "applications has 0 in the dump, 5 in the database before and after; " +
+          "markets has 0 in the dump, 3 in the database before and after",
+      );
     });
     assert.deepEqual(backups(), []);
   });

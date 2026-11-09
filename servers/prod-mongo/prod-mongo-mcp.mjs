@@ -12,7 +12,8 @@
 // The value lives only in this function's closure, never in process.env: no child gets it but
 // mongodump, through the FIFO backup.mjs feeds it. Every child is started with childEnv()
 // (children.mjs), and every child's or the driver's error text reaches an answer only through
-// scrubbed. The umask is 077, so every file and directory it or a child makes is its user's alone.
+// scrubbed, applied where that text enters a Refusal (refusal.mjs), or to the whole message of an
+// error that is not one. The umask is 077, so every file and directory it or a child makes is its user's alone.
 // Its tools: backup (backup.mjs), list-backups (list.mjs) and restore-drill (drill.mjs, which runs
 // toolkits/prod-mongo/scripts/restore-drill.mjs through bin/team-heavy), each checking the root
 // against root.mjs's rules before it touches it. One long call runs at a time: a backup or a
@@ -112,8 +113,10 @@ export async function startProdMongo({ name, reference, database, root: configur
     tools: tools.map(({ name: toolName, description, inputSchema, annotations }) => ({ name: toolName, description, inputSchema, annotations })),
   }));
   server.setRequestHandler(sdk.CallToolRequestSchema, async ({ params }, extra) => {
-    // Every path from ~/, since the home's own path holds the account's name.
-    const refuse = (message) => ({ content: [{ type: "text", text: `${params.name}: ${scrubbed(message).replaceAll(`${home}/`, "~/")}` }], isError: true });
+    // Every path from ~/, since the home's own path holds the account's name. A Refusal's message
+    // is the server's own sentence, whose child or driver text was scrubbed where it entered, so
+    // only an error of anything else is scrubbed here.
+    const refuse = (message) => ({ content: [{ type: "text", text: `${params.name}: ${message.replaceAll(`${home}/`, "~/")}` }], isError: true });
     const tool = tools.find((candidate) => candidate.name === params.name);
     if (!tool) return refuse(`not a tool of ${name}`);
     const input = params.arguments ?? {};
@@ -135,7 +138,7 @@ export async function startProdMongo({ name, reference, database, root: configur
       return { content: [{ type: "text", text: answer.text.replaceAll(`${home}/`, "~/") }], ...(answer.isError ? { isError: true } : {}) };
     } catch (error) {
       if (error instanceof Refusal) return refuse(`failed: ${error.message}`);
-      return refuse(`failed: ${error?.message ?? error}`);
+      return refuse(`failed: ${scrubbed(error?.message ?? error)}`);
     } finally {
       if (tool.long) running = null;
     }
