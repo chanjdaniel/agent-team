@@ -8,6 +8,7 @@
   "syncClaudeAiSkills": false,
   "disableClaudeAiConnectors": true,
   "isolatePeerMachines": true,
+  "promptCacheTtl": "1h",
   "permissions": {
     "deny": [
       "AskUserQuestion",
