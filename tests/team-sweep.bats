@@ -1601,9 +1601,9 @@ relaunch_t4() {
   level_record minor
   # Room for both stowed tasks' roles.
   capacity_reading 0 8
-  local hold='{reason: "on hold by Daniel (1567157155797139608)"}'
+  local hold='{reason: "on hold by Daniel (1500000000000000001)"}'
   # T3 stowed first, then Daniel put it on hold: the finding names T4, the next that fits.
-  held_pair -- "waiting:{on: \"Daniel\", reason: \"on hold by Daniel (1567157155797139608)\"}"
+  held_pair -- "waiting:{on: \"Daniel\", reason: \"on hold by Daniel (1500000000000000001)\"}"
   run_bin -1 team-sweep
   assert_equal "$output" "level: T4 fits again: relaunch its builder"
   # With T4 relaunched, T3 is the only one stowed: a held before its stow keeps it stowed.
@@ -1654,6 +1654,55 @@ relaunch_t4() {
   sessions "$(session 5e5e5e5e T5-reviewer busy working)"
   run_bin -0 team-sweep
   assert_equal "$output" ""
+}
+
+# refused_t5 [<T5 event>...] -- [<T5 event>...]: the ledger afresh, T5's builder launched and its
+# PR opened, then its reviewer's launch refused for room at 04:40, with each T5 event
+# (<kind>:<jq object of more fields>) logged before the refusal, or after it when it follows the --.
+refused_t5() {
+  local spec at=04:35
+  : >"$TEAM_HOME/ledger.jsonl"
+  level_task T5 03:00 builder:5b5b5b5b
+  ledger_line '{ts: "2026-10-22T04:30:00Z", task: "T5", event: "pr", url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  for spec in "$@"; do
+    if [[ $spec == -- ]]; then
+      ledger_line '{ts: "2026-10-22T04:40:00Z", task: "T5", event: "paused",
+        reason: "team-worker: no room for session:reviewer at minor (30%): 9.3 GiB of 9.6 GiB reserved, a reviewer needs 0.5 GiB"}'
+      at=04:50
+    else
+      ledger_line --arg e "${spec%%:*}" --arg ts "2026-10-22T$at:00Z" "{ts: \$ts, task: \"T5\", event: \$e} + ${spec#*:}"
+    fi
+  done
+}
+
+@test "level-launch: a refused launch held, or waiting or blocked since its refusal, is never named, until resumed" {
+  level_record minor
+  # Room for a reviewer.
+  capacity_reading 0 8 T9:builder:9c9c9c9c:8.9
+  local level='.[] | select(.task == null) | .text'
+  # Held after the refusal: no level finding.
+  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # Held before it holds it too, since a held stands wherever it falls.
+  refused_t5 'held:{reason: "on hold by Daniel (1500000000000000001)"}' --
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # Waiting on Daniel, or blocked, since the refusal: none.
+  refused_t5 -- 'waiting:{on: "Daniel", reason: "on hold by Daniel (1500000000000000001)"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  refused_t5 -- 'blocked:{reason: "the fixture server is down"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # A wait before the refusal did not stop the launch tried then, so the finding names T5.
+  refused_t5 'waiting:{on: "Daniel", reason: "the merge"}' --
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
+  # A resumed lifts the hold.
+  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
 }
 
 @test "level: a team-capacity plan that fails is one finding naming its reason, and the task findings still come" {

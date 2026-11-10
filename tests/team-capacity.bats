@@ -1646,7 +1646,7 @@ Stowed, waiting to resume, oldest stow first:
   plan_task T5 08:00 planner:aaaa0051
   plan_event T5 10:00 stowed "$stowed + {roles: [\"planner\"]}"
   plan_event T5 10:00 paused '{reason: "stowed"}'
-  plan_event T5 10:30 waiting '{on: "Daniel", reason: "on hold by Daniel (1567157155797139608)"}'
+  plan_event T5 10:30 waiting '{on: "Daniel", reason: "on hold by Daniel (1500000000000000001)"}'
   plan_task T6 08:00 builder:aaaa0061
   plan_event T6 10:30 held '{reason: "Daniel holds it for the release"}'
   plan_event T6 11:00 stowed "$stowed + {roles: [\"builder\"]}"
@@ -1663,13 +1663,13 @@ Stowed, waiting to resume, oldest stow first:
   run_bin -0 team-capacity plan
   assert_equal "$output" "Within budget at full (90%): 0.0 GiB reserved of 20.0 GiB: nothing to stop or stow.
 Stowed, waiting to resume, oldest stow first:
-  T5 (planner): needs 0.5 GiB, fits, on hold, not relaunched: waiting on Daniel: on hold by Daniel (1567157155797139608)
+  T5 (planner): needs 0.5 GiB, fits, on hold, not relaunched: waiting on Daniel: on hold by Daniel (1500000000000000001)
   T6 (builder): needs 0.5 GiB, fits, on hold, not relaunched: held: Daniel holds it for the release
   T7 (builder): needs 0.5 GiB, fits, on hold, not relaunched: blocked: the fixture server is down
   T8 (planner): needs 0.5 GiB, fits"
   run_bin -0 team-capacity plan --json
   assert_equal "$(jq -c '.resume | map([.task, .hold])' <<<"$output")" \
-    '[["T5","waiting on Daniel: on hold by Daniel (1567157155797139608)"],["T6","held: Daniel holds it for the release"],["T7","blocked: the fixture server is down"],["T8",null]]'
+    '[["T5","waiting on Daniel: on hold by Daniel (1500000000000000001)"],["T6","held: Daniel holds it for the release"],["T7","blocked: the fixture server is down"],["T8",null]]'
 
   # A resumed lifts each hold; a hold that does not fit says so after its fits words.
   plan_event T5 14:00 resumed
@@ -1681,6 +1681,27 @@ Stowed, waiting to resume, oldest stow first:
   run_bin -0 team-capacity plan
   assert_contains "$output" "
   T7 (builder): needs 0.5 GiB, does not fit yet, on hold, not relaunched: blocked: the fixture server is down"
+}
+
+@test "plan: a launch refused for room and held, or waiting or blocked since its refusal, is on hold, with what holds it" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  local refused='{reason: "team-worker: no room for session:reviewer at minor (30%): 9.3 GiB of 9.6 GiB reserved"}'
+  # T5 waits on Daniel since its refusal; T6's wait came before it, so nothing holds T6.
+  plan_task T5 08:00 builder:aaaa0051
+  plan_event T5 10:00 paused "$refused"
+  plan_event T5 10:30 waiting '{on: "Daniel", reason: "on hold by Daniel (1500000000000000001)"}'
+  plan_task T6 08:00 builder:aaaa0061
+  plan_event T6 10:30 waiting '{on: "Daniel", reason: "the merge"}'
+  plan_event T6 11:00 paused "$refused"
+  team_reading 8
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Within budget at full (90%): 0.0 GiB reserved of 20.0 GiB: nothing to stop or stow.
+Refused for room, waiting to launch, oldest refusal first:
+  T5 (reviewer): needs 0.5 GiB, fits, on hold, not launched: waiting on Daniel: on hold by Daniel (1500000000000000001)
+  T6 (reviewer): needs 0.5 GiB, fits"
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '.launch | map([.task, .hold])' <<<"$output")" \
+    '[["T5","waiting on Daniel: on hold by Daniel (1500000000000000001)"],["T6",null]]'
 }
 
 @test "plan: a builder is finished only once a later builder launched in its worktree and a ticket-done, pr or done followed it" {

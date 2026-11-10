@@ -235,22 +235,24 @@
 #          relaunch, whether that fits now (never at none) and what holds it, if anything (its
 #          latest held while it stands, or a waiting or blocked logged after its stow while it
 #          stands: stow_hold in bin/lib/ledger.jq), which keeps it from being relaunched until a
-#          resumed lifts it; then the tasks whose launches were
-#          refused for room and not launched since (refused_launches in bin/lib/ledger.jq), oldest
-#          refusal first, each with its roles' estimate and whether it fits. Text:
-#          "Over budget at minor (30%): 14.5 GiB reserved of 9.6 GiB.", then "  stop T1-reviewer
-#          aaaa0012, its work handed on: frees 1.0 GiB", "  stop conventioner-3 of T3, no busy
-#          session in its worktree: frees 3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed,
-#          waiting to resume, oldest stow first:" and "  T6 (planner): needs 0.5 GiB, fits",
-#          a held one's line ending ", on hold, not relaunched: waiting on Daniel: <reason>", then "Refused for room, waiting to launch, oldest refusal first:" and its lines alike.
-#          With --json {schema: "team-capacity-plan/1", mode, level, share, budget (bytes, null with no
-#          reading above none), reserved, over, confirmed, stop_sessions: [{task, role, session,
-#          frees}], stop_stacks: [{task, name, worktree, frees}], stow: [{task, opened, frees}],
-#          resume: [{task, stowed, roles, needs, fits, hold (the text, or null)}], launch: [{task, refused, roles, needs,
-#          fits}]}, bytes throughout; each step list is []
-#          unless confirmed. team-level tick takes the two stop steps; the stows are the
-#          coordinator's, on team-sweep's level-stow finding, and so are the launches, on its
-#          level-resume and level-launch findings.
+#          resumed lifts it; then the tasks whose launches were refused for room and not
+#          launched since (refused_launches in bin/lib/ledger.jq), oldest refusal first, each
+#          with its roles' estimate, whether it fits and what holds it alike (a waiting or
+#          blocked logged after its latest refusal). Text: "Over budget at minor (30%): 14.5 GiB
+#          reserved of 9.6 GiB.", then "  stop T1-reviewer aaaa0012, its work handed on: frees
+#          1.0 GiB", "  stop conventioner-3 of T3, no busy session in its worktree: frees
+#          3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed, waiting to resume, oldest stow first:"
+#          and "  T6 (planner): needs 0.5 GiB, fits", a held one's line ending ", on hold, not
+#          relaunched: waiting on Daniel: <reason>", then "Refused for room, waiting to launch,
+#          oldest refusal first:" and its lines alike, a held one's ending ", on hold, not
+#          launched: <what holds it>". With --json {schema: "team-capacity-plan/1", mode, level,
+#          share, budget (bytes, null with no reading above none), reserved, over, confirmed,
+#          stop_sessions: [{task, role, session, frees}], stop_stacks: [{task, name, worktree,
+#          frees}], stow: [{task, opened, frees}], resume: [{task, stowed, roles, needs, fits,
+#          hold (the text, or null)}], launch: [{task, refused, roles, needs, fits, hold}]},
+#          bytes throughout; each step list is [] unless confirmed. team-level tick takes the
+#          two stop steps; the stows are the coordinator's, on team-sweep's level-stow finding,
+#          and so are the launches, on its level-resume and level-launch findings.
 # jobs     How many processes a test suite runs at once (tests/run, and team-checks' commands
 #          through TEAM_JOBS): the floor of the level's CPU budget, at least 1, as team-level
 #          status --stored reads it, from the stored readings only (it takes none) and the

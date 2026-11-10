@@ -791,7 +791,9 @@ def task_words: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.
 # and the resume plan, whatever the budget: resume [{task, stowed, roles, needs, fits, hold}], each
 # task stowed, waiting to resume (for the level or a handoff), oldest stow first, needs its roles'
 # session estimates, fits whether needs fits beside what is reserved now (never at none), and hold
-# what keeps it from being relaunched (ledger.jq's stow_hold), or null. Each step list is [] when not confirmed.
+# what keeps it from being relaunched (ledger.jq's stow_hold), or null; and launch [{task,
+# refused, roles, needs, fits, hold}] alike, each task whose launches were refused for room
+# (ledger.jq's refused_launches), oldest refusal first. Each step list is [] when not confirmed.
 def capacity_plan($in):
   $in.settings as $s | $in.current as $current
   | ($in.readings | .[-1]) as $r
@@ -871,14 +873,16 @@ def capacity_plan($in):
      resume: [$in.tasks[] | select(.stowed != null) | .stowed.hold as $hold
               | {task, stowed: .stowed.at, roles: .stowed.roles} | needs_fits | .hold = $hold]
              | sort_by(.stowed, (.task[1:] | tonumber)),
-     launch: [$in.tasks[] | select(.refused != null) | {task, refused: .refused.at, roles: .refused.roles} | needs_fits]
+     launch: [$in.tasks[] | select(.refused != null) | .refused.hold as $hold
+              | {task, refused: .refused.at, roles: .refused.roles} | needs_fits | .hold = $hold]
              | sort_by(.refused, (.task[1:] | tonumber))};
 
 # The level as the plan's texts say it: "minor (30%)".
 def plan_at: "\(.level) (\(.share | percent))";
 
 # team-capacity plan's lines from its team-capacity-plan/1 object: the verdict, each step, then
-# the tasks stowed, waiting to resume, a held one's line ending with what holds it.
+# the tasks stowed, waiting to resume, and those refused for room, a held one's line ending with
+# what holds it.
 def plan_text:
   if .budget == null then "No reading of the machine's load, so no budget: nothing to plan."
   elif .over | not then "Within budget at \(plan_at): \(.reserved | gib) reserved of \(.budget | gib): nothing to stop or stow."
@@ -894,7 +898,8 @@ def plan_text:
     (.resume[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)\(
       if .hold != null then ", on hold, not relaunched: \(.hold)" else "" end)")),
   (select((.launch // []) != []) | "Refused for room, waiting to launch, oldest refusal first:",
-    (.launch[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)"));
+    (.launch[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)\(
+      if .hold != null then ", on hold, not launched: \(.hold)" else "" end)"));
 
 # What the stow plan <plan> (capacity_plan's) says must stow, for team-level's acknowledgement and
 # its automatic post: "T171 and T174 stow", in task number order, or "nothing needs to stow".
