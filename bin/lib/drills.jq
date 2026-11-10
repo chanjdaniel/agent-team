@@ -23,7 +23,7 @@ def drills_record($names):
   and (.claude | type == "null" or type == "string")
   and (.verdict == "pass" or .verdict == "fail")
   and (.detail | type == "string" and length <= 300 and (contains("\n") | not))
-  and (has("run") | not or (.run | type == "string"));
+  and ((has("run") | not) or (.run | type == "string"));
 
 # The record read in one pass, over its raw lines (jq -nR): each drill's last record in file order,
 # and the count of lines that are no drill record, which are skipped: drills_scan($registry)
