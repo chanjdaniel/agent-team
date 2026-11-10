@@ -1,7 +1,8 @@
 # SOP: moving the team between machines
 
 The method T6 designed, T7 revised and T17 built (2026-10-23), in short; the research is in `tasks/T6/report.md` and `tasks/T7/report.md`, and nothing here needs it.
-Each command's `--help` is its exact reference; `tests/drill.bats` runs a handoff, a stale lease, a crash and an outage end to end through the real commands, two machines against local bare repos.
+Each command's `--help` is its exact reference.
+`tests/drill.bats` runs these paths in a sandbox (a handoff, a stale lease, a crash and an outage, end to end through the real commands, two machines against local bare repos), and `sops/drills.md` lists the drills that run them for real, between real machines.
 Setting up a machine is `sops/machine-setup.md`.
 
 ## Principles
@@ -34,6 +35,7 @@ Two repositories hold the team, each checked out on every machine:
 | Claude user config (instructions, settings, skills, plugins) | `machine/claude/` | `team-config capture` (in a handoff), `team-config apply` (in a resume) |
 | Auto memory | `memory/<project>/`, which every worktree of the project uses through `autoMemoryDirectory`, and `memory/coordinator/`, the team home's own once it is no project's primary checkout | `team-checkpoint`, `team-handoff` |
 | Each machine's Claude usage (token counts, never content), and where each launched worker session's time went (durations and tool or command names only) | `usage/<machine>/`, the time rows in `usage/<machine>/time/` | `team-tokens export`, in `team-checkpoint` and `team-handoff` |
+| Each drill's runs (what ran, the machine, the code commit, the Claude Code version and the verdict) | `drills.jsonl` | `team-drill` and the drills that record themselves; `team-checkpoint`, `team-handoff` |
 | Tool versions | `bin/lib/tools.lock` | read by `team-doctor` and `team-bootstrap` |
 | Which secrets a machine needs (never a value) | `machine/secrets.json`, described in `machine/secrets.md` | read by `team-secrets` |
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |

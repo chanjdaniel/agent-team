@@ -193,6 +193,16 @@ usage/home-pc/time/2026-10-26.jsonl"
   assert_equal "${missing[*]}" ""
 }
 
+# The doctor's drills line sends Daniel to sops/drills.md for a due drill's runbook, so every
+# drill of the registry has a "## " heading there naming it in backquotes.
+@test "every drill has a section in sops/drills.md" {
+  local name missing=()
+  while IFS= read -r name; do
+    grep -qE "^## .*\`$name\`" "$REPO_ROOT/sops/drills.md" || missing+=("$name")
+  done < <(jq -r '.drills[].name' "$REPO_ROOT/bin/lib/drills.json")
+  assert_equal "${missing[*]}" ""
+}
+
 # The kinds the contract marks push, Daniel's word and outside facts, are on origin the moment
 # they are logged: every script the contract names as a writer of one calls ledger_push, on a
 # line of its own, which commits and pushes the ledger before it ends.
