@@ -47,15 +47,26 @@ gate_daemon() {
 }
 
 # The live sessions claude agents --json lists: each argument one "<id> <name> <pid>" (name - for
-# an unnamed one).
+# an unnamed one, pid - for one listed with no pid yet).
 sessions() {
   local spec id name pid
   for spec; do
     read -r id name pid <<<"$spec"
-    jq -cn --arg id "$id" --arg name "$name" --argjson pid "$pid" '{pid: $pid, id: $id, cwd: "/w",
-      kind: "background", sessionId: "\($id)-1111-4222-8333-444455556666", status: "idle"}
+    jq -cn --arg id "$id" --arg name "$name" --arg pid "$pid" '(if $pid == "-" then {} else {pid: ($pid | tonumber)} end)
+      + {id: $id, cwd: "/w", kind: "background", sessionId: "\($id)-1111-4222-8333-444455556666", status: "idle"}
       + (if $name == "-" then {} else {name: $name} end)'
   done | jq -s . >"$STUB_FIXTURES/agents.json"
+}
+
+# Keep the list sessions last wrote as the one the claude stub serves on its <n>th call: the
+# stub serves agents-<n>.json on its nth call while there is one, else agents.json: list_in_turn <n>
+list_in_turn() {
+  mv "$STUB_FIXTURES/agents.json" "$STUB_FIXTURES/agents-$1.json"
+  stub_script claude <<'EOF'
+n=$(($(cat "$STUB_FIXTURES/agents.calls" 2>/dev/null || echo 0) + 1))
+echo "$n" >"$STUB_FIXTURES/agents.calls"
+if [[ -f $STUB_FIXTURES/agents-$n.json ]]; then cat "$STUB_FIXTURES/agents-$n.json"; else cat "$STUB_FIXTURES/agents.json"; fi
+EOF
 }
 
 # A session's process tree as the claude daemon makes it: the daemon (pid 10), the session's pty
@@ -238,7 +249,7 @@ agent-team-T10-c1b2c3d4.scope agent-team-T10.slice 300 299 301 302"
   session_tree 200
   session_tree 300
   sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-planner 200" "c0ffee00 coordinator 300" "d1b2c3d4 T11-builder 500"
-  run_bin -1 --separate-stderr team-capacity place b1b2c3d4 99999999 c0ffee00 d1b2c3d4
+  TEAM_CAPACITY_PLACE_SECONDS=1 run_bin -1 --separate-stderr team-capacity place b1b2c3d4 99999999 c0ffee00 d1b2c3d4
   assert_equal "$output" "placed T9-planner b1b2c3d4 in agent-team-T9-b1b2c3d4.scope (4 processes)"
   assert_equal "$stderr" "team-capacity: could not place 99999999: no live session has that id
 team-capacity: could not place c0ffee00: it is no team session (named coordinator, not T<n>-<role>)
@@ -246,6 +257,68 @@ team-capacity: could not place T11-builder d1b2c3d4: its process 500 is gone"
   assert_contains "$(cgroup_of 100)" "konsole"
   run_bin -2 team-capacity place 'T7 builder'
   assert_contains "$output" "a session id is 8 hex digits, got 'T7 builder'"
+  TEAM_CAPACITY_PLACE_SECONDS=soon run_bin -2 team-capacity place b1b2c3d4
+  assert_contains "$output" "TEAM_CAPACITY_PLACE_SECONDS must be a whole number of seconds, not 'soon'"
+}
+
+@test "place with ids waits for a launched session the list does not hold yet, or holds with no process yet, and places it" {
+  session_tree 100
+  session_tree 200
+  # T9's planner is in no list but the third, and T7's builder has no pid until the fourth: each
+  # id is read again once a second, from a fresh list, until it runs.
+  sessions "a1b2c3d4 T7-builder -"
+  list_in_turn 1
+  sessions "a1b2c3d4 T7-builder -"
+  list_in_turn 2
+  sessions "a1b2c3d4 T7-builder -" "b1b2c3d4 T9-planner 200"
+  list_in_turn 3
+  sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-planner 200"
+  TEAM_CAPACITY_PLACE_SECONDS=3 run_bin -0 --separate-stderr team-capacity place b1b2c3d4 a1b2c3d4
+  assert_equal "$output" "placed T9-planner b1b2c3d4 in agent-team-T9-b1b2c3d4.scope (4 processes)
+placed T7-builder a1b2c3d4 in agent-team-T7-a1b2c3d4.scope (4 processes)"
+  assert_equal "$stderr" ""
+  assert_equal "$(cat "$STUB_FIXTURES/agents.calls")" 4
+
+  # Each id still not placeable once its own seconds have passed fails with today's message.
+  rm "$STUB_FIXTURES/agents.calls"
+  sessions "c1b2c3d4 T10-reviewer -"
+  local started=$SECONDS
+  TEAM_CAPACITY_PLACE_SECONDS=2 run_bin -1 --separate-stderr team-capacity place 99999999 c1b2c3d4
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-capacity: could not place 99999999: no live session has that id
+team-capacity: could not place T10-reviewer c1b2c3d4: its process (none listed) is gone"
+  ((SECONDS - started >= 4 && SECONDS - started < 8))
+}
+
+@test "place with ids tries again while a process of the tree ends before each call, and once only on any other failure or with no ids" {
+  session_tree 100
+  fake_process 103 100 - sleep 30
+  fake_process 104 100 - sleep 30
+  session_tree 300
+  printf '%s\n' 102 103 104 >"$STUB_FIXTURES/busctl-gone"
+  echo 300 >"$STUB_FIXTURES/busctl-refuse"
+  sessions "a1b2c3d4 T7-builder 100" "c1b2c3d4 T10-reviewer 300"
+  TEAM_CAPACITY_PLACE_SECONDS=5 run_bin -1 --separate-stderr team-capacity place a1b2c3d4 c1b2c3d4
+  assert_equal "$output" "placed T7-builder a1b2c3d4 in agent-team-T7-a1b2c3d4.scope (3 processes)"
+  assert_equal "$stderr" "team-capacity: could not place T10-reviewer c1b2c3d4 (pid 300) in agent-team-T10.slice: Call failed: Access denied"
+  assert_equal "$(placements)" "agent-team-T7-a1b2c3d4.scope agent-team-T7.slice 100 99 101 102 103 104
+agent-team-T7-a1b2c3d4.scope agent-team-T7.slice 100 99 101 103 104
+agent-team-T7-a1b2c3d4.scope agent-team-T7.slice 100 99 101 104
+agent-team-T7-a1b2c3d4.scope agent-team-T7.slice 100 99 101
+agent-team-T10-c1b2c3d4.scope agent-team-T10.slice 300 299 301 302
+agent-team-T10-c1b2c3d4.scope agent-team-T10.slice 300 299 301 302"
+
+  # The heartbeat's place, with no ids, waits for nothing: the one retry stands.
+  : >"$STUB_CALLS/busctl.log"
+  session_tree 200
+  fake_process 203 200 - sleep 30
+  printf '%s\n' 202 203 >>"$STUB_FIXTURES/busctl-gone"
+  sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-planner 200"
+  run_bin -1 --separate-stderr team-capacity place
+  assert_equal "$output" "left T7-builder a1b2c3d4: already in agent-team-T7-a1b2c3d4.scope"
+  assert_equal "$stderr" "team-capacity: could not place T9-planner b1b2c3d4 (pid 200) in agent-team-T9.slice: Call failed: Failed to add PID 203 to scope unit: No such process"
+  assert_equal "$(placements)" "agent-team-T9-b1b2c3d4.scope agent-team-T9.slice 200 199 201 202 203
+agent-team-T9-b1b2c3d4.scope agent-team-T9.slice 200 199 201 203"
 }
 
 @test "place fails, moving nothing, when the session list cannot be read" {

@@ -122,8 +122,12 @@ The coordinator and Daniel's own sessions are never in the slice.
 
 A worker session is the claude daemon's child (the daemon, then the session's `bg-pty-host`, then the session), never `team-worker`'s, so it cannot be started inside the slice.
 Instead `team-capacity place` adopts each live session named `T<n>-<role>` after it starts, but a load check's `T0-<role>`, which is no task's work: the session's process, its `bg-pty-host` parent and every descendant move into the transient scope `agent-team-T<n>-<id>.scope` in its task's slice, through the user manager's `StartTransientUnit` (`busctl --user call org.freedesktop.systemd1 ...`).
-A descendant the team's slice already holds stays where it is, a session already in its scope is left, and a call that fails is tried once more with a fresh tree, since a process may end between the read and the call.
-`team-worker` runs `place` for its new session right after the launch; a session it cannot place is a warning, and the launch stands.
+A descendant the team's slice already holds stays where it is, a session already in its scope is left, and a call that fails while the session runs is tried once more at once, with the session's pid from a fresh session list and a fresh tree, since a process may end between the read and the call.
+`team-worker` runs `place <id>` for its new session right after the launch, which the claude daemon may not list yet, or list with no running process: with ids, `place` reads the list again once a second until the session is placeable or `TEAM_CAPACITY_PLACE_SECONDS` (30) have passed since that id's wait began.
+With ids, a call that fails saying a process is gone (`No such process`, a short-lived process of the tree that ended before the call) is tried again 1 second apart, within the same seconds; any other failure gets the one retry.
+An id listed under a name that is no team session fails at once, since a name does not change.
+A session it still cannot place is a warning, and the launch stands.
+`place` with no ids, the heartbeat's and the doctor's fix, waits for nothing and retries a failed call once, so the heartbeat's `capacity` step stays within its time limit.
 Once all of a scope's processes end, systemd removes the scope.
 
 The assumptions, checked on home-pc on 2026-11-01 (T175 build note `01-cgroups.md`): the user manager's cgroup delegates `cpu`, `memory` and `pids`; systemd is 262; Docker's cgroup driver is `systemd` on cgroup v2; the claude daemon was started from a Konsole tab, and every session it starts sits in that tab's scope under `user@1000.service`; and Daniel's own run of the probe moved such a process into `agent-team-probe.scope`.

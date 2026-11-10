@@ -35,8 +35,9 @@
 # the reason, launching nothing else; a failure of the admission itself stops the launch with its
 # reason (exit 1). T0 and ops are never asked.
 # Once the session runs, `team-capacity place <id>` adopts it into its task's slice (on Linux;
-# nothing on macOS), but T0's; a session it cannot place is a warning on stderr, and the launch
-# stands.
+# nothing on macOS), but T0's, waiting up to TEAM_CAPACITY_PLACE_SECONDS (30) for the claude
+# daemon to list it with a running process and for a call that names a process gone to succeed;
+# a session it still cannot place is a warning on stderr, and the launch stands.
 # Before it asks for room, it stops each idle live session of the task's earlier launches whose
 # work is handed on (every planner and reviewer, and every builder of the same worktree when the
 # new worker is a builder: one builder holds a worktree's work at a time) once the ledger follows
