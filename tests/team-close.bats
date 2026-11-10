@@ -214,6 +214,22 @@ T2"
   [[ -f $TEAM_HOME/tasks/T2/ui/page.png ]]
 }
 
+# The system prompts team-worker generated for the task's sessions, each with a copy of a
+# project's instructions, stay on this machine and go with the task.
+@test "the task's generated system prompts in the machine's state directory are removed, another task's kept" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]} prompts=$HOME/.local/state/agent-team/prompts
+  mkdir -p "$slot/.scratch/task" "$prompts/T1" "$prompts/T2"
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  echo "You build." >"$prompts/T1/builder.home.md"
+  echo "You plan." >"$prompts/T2/planner.home.md"
+  work_and_push "$slot" feature.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $prompts/T1 ]]
+  assert_contains "$stderr" "team-close: removed ~/.local/state/agent-team/prompts/T1/, the system prompts team-worker generated for the task's sessions"
+  [[ -f $prompts/T2/planner.home.md ]]
+}
+
 # What team-thread wait saves from an interview goes the same way.
 @test "an image team-thread wait saved goes with the task's captures, and into no archive" {
   run_bin -0 team-open home feature feat work "Do the work"

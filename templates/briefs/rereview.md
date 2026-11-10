@@ -10,6 +10,10 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, and `rev
 
 {{since}}
 
+## Instruction and settings files
+
+{{instruction_files}}
+
 ## Check
 
 1. First start the wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait {{pr}} {{head}}`, run with Bash `run_in_background`, so the run and your reading overlap, and run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
