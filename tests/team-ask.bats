@@ -84,7 +84,7 @@ Five tries a minute, or ten an hour.
 
 Script: $path
 sha256: $hash
-It runs only on a reply in Discord with a line that starts with yes."
+It runs only on a reply in Discord with a line that starts with yes, or, by its number on the waiting list, \"<number> yes\"."
   assert_equal "$(logged | jq -c 'select(.event == "asked")')" \
     "$(jq -cn --arg path "$path" --arg hash "$hash" '{task: "T7", event: "asked", id: "fix",
       text: "Which of the two sign-in limits stays?", script: $path, sha256: $hash,
