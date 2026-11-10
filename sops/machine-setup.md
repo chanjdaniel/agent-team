@@ -55,7 +55,10 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
    When it is missing, `~/agent-team/bin/team-bootstrap --home agent-team-records --stage machine` writes it (it can go with `--name` in one run).
    The bootstrap writes it once: a setting that names another checkout is left as it is, and a path with no checkout yet is refused until the clone is there.
    Until it is written, nothing names the team home: every script but the bootstrap refuses, naming the setting, the doctor's `team home` line fails, and the machine stage stops on Daniel's step to clone `~/agent-team-records` (when it is missing) and name it.
-4. The machine's resource levels need no question: the defaults in `bin/team-capacity`'s header hold, and only a machine that differs gets a `~/.config/agent-team/capacity.json` (`sops/resources.md`, "The settings").
+4. The machine stage then fetches the team home and asks the doctor for its `team home history` line alone.
+   A team home that shares no history with origin's `dev` is a clone from before a rewrite of the records' history (the laptop's, from before the records rewrite of 2026-10-28), and the stage stops on it as Daniel's re-clone (section 3), so no later stage reads the old records.
+   A fetch that fails is said on one line, and the line is read as the team home was last fetched.
+5. The machine's resource levels need no question: the defaults in `bin/team-capacity`'s header hold, and only a machine that differs gets a `~/.config/agent-team/capacity.json` (`sops/resources.md`, "The settings").
    Like the name, that file is this machine's own and never moved; the bootstrap does not write it.
 
 ### Stage 3: OS packages
@@ -145,6 +148,7 @@ Done when `check` lists no `Daniel <n>:` line.
 | git and gh (Arch) | 1 | own terminal: `sudo pacman -S --needed git github-cli` | `sudo` |
 | GitHub login | 1 | browser, with the code the agent relays | account login |
 | The machine's name | 2 | the conversation | Daniel's naming |
+| The team home's re-clone, when the `team home history` line fails | 2 | own terminal: `sops/records-rewrite.md` step 10 | a records guard and a directory move are Daniel's |
 | The team home's setting, when stage 7 lists it (stage 1 writes it, so only when that was skipped) | 7 | the conversation: Daniel says the team home is cloned at `~/agent-team-records`, then the agent runs `team-bootstrap --home agent-team-records` | where the records live is Daniel's layout |
 | `sudo` stages (Arch: preflight, packages, tools) | 2 to 4 | own terminal: the `team-bootstrap --stage <stage>` it names | password |
 | Choosing apply or capture when config differs | 6 | the conversation | whose config wins |

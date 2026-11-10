@@ -223,6 +223,21 @@ $SITE"
   assert_equal "$(tail -n1 <<<"$output")" "trust: not done: claude does not trust ~/projects/site yet; run $CODE_CHECKOUT/bin/team-bootstrap --stage trust again and accept its dialog"
 }
 
+@test "check lists the team home's re-clone as Daniel's first step while its history line fails, ahead of the logins" {
+  tools_at arch
+  rewrite_origin_dev
+  git -C "$TEAM_HOME" fetch -q origin
+  stub_script gh <<'EOF2'
+exit 1
+EOF2
+  run_bin -1 team-bootstrap --stage check
+  local reason="$TEAM_HOME shares no history with origin's dev, so its history was rewritten since it was cloned (the records rewrite of 2026-10-28, say), and nothing should read or pull it"
+  local fix="re-clone it, keeping this one aside, as sops/records-rewrite.md step 10 says: mv $TEAM_HOME $TEAM_HOME.pre-rewrite, a fresh clone of dev with lease added, its records guard, and the ignored files carried over; never git pull into this clone"
+  assert_equal "$(stage_lines check | grep -m1 '^Daniel 1: ')" "Daniel 1: team home history: $fix ($reason)"
+  assert_contains "$(stage_lines check | grep '^Daniel 2: ')" "Daniel 2: github login: "
+  assert_contains "$output" "check: doctor: FAIL team home history: $reason; fix: $fix"
+}
+
 @test "--home writes the team home's setting once, relative to HOME, and never over another or for a missing checkout" {
   fresh arch
   # Until ~/agent-team-records is cloned the check stage asks for no setting, which --home would refuse.
@@ -238,7 +253,9 @@ machine: ~/agent-team-records is not a directory: clone the team home there firs
   run_bin -0 team-bootstrap --stage machine --home agent-team-records
   assert_equal "$output" "machine: done: this machine is laptop
 machine: named the team home ~/agent-team-records (~/.config/agent-team/home)
-machine: done: the team home fetches only dev and lease"
+machine: done: the team home fetches only dev and lease
+machine: running: git -C $TEAM_HOME fetch origin
+machine: done: the team home shares history with origin's dev"
   assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
   # Once written, the same checkout (however named) is done, and another is left unused.
   run_bin -0 team-bootstrap --stage machine --home "$HOME/agent-team-records"
