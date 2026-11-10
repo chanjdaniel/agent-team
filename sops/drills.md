@@ -11,7 +11,7 @@ A drill runs, for real, a path the team rests on and seldom takes: a move betwee
 - A failed run is recorded as failed; what it found goes in the detail and into a task of its own.
 - The checkpoint commits and pushes the file with the other records.
 - `team-drill status` lists every drill with its last run and whether it is due.
-- The doctor's `drills` line warns when a drill never ran, last failed, ran on a commit the code checkout lacks or on uncommitted changes, ran before the last change to the code it proves, or is over 30 days old.
+- The doctor's `drills` line warns when a drill never ran, last failed, ran on a commit the code checkout lacks or on uncommitted changes, ran before the last change to the code it proves, ran at a time over a day ahead of the machine's clock, or is over 30 days old.
 
 ## Who runs a drill
 
@@ -63,9 +63,11 @@ A drill runs, for real, a path the team rests on and seldom takes: a move betwee
   Duration: 45 minutes, unattended.
 - When: after a change to `bin/team-bootstrap`, `bin/lib/tools.lock` or the workflow, and when the doctor's line names it.
 - Steps:
-  1. `gh workflow run bootstrap.yml --ref dev`, then `gh run list --workflow bootstrap.yml --limit 1` for the run's id.
-  2. Wait for the run with a command that ends by itself (`gh run watch <id> --exit-status` under `timeout 60m`, in the background).
-  3. `team-drill import <run id>`, which records one line per job; it exits 75 while the run is still going, and a second import of the same run adds nothing.
+  1. Note the time, `date -u +%FT%TZ`, then dispatch the run: `gh workflow run bootstrap.yml --ref dev`.
+  2. Find its id: `gh run list --workflow bootstrap.yml --event workflow_dispatch --branch dev --created ">=<the time noted>" --json databaseId,createdAt`.
+     `gh workflow run` returns before the run exists, so this lists nothing for a few seconds: run it again until it lists the run, and never take one created before the time noted, which is an earlier run.
+  3. Wait for the run with a command that ends by itself (`gh run watch <id> --exit-status` under `timeout 60m`, in the background).
+  4. `team-drill import <run id>`, which records one line per job; it exits 75 while the run is still going, and a second import of the same run adds nothing.
 - Passes, per job, when the job succeeded and `tests/bootstrap-drill` ended at a step of Daniel's in the bootstrap's `projects` stage or a later one, or at its summary with no failure besides Daniel's steps.
 - Until the runner has a stand-in team home, each job stops at the `machine` stage, whose team home clone needs a GitHub login to a private repository, and fails.
 - Record: `team-drill import`'s; import each run once it completes, in the order the runs ran, since a drill's last run is its last line.

@@ -6,9 +6,10 @@
 #
 # Usage: tests/bootstrap-drill <machine name>
 # Exit 0 when the bootstrap ends at a step of Daniel's in the projects stage or a later one, or set
-# up; 1 when it failed on its own (its summary naming failures besides Daniel's steps), or stopped at a step of Daniel's in an earlier stage, which the
-# runner should have got past: the drill plays every earlier step (the name, by --name, and each
-# sudo stage, in a pseudo-terminal), so an earlier stop leaves most of the bootstrap unproven.
+# up; 1 when it failed on its own (its summary naming failures besides Daniel's steps), or stopped
+# at a step of Daniel's in an earlier stage, which the runner should have got past: the drill plays
+# every earlier step (the name, by --name, and each sudo stage, in a pseudo-terminal), so an
+# earlier stop leaves most of the bootstrap unproven.
 # Its last line, on every way it ends, is the run's record for team-drill import, which reads it
 # from the job's log: "drill-record: machine=<its argument> verdict=<pass, exactly when it exits 0,
 # else fail> commit=<the HEAD of its checkout, or unknown> claude=<the first word of claude
