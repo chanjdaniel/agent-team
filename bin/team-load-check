@@ -51,7 +51,8 @@
 # tools and skills, and checks that
 #   - its only MCP tools are the given toolkits' (none when no toolkit is given), and each MCP
 #     server a given toolkit's .mcp.json declares brought at least one of them (FAIL: toolkit
-#     <name> brought no tools from its MCP server <server>);
+#     <name> brought no tools from its MCP server <server>), but one the toolkit's mcp-roles.json
+#     names for other roles only, which is neither expected of a planner nor allowed it;
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
 #   - the planner's edit hook blocks a write outside .scratch/;
@@ -94,8 +95,8 @@
 # transcript; the counts are of what the session listed before that reply (its skill listing, its
 # deferred tools, and the MCP servers those tools come from). Only numbers leave the transcript. A
 # role with no reply is a FAIL line instead of a row, and a role that listed no tool of an MCP
-# server a given toolkit declares, before that reply, a FAIL line naming the toolkit and server as
-# well as its row. Every session is stopped and removed, and the worktree with them, on every path.
+# server a given toolkit declares for it, before that reply, a FAIL line naming the toolkit and server
+# as well as its row. Every session is stopped and removed, and the worktree with them, on every path.
 # Run from a checkout, it measures that checkout's roles, settings and toolkits, so a run on dev and
 # one on a PR's head give a change's before and after. The coordinator runs it: workers may not
 # start sessions.
@@ -399,9 +400,14 @@ load_worktree() {
   mkdir -p "$wt/.scratch"
 }
 
-# declared_servers <toolkit>: the MCP servers the toolkit's .mcp.json declares, one per line
+# declared_servers <toolkit> <role>: the MCP servers the toolkit's .mcp.json declares, one per
+# line, but those its mcp-roles.json names for other roles only, which team-worker leaves out of
+# that role's session
 declared_servers() {
-  jq -r '.mcpServers // {} | keys[]' "$home/toolkits/$1/.mcp.json" 2>/dev/null || true
+  local roles_file=$home/toolkits/$1/mcp-roles.json
+  [[ -f $roles_file ]] || roles_file=/dev/null
+  jq -rn --arg role "$2" --slurpfile roles "$roles_file" '($roles[0] // {}) as $named | input | .mcpServers // {} | keys[]
+    | select($named[.] == null or any($named[.][]; . == $role))' "$home/toolkits/$1/.mcp.json" 2>/dev/null || true
 }
 
 # automode_check <role> <worktree>: the role's effective autoMode, as auto mode's classifier reads
@@ -537,7 +543,7 @@ planner_check() {
   allowed='^$'
   for kit in "${expected[@]}"; do
     allowed+="|^mcp__plugin_${kit}_"
-    for server in $(declared_servers "$kit"); do
+    for server in $(declared_servers "$kit" planner); do
       allowed+="|^mcp__${server}__"
       grep -Eq "^mcp__(plugin_${kit}_)?${server}__" <<<"$tools" ||
         check_failed "toolkit $kit brought no tools from its MCP server $server"
@@ -616,7 +622,7 @@ context_check() {
       rows+=("$r $figures")
       servers=$(mcp_servers "$transcript")
       for kit in "${expected[@]}"; do
-        for server in $(declared_servers "$kit"); do
+        for server in $(declared_servers "$kit" "$r"); do
           grep -Eqx "(plugin_${kit}_)?${server}" <<<"$servers" ||
             { echo "FAIL $r: toolkit $kit brought no tools from its MCP server $server"; fail=1; }
         done

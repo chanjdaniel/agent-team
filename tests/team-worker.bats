@@ -1072,13 +1072,25 @@ role_texts() {
   assert_equal "$(launches | jq -c .toolkits)" '["browser"]'
 }
 
-@test "the effect toolkit adds its plugin directory and no MCP server" {
+# The Foldkit DevTools server's project root is the session's worktree, by its real path, so the
+# wrapper confines it to that worktree's dev servers (tests/toolkits/effect-devtools.test.mjs).
+@test "the effect toolkit adds its plugin directory and the Foldkit DevTools server, rooted at the worktree, for all but a planner" {
   thread T7
   run_bin -0 team-worker T7 builder "$wt1" --toolkit effect -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/effect"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" \
+    "$(jq -cn --arg code "$REPO_ROOT" --arg wt "$(realpath "$wt1")" '{mcpServers: {"foldkit-devtools": {command: "node",
+      args: ["\($code)/toolkits/effect/scripts/foldkit-devtools-mcp.mjs"], env: {FOLDKIT_PROJECT_ROOT: $wt}}}}')"
   assert_equal "$(launches | jq -c .toolkits)" '["effect"]'
+  # A reviewer gets it too; a planner, who runs no dev server, gets the plugin and no server, as the
+  # toolkit's mcp-roles.json says.
+  run_bin -0 team-worker T7 reviewer "$wt1" --toolkit effect -- go
+  assert_equal "$(jq -c '.mcpServers | keys' "$TEAM_HOME/tasks/T7/mcp.reviewer.proj.json")" '["foldkit-devtools"]'
+  run_bin -0 team-worker T7 planner "$wt1" --toolkit effect -- go
+  assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/effect"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" '{"mcpServers":{}}'
 }
 
 @test "the codegraph toolkit adds its plugin directory and no MCP server" {
@@ -1802,20 +1814,23 @@ matcher_matches() {
   run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.ops.json" "$TEAM_HOME/tasks/T7/mcp.ops.json"
 }
 
-@test "@TEAM_CODE@, @TASK@, @TASK_DIR@ and @ROLE@ are substituted in the settings and the MCP config" {
+@test "@TEAM_CODE@, @TASK@, @TASK_DIR@, @WORKTREE@ and @ROLE@ are substituted in the settings and the MCP config" {
   fake_checkout
-  echo '{"env": {"WHO": "@ROLE@"}, "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
+  echo '{"env": {"WHO": "@ROLE@", "WHERE": "@WORKTREE@"}, "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
     >"$code/settings/planner.json"
-  echo '{"mcpServers": {"alpha": {"command": "@TEAM_CODE@/a", "args": ["--task", "@TASK@", "@TASK_DIR@", "@ROLE@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
+  echo '{"mcpServers": {"alpha": {"command": "@TEAM_CODE@/a", "args": ["--task", "@TASK@", "@TASK_DIR@", "@ROLE@"], "env": {"ROOT": "@WORKTREE@"}}}}' >"$code/toolkits/kit-a/.mcp.json"
   thread T7
-  run_fake T7 planner "$wt1" --toolkit kit-a -- go
+  # The worktree by its real path, though the launch names it through a symlink.
+  ln -s "$wt1" "$HOME/slot-link"
+  run_fake T7 planner "$HOME/slot-link" --toolkit kit-a -- go
   assert_equal "$status" 0
   # The role's hook comes after the shared settings' own.
   assert_equal "$(jq -c '.hooks.PreToolUse[-1].hooks[0] | [.command, .args[0]]' "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" \
     "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '["\($code)/bin/hooks/x T7", $t]')"
   assert_equal "$(jq -r .env.WHO "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" planner
+  assert_equal "$(jq -r .env.WHERE "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" "$(realpath "$wt1")"
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" \
-    "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t, "planner"]}}}')"
+    "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" --arg wt "$(realpath "$wt1")" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t, "planner"], env: {ROOT: $wt}}}}')"
 }
 
 # The ledger lines given on stdin, one per line, each "launch <task> <role> <session> <worktree>"

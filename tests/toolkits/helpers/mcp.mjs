@@ -1,5 +1,6 @@
 // A toolkit's MCP server started exactly as its .mcp.json declares, with @TEAM_CODE@ resolved to
-// this checkout (what team-worker does), spoken to over stdio by a minimal MCP client.
+// this checkout and @WORKTREE@ to a session's worktree (what team-worker does), spoken to over
+// stdio by a minimal MCP client.
 //
 //   const server = startToolkitServer("prod-read", { home, opDir, env, path });
 //   await server.initialize();                         or initialize({ elicitation: true })
@@ -12,7 +13,9 @@
 //   server.fromServer              requests and notifications the server sent; an elicitation
 //                                  request is answered with a decline, any other request refused
 //
-// startServer({ command, args, env }, options) starts any server entry the same way.
+// startServer({ command, args, env }, options) starts any server entry the same way;
+// serverConfig(toolkit, { server, worktree }) is the entry, the server named for the toolkit
+// unless `server` names another, and @WORKTREE@ filled in when `worktree` is given.
 import { spawn } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,10 +31,10 @@ process.on("exit", () => rmSync(tempRoot, { recursive: true, force: true }));
 export const tempDir = (prefix) => mkdtempSync(join(tempRoot, `${prefix}-`));
 
 // The toolkit's server entry from its MCP config, as Claude Code would read it.
-export function serverConfig(toolkit) {
-  const text = readFileSync(join(repoRoot, "toolkits", toolkit, ".mcp.json"), "utf8");
-  const config = JSON.parse(text.replaceAll("@TEAM_CODE@", repoRoot));
-  return config.mcpServers[toolkit];
+export function serverConfig(toolkit, { server = toolkit, worktree } = {}) {
+  let text = readFileSync(join(repoRoot, "toolkits", toolkit, ".mcp.json"), "utf8").replaceAll("@TEAM_CODE@", repoRoot);
+  if (worktree !== undefined) text = text.replaceAll("@WORKTREE@", worktree);
+  return JSON.parse(text).mcpServers[server];
 }
 
 // A directory driving the op stub (helpers/op): its value, each reference's own value in

@@ -236,6 +236,16 @@ toolkit_checkout() {
   assert_contains "$output" "FAIL: toolkit served brought no tools from its MCP server spare"
   [[ $output != *"MCP server served"* ]]
 
+  # A server the toolkit's mcp-roles.json names for other roles only is neither expected of the
+  # planner nor allowed it.
+  echo '{"spare": ["builder", "reviewer"]}' >"$CODE_CHECKOUT/toolkits/served/mcp-roles.json"
+  run_bin -0 team-load-check --toolkit served
+  assert_equal "${lines[-1]}" PASS
+  inventory mcp__served__look mcp__spare__look --- served:a-skill
+  run_bin -1 team-load-check --toolkit served
+  assert_contains "$output" "FAIL: MCP tools from outside the toolkits:"$'\n'"  mcp__spare__look"
+  rm "$CODE_CHECKOUT/toolkits/served/mcp-roles.json"
+
   # A toolkit that declares no MCP server needs none.
   inventory --- plain:a-skill
   run_bin -0 team-load-check --toolkit plain
@@ -1178,7 +1188,16 @@ reviewer    45003       2               2            0"
   [[ $output != *"FAIL builder"* ]]
   assert_equal "${lines[-1]}" "load check FAILED"
 
-  # A toolkit that declares no MCP server needs none; the stub forgets the first run's sessions.
+  # A server the toolkit's mcp-roles.json names for other roles only is expected of those alone;
+  # the stub forgets the first run's sessions.
+  rm "$STUB_FIXTURES"/launched-* "$STUB_FIXTURES"/removed-*
+  echo '{"served": ["builder"]}' >"$CODE_CHECKOUT/toolkits/served/mcp-roles.json"
+  run_bin -1 team-load-check --context --toolkit served
+  assert_contains "$output" "FAIL planner: toolkit served brought no tools from its MCP server spare"
+  [[ $output != *"MCP server served"* ]]
+  rm "$CODE_CHECKOUT/toolkits/served/mcp-roles.json"
+
+  # A toolkit that declares no MCP server needs none.
   rm "$STUB_FIXTURES"/launched-* "$STUB_FIXTURES"/removed-*
   run_bin -0 team-load-check --context --role builder --toolkit served --toolkit plain
   [[ $output != *FAIL* ]]
