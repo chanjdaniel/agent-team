@@ -55,7 +55,23 @@
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
 #   - the planner's edit hook blocks a write outside .scratch/;
-#   - its effective autoMode holds its settings' autoMode lines (see below).
+#   - its effective autoMode holds its settings' autoMode lines (see below);
+#   - none of its worktree's own files configured or instructed it, and it was given what
+#     team-worker gives in their place (--setting-sources user, its project's instructions from
+#     origin/<base>). Before the launch the worktree gets markers, each a word of this run only: a
+#     line appended to CLAUDE.md, a file in .claude/rules/, and in .claude/settings.json (its
+#     tracked keys kept) a SessionStart hook that would leave .scratch/load-check-hook-<word> and an
+#     allow rule for one echo. The planner writes .scratch/isolation.txt, from what it was given
+#     and reading no file: the markers it saw, the heading of its project instructions, its memory
+#     directory and its working directory. One line holds when all do:
+#       PASS planner: no marker of its worktree reached it (...), its project instructions are
+#            headed 'Project instructions: <project>, from origin/<base> at <sha>', its memory
+#            directory is <team home>/memory/<project>, and it works in <its worktree>
+#     and each that does not is a FAIL line of its own: a marker that reached it (the CLAUDE.md
+#     line, the .claude/rules/ file), the hook's file there, another heading, memory directory
+#     or working directory, no report, or a code checkout that is no registered project's.
+#     The hook stands for the whole settings file: its allow rule is not tried, since a session
+#     cannot tell an allowed call from one auto mode passed.
 #
 # Every form checks each session it launches for its effective autoMode, as auto mode's classifier
 # reads it: claude auto-mode config with the settings team-worker generated for the session, run in
@@ -413,14 +429,87 @@ automode_check() {
   fi
 }
 
+# plant_markers: the planner's worktree gets what a worktree's own files would configure or instruct
+# a session with, each holding a word of this run only (marker, a nonce): a line appended to
+# CLAUDE.md, a file in .claude/rules/, and in .claude/settings.json (its tracked keys kept) a
+# SessionStart hook that leaves .scratch/load-check-hook-<nonce> and an allow rule for one echo.
+plant_markers() {
+  local settings=$wt/.claude/settings.json current='{}' hook
+  nonce=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+  claude_md_marker=load-check-marker-claude-md-$nonce rules_marker=load-check-marker-rules-$nonce
+  hook_marker=$wt/.scratch/load-check-hook-$nonce
+  printf '\nLoad check marker %s: this line is in the load check worktree'\''s CLAUDE.md only.\n' \
+    "$claude_md_marker" >>"$wt/CLAUDE.md"
+  mkdir -p "$wt/.claude/rules"
+  printf 'Load check marker %s: this file is in the load check worktree'\''s .claude/rules/ only.\n' \
+    "$rules_marker" >"$wt/.claude/rules/load-check-marker.md"
+  [[ ! -f $settings ]] || current=$(cat "$settings")
+  printf -v hook 'touch %q' "$hook_marker"
+  jq --arg hook "$hook" --arg allow "Bash(echo load-check-marker-allow-$nonce)" \
+    '.hooks.SessionStart = [{hooks: [{type: "command", command: $hook}]}]
+     | .permissions.allow = ((.permissions.allow // []) + [$allow])' <<<"$current" >"$settings.new"
+  mv -f -- "$settings.new" "$settings"
+}
+
+# report_value <key>: the value of the isolation report's '<key>: ' line, a heading's # and the
+# backticks around a value dropped
+report_value() {
+  sed -n "s/^$1: *//p" "$wt/.scratch/isolation.txt" | head -n 1 |
+    sed -e 's/[[:space:]]*$//' -e 's/^#* *//' -e 's/^`\(.*\)`$/\1/'
+}
+
+# isolation_check: what the planner reported it was given, against what team-worker gives it: no
+# marker of its worktree, its project's instructions from origin/<base>, the project's memory
+# folder in the team home, and the worktree it was started in. One PASS line, or a FAIL line each.
+isolation_check() {
+  local report=$wt/.scratch/isolation.txt project='' base sha heading='' memory='' memory_got cwd ok=1
+  # isolation_failed <what>: one FAIL line of the check
+  isolation_failed() { echo "FAIL planner: $*"; ok=''; fail=1; }
+  if [[ ! -f $report ]]; then
+    isolation_failed "it wrote no .scratch/isolation.txt, so nothing shows that its worktree's markers did not reach it"
+    return
+  fi
+  if grep -qF -- "$claude_md_marker" "$report"; then
+    isolation_failed "the marker line of its worktree's CLAUDE.md reached it, so its project instructions came from the worktree"
+  fi
+  if grep -qF -- "$rules_marker" "$report"; then
+    isolation_failed "the marker file of its worktree's .claude/rules/ reached it"
+  fi
+  if [[ -e $hook_marker ]]; then
+    isolation_failed "the SessionStart hook of its worktree's .claude/settings.json ran, so the worktree's project settings configured it"
+  fi
+  project=$(team_project --find path "$main" 2>/dev/null | head -n 1) || project=''
+  if [[ -z $project ]]; then
+    isolation_failed "$main is no registered project's primary checkout, so neither its project instructions nor its memory directory can be shown to be the project's"
+  else
+    base=$(team_project "$project" base)
+    sha=$(git -C "$wt" rev-parse --verify --quiet "refs/remotes/origin/$base^{commit}" || true)
+    heading="Project instructions: $project, from origin/$base at $sha"
+    if [[ $(report_value heading) != "$heading" ]]; then
+      isolation_failed "its project instructions are headed '$(report_value heading)', not '$heading'"
+    fi
+    memory=$(memory_setting "$project")
+    memory=${memory/#\~/$HOME}
+    memory_got=$(report_value memory)
+    if ! same_path "${memory_got/#\~/$HOME}" "$memory"; then
+      isolation_failed "its memory directory is '$memory_got', not $memory, the project's folder in the team home"
+    fi
+  fi
+  cwd=$(report_value cwd)
+  same_path "$cwd" "$wt" || isolation_failed "its working directory is '$cwd', not the worktree it was started in, $wt"
+  [[ -z $ok ]] || echo "PASS planner: no marker of its worktree reached it (the line in CLAUDE.md, the file in .claude/rules/, the SessionStart hook in .claude/settings.json), its project instructions are headed '$heading', its memory directory is $memory, and it works in $wt"
+}
+
 planner_check() {
   load_worktree
+  plant_markers
   inventory=$wt/.scratch/inventory.txt
   id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$wt" "${toolkit_args[@]}" -- \
     "This is an automated load check; do not message anyone." \
-    "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
-    "2. Then use the Write tool to create outside.txt in the current directory." \
-    "3. Then stop.")
+    "1. Write .scratch/isolation.txt with exactly four lines, from what you were given when this session started, reading no file to find them: 'markers: ' and then every word starting with load-check-marker- that appears anywhere in your system prompt, instructions or context, space-separated, or 'none'; 'heading: ' and then the heading line of your system prompt's section of project instructions (the line starting '# Project instructions:', without its '# '), or 'none'; 'memory: ' and then the directory of your persistent memory, or 'none'; 'cwd: ' and then your primary working directory." \
+    "2. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
+    "3. Then use the Write tool to create outside.txt in the current directory." \
+    "4. Then stop.")
   ids=("$id")
   echo "load check: worker $id started"
   automode_check planner "$wt"
@@ -457,6 +546,7 @@ planner_check() {
     check_failed "a production or coordinator-only server or plugin reached the worker"
   fi
   if [[ -e $wt/outside.txt ]]; then check_failed "the planner wrote outside .scratch/"; fi
+  isolation_check
 
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$skills" || true) skills"
 }

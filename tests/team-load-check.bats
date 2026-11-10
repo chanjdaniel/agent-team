@@ -7,7 +7,9 @@
 # MCP tools and skills, and the check fails on anything production or coordinator-only. The session
 # is a claude stub that writes the inventory from $STUB_FIXTURES/inventory.txt, notes in
 # $BATS_TEST_TMPDIR/launch where it started, and writes outside.txt where it started when
-# $STUB_FIXTURES/write-outside exists. Before it, each treehouse project's
+# $STUB_FIXTURES/write-outside exists. It copies the markers planted in its worktree to
+# $BATS_TEST_TMPDIR/planted-claude.md and planted-claude/, and writes the isolation report from what
+# team-worker gave it (its fixtures are named beside it). Before it, each treehouse project's
 # lease is rehearsed on a fake pool (helpers/treehouse); the registry has no treehouse project
 # unless a test adds one.
 
@@ -40,8 +42,37 @@ case $1 in
   --bg)
     { pwd -P; git rev-parse HEAD; git symbolic-ref -q HEAD || echo detached
       git check-ignore -q .scratch/inventory.txt && echo '.scratch ignored'
-      ls -A | grep -vx -e .git -e .gitignore -e README.md -e CLAUDE.md -e .scratch || true; } >"$BATS_TEST_TMPDIR/launch"
+      ls -A | grep -vx -e .git -e .gitignore -e README.md -e CLAUDE.md -e .scratch -e .claude || true; } >"$BATS_TEST_TMPDIR/launch"
+    rm -rf "$BATS_TEST_TMPDIR/planted-claude" && cp -R .claude "$BATS_TEST_TMPDIR/planted-claude" 2>/dev/null || true
+    cp CLAUDE.md "$BATS_TEST_TMPDIR/planted-claude.md" 2>/dev/null || true
     [[ ! -e $STUB_FIXTURES/write-outside ]] || echo planner >outside.txt
+    # The isolation report, as a session reports what it was given: the heading of its system
+    # prompt file's project section, its settings' memory directory, its working directory, and a
+    # marker only where $STUB_FIXTURES/leak-claude-md or leak-rules has the worktree's file reach
+    # it; run-hook runs the worktree's SessionStart hook; heading, memory and cwd override a value;
+    # no-isolation writes no report.
+    prompt_file='' settings_file='' args=("$@")
+    for ((i = 0; i < ${#args[@]} - 1; i++)); do
+      case ${args[i]} in
+        --append-system-prompt-file) prompt_file=${args[i + 1]} ;;
+        --settings) settings_file=${args[i + 1]} ;;
+      esac
+    done
+    if [[ -e $STUB_FIXTURES/run-hook ]]; then
+      bash -c "$(jq -r '.hooks.SessionStart[].hooks[].command' .claude/settings.json)"
+    fi
+    if [[ ! -e $STUB_FIXTURES/no-isolation ]]; then
+      markers=$( { [[ ! -e $STUB_FIXTURES/leak-claude-md ]] || cat CLAUDE.md
+        [[ ! -e $STUB_FIXTURES/leak-rules ]] || cat .claude/rules/*.md; } | { grep -oE 'load-check-marker-[a-z0-9-]+' || true; } | paste -sd ' ')
+      heading=$(sed -n 's/^# \(Project instructions: .*\)$/\1/p' "$prompt_file" | head -n 1)
+      memory=$(jq -r '.autoMemoryDirectory // "none"' "$settings_file")
+      memory=${memory/#\~/$HOME}
+      [[ ! -f $STUB_FIXTURES/heading ]] || heading=$(cat "$STUB_FIXTURES/heading")
+      [[ ! -f $STUB_FIXTURES/memory ]] || memory=$(cat "$STUB_FIXTURES/memory")
+      cwd=$(pwd -P)
+      [[ ! -f $STUB_FIXTURES/cwd ]] || cwd=$(cat "$STUB_FIXTURES/cwd")
+      printf '%s\n' "markers: ${markers:-none}" "heading: ${heading:-none}" "memory: $memory" "cwd: $cwd" >.scratch/isolation.txt
+    fi
     cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt
     echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
     ;;
@@ -244,6 +275,92 @@ left_nothing() {
 @test "a failing planner check also leaves nothing in the code checkout" {
   inventory mcp__prod-read__find --- tdd
   run_bin -1 team-load-check
+  left_nothing
+}
+
+# isolation_pass: the PASS line of a planner none of whose worktree's markers reached it
+isolation_pass() {
+  echo "PASS planner: no marker of its worktree reached it (the line in CLAUDE.md, the file in .claude/rules/, the SessionStart hook in .claude/settings.json), its project instructions are headed 'Project instructions: code, from origin/main at $(git -C "$code" rev-parse origin/main)', its memory directory is $TEAM_HOME/memory/code, and it works in $wt"
+}
+
+@test "the planner's worktree gets a CLAUDE.md line, a .claude/rules/ file and a .claude/settings.json hook and allow rule, and a planner that reports none of them passes" {
+  inventory --- tdd
+  # A tracked .claude/settings.json keeps its keys, and a commit not on origin/main is not the
+  # instructions' ref.
+  mkdir -p "$code/.claude"
+  echo '{"worktree": {"bgIsolation": "none"}}' >"$code/.claude/settings.json"
+  git -C "$code" add .claude/settings.json
+  git -C "$code" commit -q -m "chore: settings"
+  run_bin -0 team-load-check
+  assert_contains "$output" "$(isolation_pass)"
+  assert_equal "${lines[-1]}" PASS
+
+  # The markers, planted before the launch, each its own word of this run.
+  assert_equal "$(head -n 1 "$BATS_TEST_TMPDIR/planted-claude.md")" "# code"
+  claude_md=$(tail -n 1 "$BATS_TEST_TMPDIR/planted-claude.md" | grep -oE 'load-check-marker-claude-md-[0-9a-f]+')
+  rules=$(grep -ohE 'load-check-marker-rules-[0-9a-f]+' "$BATS_TEST_TMPDIR"/planted-claude/rules/*.md)
+  settings=$BATS_TEST_TMPDIR/planted-claude/settings.json
+  assert_equal "$(jq -r .worktree.bgIsolation "$settings")" none
+  assert_equal "$(jq -r '.hooks.SessionStart | length' "$settings")" 1
+  hook=$(jq -r '.hooks.SessionStart[0].hooks[0] | select(.type == "command") | .command' "$settings")
+  assert_contains "$hook" "$wt/.scratch/load-check-hook-"
+  [[ $(jq -r '.permissions.allow[]' "$settings") =~ ^Bash\(echo\ load-check-marker-allow-[0-9a-f]+\)$ ]]
+  [[ ${claude_md#load-check-marker-claude-md-} == "${rules#load-check-marker-rules-}" ]]
+  # The planner is asked for them, and never told them.
+  prompt=$(stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1] | join(" ")')
+  assert_contains "$prompt" ".scratch/isolation.txt"
+  [[ $prompt != *"$claude_md"* && $prompt != *"$rules"* ]]
+  left_nothing
+
+  # A second run plants markers of its own.
+  run_bin -0 team-load-check
+  [[ $(tail -n 1 "$BATS_TEST_TMPDIR/planted-claude.md") != *"$claude_md"* ]]
+  left_nothing
+}
+
+@test "each worktree marker that reaches the planner and each wrong value it reports is its own FAIL line, and the worktree is still removed" {
+  inventory --- tdd
+  sha=$(git -C "$code" rev-parse origin/main)
+  # fails_with <fixture> <FAIL line>: the planner with <fixture> fails on that line alone
+  fails_with() {
+    run_bin -1 team-load-check
+    assert_contains "$output" "$2"
+    assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
+    [[ $output != *"PASS planner:"* ]]
+    assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+    left_nothing
+    rm -f "$STUB_FIXTURES/$1"
+  }
+  touch "$STUB_FIXTURES/leak-claude-md"
+  fails_with leak-claude-md "FAIL planner: the marker line of its worktree's CLAUDE.md reached it, so its project instructions came from the worktree"
+  touch "$STUB_FIXTURES/leak-rules"
+  fails_with leak-rules "FAIL planner: the marker file of its worktree's .claude/rules/ reached it"
+  touch "$STUB_FIXTURES/run-hook"
+  fails_with run-hook "FAIL planner: the SessionStart hook of its worktree's .claude/settings.json ran, so the worktree's project settings configured it"
+  echo "Project instructions: code, from the worktree" >"$STUB_FIXTURES/heading"
+  fails_with heading "FAIL planner: its project instructions are headed 'Project instructions: code, from the worktree', not 'Project instructions: code, from origin/main at $sha'"
+  echo none >"$STUB_FIXTURES/heading"
+  fails_with heading "FAIL planner: its project instructions are headed 'none', not 'Project instructions: code, from origin/main at $sha'"
+  echo "$HOME/.claude/projects/-wt/memory" >"$STUB_FIXTURES/memory"
+  fails_with memory "FAIL planner: its memory directory is '$HOME/.claude/projects/-wt/memory', not $TEAM_HOME/memory/code, the project's folder in the team home"
+  echo "$code" >"$STUB_FIXTURES/cwd"
+  fails_with cwd "FAIL planner: its working directory is '$code', not the worktree it was started in, $wt"
+  touch "$STUB_FIXTURES/no-isolation"
+  fails_with no-isolation "FAIL planner: it wrote no .scratch/isolation.txt, so nothing shows that its worktree's markers did not reach it"
+
+  # All at once, each its own line.
+  touch "$STUB_FIXTURES/leak-claude-md" "$STUB_FIXTURES/leak-rules" "$STUB_FIXTURES/run-hook"
+  echo "$code" >"$STUB_FIXTURES/cwd"
+  run_bin -1 team-load-check
+  assert_equal "$(grep -c '^FAIL planner: ' <<<"$output")" 4
+  left_nothing
+}
+
+@test "a code checkout that is no registered project's fails the planner's isolation check, naming why" {
+  inventory --- tdd
+  { project site; printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'; } >"$TEAM_HOME/projects.toml"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL planner: $code is no registered project's primary checkout, so neither its project instructions nor its memory directory can be shown to be the project's"
   left_nothing
 }
 
