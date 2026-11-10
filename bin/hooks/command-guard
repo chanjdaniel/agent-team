@@ -68,7 +68,8 @@ tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<
 command=$(jq -er '.tool_input.command | strings' <<<"$input" 2>/dev/null) ||
   block "it could not read the Bash call's command (tool_input.command, a string)"
 [[ $command == *team-worker* || $command == *team-load-check* || $command == *ui-capture* ||
-  $command == *AGENT_TEAM_* || $command == *curl* || $command == *wget* || (($command == *env*[[:space:]]-* || $command == *exec*[[:space:]]-*) &&
+  $command == *AGENT_TEAM_* || $command == *curl* || $command == *wget* ||
+  (($command == *env*[[:space:]]-* || $command == *exec*[[:space:]]-*) &&
   ($command == *team-* || $command == *claude-coordinator*)) ]] || exit 0
 
 code=$(python3 -I "$TEAM_LIB/command_text.py" <<<"$command" 2>&1) ||

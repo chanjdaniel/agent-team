@@ -4,7 +4,8 @@
 Usage: python3 -I command_text.py   (the command on stdin; prints the text on stdout)
 
 bin/hooks/command-guard runs this file on a Bash call's command, team-tokens imports
-without_heredocs from it, and outbound.py simple_commands, each simple command's words. It reads the command far enough to know its quotes ('...', "..." and
+without_heredocs from it, and outbound.py simple_commands, each simple command's words. It
+reads the command far enough to know its quotes ('...', "..." and
 $'...'), backslashes, comments, arithmetic ($[, and $(( or (( whose two closing parentheses are
 adjacent, matched as Bash's parse_matched_pair does, past quotes, backticks and a $(...) read
 by this scan: ((cmd) ) is two subshells), groups ((, $(, a backtick, ${ in which quotes
