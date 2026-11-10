@@ -36,7 +36,10 @@
 # item=<n>, which team-log refuses.
 # It refuses on a machine that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh),
 # before reading Discord, and in a worker session (worker_refusal).
-# Prints the message's text verbatim, or with --item the text of each part naming n, one per line.
+# Prints the message's text verbatim, or with --item the text of each part naming n, one per line;
+# an empty line is a part that named n with no text of its own and none after it on its line,
+# which answers nothing (ask Daniel what they meant), as "approve 3 and 5" names 5 alone, since a
+# part starts with its number and "approve 3" does not.
 # Any refusal is exit 1 with nothing logged.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"

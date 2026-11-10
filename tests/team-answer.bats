@@ -385,6 +385,33 @@ TABLE
   assert_equal "$(logged_since)" ""
 }
 
+@test "a reply that may mean otherwise is read by the rule alone: a number with a space after it starts a part, and a part with no text prints an empty line" {
+  listed
+  # "approve 3 and 5" names 5 alone, with no text of its own, and not 3, since a part starts with its number.
+  message "$COORDINATOR" 1564000000000000010 757 "approve 3 and 5"
+  run_bin -1 --separate-stderr team-answer --item 3 1564000000000000010
+  assert_equal "$stderr" "team-answer: Discord message 1564000000000000010 names no item 3 (it names 5); log it with team-answer T7 sign-in 1564000000000000010 if it answers that ask"
+  run_bin -0 --separate-stderr team-answer --item 5 1564000000000000010
+  assert_equal "$output" ""
+  assert_equal "$(logged_since | jq -c 'select(.event == "answered") | [.task, .item, .answer]')" '["T8",5,"approve 3 and 5"]'
+  # A number after a comma, with a space after it, is a part, whatever follows.
+  local reply want
+  while IFS='|' read -r reply want; do
+    listed_again
+    message "$COORDINATOR" 1564000000000000010 757 "$reply"
+    run_bin -0 --separate-stderr team-answer --item 3 1564000000000000010
+    assert_equal "$output" "$want"
+  done <<'TABLE'
+yes, 3 more questions first|more questions first
+ok, 3 minutes|minutes
+TABLE
+  # "3, yes" names nothing: a comma right after a number is no marker.
+  listed_again
+  message "$COORDINATOR" 1564000000000000010 757 "3, yes"
+  run_bin -1 --separate-stderr team-answer --item 3 1564000000000000010
+  assert_equal "$stderr" "team-answer: Discord message 1564000000000000010 names no item 3 (it names no item by number); log it with team-answer T7 sign-in 1564000000000000010 if it answers that ask"
+}
+
 @test "a PR's or an interview's number is refused, naming what to do instead, with nothing read or logged" {
   listed
   message "$COORDINATOR" 1564000000000000010 757 "2 yes, 4 yes"
