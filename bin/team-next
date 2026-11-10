@@ -58,8 +58,11 @@
 # rereview-<k>, the lowest k from 2 whose brief no launch read, and takes the PR's url and head (a
 # PR) or the reported head (review-ready), the rest derived by team-brief (a DONE merged's head
 # from GitHub, and its since naming the merge's conflicted files), --since added after the
-# derived since. It launches as a reviewer with the toolkits of the task's latest reviewer
-# launch, else of its latest builder launch.
+# derived since. Each of these briefs names the instruction and settings files its head changes
+# against the base, team-brief's instruction_files; a brief team-brief refuses (that list
+# unreadable, say, or exit 75 on an unreachable origin) logs and launches nothing, with its exit
+# code. It launches as a reviewer with the toolkits of the task's latest reviewer launch, else of
+# its latest builder launch.
 # A reviewer's DONE pass or DONE findings launches nothing: refused, before anything is logged,
 # when the task has no plan-approved, a DONE findings without --sent-back, a pass that counts a
 # blocking, correctness, security, real-data or note-change finding with no --sent-back list of
