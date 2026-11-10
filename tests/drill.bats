@@ -422,15 +422,15 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   assert_equal "$(laptop_launches | wc -l)" 1
 
   # home-pc comes back: its heartbeat fences it, and its doctor fails, listing what only home-pc
-  # holds (the park in its ledger, the later commit and edit) with the commands that push it to a
-  # salvage branch.
+  # holds (the park in its ledger, the waiting list written since its checkpoint, the later commit
+  # and edit) with the commands that push it to a salvage branch.
   run -0 "$REPO_ROOT/bin/team-timers" run
   [[ -e $state/fenced ]]
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
   assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict, .reason, .fix]' <<<"$output")" \
     "$(jq -cn --arg url "$team_origin" --arg home "$TEAM_HOME" '["salvage records", "FAIL",
-      "\($home) has uncommitted records (ledger.jsonl: 1 new line)",
-      "git -C \($home) add -A -- ledger.jsonl && git -C \($home) commit -m \"wip: salvage records from home-pc\", then git -C \($home) push \($url) HEAD:refs/heads/salvage/records/home-pc-1"],
+      "\($home) has uncommitted records (ledger.jsonl: 1 new line; waiting.json; waiting.md)",
+      "git -C \($home) add -A -- ledger.jsonl waiting.json waiting.md && git -C \($home) commit -m \"wip: salvage records from home-pc\", then git -C \($home) push \($url) HEAD:refs/heads/salvage/records/home-pc-1"],
       ["salvage T1 home", "FAIL",
       "~/slots/home/1 has 1 commit on no origin branch and uncommitted changes (changes to tracked files: a.txt; untracked files: b.txt)",
       "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push \($url) HEAD:refs/heads/salvage/home/T1-home-pc"]')"
