@@ -1,7 +1,9 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2154 # code, wt and stopped are helpers/load-check.bash's
 # team-load-check: team-doctor --json runs first, and a FAIL there that bears on a session the
 # form starts stops the load check before it touches its worktree or launches a worker; the other
-# tests pass a stub doctor (TEAM_DOCTOR).
+# tests pass a stub doctor (TEAM_DOCTOR, from helpers/load-check, with the code checkout and the
+# registry).
 # The planner form: the planner it launches through team-worker, in a detached worktree of the code
 # checkout (a sandbox repo, TEAM_LOAD_CHECK_CHECKOUT) at .claude/worktrees/load-check, reports its
 # MCP tools and skills, and the check fails on anything production or coordinator-only. The session
@@ -16,34 +18,14 @@
 # unless a test adds one.
 
 load helpers/common
+load helpers/load-check
 load helpers/ops-request
 load helpers/transcript
 load helpers/treehouse
 
 setup() {
-  sandbox
-  code=$(make_repo code)
-  printf '%s\n' .scratch/ .claude/worktrees/ >"$code/.gitignore"
-  # The project's instructions, which team-worker gives each session from origin/main.
-  echo "# code" >"$code/CLAUDE.md"
-  git -C "$code" add .gitignore CLAUDE.md
-  git -C "$code" commit -q -m "chore: ignore scratch and worktrees"
-  git -C "$code" push -q origin main
-  code=$(realpath "$code") wt=$code/.claude/worktrees/load-check
-  export TEAM_LOAD_CHECK_CHECKOUT=$code
-  # A doctor that answers --json with $BATS_TEST_TMPDIR/doctor.json, and fails when it holds a
-  # FAIL, as team-doctor does; it passes until a test calls doctor_results. The doctor's own lines
-  # are tests/team-doctor*.bats'.
-  export TEAM_DOCTOR=$BATS_TEST_TMPDIR/doctor
-  printf '%s\n' '#!/usr/bin/env bash' '[[ $* == --json ]] || exit 64' 'cat "$BATS_TEST_TMPDIR/doctor.json"' \
-    'jq -e "all(.[]; .verdict != \"FAIL\")" "$BATS_TEST_TMPDIR/doctor.json" >/dev/null 2>&1' >"$TEAM_DOCTOR"
-  chmod +x "$TEAM_DOCTOR"
-  doctor_results
-  registry
+  load_check_sandbox
   planner_transcript hook
-  # team-drill names the machine it records the run on.
-  mkdir -p "$HOME/.config/agent-team"
-  echo home-pc >"$HOME/.config/agent-team/machine"
   stub_script claude <<'SH'
 case $1 in
   --bg)
@@ -105,45 +87,6 @@ case $1 in
 esac
 SH
 }
-
-# registry [<proj's pool block>]: projects.toml with the code checkout's own project, code, and a
-# git pool project, site, and, when given, proj, with that pool, listing prod-read, prod-write and
-# vercel-read (T0 takes no production toolkit its project does not list); code is registered, as
-# the real code checkout is, since team-worker gives a toolkit, the project's instructions and its
-# memory directory only in a registered project's worktree
-registry() {
-  {
-    project code
-    printf '%s\n' '[code.pool]' 'provider = "git"' 'slots = []'
-    project site
-    printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'
-    if [[ -n ${1:-} ]]; then project proj '["prod-read", "prod-write", "vercel-read"]' && echo "$1"; fi
-  } >"$TEAM_HOME/projects.toml"
-}
-
-# project <name> [<toolkits, a TOML list>]: the project's table, its toolkits none by default
-project() {
-  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "no-mistakes"' \
-    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' "toolkits = ${2:-[]}"
-}
-
-# doctor_results [<verdict> <check>]...: the stub doctor's results: a PASS of machine, then each
-# given one, its reason "broken" and its fix "repair it"
-doctor_results() {
-  local results='{"check": "machine", "verdict": "PASS", "reason": "named", "fix": ""}'
-  while [[ $# -gt 0 ]]; do
-    results+=$(jq -cn --arg verdict "$1" --arg check "$2" '{$check, $verdict, reason: "broken", fix: "repair it"}')
-    shift 2
-  done
-  jq -s . <<<"$results" >"$BATS_TEST_TMPDIR/doctor.json"
-}
-
-# going_on <check>: the line the load check names a FAIL it goes on past with
-going_on() {
-  echo "load check: going on past FAIL $1: it bears on no session this check starts"
-}
-
-stopped="load check: team-doctor reports a FAIL above; fix it, then run the load check again"
 
 # inventory <line>...: what the planner reports
 inventory() {
@@ -289,13 +232,6 @@ toolkit_checkout() {
   # A toolkit that declares no MCP server needs none.
   inventory --- plain:a-skill
   run_bin -0 team-load-check --toolkit plain
-}
-
-# left_nothing: the load check's worktree is gone, and the code checkout is as it was
-left_nothing() {
-  [[ ! -e $wt ]]
-  assert_equal "$(git -C "$code" worktree list --porcelain | sed -n 's/^worktree //p')" "$code"
-  assert_equal "$(git -C "$code" status --porcelain --ignored)" ""
 }
 
 @test "the planner runs in a fresh worktree of the code checkout, detached at its HEAD, which is removed at the end" {
@@ -1459,26 +1395,6 @@ $(going_on 'gate proj')"
 # The drill record: the planner form and the ops form's prod-write and vercel-read sets record
 # their run in the team home's drills.jsonl, through this checkout's team-drill, once they have
 # launched their session.
-
-# The team home's drill record, each line's fields but at.
-drill_lines() {
-  if [[ -e $TEAM_HOME/drills.jsonl ]]; then jq -c 'del(.at)' "$TEAM_HOME/drills.jsonl"; fi
-}
-
-# The one line a run of <drill> should have recorded from this checkout, but at:
-# drill_line <drill> <verdict> [<detail>]
-drill_line() {
-  jq -cn --arg drill "$1" --arg commit "$(git -C "$REPO_ROOT" rev-parse HEAD)" --argjson dirty \
-    "$([[ -z $(git -C "$REPO_ROOT" status --porcelain --untracked-files=no) ]] && echo false || echo true)" \
-    --arg verdict "$2" --arg detail "${3:-}" \
-    '{drill: $drill, machine: "home-pc", commit: $commit, dirty: $dirty, claude: "2.1.321",
-      verdict: $verdict, detail: $detail}'
-}
-
-# recorded <drill> <verdict>: team-drill's line for this checkout's run of <drill>
-recorded() {
-  echo "team-drill: recorded $1 $2 on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
-}
 
 @test "the planner form records load-check-planner: pass on exit 0 with its toolkits, fail otherwise, before its verdict line" {
   inventory --- tdd
