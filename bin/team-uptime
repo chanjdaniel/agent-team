@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Check each project's production, as projects.toml's uptime key names it, and post in
-# #coordinator when a check is down and again when it is back. The heartbeat's uptime step runs
-# it on the lease holder at every run (team-timers), and show each check's last result.
+# #coordinator when a check is down and again when it is back, and show each check's last result.
+# The heartbeat's uptime step runs it on the lease holder at every run (team-timers).
 #
 # Usage: team-uptime run | status [--json]
 #
@@ -47,7 +47,7 @@
 #   Production still down: <project> <name> (<<url>>) since <HH:MM>, <duration>: <reason>.
 #   Production back: <project> <name> (<<url>>) answers again at <HH:MM>, down since <HH:MM> (<duration>).
 # times as this machine's local hours and minutes, durations as "<n> minutes", "<h> hours" or
-# "<h> hours <n> minutes". A post that went through is recorded, so neither a later run nor a
+# "<h> hours <n> minutes", singular for 1. A post that went through is recorded, so neither a later run nor a
 # restart posts it again; one Discord refused is not, so it is due again at the next run, and it
 # fails this one ("team-uptime: the post to #coordinator failed (<reason>); it is tried again next
 # run" on stderr). A check the registry no longer names, or names with another url or expect, is
