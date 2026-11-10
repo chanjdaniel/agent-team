@@ -2,8 +2,9 @@
 # Keep what waits on Daniel, numbered, in the team home's waiting.md, from the ledger alone, so no
 # model turn writes it, and post it fresh in #coordinator when Daniel asks what waits.
 #
-# Usage: team-inbox [--post]
-# With no argument it writes the list; --post writes it, then posts it (below).
+# Usage: team-inbox [--post | --item <n>]
+# With no argument it writes the list; --post writes it, then posts it; --item <n> names the item
+# numbered n (each below).
 # The list holds, for each open task in task number order: each ask nothing settled (an asked
 # with no answered or merge-preapproved of its id and no merge-approved whose url its text names,
 # as team-sweep reads it), with the task, the ask's id, its first line and a link to the question
@@ -60,6 +61,13 @@
 # showed; when the first fails, nothing is recorded. --post refuses before writing anything
 # without a token, and as Discord's refusal says (75 on a 429, else 1) when the guild cannot be
 # read or a message cannot be posted.
+# --item <n>, n from 1 to 999, for routing Daniel's numbered reply ("3 yes, 5 no"; team-answer
+# --item runs it): prints the standing item numbered n, as "ask <task> <id>", "pr <task> <url>" or
+# "interview <task> <thread>". It reads waiting.json alone, with no lock, no Discord and no lease
+# check (the lease-fence hook blocks it on a fenced machine), and refuses with exit 1 a number no
+# standing item holds: "item <n> no longer waits: the list posted <time> showed it as <its line>"
+# when the latest post showed it, else "no item <n> waits; the list holds 1, 2 and 4" (or
+# "nothing waits"); and a waiting.json that is missing or cannot be read.
 # Files: the team home's waiting.md, the list as Daniel reads it, with its final newline, and
 # waiting.json beside it ({schema: "team-waiting/1", items: [{n, key, kind, task, title, ...,
 # line}], standing, posted}), which the scripts read; both are records, which the checkpoint
@@ -76,15 +84,15 @@
 # never edits anything else, and posts only on --post.
 # team-ask, team-answer, team-merge and team-close run it at their end (refresh_inbox in
 # bin/lib/team.sh), going on with a line on stderr when it fails; team-timers run runs it every
-# five minutes on the lease holder. It refuses on a machine that is fenced or lost the lease
-# (lease_refusal in bin/lib/team.sh) and in a worker session (worker_refusal), and one run at a
-# time holds ~/.local/state/agent-team/inbox.lock, waiting for it at most a minute
-# (TEAM_INBOX_LOCK_SECONDS replaces the 60 s, the tests' seam).
+# five minutes on the lease holder. It refuses in a worker session (worker_refusal in
+# bin/lib/team.sh), and, but on --item, on a machine that is fenced or lost the lease
+# (lease_refusal); one run at a time holds ~/.local/state/agent-team/inbox.lock, waiting for it at
+# most a minute (TEAM_INBOX_LOCK_SECONDS replaces the 60 s, the tests' seam).
 # Prints "retired <the old message's link>" when it retired it, then "wrote waiting.md: <n> items"
 # ("1 item", "0 items"), then on --post "posted <link>" for each message posted, in order.
-# Exit codes: 0 written (and on --post, posted); 1 refused, a file cannot be written, or Discord
-# refused a post's call; 2 a malformed command line; 75 another run held the lock for the wait, or
-# Discord rate-limited a post's call.
+# Exit codes: 0 written (and on --post, posted; on --item, named); 1 refused, a file cannot be
+# written, no item <n> waits, or Discord refused a post's call; 2 a malformed command line; 75
+# another run held the lock for the wait, or Discord rate-limited a post's call.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -100,14 +108,29 @@ SUPPRESS_EMBEDS=4
 # The old message's one edit.
 RETIRED='**Waiting on you** is no longer kept here: ask the coordinator what waits on you, and it posts the list fresh, numbered so one reply answers several.'
 
-post=''
+USAGE="usage: team-inbox [--post | --item <n>]"
+
+post='' item=''
 case $#:${1:-} in
   0:) ;;
   1:--post) post=1 ;;
-  *) usage_error "usage: team-inbox [--post]" ;;
+  2:--item) item=$2 ;;
+  *) usage_error "$USAGE" ;;
 esac
+[[ -z $item || $item =~ ^[1-9][0-9]{0,2}$ ]] || usage_error "$USAGE"
 [[ $LOCK_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_INBOX_LOCK_SECONDS must be a whole number of seconds, not '$LOCK_SECONDS'"
 why=$(worker_refusal "" "edits nothing in Discord") && die "$why"
+
+# --item reads waiting.json alone: no lock, no Discord and no lease check, which the lease-fence
+# hook makes on a fenced machine.
+if [[ -n $item ]]; then
+  waiting=$TEAM_HOME/waiting.json
+  [[ -e $waiting ]] || die "no waiting list yet; team-inbox writes it"
+  answer=$(jq -sc -L "$TEAM_LIB" --argjson n "$item" 'include "ledger"; waiting_item($n)' <"$waiting" 2>&1) ||
+    die "waiting.json cannot be read: $(grep -m 1 . <<<"$answer" || echo "jq failed"); team-inbox writes it afresh"
+  jq -er '.item // empty' <<<"$answer" || die "$(jq -r .refusal <<<"$answer")"
+  exit 0
+fi
 
 why=$(lease_refusal "posts nothing to Discord; the coordinator on the holder answers there.") && die "$why"
 # A post needs the token, so without it nothing is written.

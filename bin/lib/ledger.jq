@@ -730,6 +730,32 @@ def unattended_review_reasons($head):
 def answered_from($id; $message):
   any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);
 
+# A list of strings as text, its last two joined by "and" and the rest by commas: "1, 2 and 4".
+def and_text: if length < 2 then join("") else (.[:-1] | join(", ")) + " and " + .[-1] end;
+
+# The numbered parts of a reply's text, as Daniel answers several items of the waiting list in one
+# message ("3 yes, 5 no"), an array of {n, text} in the order they come. Each line (a trailing \r
+# dropped) loses a leading bullet (- or * and spaces), and is split before each separator (a
+# comma, semicolon or &, or the word and, with any spaces) that a number follows: an optional #,
+# 1 to 3 digits, then a space, one of . ) : - , ; & or the line's end. A piece is a part when it is
+# an optional #, a number from 1 to 999, optional spaces, an optional marker (. ) : or -), then
+# spaces and its text, or the piece's end; a piece that is not one stays with the piece before it.
+# A part with no text takes the text of the next part on its line that has some, so "3 and 5 yes"
+# answers both, and keeps an empty text when none has. "1-2 yes" and "2026 was busy" name nothing.
+def numbered_parts:
+  def trimmed: sub("^\\s+"; "") | sub("\\s+$"; "");
+  def part: trimmed | capture("^#?(?<n>[0-9]{1,3})\\s*[.):-]?(?:\\s+(?<text>.*)|$)")
+    | {n: (.n | tonumber), text: (.text // "" | trimmed)} | select(.n >= 1 and .n <= 999);
+  "\\s*(?:[,;&]|\\band\\b)\\s*(?=#?[0-9]{1,3}(?:[ .):,;&-]|$))" as $separator
+  | [split("\n")[] | rtrimstr("\r") | sub("^\\s*[-*]\\s+"; "") | . as $line
+    | [$line | splits($separator; "gi")] as $pieces
+    | [$line | match($separator; "gi") | .string] as $separators
+    | reduce range(1; $pieces | length) as $i ([$pieces[0]];
+        if [$pieces[$i] | part] != [] then . + [$pieces[$i]] else .[-1] += $separators[$i - 1] + $pieces[$i] end)
+    | [.[] | part] as $parts
+    | range($parts | length) as $i
+    | $parts[$i] | if .text == "" then .text = (first($parts[$i + 1:][] | .text | select(. != "")) // "") else . end];
+
 # The asked events no later event settles yet, each as {k, ask}: its index among the events and
 # the event.
 def unsettled_asks:
@@ -1357,6 +1383,26 @@ def post_messages($max):
 def waiting_posted($at; $ids; $sent):
   ([$sent[] | split("\n")[]]) as $lines
   | .posted = {at: $at, messages: $ids, items: [.items[] | select(.line | IN($lines[]))]};
+
+# team-inbox --item's answer for the number $n, over waiting.json read whole (jq -s): {item} for
+# the standing item numbered $n, the line naming it ("ask <task> <id>", "pr <task> <url>" or
+# "interview <task> <thread>"), else {refusal}: the item the latest post showed as $n, which no
+# longer waits, or the numbers that do; or a waiting.json of another schema.
+def waiting_item($n):
+  if length != 1 or (.[0] | type != "object" or .schema != "team-waiting/1") then
+    {refusal: "waiting.json cannot be read: its schema is not team-waiting/1; team-inbox writes it afresh"}
+  else .[0]
+    | ([.items[]? | objects | select(.n == $n)] | first) as $item
+    | ([.posted.items[]? | objects | select(.n == $n)] | first) as $shown
+    | if $item != null then
+        {item: (if $item.kind == "ask" then "ask \($item.task) \($item.id)"
+          elif $item.kind == "pr" then "pr \($item.task) \($item.url)"
+          else "\($item.kind) \($item.task) \($item.thread)" end)}
+      elif $shown != null then {refusal: "item \($n) no longer waits: the list posted \(.posted.at) showed it as \($shown.line)"}
+      else {refusal: "no item \($n) waits; "
+        + ([.items[]?.n | numbers] | sort | map(tostring) | if . == [] then "nothing waits" else "the list holds \(and_text)" end)}
+      end
+  end;
 
 # The following defs serve team-retro, over every ledger event as one array.
 

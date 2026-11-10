@@ -905,13 +905,96 @@ EOF
   [[ ! -e $TEAM_HOME/waiting.md ]]
 }
 
-@test "--help prints the header, and any argument but --post is a usage error" {
+@test "--item names the standing item a number stands for, by its kind, reading waiting.json alone" {
+  waiting_ledger
+  run_bin -0 team-inbox
+  local calls
+  calls=$(inbox_calls)
+  run_bin -0 --separate-stderr team-inbox --item 1
+  assert_equal "$output" "ask T3 plan"
+  assert_equal "$stderr" ""
+  run_bin -0 team-inbox --item 3
+  assert_equal "$output" "ask T5 keep"
+  run_bin -0 team-inbox --item 4
+  assert_equal "$output" "pr T4 https://github.com/owner/proj/pull/4"
+  run_bin -0 team-inbox --item 5
+  assert_equal "$output" "interview T9 9999"
+  assert_equal "$(inbox_calls)" "$calls"
+
+  # It takes no lock, and a fenced machine's own check is left to the lease-fence hook.
+  local lock
+  exec {lock}>>"$HOME/.local/state/agent-team/inbox.lock"
+  flock "$lock"
+  echo '{"since": "2026-10-29T10:00:00Z"}' >"$HOME/.local/state/agent-team/fenced"
+  TEAM_INBOX_LOCK_SECONDS=0 run_bin -0 team-inbox --item 2
+  assert_equal "$output" "ask T3 port"
+  exec {lock}>&-
+  assert_equal "$(inbox_calls)" "$calls"
+}
+
+@test "--item on a number the latest post showed and that settled since says what it was" {
+  waiting_ledger
+  run_bin -0 team-inbox
+  posted_as
+  log_events '{"task":"T9","event":"closed","archive":[],"returned":[],"kept":[]}'
+  run_bin -0 team-inbox
+  run_bin -1 --separate-stderr team-inbox --item 5
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-inbox: item 5 no longer waits: the list posted 2026-10-01T12:00:00Z showed it as - **5** T9 Nine: <#9999>"
+}
+
+@test "--item on a number nothing holds names the numbers that wait, or that nothing does" {
+  waiting_ledger
+  run_bin -0 team-inbox
+  run_bin -1 --separate-stderr team-inbox --item 7
+  assert_equal "$stderr" "team-inbox: no item 7 waits; the list holds 1, 2, 3, 4 and 5"
+  log_events '{"task":"T3","event":"closed","archive":[],"returned":[],"kept":[]}' \
+    '{"task":"T5","event":"closed","archive":[],"returned":[],"kept":[]}' \
+    '{"task":"T9","event":"closed","archive":[],"returned":[],"kept":[]}'
+  run_bin -0 team-inbox
+  run_bin -1 --separate-stderr team-inbox --item 5
+  assert_equal "$stderr" "team-inbox: no item 5 waits; the list holds 4"
+  log_events '{"task":"T4","event":"closed","archive":[],"returned":[],"kept":[]}'
+  run_bin -0 team-inbox
+  run_bin -1 --separate-stderr team-inbox --item 4
+  assert_equal "$stderr" "team-inbox: no item 4 waits; nothing waits"
+  # Two numbers are joined by "and" alone.
+  jq '.items = [{n: 2, kind: "ask", task: "T3", id: "a"}, {n: 6, kind: "ask", task: "T3", id: "b"}]' \
+    "$TEAM_HOME/waiting.json" >"$BATS_TEST_TMPDIR/w" && mv "$BATS_TEST_TMPDIR/w" "$TEAM_HOME/waiting.json"
+  run_bin -1 --separate-stderr team-inbox --item 1
+  assert_equal "$stderr" "team-inbox: no item 1 waits; the list holds 2 and 6"
+}
+
+@test "--item with no waiting.json, or one it cannot read, says so" {
+  run_bin -1 --separate-stderr team-inbox --item 1
+  assert_equal "$stderr" "team-inbox: no waiting list yet; team-inbox writes it"
+  echo '{"schema": "team-waiting/1", "items": [' >"$TEAM_HOME/waiting.json"
+  run_bin -1 --separate-stderr team-inbox --item 1
+  assert_contains "$stderr" "team-inbox: waiting.json cannot be read: "
+  assert_contains "$stderr" "; team-inbox writes it afresh"
+  echo '{"schema": "team-waiting/0", "items": []}' >"$TEAM_HOME/waiting.json"
+  run_bin -1 --separate-stderr team-inbox --item 1
+  assert_equal "$stderr" "team-inbox: waiting.json cannot be read: its schema is not team-waiting/1; team-inbox writes it afresh"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "--item in a worker session is refused" {
+  waiting_ledger
+  run_bin -0 team-inbox
+  AGENT_TEAM_ROLE=builder AGENT_TEAM_TASK=T7 run_bin -1 --separate-stderr team-inbox --item 1
+  assert_equal "$stderr" "team-inbox: a builder session edits nothing in Discord: that is the coordinator's; send it your message"
+}
+
+@test "--help prints the header, and any argument but --post or --item <n> from 1 to 999 is a usage error" {
   run_bin -0 team-inbox --help
-  assert_contains "$output" "Usage: team-inbox [--post]"
+  assert_contains "$output" "Usage: team-inbox [--post | --item <n>]"
   local args
-  for args in --now "--post --post" "--post x"; do
+  for args in --now "--post --post" "--post x" --item "--item 0" "--item 1000" "--item 01" "--item x" "--item -1" \
+    "--item 1 2" "--post --item 1" "--item 1 --post"; do
     # shellcheck disable=SC2086 # each word an argument
     run_bin -2 team-inbox $args
-    assert_contains "$output" "usage: team-inbox [--post]"
+    assert_contains "$output" "usage: team-inbox [--post | --item <n>]"
   done
+  run_bin -0 team-inbox
+  run_bin -1 team-inbox --item 999
 }

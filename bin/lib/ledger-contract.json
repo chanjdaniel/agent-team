@@ -104,9 +104,10 @@
     "answered": {
       "writer": ["team-log", "team-answer"],
       "push": true,
-      "about": "Daniel's answer to the asked of its id; discord_message: the message team-answer read it from, never logged twice for one ask",
+      "about": "Daniel's answer to the asked of its id; discord_message: the message team-answer read it from, never logged twice for one ask; item: the waiting list's number Daniel's message answered it by, logged by team-answer --item alone",
       "required": {"id": "string", "answer": "string"},
-      "optional": {"discord_message": "id"}
+      "optional": {"discord_message": "id", "item": "number"},
+      "field_writers": {"item": "team-answer"}
     },
     "ran": {
       "writer": "team-run-approved",
