@@ -32,7 +32,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 | # | Stage | Who | Done when |
 | - | - | - | - |
 | 1 | git, gh, GitHub login, the code checkout and the team home cloned, the team home's setting written | agent, Daniel logs in | `SETUP.md` stage 1's checks pass |
-| 2 | Preflight and the machine's name | agent, Daniel names it | `machine: named this machine <name>` or `done`, `machine: done: ~/.config/agent-team/home names ~/agent-team-records`, and `machine: done: the team home fetches only dev and lease` |
+| 2 | Preflight and the machine's name | agent, Daniel names it | `machine: named this machine <name>` or `done`, `machine: done: ~/.config/agent-team/home names ~/agent-team-records`, `machine: done: the team home fetches only dev and lease`, and `machine: done: the team home shares history with origin's dev` |
 | 3 | OS packages | agent; Daniel's terminal on Arch | `packages: done` |
 | 4 | Tools at their pins | agent; Daniel's terminal for `sudo` | `tools: done` |
 | 5 | Projects | agent | `projects: done` |
@@ -55,7 +55,10 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
    When it is missing, `~/agent-team/bin/team-bootstrap --home agent-team-records --stage machine` writes it (it can go with `--name` in one run).
    The bootstrap writes it once: a setting that names another checkout is left as it is, and a path with no checkout yet is refused until the clone is there.
    Until it is written, nothing names the team home: every script but the bootstrap refuses, naming the setting, the doctor's `team home` line fails, and the machine stage stops on Daniel's step to clone `~/agent-team-records` (when it is missing) and name it.
-4. The machine's resource levels need no question: the defaults in `bin/team-capacity`'s header hold, and only a machine that differs gets a `~/.config/agent-team/capacity.json` (`sops/resources.md`, "The settings").
+4. The machine stage then fetches the team home and asks the doctor for its `team home history` line alone.
+   A team home that shares no history with origin's `dev` is a clone from before a rewrite of the records' history, such as the records rewrite of 2026-10-28, and the stage stops on it as Daniel's re-clone (section 3), so no later stage reads the old records.
+   A fetch that fails is said on one line, and the line is read as the team home was last fetched.
+5. The machine's resource levels need no question: the defaults in `bin/team-capacity`'s header hold, and only a machine that differs gets a `~/.config/agent-team/capacity.json` (`sops/resources.md`, "The settings").
    Like the name, that file is this machine's own and never moved; the bootstrap does not write it.
 
 ### Stage 3: OS packages
@@ -136,6 +139,20 @@ Done when `check` lists no `Daniel <n>:` line.
 - `team-resume` ends by starting the coordinator; ask Daniel to pin it in `claude agents` (Ctrl+T).
 - Done when the coordinator posts on Discord from this machine.
 
+### A host that held the team before
+
+A machine that held the team before and whose checkouts and tools have fallen behind, such as the laptop, is brought up to date by the same stages, from "set up as host", and each stage skips what already passes.
+
+1. Stage 1: `SETUP.md` stage 1's history checks come first.
+   A code checkout only behind origin's branch is fast-forwarded by the agent; one with local commits or no common commit is Daniel's call.
+   A team home that shares no history with origin's `dev` is Daniel's re-clone (section 3), before any later stage; the machine stage stops on the `team home history` line too.
+2. Stage 2: the machine's name and the team home's setting are this machine's own and already written, so the machine stage says `done` for them.
+3. Stage 4: the tools stage brings Node, the global npm tools and the other tools to their pins in `bin/lib/tools.lock`; an old Node stays installed under nvm, for a rollback.
+4. Stage 5: the projects stage clones each project registered since, and leaves the ones already cloned.
+5. Stage 7: `check` lists the steps still Daniel's, such as the secrets added since (`team-secrets restore` fetches a missing one), the trust of each new project root, and the gate's agent in `~/.no-mistakes/config.yaml`.
+6. Old task worktrees and slots, from tasks closed or moved since, are Daniel's to keep or remove; the doctor's `leases <project>` and `slots <project>` lines name them, with the commands.
+7. It ends at stage 8, as a standby; stage 9 waits for Daniel's word, as on any machine.
+
 ## 3. What only Daniel does
 
 | Step | Stage | Where | Why only Daniel |
@@ -145,12 +162,13 @@ Done when `check` lists no `Daniel <n>:` line.
 | git and gh (Arch) | 1 | own terminal: `sudo pacman -S --needed git github-cli` | `sudo` |
 | GitHub login | 1 | browser, with the code the agent relays | account login |
 | The machine's name | 2 | the conversation | Daniel's naming |
+| The team home's re-clone, when the `team home history` line fails | 2 | own terminal: `sops/records-rewrite.md` step 10 | a records guard and a directory move are Daniel's |
 | The team home's setting, when stage 7 lists it (stage 1 writes it, so only when that was skipped) | 7 | the conversation: Daniel says the team home is cloned at `~/agent-team-records`, then the agent runs `team-bootstrap --home agent-team-records` | where the records live is Daniel's layout |
 | `sudo` stages (Arch: preflight, packages, tools) | 2 to 4 | own terminal: the `team-bootstrap --stage <stage>` it names | password |
 | Choosing apply or capture when config differs | 6 | the conversation | whose config wins |
 | Restarting the session after the config changed | 6 | exit, `claude` in `~/agent-team` | a session cannot reload itself |
 | Claude Code login, if the doctor fails it | 7 | own terminal: `claude auth login --claudeai` (browser) | account login |
-| Docker access | 7 | macOS: open Docker Desktop, accept its license; Arch: own terminal, `sudo systemctl enable --now docker.service`, then `sudo usermod -aG docker $USER` and a new login if the doctor then says permission denied | GUI or `sudo` |
+| Docker access | 7 | macOS: open Docker Desktop, accept its license, and turn on Settings, General, "Start Docker Desktop when you sign in", so a restart never leaves the team without Docker; Arch: own terminal, `sudo systemctl enable --now docker.service`, then `sudo usermod -aG docker $USER` and a new login if the doctor then says permission denied | GUI or `sudo` |
 | 1Password app: install, sign in, CLI integration (and on Arch, unlock with system authentication) | 7 | macOS: `brew install --cask 1password`; Arch: the native AUR package; then the app's Settings > Developer > Integrate with 1Password CLI | account login, app settings |
 | `team-secrets restore` | 7 | own terminal: `~/agent-team/bin/team-secrets restore`; it fetches a secret that is missing, empty or off its mode (a file off its mode may be another machine's old copy, so it is replaced, the old one kept beside it as `<file>.bak-<date and time>`, mode 600) | Touch ID or system authentication; values never reach an agent |
 | `#coordinator` letting in only Daniel, when the doctor's `discord access` line fails on a restored `access.json` | 7 | Daniel's own Claude Code session: the `/discord:access group add <#coordinator id> --no-mention --allow <their id>` the line names | the plugin edits `access.json` only on Daniel's own command |
@@ -177,12 +195,14 @@ On a fresh machine, Daniel meets them in this order (recorded from `team-bootstr
 | Shell | Bash 5 is `/bin/bash` | `/bin/bash` is 3.2; the scripts refuse it and need Homebrew's `bash` first on `PATH` |
 | Userland | GNU | `bin/lib/platform.sh` puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH` for every script, and refuses with the `brew install` line when one is missing |
 | Python | the OS's 3.11 or newer | Homebrew's `python@3.12`, which the lock pins (macOS's own `python3` is too old for `tomllib`); its `python3` is only in the formula's `libexec/bin`, which the library puts first on every script's `PATH`, and the doctor's `tool python` line names the `python3` it found |
-| Docker | the daemon, enabled with `sudo`, and the `docker` group | Docker Desktop (`brew install --cask docker-desktop`), opened once to accept its license |
+| Docker | the daemon, enabled with `sudo`, and the `docker` group | Docker Desktop (`brew install --cask docker-desktop`), opened once to accept its license, with Settings, General, "Start Docker Desktop when you sign in" turned on, so a restart never leaves the team without Docker |
 | treehouse | `/usr/local/bin`, with `sudo` | `~/.local/bin` |
 | 1Password CLI | 1Password's zip into `/usr/local/bin` with the `onepassword-cli` group, with `sudo` | `brew install 1password-cli` |
 | 1Password unlock | system authentication (PolKit); the native AUR app, not Snap or Flatpak | Touch ID |
 | rc file the bootstrap writes `PATH` lines to | `~/.bashrc` | `~/.zshrc` |
 | Heartbeat | systemd user units `agent-team-heartbeat.{service,timer}` in `~/.config/systemd/user/`, `Persistent=true` | LaunchAgents `agent-team.heartbeat` (missed runs happen on wake) and `agent-team.caffeinate` (`caffeinate -i` while the heartbeat is enabled, so the Mac does not idle-sleep) in `~/Library/LaunchAgents/` |
+| Resource levels | `agent-team.slice` with `CPUQuota`, `MemoryHigh` and `MemoryMax`, which `team-capacity install` writes on Daniel's yes | admission and stow only, with no hard CPU or memory limit on the team's sessions, heavy runs or gate; the containers' CPU held by `docker update`, their memory by Docker Desktop's VM (`sops/resources.md`, "On macOS") |
+| Sleep | none | `caffeinate -i` stops idle sleep only, so the lid stays open and the Mac on power while it holds the team; the doctor's `power` line warns on battery power |
 | Claude Code login | `~/.claude/.credentials.json` | the macOS Keychain |
 | Home path | `/home/<user>` | `/Users/<user>`; recorded paths under either are read as the same path under this `$HOME` |
 | Filesystem | case-sensitive | APFS, case-insensitive by default; no repo has case-only name clashes today, and path case no longer matters for the registry: the scripts compare checkout paths by file identity, so `Documents/projects` in `projects.toml` names `~/Documents/Projects` |

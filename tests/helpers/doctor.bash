@@ -420,6 +420,16 @@ only_checks() {
   export TEAM_DOCTOR_CHECKS="$*"
 }
 
+# Replace dev on the team home's origin (make_team_home) with a history of its own, sharing no
+# commit with the team home's, as the records rewrite of 2026-10-28 did: rewrite_origin_dev
+rewrite_origin_dev() {
+  local origin=$BATS_TEST_TMPDIR/origin/agent-team.git blob tree commit
+  blob=$(echo rewritten | git -C "$origin" hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tledger.jsonl\n' "$blob" | git -C "$origin" mktree)
+  commit=$(git -C "$origin" commit-tree "$tree" -m "chore: the rewritten records")
+  git -C "$origin" update-ref refs/heads/dev "$commit"
+}
+
 # The line of check <name> in the output.
 line_of() {
   # shellcheck disable=SC2154 # bats' run sets output

@@ -45,9 +45,10 @@
 #          already in its scope is left. Each placed and left session is one line on stdout (with
 #          --quiet, the heartbeat's, only each placed one), each one it cannot place one line on
 #          stderr, and the others are still placed; exit 1 when any failed.
-# check    What the doctor's resources line says, as {os, verdict (PASS, WARN or FAIL), reason,
-#          fix, problems: [{verdict, reason, fix}]} with --json, else the line "<verdict>
-#          <reason>" and "; fix: <fix>" when there is one, exiting 1 unless it passes. Its reason
+# check    What the doctor's resources line says, as {os, backend (systemd on Linux, macos on
+#          macOS), verdict (PASS, WARN or FAIL), reason, fix, problems: [{verdict, reason, fix}]}
+#          with --json, else the line "<verdict> <reason>" and "; fix: <fix>" when there is one,
+#          exiting 1 unless it passes. Its reason
 #          starts with the level's words (team-level status --json --stored's says: "manual,
 #          minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved"). On any OS it
 #          FAILs on a capacity.json or a level.jsonl line that is malformed, naming it. On Linux
@@ -66,7 +67,8 @@
 #          with --holding (this machine holds the lease, whose heartbeat takes a reading every 5
 #          minutes) when the newest reading is more than 15 minutes old, or there is none, its fix
 #          the heartbeat log's capacity lines, or team-timers enable with --heartbeat disabled. The
-#          passing reason names the slice and how many live team sessions are in it.
+#          passing reason, after the level's words, is "systemd backend: agent-team.slice holds the
+#          team, <n> live team session(s) in it" on Linux, and the macOS words below on macOS.
 # sample   Takes one reading of the machine's load with the team's use per task and appends it to
 #          ~/.local/state/agent-team/capacity/readings.jsonl, kept to the last 24 hours (the
 #          heartbeat's capacity step runs it every 5 minutes), printing nothing; within 60
@@ -280,8 +282,10 @@
 # sample, status and costs, naming each (exit 1).
 #
 # On macOS, which has no cgroups, install and place change nothing and say so once on stderr,
-# check passes with "no hard limits on macOS: admission and stow only", and sample reads each
-# task's use by the working-directory rule alone.
+# check passes with "macOS backend, admission and stow only: no cgroups, so no hard CPU or memory
+# limit holds the team's sessions, heavy runs or gate; the team's containers' CPU is held with
+# docker update, and their memory within Docker Desktop's VM", its warnings and failures only
+# the any-OS ones, and sample reads each task's use by the working-directory rule alone.
 # Test seams: TEAM_CGROUP_ROOT stands for / where the user manager's cgroup.controllers and /proc
 # are read by place and check, and each unit's cgroup by sample, so the tests run on a tree of
 # their own; sample reads the machine
@@ -706,11 +710,12 @@ check() {
   printf '%s\n' "${problems[@]}" | jq -sc --arg os "$os" --argjson placed "$placed" --arg level "$LEVEL_SAYS" '
     map(select(. != null)) as $p
     | {os: $os,
+       backend: (if $os == "macos" then "macos" else "systemd" end),
        verdict: (if any($p[]; .verdict == "FAIL") then "FAIL" elif $p != [] then "WARN" else "PASS" end),
        reason: ((if $level == "" then [] else [$level] end)
          + if $p != [] then $p | map(.reason)
-           elif $os == "macos" then ["no hard limits on macOS: admission and stow only"]
-           else ["agent-team.slice holds the team, \($placed) live team session\(if $placed == 1 then "" else "s" end) in it"] end
+           elif $os == "macos" then ["macOS backend, admission and stow only: no cgroups, so no hard CPU or memory limit holds the team'"'"'s sessions, heavy runs or gate; the team'"'"'s containers'"'"' CPU is held with docker update, and their memory within Docker Desktop'"'"'s VM"]
+           else ["systemd backend: agent-team.slice holds the team, \($placed) live team session\(if $placed == 1 then "" else "s" end) in it"] end
          | join("; ")),
        fix: ($p | map(.fix | select(. != "")) | unique | join("; ")),
        problems: $p}' >"$work/check.json"

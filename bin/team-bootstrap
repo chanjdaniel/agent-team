@@ -24,7 +24,12 @@
 #              warns, narrows the team home's fetch to dev and lease (git remote set-branches
 #              origin dev lease) and deletes origin's other remote-tracking branches it keeps
 #              (git branch -r -d), local config and refs only, so its wip/* and salvage/* are
-#              never downloaded.
+#              never downloaded; then, while the team home line passes, fetches the team home
+#              (git fetch origin; one that fails is said, and the history read as last fetched)
+#              and asks the doctor for its team home history line alone: a team home that shares
+#              no history with origin's dev, a clone from before a rewrite of the records, stops
+#              the run as Daniel's re-clone (sops/records-rewrite.md step 10), so no later stage
+#              reads the old records.
 #   packages   The failing tool lines whose fix is an OS package: on Arch one
 #              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` for
 #              each formula or cask Homebrew lacks (`brew list --versions`) and `brew upgrade`
@@ -56,8 +61,9 @@
 #              lease. team-resume enables it when this machine takes the lease.
 #   check      The doctor again, then Daniel's remaining steps in order, one line each with its
 #              command (the machine's name, the team home's setting once ~/agent-team-records is
-#              there, logins, Docker access, the 1Password app and team-secrets restore (each
-#              failing secret with its reason, and the gate's config.yaml while it is missing),
+#              there, the team home's re-clone while its history line fails, logins, Docker
+#              access, the 1Password app and team-secrets restore (each failing secret with its
+#              reason, and the gate's config.yaml while it is missing),
 #              #coordinator's group in the Discord plugin's access.json letting in only Daniel,
 #              the gate's config.yaml running the gate on its opencode wrapper, trust in the team
 #              home, where the coordinator starts, and in each project root, Chrome, then the
@@ -261,6 +267,7 @@ stage_machine() {
   # Every stage after this one reads the team home.
   [[ -n $TEAM_HOME || -n $home ]] || daniel "$(clone_home)"
   stage_home_fetch
+  stage_home_history
 }
 
 # Daniel's step while nothing names the team home: clone it unless it is there, fetching only dev
@@ -287,6 +294,38 @@ stage_home_fetch() {
       grep -vxE 'origin/(HEAD|dev|lease)' || true)
     ((${#kept[@]} == 0)) || act "git -C $home_q branch -r -d ${kept[*]}"
   fi
+}
+
+# The team home's history, while the doctor's team home line passes: the team home fetched (dev
+# and lease alone, by its narrowed fetch), then the doctor's team home history line alone, read
+# as the whole doctor's are. A FAIL, a clone from before a rewrite of the records, is Daniel's
+# re-clone, so no later stage (config's team-config apply above all) reads the old records. A
+# fetch that fails is said, and the line read as last fetched, since team-resume refuses a
+# diverged clone anyway. The fetch changes no setup, so it is neither logged nor counted as a
+# change.
+stage_home_history() {
+  [[ -n $(lines '^team home$' PASS) ]] || return 0
+  local shown doctor rc=0 check verdict reason fix
+  shown="git -C $(tilde "$TEAM_HOME") fetch origin"
+  if ((dry)); then
+    say "would run: $shown"
+  else
+    say "running: $shown"
+    GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" fetch -q origin 2>"$err" </dev/null || rc=$?
+    ((!rc)) ||
+      say "could not fetch the team home ($(grep -m1 . "$err" || echo "exit $rc")), so its history is read as it was last fetched"
+    rc=0
+  fi
+  # lines reads this doctor, the history line's alone, in place of the whole one.
+  doctor=$(TEAM_DOCTOR_CHECKS=086-team-home-history.sh "$bin/team-doctor" --json 2>"$err" </dev/null) || rc=$?
+  if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$doctor" >/dev/null 2>&1; then
+    die "team-doctor did not answer for the team home history line (exit $rc): $(grep -m1 . "$err" || true)"
+  fi
+  IFS=$'\t' read -r check verdict reason fix < <(lines '^team home history$' 'PASS FAIL') || true
+  case ${verdict:-} in
+    PASS) say "done: the team home shares history with origin's dev" ;;
+    FAIL) daniel "$fix ($reason); then team-bootstrap again" ;;
+  esac
 }
 
 # The team home's setting, ~/.config/agent-team/home: --home written once, never over another.
@@ -609,6 +648,7 @@ stage_check() {
     steps+=("team home: $(clone_home) (~/.config/agent-team/home is missing)")
     [[ $TEAM_HOME_FROM != none ]] || covered+=("team home")
   fi
+  step '^team home history$' FAIL
   step '^claude login$' FAIL
   step '^github login$' FAIL ", then gh auth setup-git"
   step '^docker$' FAIL
