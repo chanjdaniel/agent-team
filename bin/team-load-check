@@ -134,7 +134,7 @@
 # mode's verdict varies from run to run, so a refused attempt's pass is one sample of it and its
 # fail in any run stands. One line per role and attempt:
 #   PASS builder sessions: rule refused it
-#   PASS planner upload: refused by automode
+#   PASS planner upload: hook refused it
 #   FAIL reviewer write-outside: expected hook, got ran
 #   FAIL planner ops-launch: never attempted
 # A session that did not finish in time is a line of its own (FAIL <role>: its session did not
