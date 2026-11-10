@@ -53,9 +53,10 @@ in a curl -K config, a URL in a wget -i list, a proxy exported earlier or set in
 script file a shell runs, ssh's remote command (it runs on the other host) and ssh itself, a
 command another tool runs from its arguments (nsenter, chroot, unshare, systemd-run, tmux
 send-keys), a command word built by a substitution ($(command -v curl)), a command given as one
-string where its tool takes words (sudo -s escapes each word it passes its shell), another tool's
-upload and an interpreter's own request go unseen, held by auto mode and the role's rule against
-reaching a refused thing another way.
+string where its tool takes words (sudo -s escapes each word it passes its shell), a watch or
+parallel command string after an option's value followed by another option (watch -n 5 -d '...'),
+another tool's upload and an interpreter's own request go unseen, held by auto mode and the role's
+rule against reaching a refused thing another way.
 """
 
 import os
