@@ -388,9 +388,9 @@ load_worktree() {
 # line, but those its mcp-roles.json names for other roles only, which team-worker leaves out of
 # that role's session
 declared_servers() {
-  local roles=$home/toolkits/$1/mcp-roles.json
-  [[ -f $roles ]] || roles=/dev/null
-  jq -rn --arg role "$2" --slurpfile roles "$roles" '($roles[0] // {}) as $named | input | .mcpServers // {} | keys[]
+  local roles_file=$home/toolkits/$1/mcp-roles.json
+  [[ -f $roles_file ]] || roles_file=/dev/null
+  jq -rn --arg role "$2" --slurpfile roles "$roles_file" '($roles[0] // {}) as $named | input | .mcpServers // {} | keys[]
     | select($named[.] == null or any($named[.][]; . == $role))' "$home/toolkits/$1/.mcp.json" 2>/dev/null || true
 }
 
