@@ -1768,6 +1768,9 @@ after"
     --set findings_file=.work/task/review.md --set goal=g
   files+=("$output")
   brief=$(<"$output")
+  # The round fixes each finding as narrowly as it asks, and asks before reaching wider.
+  assert_contains "$brief" "4. Fix each finding on the branch as narrowly as it asks, test-first where it changes behaviour; a fix that would reach shapes the finding did not name goes to \`coordinator\` as \`T14 QUESTION\` first, and delete \`.work/task/handoff.md\` once its work is done."
+  refute_grep -F '4. Fix each finding on the branch, test-first' "$output"
   assert_contains "$brief" "   Otherwise, on a direct-PR delivery, send the \`PR\` at the push as the delivery says, its wait for the PR's GitHub checks going on in the background, so the rereview reads while CI runs, and push each fix of a failed check at once with no new report, as it says."
   assert_contains "$brief" "6. $wait"
   # The merge-base builder reports its merge at the push the same way.

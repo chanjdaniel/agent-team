@@ -92,8 +92,27 @@
 # or a pass that sent some
 # back (which team-log logs as findings): the message for the holder under 250k (its name, the
 # findings sent back and the findings file the message names, for a pass the newest of review.md
-# and rereview*.md in the holder's task directory, as team-brief derives a round's), else the
-# T<n> STOW to send it (after recovering it when gone), or no hand-off when nothing was sent back.
+# and rereview*.md in the holder's task directory, as team-brief derives a round's, and that
+# each is fixed as narrowly as it asks, a fix reaching shapes it does not name a T<n> QUESTION
+# first), else the T<n> STOW to send it (after recovering it when gone), or no hand-off when
+# nothing was sent back.
+# The churn rule: when this review sent back a finding its widening= marks (one in what the last
+# fix added), the task's previous review (the latest before this one, on a rerun the latest
+# before the line that holds it) sent back one of its own, and every finding this one sent back
+# outside its widening may be a plain note, the last line is instead "churn: findings <W> of the
+# review of <head> sit in what the fix since the last review added, as findings <P> of the
+# review of <previous head> did: decide whether to narrow them (the holder makes each a
+# documented limit in the code's header instead of widening the fix, and the next rereview's
+# --since says so), revert the fix that widened, or run one more round: <the line above>", each
+# list's numbers sent back and each head's first 8 characters; with
+# "the review found guarded areas <them>, so ask Daniel with team-ask T<n> <an id> --file <the
+# question>" for decide when its guarded names guardrails, permissions or secrets. Nothing is
+# launched either way. Its documented limit: the counts do not say which number is which kind,
+# so a sent-back finding outside widening is taken as a plain note only when the review counts
+# no blocking, correctness, security or real-data finding, and a round whose serious findings
+# are all widening but which sends back a plain note outside it is a plain fix round. A verify
+# review, or a first review, marks no widening, so either breaks a chain, and so does a phase's
+# first review, which follows a pass.
 # A PAUSED stowed (its reason the word stowed, alone or with more after it) while the latest
 # review sent findings back, with no launch since
 # it but an ops session's, launches the fix round: team-brief T<n> builder-round --name
@@ -416,10 +435,39 @@ if [[ $handoff == verdict ]]; then
       where=${file:+in $file}
       stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
       case $holds in
-        holds) echo "send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $short} on the same branch, then deliver again as your brief says" ;;
-        full) echo "send to $who: $stow" ;;
-        gone) echo "$gone $stow" ;;
+        holds) fix="send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $short} on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a $task QUESTION first), then deliver again as your brief says" ;;
+        full) fix="send to $who: $stow" ;;
+        gone) fix="$gone $stow" ;;
       esac
+      # The churn rule, over the ledger as it was before this run logged anything: this review's
+      # and the task's previous review's sent-back widening numbers (the previous one the latest
+      # review before the index that holds this one on a rerun, else the latest of all), each
+      # review's head's first 8 characters, and the areas of guardrails, permissions and secrets
+      # this review found; nothing unless both sent back a widening finding and every sent-back
+      # number outside this one's widening may be a plain note, which it is taken to be only
+      # when the review counts no blocking, correctness, security or real-data finding.
+      churn=$(jq -c --argjson review "$review" --argjson held "$held" '
+        def sent_widening: (.sent_back // []) as $s | [(.widening // [])[] | select(IN($s[]))];
+        ([$held.events[] | select(.event.event == "review") | .at] | first) as $at
+        | ([to_entries[] | select(.value.event == "review" and ($at == null or .key < $at)) | .value] | last) as $prev
+        | ($review | sent_widening) as $w
+        | (($prev // {}) | sent_widening) as $p
+        | ($review.findings // {}) as $f
+        | any("blocking", "correctness", "security", "real-data"; ($f[.] // 0) > 0) as $serious
+        | any(($review.sent_back // [])[]; IN($w[]) | not) as $outside
+        | select($w != [] and $p != [] and (($serious and $outside) | not))
+        | {w: $w, p: $p, short: $review.head[:8], prev_short: $prev.head[:8],
+           areas: [($review.guarded // [])[] | select(IN("guardrails", "permissions", "secrets"))]}' <<<"$events")
+      if [[ -z $churn ]]; then
+        echo "$fix"
+      else
+        whom=decide
+        areas=$(jq -c .areas <<<"$churn")
+        if [[ $areas != '[]' ]]; then
+          whom="the review found guarded areas $(and_list "$areas"), so ask Daniel with team-ask $task <an id> --file <the question>"
+        fi
+        echo "churn: findings $(and_list "$(jq -c .w <<<"$churn")") of the review of $(jq -r .short <<<"$churn") sit in what the fix since the last review added, as findings $(and_list "$(jq -c .p <<<"$churn")") of the review of $(jq -r .prev_short <<<"$churn") did: $whom whether to narrow them (the holder makes each a documented limit in the code's header instead of widening the fix, and the next rereview's --since says so), revert the fix that widened, or run one more round: $fix"
+      fi
     fi
     exit 0
   fi
