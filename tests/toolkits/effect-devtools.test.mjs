@@ -4,7 +4,9 @@
 // project's primary checkout, one in a worktree slot inside it (.claude/worktrees/1), and a second
 // slot (.claude/worktrees/2) with no dev server. Every dev server and server shares one relay
 // registry, a private directory under the test's own XDG_RUNTIME_DIR, so the machine's is never
-// read or written.
+// read or written. It shows the server alone, started for a slot with no dev server, reads the
+// checkout's app, and that through the wrapper a slot's server reads and dispatches to the slot's
+// app alone and an empty slot's to none.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";

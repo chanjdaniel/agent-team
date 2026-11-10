@@ -1,8 +1,10 @@
-// The effect toolkit as team-worker --toolkit effect loads it: its plugin layout and README, and
-// its effect-v4 skill, whose limits and order of sections the test holds, and whose trap table it
-// checks against the effect package servers/ pins: every name the GA column gives exists there, and
-// every name a v3 or early-beta column gives is gone; and its post-edit hook, run as Claude Code runs
-// a plugin's on a copy of the fixture project, against the effect-tsgo servers/ pins and stubs.
+// The effect toolkit as team-worker --toolkit effect loads it: its plugin layout, README and evals,
+// and its effect-v4 skill, whose limits and order of sections the test holds, and whose trap table
+// it checks against the effect package servers/ pins: every name the GA column gives exists there,
+// and every name a v3 or early-beta column gives is gone; and its post-edit hook, run as Claude Code
+// runs a plugin's on a copy of the fixture project, against the effect-tsgo servers/ pins and stubs,
+// and again inside unshare -rn, with no network, on a Linux machine that lets an unprivileged user
+// make that namespace, which CI's Ubuntu runner does not.
 // effect-devtools.test.mjs runs its Foldkit DevTools MCP server.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

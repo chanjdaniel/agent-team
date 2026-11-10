@@ -8,8 +8,8 @@ def message_forms:
   ["QUESTION <text>", "BLOCKED <what> <why>", "NEED toolkit <name>", "PAUSED <why>",
    "PR <full url> [merged <base> conflicts: <files or none>]",
    "DONE <NN> <sha>... <line>", "DONE review-ready <sha>", "DONE merged <base> <sha> conflicts: <files or none>",
-   "DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list> [memory=<path>]",
-   "DONE findings <path> findings=<kind:n,...> [before=<list>] guarded=<list> [memory=<path>]",
+   "DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list> [widening=<list>] [memory=<path>]",
+   "DONE findings <path> findings=<kind:n,...> [before=<list>] guarded=<list> [widening=<list>] [memory=<path>]",
    "DONE gate <key=value>...", "DONE <report>", "FAILED <why>", "INJECTION <where> <what it asked>"];
 
 def message_sha: test("^[0-9a-f]{7,40}$");
@@ -94,7 +94,8 @@ def with_sender($task; $events; $from; $implied; f):
 def message_event($event; $fields): {event: $event, fields: $fields};
 
 # A reviewer's DONE pass or findings: the review and the reviewer's done, the review carrying
-# memory=, the file of memories the reviewer added for the coordinator to file, when it names one.
+# widening=, the numbers of a rereview's new findings in what the last fix added, and memory=, the
+# file of memories the reviewer added for the coordinator to file, when it names them.
 # Its head is the head of the brief record its latest launch read ($records, by brief name), else
 # the message's own head for a pass on a head, else it is refused naming head=. Its verdict is the
 # message's word, raw:
@@ -107,9 +108,9 @@ def message_review($task; $events; $records; $from; $sent_back; $verdict; $rest)
       message_refused("DONE pass takes a PR url or a head of 7 to 40 hex digits, got '\($m.target)'")
     else ($m.pairs | message_pairs("DONE \($verdict)")) as $p
       | if $p.problems then $p
-        elif any($p.pairs[]; .[0] | IN("findings", "before", "guarded", "memory") | not) then
-          message_refused("DONE \($verdict) takes findings=<kind:n,...>, before=<list>, guarded=<list> and memory=<path>, got "
-            + ([$p.pairs[] | .[0] | select(IN("findings", "before", "guarded", "memory") | not)] | join(", ")))
+        elif any($p.pairs[]; .[0] | IN("findings", "before", "guarded", "widening", "memory") | not) then
+          message_refused("DONE \($verdict) takes findings=<kind:n,...>, before=<list>, guarded=<list>, widening=<list> and memory=<path>, got "
+            + ([$p.pairs[] | .[0] | select(IN("findings", "before", "guarded", "widening", "memory") | not)] | join(", ")))
         elif ([$p.pairs[] | .[0] | select(IN("findings", "guarded"))] | length) < 2 then
           message_refused("DONE \($verdict) needs findings= and guarded=")
         else with_sender($task; $events; $from; "reviewer";

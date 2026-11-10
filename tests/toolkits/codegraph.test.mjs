@@ -1,7 +1,10 @@
 // The codegraph toolkit as team-worker --toolkit codegraph loads it: its plugin layout, and its one
 // SessionStart hook run as Claude Code runs a plugin's hook, with CLAUDE_PLUGIN_ROOT set to the
-// toolkit and the SessionStart event on stdin, on a stub codegraph that records its arguments; and,
-// where a real codegraph is on PATH (not on CI), once against it on a small project written here.
+// toolkit and the SessionStart event on stdin, on a stub codegraph that records its arguments, for
+// a builder, a reviewer and the roles it skips, with and without .codegraph/ and an index, and with
+// each command failing, its banner held to six lines; and, where a real codegraph is on PATH (not
+// on CI), once against it on a small project written here at run time, so the repository holds no
+// .codegraph/, checking the banner names only subcommands that CLI has.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
