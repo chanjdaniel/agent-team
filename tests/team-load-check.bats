@@ -1396,26 +1396,6 @@ $(going_on 'gate proj')"
 # their run in the team home's drills.jsonl, through this checkout's team-drill, once they have
 # launched their session.
 
-# The team home's drill record, each line's fields but at.
-drill_lines() {
-  if [[ -e $TEAM_HOME/drills.jsonl ]]; then jq -c 'del(.at)' "$TEAM_HOME/drills.jsonl"; fi
-}
-
-# The one line a run of <drill> should have recorded from this checkout, but at:
-# drill_line <drill> <verdict> [<detail>]
-drill_line() {
-  jq -cn --arg drill "$1" --arg commit "$(git -C "$REPO_ROOT" rev-parse HEAD)" --argjson dirty \
-    "$([[ -z $(git -C "$REPO_ROOT" status --porcelain --untracked-files=no) ]] && echo false || echo true)" \
-    --arg verdict "$2" --arg detail "${3:-}" \
-    '{drill: $drill, machine: "home-pc", commit: $commit, dirty: $dirty, claude: "2.1.321",
-      verdict: $verdict, detail: $detail}'
-}
-
-# recorded <drill> <verdict>: team-drill's line for this checkout's run of <drill>
-recorded() {
-  echo "team-drill: recorded $1 $2 on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
-}
-
 @test "the planner form records load-check-planner: pass on exit 0 with its toolkits, fail otherwise, before its verdict line" {
   inventory --- tdd
   run_bin -0 team-load-check

@@ -140,7 +140,9 @@
 # finish its attempts within 10 minutes (state '<state>')), and one whose transcript cannot be read
 # fails each of its role's attempts (FAIL <role> <id>: cannot read its session's transcript). Only
 # ids and outcomes leave the transcripts. Every session is stopped and removed, and the worktree
-# with them, on every path.
+# with them, on every path. bin/lib/probe.json also sorts every deny rule of the worker roles'
+# settings into one family and lists their PreToolUse hooks, each with an attempt for each role
+# that holds it or the reason it has none, which tests/repo.bats holds.
 #
 # The ops form reads production, so Daniel must be at the PC to approve its 1Password prompts (one
 # per toolkit) and, with prod-write, to decline its five write prompts on the phone.
@@ -174,15 +176,18 @@
 # out of Vercel, and writes nothing to either.
 #
 # Each run of the planner form, and of the ops form with prod-read and prod-write or with
-# vercel-read alone, is a drill (sops/drills.md): once it has launched its session, it records one
-# line in the team home's drills.jsonl through this checkout's bin/team-drill record, as
-# load-check-planner (its detail "toolkits: <names>" or "no toolkit"), load-check-ops-prod-write or
-# load-check-ops-vercel-read (no detail): pass on exit 0, else fail, with team-drill's line just
-# before the verdict line; and fail, team-drill's line last, on every way it ends after the launch
-# before its verdict line (no inventory within 5 minutes, an error, an interruption). The ops
-# form's other two sets say "load check: no drill is registered for this toolkit set, so nothing
-# is recorded"; the context form records nothing, and so does a run that ends before its launch
-# (a doctor FAIL, a malformed command line, an end during the lease rehearsal). A record
+# vercel-read alone, and of the probe form for all three roles, is a drill (sops/drills.md): once
+# it has launched its session (the probe form, its first one), it records one line in the team home's
+# drills.jsonl through this checkout's bin/team-drill record, as load-check-planner (its detail
+# "toolkits: <names>" or "no toolkit"), load-check-ops-prod-write or load-check-ops-vercel-read (no
+# detail), or load-check-probe ("<passed> of <total> attempts refused as expected", the PASS lines
+# of attempts against all three roles' attempts): pass on exit 0, else fail, with team-drill's line
+# just before the verdict line; and fail, team-drill's line last, on every way it ends after the
+# launch before its verdict line (no inventory within 5 minutes, an error, an interruption). The
+# ops form's other two sets say "load check: no drill is registered for this toolkit set, so
+# nothing is recorded", and a probe with --role "load check: a probe of one role is not the drill,
+# so nothing is recorded"; the context form records nothing, and so does a run that ends before
+# its launch (a doctor FAIL, a malformed command line, an end during the lease rehearsal). A record
 # team-drill refuses prints "load check: not recorded: <team-drill's first error line>" on stderr
 # and leaves the exit status as it was.
 #
@@ -336,10 +341,15 @@ check_failed() { echo "FAIL: $*"; fail=1; }
 # drill once, through this checkout's team-drill, which fills in the machine, the commit and
 # Claude Code's version: on its way to its verdict line, pass on exit 0, else fail; and from the
 # EXIT trap on any other way it ends, always fail, since such an end is an error, an exit of its
-# own or an interruption (whose trap may see status 0). drill is empty for a form whose toolkit
-# set no drill registers; the context form launches sessions but records nothing.
+# own or an interruption (whose trap may see status 0). drill is empty for a form that is no drill,
+# no_drill the line it prints instead: an ops toolkit set no drill registers, and a probe of one
+# role; the context form launches sessions but records nothing.
 record_pending='' drill='' drill_detail=''
-if [[ -z $context$probe ]]; then
+no_drill="load check: no drill is registered for this toolkit set, so nothing is recorded"
+if [[ -n $probe ]]; then
+  if ((${#probe_roles[@]} == 3)); then drill=load-check-probe
+  else no_drill="load check: a probe of one role is not the drill, so nothing is recorded"; fi
+elif [[ -z $context ]]; then
   case $role,${kits[*]} in
     planner,) drill=load-check-planner drill_detail='no toolkit'
       ((${#expected[@]} == 0)) || drill_detail="toolkits: ${expected[*]}" ;;
@@ -354,7 +364,7 @@ record_run() {
   [[ -n $record_pending ]] || return 0
   record_pending=''
   if [[ -z $drill ]]; then
-    echo "load check: no drill is registered for this toolkit set, so nothing is recorded"
+    echo "$no_drill"
     return 0
   fi
   [[ $1 != 0 ]] || verdict=pass
@@ -877,17 +887,22 @@ probe_verdicts() {
 }
 
 # probe_check: one session per role in probe_roles, each making its attempts, and a line per role
-# and attempt of what refused each.
+# and attempt of what refused each. Once a session has launched, the drill's detail counts the
+# attempts refused as expected so far, of all the roles' attempts.
 probe_check() {
-  local r id s uuid transcript attempts verdicts line
+  local r id s uuid transcript attempts verdicts line total=0 passed=0
   local -A launched=() made=()
   load_worktree
   # The bare repository the push attempts name, so an allowed one reaches nothing but it.
   git init -q --bare "$wt/.scratch/probe.git"
   for r in "${probe_roles[@]}"; do
     made[$r]=$(probe_attempts "$r")
+    total=$((total + $(jq length <<<"${made[$r]}")))
+  done
+  drill_detail="0 of $total attempts refused as expected"
+  for r in "${probe_roles[@]}"; do
     id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 "$r" "$wt" -- "$(probe_prompt "$r" "${made[$r]}")")
-    ids+=("$id") launched[$r]=$id
+    ids+=("$id") launched[$r]=$id record_pending=1
     echo "load check: $r $id started, with $(jq length <<<"${made[$r]}") attempts"
     automode_check "$r" "$wt"
   done
@@ -915,6 +930,7 @@ probe_check() {
       [[ -n $line ]] || continue
       echo "$line"
       [[ $line != FAIL* ]] || fail=1
+      [[ $line != PASS* ]] || drill_detail="$((++passed)) of $total attempts refused as expected"
     done <<<"$verdicts"
   done
 }

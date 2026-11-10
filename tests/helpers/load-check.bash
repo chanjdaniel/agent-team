@@ -25,6 +25,12 @@
 #   going_on <check>         the line the load check names a FAIL it goes on past with
 #   stopped                  the line a doctor FAIL stops the load check with
 #   left_nothing             the load check's worktree is gone, and the code checkout is as it was
+#   drill_lines              the team home's drill record, each line's fields but at
+#   drill_line <drill> <verdict> [<detail>]
+#                            the one line a run of <drill> from this checkout should have recorded,
+#                            but at
+#   recorded <drill> <verdict>
+#                            team-drill's line for this checkout's run of <drill>
 
 load_check_sandbox() {
   sandbox
@@ -87,4 +93,20 @@ left_nothing() {
   [[ ! -e $wt ]]
   assert_equal "$(git -C "$code" worktree list --porcelain | sed -n 's/^worktree //p')" "$code"
   assert_equal "$(git -C "$code" status --porcelain --ignored)" ""
+}
+
+drill_lines() {
+  if [[ -e $TEAM_HOME/drills.jsonl ]]; then jq -c 'del(.at)' "$TEAM_HOME/drills.jsonl"; fi
+}
+
+drill_line() {
+  jq -cn --arg drill "$1" --arg commit "$(git -C "$REPO_ROOT" rev-parse HEAD)" --argjson dirty \
+    "$([[ -z $(git -C "$REPO_ROOT" status --porcelain --untracked-files=no) ]] && echo false || echo true)" \
+    --arg verdict "$2" --arg detail "${3:-}" \
+    '{drill: $drill, machine: "home-pc", commit: $commit, dirty: $dirty, claude: "2.1.321",
+      verdict: $verdict, detail: $detail}'
+}
+
+recorded() {
+  echo "team-drill: recorded $1 $2 on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
 }
