@@ -22,15 +22,16 @@
 // by its real path, lies under the worktree's real path, and removes every other entry. The
 // server reads the registry only while it handles a message, so it only ever sees this worktree's
 // dev servers, and with none it says it is not connected.
-// The real registry is read only when it passes the server's own trust check, the same rules
-// (@foldkit/devtools-mcp's relayRegistryTrust): a directory, no symlink, owned by the user and
-// shared with no one (mode 077 clear), each directory above it owned by the user or root and
-// writable by no one else unless sticky, and on macOS no ACL entry allowing anyone access. One it
+// The real registry is read only when it passes the server's own trust check, which
+// relay-registry-trust.mjs ports from the pinned server line for line: a directory, no symlink,
+// owned by the user and shared with no one (mode 077 clear), each directory above it owned by the
+// user or root and writable by no one else unless sticky, on macOS an `ls -led` of each it can
+// parse with no ACL entry allowing anyone access, and the same directory before and after. One it
 // refuses is ignored, as the server would, with one line on stderr saying why.
 // FOLDKIT_DEVTOOLS_MCP_PORT and FOLDKIT_DEVTOOLS_MCP_HOST, which skip the registry for a fixed
 // relay anyone on the network may run, never reach the server: one set is named on stderr and
 // dropped. Its stdout is the server's own (the MCP stream), and its exit the server's.
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   existsSync,
   lstatSync,
@@ -46,6 +47,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { registryRefusal } from "./relay-registry-trust.mjs";
 
 const NAME = "foldkit-devtools";
 const REGISTRY_NAME = "foldkit-devtools-relays";
@@ -89,41 +91,6 @@ const realOr = (path) => {
   }
 };
 
-// Why the server would refuse the registry at `directory`, or null when it would trust it.
-function refusal(directory) {
-  const me = process.getuid();
-  const entry = lstatSync(directory);
-  if (entry.isSymbolicLink() || !entry.isDirectory()) return "is not a regular directory";
-  const canonical = realpathSync(directory);
-  const chain = [];
-  for (let at = canonical; ; at = dirname(at)) {
-    chain.unshift(at);
-    if (dirname(at) === at) break;
-  }
-  for (const at of chain) {
-    const info = lstatSync(at);
-    if (info.isSymbolicLink() || !info.isDirectory()) return "has ownership that cannot be verified";
-    if (at === canonical) {
-      if (info.uid !== me) return "is owned by another user";
-      if ((info.mode & 0o077) !== 0) return "is readable or writable by other users";
-    } else {
-      if (info.uid !== me && info.uid !== 0) return "has a parent directory that another user can replace";
-      if ((info.mode & 0o022) !== 0 && (info.mode & 0o1000) === 0) return "has a parent directory that another user can replace";
-    }
-    if (process.platform === "darwin") {
-      const listing = execFileSync("/bin/ls", ["-l", "-d", "-e", "-P", "-b", "--", at], {
-        encoding: "utf8",
-        env: { ...process.env, LC_ALL: "C" },
-        stdio: ["ignore", "pipe", "ignore"],
-      });
-      if (listing.split("\n").slice(1).some((line) => /^\s*\d+:\s+.+\sallow\s+\S+/.test(line))) {
-        return at === canonical ? "is readable or writable by other users" : "has a parent directory that another user can replace";
-      }
-    }
-  }
-  return null;
-}
-
 const reported = new Set();
 function report(line) {
   if (reported.has(line)) return;
@@ -135,12 +102,7 @@ function report(line) {
 function wantedRecords() {
   const wanted = new Map();
   if (!existsSync(registry)) return wanted;
-  let why;
-  try {
-    why = refusal(registry);
-  } catch {
-    why = "has ownership that cannot be verified";
-  }
+  const why = registryRefusal(registry);
   if (why) {
     report(`ignoring the relay registry at ${registry}: it ${why}`);
     return wanted;

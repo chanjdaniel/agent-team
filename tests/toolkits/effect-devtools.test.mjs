@@ -7,12 +7,13 @@
 // read or written.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { browserSession, startChrome } from "./helpers/chrome.mjs";
 import { repoRoot, serverConfig, startServer, tempDir } from "./helpers/mcp.mjs";
+import { darwinAclOutputRefusal } from "../../toolkits/effect/scripts/relay-registry-trust.mjs";
 
 const toolkit = join(repoRoot, "toolkits", "effect");
 const modules = join(repoRoot, "servers", "node_modules");
@@ -24,7 +25,7 @@ const run = tempDir("foldkit");
 const home = join(run, "home");
 const xdg = join(run, "xdg");
 const registry = join(xdg, "foldkit-devtools-relays");
-const checkout = join(run, "intone_app");
+const checkout = join(run, "app");
 const slot = join(checkout, ".claude", "worktrees", "1");
 const emptySlot = join(checkout, ".claude", "worktrees", "2");
 mkdirSync(home);
@@ -108,17 +109,26 @@ async function runtimeRoots(server, count = 1, waitMs = 60_000) {
 }
 
 // Until `server` lists a runtime for each of `apps` ({ root, url, log }), every one open in a tab:
-// a page whose app has not connected within 30 s is reloaded, twice at most, as startChrome
-// reopens a tab that never loads; then a failure names what each tab shows and each app's log.
-async function untilConnected(server, browserUrl, apps) {
+// a page whose app has not connected within a round (`roundMs`, 30 s), the server refusing
+// meanwhile or not, is reloaded, twice at most, as startChrome reopens a tab that never loads;
+// then a failure names the server's last answer, what each tab shows and each app's log.
+async function untilConnected(server, browserUrl, apps, { roundMs = 30_000 } = {}) {
   const want = apps.map((app) => app.root).sort();
   for (let round = 1; ; round++) {
-    const { roots = [] } = await runtimeRoots(server, want.length, 30_000);
+    const deadline = Date.now() + roundMs;
+    let answer;
+    do {
+      answer = await runtimeRoots(server, want.length, Math.max(0, deadline - Date.now()));
+      if (answer.error !== undefined && Date.now() < deadline) await sleep(200);
+    } while (answer.error !== undefined && Date.now() < deadline);
+    const { roots = [] } = answer;
     const missing = apps.filter((app) => !roots.includes(app.root));
     if (!missing.length) return;
     if (round === 3) {
       const tabs = (await tabStates(browserUrl)).join("\n");
-      assert.deepEqual(roots, want, `the apps' pages did not connect:\n${tabs}\n${apps.map((app) => app.log()).join("\n")}`);
+      const last = answer.error ?? JSON.stringify(roots);
+      assert.deepEqual(roots, want,
+        `the apps' pages did not connect:\nthe server's last answer: ${last}\n${tabs}\n${apps.map((app) => app.log()).join("\n")}`);
     }
     const tabs = (await fetch(`${browserUrl}/json/list`).then((r) => r.json())).filter((t) => t.type === "page");
     for (const tab of tabs.filter((t) => missing.some((app) => app.url === t.url))) {
@@ -184,7 +194,7 @@ describe("the effect toolkit's Foldkit DevTools MCP server", () => {
     });
   });
 
-  test("runs the @foldkit/devtools-mcp servers/ pins, the version intone's foldkit 0.170.0 shipped with", () => {
+  test("runs the @foldkit/devtools-mcp servers/ pins, the version released with foldkit 0.170.0", () => {
     const pins = JSON.parse(readFileSync(join(repoRoot, "servers", "package.json"), "utf8")).dependencies;
     assert.equal(pins["@foldkit/devtools-mcp"], "0.26.0");
     assert.equal(pins.foldkit, "0.170.0");
@@ -244,6 +254,56 @@ describe("the effect toolkit's Foldkit DevTools MCP server", () => {
     assert.deepEqual(readdirSync(server.tmp), [], "the server's private registry outlived it");
   });
 
+  test("in a slot copies no record whose root only looks like it lies in the slot", async () => {
+    const realSlot = realpathSync(slot);
+    const slotRecord = records().find((record) => record.root === realSlot);
+    const sibling = join(checkout, ".claude", "worktrees", "10");
+    const link = join(slot, "checkout-link");
+    mkdirSync(sibling, { recursive: true });
+    symlinkSync(realpathSync(checkout), link);
+    // Each as live as the slot's own: this test's pid, the slot relay's url.
+    const fakes = {
+      "through-a-symlink.json": link,
+      "in-a-sibling-slot.json": realpathSync(sibling),
+      "climbing-out.json": `${realSlot}/../../..`,
+    };
+    for (const [name, root] of Object.entries(fakes)) {
+      writeFileSync(join(registry, name), JSON.stringify({ ...slotRecord, id: name.slice(0, -5), root, pid: process.pid }), { mode: 0o600 });
+    }
+    symlinkSync(join(registry, `${slotRecord.id}.json`), join(registry, "a-link-to-the-slot's.json"));
+    const server = devtools(slot);
+    try {
+      await server.initialize();
+      assert.deepEqual(await runtimeRoots(server), { roots: [realSlot] });
+      const [mirror] = readdirSync(server.tmp);
+      assert.deepEqual(readdirSync(join(server.tmp, mirror)), [`${slotRecord.id}.json`]);
+    } finally {
+      await server.close();
+      for (const name of [...Object.keys(fakes), "a-link-to-the-slot's.json"]) rmSync(join(registry, name), { force: true });
+      rmSync(link);
+      rmSync(sibling, { recursive: true });
+    }
+  });
+
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+    // The server handles a signal itself (it exits 130), and the wrapper's exit is the server's.
+    test(`stopped by ${signal}, ends within 5 s and removes its private registry`, async () => {
+      const server = devtools(slot);
+      try {
+        await server.initialize();
+        assert.deepEqual(await runtimeRoots(server), { roots: [realpathSync(slot)] });
+        assert.equal(readdirSync(server.tmp).length, 1);
+        server.child.kill(signal);
+        const ended = await Promise.race([server.exited, sleep(5000).then(() => "still running after 5 s")]);
+        assert.notEqual(ended, "still running after 5 s");
+        assert.ok(ended.signal === signal || (ended.signal === null && ended.code !== 0), JSON.stringify(ended));
+      } finally {
+        await server.close();
+      }
+      assert.deepEqual(readdirSync(server.tmp), [], "the server's private registry outlived it");
+    });
+  }
+
   test("in a slot with no dev server sees none, not the checkout's that encloses it", async () => {
     const server = devtools(emptySlot);
     try {
@@ -253,6 +313,20 @@ describe("the effect toolkit's Foldkit DevTools MCP server", () => {
       assert.match((await server.callTool("foldkit_get_model", {})).text, NOT_CONNECTED);
       const dispatched = await server.callTool("foldkit_dispatch_message", { message: { _tag: "ClickedIncrement" } });
       assert.match(dispatched.text, NOT_CONNECTED);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("waits for the apps' pages a whole round at a time while the server is not connected, and names its refusal", async () => {
+    const server = devtools(emptySlot);
+    const app = { root: realpathSync(emptySlot), url: "http://127.0.0.1:9/", log: () => "the app's log" };
+    try {
+      await server.initialize();
+      const started = Date.now();
+      await assert.rejects(untilConnected(server, chrome.browserUrl, [app], { roundMs: 1000 }),
+        (error) => NOT_CONNECTED.test(error.message.split("\n").find((line) => line.startsWith("the server's last answer: "))?.slice("the server's last answer: ".length) ?? ""));
+      assert.ok(Date.now() - started >= 3000, `it gave up after ${Date.now() - started} ms, not three rounds of 1 s`);
     } finally {
       await server.close();
     }
@@ -340,4 +414,23 @@ describe("the effect toolkit's Foldkit DevTools MCP server", () => {
     assert.match(readme, /foldkit_dispatch_message/);
     assert.match(readme, /tests\/toolkits\/effect-devtools\.test\.mjs/);
   });
+});
+
+// The macOS branch of the wrapper's registry trust check, fed `ls -led` output as the server's
+// darwinAclOutputRefusal (relayRegistryTrust.js) is: no test machine runs macOS's ls.
+describe("the Foldkit DevTools wrapper's macOS ACL check", () => {
+  const summary = "drwx------  3 someone  staff  96 Nov 10 10:00 /Users/someone/.cache/foldkit-devtools-relays";
+  for (const { what, output, leaf = "is readable or writable by other users", parent = "has a parent directory that another user can replace" } of [
+    { what: "no ACL", output: `${summary}\n`, leaf: null, parent: null },
+    { what: "only deny entries", output: `${summary}\n 0: group:everyone deny delete\n`, leaf: null, parent: null },
+    { what: "an allow entry", output: `${summary}\n 0: group:everyone deny delete\n 1: user:other allow list,search\n` },
+    { what: "no mode on its summary line", output: "total 0\n", leaf: "has permissions that cannot be verified", parent: "has permissions that cannot be verified" },
+    { what: "no output", output: "", leaf: "has permissions that cannot be verified", parent: "has permissions that cannot be verified" },
+    { what: "an ACL line that is neither allow nor deny", output: `${summary}\n 0: group:everyone inherit delete\n`, leaf: "has permissions that cannot be verified", parent: "has permissions that cannot be verified" },
+  ]) {
+    test(`with ${what}, judges it as the server does`, () => {
+      assert.equal(darwinAclOutputRefusal(output, true), leaf);
+      assert.equal(darwinAclOutputRefusal(output, false), parent);
+    });
+  }
 });

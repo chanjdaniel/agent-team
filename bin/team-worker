@@ -53,6 +53,8 @@
 # or --model names one, the session launches on it (claude --model) and the launch logs it as
 # model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
 # T0 and tasks from before team-open none from the registry.
+# The MCP config merges the chosen toolkits' .mcp.json servers, each but those a toolkit's
+# mcp-roles.json names for other roles only.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_CODE@
 # in either names this checkout, @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/,
 # @WORKTREE@ the worktree by its real path (the effect toolkit's Foldkit DevTools server's project
@@ -411,17 +413,24 @@ jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg workt
   | '"$substitute" \
   "$code/settings/worker.json" "$code/settings/$role.json" >"$settings"
 
-# MCP servers come only from the chosen toolkits.
+# MCP servers come only from the chosen toolkits; a toolkit's mcp-roles.json names the roles a
+# server of its starts for ({"<server>": ["builder", ...]}), and a server it does not name starts
+# for every role.
 mcp=$taskdir/mcp.$role.json
 plugin_args=()
 mcp_files=()
+roles_files=()
 for kit in "${toolkits[@]}"; do
   dir=$code/toolkits/$kit
   plugin_args+=(--plugin-dir "$dir")
   if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
+  if [[ -f $dir/mcp-roles.json ]]; then roles_files+=("$dir/mcp-roles.json"); fi
 done
 if [[ ${#mcp_files[@]} -gt 0 ]]; then
-  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg worktree "$worktree" --arg role "$role" --argjson facts "$facts" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
+  server_roles=$(jq -s 'add // {}' "${roles_files[@]}" </dev/null) || exit 1
+  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg worktree "$worktree" --arg role "$role" --argjson facts "$facts" \
+    --argjson roles "$server_roles" '{mcpServers: (map(.mcpServers // {}) | add
+      | with_entries(select($roles[.key] == null or any($roles[.key][]; . == $role))))} | '"$substitute" \
     "${mcp_files[@]}" >"$mcp"
 else
   echo '{"mcpServers": {}}' >"$mcp"

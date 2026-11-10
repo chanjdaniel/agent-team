@@ -1,7 +1,7 @@
 {
   "name": "effect",
   "version": "0.1.0",
-  "description": "For the planner, builder and reviewer of a task on an Effect project: the effect-v4 skill, which sends the session to the installed effect version's own sources, names the v3 and early-beta traps beside their v4 GA names, gives the check command for the project's TypeScript, and in a Foldkit project routes to Foldkit's own files; a post-edit hook that gives the session Effect's language service's findings on each TypeScript file it edits; and Foldkit's DevTools MCP server, confined to the session's worktree, which reads a running Foldkit app's Models and Message history, replays it and dispatches Messages into it.",
+  "description": "For the planner, builder and reviewer of a task on an Effect project: the effect-v4 skill, which sends the session to the installed effect version's own sources, names the v3 and early-beta traps beside their v4 GA names, gives the check command for the project's TypeScript, and in a Foldkit project routes to Foldkit's own files; a post-edit hook that gives the session Effect's language service's findings on each TypeScript file it edits; and, for the builder and reviewer, Foldkit's DevTools MCP server, confined to the session's worktree, which reads a running Foldkit app's Models and Message history, replays it and dispatches Messages into it.",
   "author": {
     "name": "Daniel Chan"
   }

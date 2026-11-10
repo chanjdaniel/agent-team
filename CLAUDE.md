@@ -48,14 +48,14 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `package.json` and `package-lock.json`: the packages and their pins, among them:
     - `@effect/platform-browser`: the Effect browser platform `foldkit` takes as a peer, for the effect toolkit's fixture Foldkit app.
     - `@effect/tsgo`: Effect's language service on TypeScript 7, whose `effect-tsgo` the effect toolkit's test runs its post-edit hook and the `effect-v4` skill's check against.
-    - `@foldkit/devtools-mcp`: Foldkit's DevTools MCP server, the version released with intone's `foldkit`, which the effect toolkit's wrapper starts confined to the session's worktree.
+    - `@foldkit/devtools-mcp`: Foldkit's DevTools MCP server, the version released with the `foldkit` that the Foldkit app the team builds pins, which the effect toolkit's wrapper starts confined to the session's worktree.
     - `@foldkit/vite-plugin`: the Vite plugin whose relay `@foldkit/devtools-mcp` reaches, for the fixture app's dev servers.
     - `chrome-devtools-axi`: the client the browser toolkit's test runs, since CI's runner has no global install; sessions run the one `tools.lock` pins, at the same version.
     - `chrome-devtools-mcp`: the sessions' MCP server, which their settings name by `CHROME_DEVTOOLS_AXI_MCP_PATH`.
     - `effect`: the Effect version whose exports the effect toolkit's test holds the `effect-v4` skill's trap table to.
-    - `foldkit`: intone's Foldkit version, the framework of the effect toolkit's fixture app.
+    - `foldkit`: the Foldkit version that app pins, the framework of the effect toolkit's fixture app.
     - `typescript`: TypeScript 7, which `effect-tsgo diagnostics` needs installed beside it, though `@effect/tsgo` declares no peer.
-    - `vite`: intone's Vite version, which runs the fixture app's dev servers.
+    - `vite`: the Vite version that app pins, which runs the fixture app's dev servers.
 - `settings/`: worker settings: `worker.json` shared, one file per role layered on it.
 - `sops/`: standing procedures.
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.
@@ -80,11 +80,11 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `tests/timings.tsv`: each bats file's seconds in one CI run, on Linux and macOS, which `tests/shards` weighs it by.
   - `tests/toolkits/`: the toolkits' Node tests.
   - `tests/vendor/`: bats-core, vendored.
-- `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
+- `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`) and the roles a server starts for when not every one (`mcp-roles.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
   - `codegraph/`: for a setup trial's builders and reviewers, a session-start hook that, in a worktree with a `.codegraph/` directory, builds or syncs that worktree's CodeGraph index and prints a banner to locate code with `codegraph explore` first; no MCP server.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
-  - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill (the installed `effect`'s sources, the v3 and beta traps beside their GA names, the check), a hook giving Effect's findings on each TypeScript file edited, and Foldkit's DevTools server, held to the worktree.
+  - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill (the installed `effect`'s sources, the v3 and beta traps, the check), a hook giving Effect's findings on each TypeScript file edited, and, but for a planner, Foldkit's DevTools server, held to the worktree.
   - `spec-review/`: the `spec-review` skill, which has two fresh, read-only reader agents read a task's spec and tickets in parallel, as a stranger and as its builder, and writes their findings to `spec-review.md` for the spec's author to sort.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.

@@ -817,7 +817,7 @@ role_texts() {
 
 # The Foldkit DevTools server's project root is the session's worktree, by its real path, so the
 # wrapper confines it to that worktree's dev servers (tests/toolkits/effect-devtools.test.mjs).
-@test "the effect toolkit adds its plugin directory and the Foldkit DevTools server, rooted at the worktree" {
+@test "the effect toolkit adds its plugin directory and the Foldkit DevTools server, rooted at the worktree, for all but a planner" {
   thread T7
   run_bin -0 team-worker T7 builder "$wt1" --toolkit effect -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
@@ -826,6 +826,14 @@ role_texts() {
     "$(jq -cn --arg code "$REPO_ROOT" --arg wt "$(realpath "$wt1")" '{mcpServers: {"foldkit-devtools": {command: "node",
       args: ["\($code)/toolkits/effect/scripts/foldkit-devtools-mcp.mjs"], env: {FOLDKIT_PROJECT_ROOT: $wt}}}}')"
   assert_equal "$(launches | jq -c .toolkits)" '["effect"]'
+  # A reviewer gets it too; a planner, who runs no dev server, gets the plugin and no server, as the
+  # toolkit's mcp-roles.json says.
+  run_bin -0 team-worker T7 reviewer "$wt1" --toolkit effect -- go
+  assert_equal "$(jq -c '.mcpServers | keys' "$TEAM_HOME/tasks/T7/mcp.reviewer.json")" '["foldkit-devtools"]'
+  run_bin -0 team-worker T7 planner "$wt1" --toolkit effect -- go
+  assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/effect"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" '{"mcpServers":{}}'
 }
 
 @test "the codegraph toolkit adds its plugin directory and no MCP server" {

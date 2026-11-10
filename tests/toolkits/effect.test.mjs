@@ -21,15 +21,16 @@ const hooks = JSON.parse(readFileSync(join(toolkit, "hooks", "hooks.json"), "utf
 const deadlineSeconds = Number(readme.match(/The hook's deadline is (\d+) s/)?.[1]);
 
 describe("the effect toolkit", () => {
-  test("is a plugin named effect with one PostToolUse hook, one MCP server and one skill, effect-v4", () => {
+  test("is a plugin named effect with one PostToolUse hook, one MCP server for its builder and reviewer, and one skill, effect-v4", () => {
     const manifest = JSON.parse(readFileSync(join(toolkit, ".claude-plugin", "plugin.json"), "utf8"));
     assert.equal(manifest.name, "effect");
     assert.equal(manifest.author?.name, "Daniel Chan");
     const mcp = JSON.parse(readFileSync(join(toolkit, ".mcp.json"), "utf8"));
     assert.deepEqual(Object.keys(mcp.mcpServers), ["foldkit-devtools"]);
-    assert.deepEqual(readdirSync(toolkit).sort(), [".claude-plugin", ".mcp.json", "README.md", "evals", "hooks", "scripts", "skills"]);
+    assert.deepEqual(readdirSync(toolkit).sort(), [".claude-plugin", ".mcp.json", "README.md", "evals", "hooks", "mcp-roles.json", "scripts", "skills"]);
+    assert.deepEqual(JSON.parse(readFileSync(join(toolkit, "mcp-roles.json"), "utf8")), { "foldkit-devtools": ["builder", "reviewer"] });
     assert.deepEqual(readdirSync(join(toolkit, "hooks")), ["hooks.json"]);
-    assert.deepEqual(readdirSync(join(toolkit, "scripts")).sort(), ["effect-diagnostics.mjs", "foldkit-devtools-mcp.mjs"]);
+    assert.deepEqual(readdirSync(join(toolkit, "scripts")).sort(), ["effect-diagnostics.mjs", "foldkit-devtools-mcp.mjs", "relay-registry-trust.mjs"]);
     assert.deepEqual(readdirSync(join(toolkit, "skills")), ["effect-v4"]);
     assert.deepEqual(readdirSync(join(toolkit, "skills", "effect-v4")), ["SKILL.md"]);
     assert.deepEqual(Object.keys(hooks.hooks), ["PostToolUse"]);
