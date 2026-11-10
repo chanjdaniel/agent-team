@@ -515,13 +515,18 @@ EOF
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   # Each task's branch, reviewed once, so the first review's head is a commit its worktree holds.
-  local -A heads=()
+  local -A heads=() revs=()
   reviewed_branch T12 dev
-  heads[T12]=$head
+  heads[T12]=$head revs[T12]=$reviewed
   reviewed_branch T14 main
-  heads[T14]=$head
+  heads[T14]=$head revs[T14]=$reviewed
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
   local counts="findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>"
+  local widening="widening=<the widening findings' numbers, comma-separated, or none>"
+  # The widening sentence of a rereview of the fix since <reviewed>.
+  marks() {
+    echo "Mark a new finding \`widening\` when it sits in code or text the fix since \`$1\` added for an earlier finding, so reverting that fix would end it, and give their numbers in \`rereview.md\`'s counts as \`widening=<numbers, comma-separated, or none>\`."
+  }
   local areas="the guarded areas the change touches, of \`ci\`, \`dependencies\`, \`migrations\`, \`settings\`, \`permissions\`, \`secrets\` and \`guardrails\`, by the paths \`$REPO_ROOT/bin/lib/guarded\` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none"
   run_bin -0 team-brief T12 reviewer --name review --set head="${heads[T12]}" --set "checks=the checks"
   brief=$(<"$output")
@@ -538,8 +543,24 @@ EOF
     brief=$(<"$output")
     assert_contains "$brief" "$areas"
     assert_contains "$brief" "the findings that stand at \`$at\`, its new ones and any earlier one sent back and not fixed, the plain notes as \`note-change\` and \`note-before\` (0 for none), the numbers of its new \`before\` notes"
-    assert_contains "$brief" "- Send \`$task DONE pass $pr $counts\` or \`$task DONE findings $dir/review.md $counts\` to \`coordinator\`, the counts, numbers and areas as \`$dir/rereview.md\` gives them."
+    assert_contains "$brief" "- Send \`$task DONE pass $pr $counts $widening\` or \`$task DONE findings $dir/review.md $counts $widening\` to \`coordinator\`, the counts, numbers and areas as \`$dir/rereview.md\` gives them."
+    assert_contains "$brief" "then write the same result alone to \`$dir/rereview.md\`.
+  $(marks "${revs[$task]}")
+  Give in it the count of each kind"
   done
+  # Before its PR, a rereview marks widening findings the same way.
+  run_bin -0 team-brief T12 rereview --name rereview-before-pr --set head="${heads[T12]}" --set "since=the fix"
+  brief=$(<"$output")
+  assert_contains "$brief" "No PR yet: reviewed at \`${revs[T12]}\`"
+  assert_contains "$brief" "- Send \`T12 DONE pass ${heads[T12]} $counts $widening\` or \`T12 DONE findings .scratch/task/review.md $counts $widening\` to \`coordinator\`, the counts, numbers and areas as \`.scratch/task/rereview.md\` gives them."
+  assert_contains "$brief" "then write the same result alone to \`.scratch/task/rereview.md\`.
+  $(marks "${revs[T12]}")
+  Give in it the count of each kind"
+  # The first review and the verify mark none: neither reads a fix that may widen.
+  refute_grep -F 'widening' "$TEAM_HOME/tasks/T12/brief-review.md"
+  refute_grep -F 'widening' "$TEAM_HOME/tasks/T14/brief-review.md"
+  run_bin -0 team-brief T14 verify --name verify --set pr=$pr --set head="${heads[T14]}" --set findings=3
+  refute_grep -F 'widening' "$output"
 }
 
 @test "each planner brief delivers scope.txt beside the spec, one repository path per line, and checks its tickets" {
