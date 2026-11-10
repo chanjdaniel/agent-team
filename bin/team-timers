@@ -1164,7 +1164,7 @@ checkpoint_step() {
   fi
 }
 
-# The inbox step, on the holder after the alert step: team-inbox, logged only when it retired the
+# The inbox step, on the holder after the uptime step: team-inbox, logged only when it retired the
 # message it kept in #coordinator before waiting.md, numbered the list afresh (which no later run
 # would show), or failed, and never failing the run, since the next run writes the list again.
 inbox_step() {

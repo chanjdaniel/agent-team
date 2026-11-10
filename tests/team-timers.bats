@@ -1065,10 +1065,10 @@ posted to #coordinator (message 1569000000000000001): down: conventioner/api"
 
 @test "the uptime step logs after the alert step's lines and before the inbox step's" {
   production 503 'Service Unavailable'
-  # ledger: a line no reader can parse, alerted at once; inbox: the Waiting on you message
-  # deleted by hand, so a new one is posted.
+  # ledger: a line no reader can parse, alerted at once; inbox: the old Waiting on you message,
+  # retired.
   echo 'not json' >>"$TEAM_HOME/ledger.jsonl"
-  rm "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  inbox_kept
   run_bin -1 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint ledger alert uptime inbox"
 }
