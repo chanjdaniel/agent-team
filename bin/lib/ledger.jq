@@ -730,6 +730,32 @@ def unattended_review_reasons($head):
 def answered_from($id; $message):
   any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);
 
+# A list of strings as text, its last two joined by "and" and the rest by commas: "1, 2 and 4".
+def and_text: if length < 2 then join("") else (.[:-1] | join(", ")) + " and " + .[-1] end;
+
+# The numbered parts of a reply's text, as Daniel answers several items of the waiting list in one
+# message ("3 yes, 5 no"), an array of {n, text} in the order they come. Each line (a trailing \r
+# dropped) loses a leading bullet (- or * and spaces), and is split before each separator (a
+# comma, semicolon or &, or the word and, with any spaces) that a number follows: an optional #,
+# 1 to 3 digits, then a space, one of . ) : - , ; & or the line's end. A piece is a part when it is
+# an optional #, a number from 1 to 999, optional spaces, an optional marker (. ) : or -), then
+# spaces and its text, or the piece's end; a piece that is not one stays with the piece before it.
+# A part with no text takes the text of the next part on its line that has some, so "3 and 5 yes"
+# answers both, and keeps an empty text when none has. "1-2 yes" and "2026 was busy" name nothing.
+def numbered_parts:
+  def trimmed: sub("^\\s+"; "") | sub("\\s+$"; "");
+  def part: trimmed | capture("^#?(?<n>[0-9]{1,3})\\s*[.):-]?(?:\\s+(?<text>.*)|$)")
+    | {n: (.n | tonumber), text: (.text // "" | trimmed)} | select(.n >= 1 and .n <= 999);
+  "\\s*(?:[,;&]|\\band\\b)\\s*(?=#?[0-9]{1,3}(?:[ .):,;&-]|$))" as $separator
+  | [split("\n")[] | rtrimstr("\r") | sub("^\\s*[-*]\\s+"; "") | . as $line
+    | [$line | splits($separator; "gi")] as $pieces
+    | [$line | match($separator; "gi") | .string] as $separators
+    | reduce range(1; $pieces | length) as $i ([$pieces[0]];
+        if [$pieces[$i] | part] != [] then . + [$pieces[$i]] else .[-1] += $separators[$i - 1] + $pieces[$i] end)
+    | [.[] | part] as $parts
+    | range($parts | length) as $i
+    | $parts[$i] | if .text == "" then .text = (first($parts[$i + 1:][] | .text | select(. != "")) // "") else . end];
+
 # The asked events no later event settles yet, each as {k, ask}: its index among the events and
 # the event.
 def unsettled_asks:
@@ -1148,7 +1174,7 @@ def plan_tasks($sessions):
 # events by id, in task number order.
 def awaiting_resume: [to_entries[] | select((.value | is_open) and (.value | stowed_awaiting_resume)) | .key] | sort_by(.[1:] | tonumber);
 
-# The resources line the Waiting on you message and the snapshot end their items with, from
+# The resources line team-inbox --post and the snapshot end their items with, from
 # team-level status --json's object $level (its says) and the tasks stowed, waiting to resume
 # ($stowed, awaiting_resume's): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the
 # team; 6.1 GiB reserved; T171 and T174 stowed, waiting to resume"; null when $level is {error}.
@@ -1262,57 +1288,129 @@ def merge_ready_prs($plan_repos; $standing_repos):
       | select(($project != null and ($events | merge_preapproval($project) | . != null and .withdrawn == null))
           or $standing_repos[$repo] != null | not)] end;
 
-# What waits on Daniel, over every ledger event, each open task's in task number order: {asks:
-# [{task, id, text (its first line), thread (the task's thread when it was asked), message (the
-# question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}],
-# standing: standing_word_events of the projects $projects (standing_projects', in team-inbox) a
-# standing word stands for}, the PRs as merge_ready_prs has them, its standing repos being those of
-# $repos (each repo, lowercased, to its project) whose project a standing word stands for.
+# What waits on Daniel, over every ledger event, each open task's in task number order: {items,
+# standing}. items, each keyed as waiting_numbered reads it: the open asks ({key: "ask <task> <id>
+# <the asked's ts>", kind: "ask", task, title, id, text (its first line), thread (the task's
+# thread when it was asked), message (the question's discord_message)}), then the PRs ready to
+# merge ({key: "pr <url, its trailing slash dropped>", kind: "pr", task, title, url}), as
+# merge_ready_prs has them, its standing repos being those of $repos (each repo, lowercased, to its
+# project) whose project a standing word stands for, then the interviews under way ({key:
+# "interview <task> <thread>", kind: "interview", task, title, thread}); standing:
+# standing_word_events of the projects $projects (standing_projects', in team-inbox) a standing
+# word stands for.
 def inbox_items($plan_repos; $repos; $projects):
   standing_words($projects) as $standing
   | ($repos | with_entries(select(.value as $project | any($standing[]; .project == $project)))) as $standing_repos
   | [by_task | to_entries[] | select(.value | is_open)
     | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
   | by_task_number
-  | {asks: [.[] | .task as $task | .events as $events | $events | unsettled_asks[]
-        | {task: $task, id: .ask.id, text: (.ask.text | tostring | split("\n")[0]),
+  | {items: ([.[] | . as $t | .events as $events | $events | unsettled_asks[]
+        | {key: "ask \($t.task) \(.ask.id) \(.ask.ts)", kind: "ask", task: $t.task, title: $t.title, id: .ask.id,
+           text: (.ask.text | tostring | split("\n")[0]),
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
-           message: (.ask.discord_message | if . == null then null else tostring end)}],
-     prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos; $standing_repos)[] | {url})],
-     interviews: [.[] | select(.events | interview_under_way)
-        | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}],
+           message: (.ask.discord_message | if . == null then null else tostring end)}]
+      + [.[] | . as $t | .events | merge_ready_prs($plan_repos; $standing_repos)[] | .url
+        | {key: "pr \(rtrimstr("/"))", kind: "pr", task: $t.task, title: $t.title, url: .}]
+      + [.[] | select(.events | interview_under_way)
+        | (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring) as $thread
+        | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread}]),
      standing: ($standing | standing_word_events)};
 
-# The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
-# question's message in guild $guild (to the thread when either is unknown), then one line per
-# standing word, linked to Daniel's message in its channel, then the line $resources
-# (resources_line's; none when null), then the health line $health (team-timers health's; none
-# when null), and its last line the time $now (seconds since the epoch) as Discord shows it to each
-# reader. Items past the limit are left out from the end, counted in one line; the standing word
-# lines, the resources line, the health line and the last line are never cut.
-def inbox_text($guild; $limit; $now; $resources; $health):
-  def link:
-    if .thread == null then ""
-    elif .message != null and $guild != null then " https://discord.com/channels/\($guild)/\(.thread)/\(.message)"
-    else " <#\(.thread)>" end;
+# The items of inbox_items, in its order, each given its number n, from the previous waiting.json
+# $previous (null when there is none or it cannot be read): an item whose key $previous's items
+# hold keeps its number, and each other item, in order, takes the lowest positive number that no
+# kept item holds, no earlier new item took and no item of the latest post ($previous.posted's
+# items) showed.
+def waiting_numbered($previous):
+  ([$previous.items[]? | objects | select((.key | type) == "string" and (.n | type) == "number")]
+   | map({key, value: .n}) | from_entries) as $kept
+  | [$previous.posted.items[]? | objects | .n | numbers] as $shown
+  | reduce .[] as $item ({items: [], seen: {}};
+      .items += [{n: (if .seen[$item.key] then null else $kept[$item.key] end)} + $item]
+      | .seen[$item.key] = true)
+  | .items
+  | reduce range(length) as $i ({items: ., taken: ([.[].n | numbers] + $shown)};
+      if .items[$i].n != null then .
+      else . as $s | first(range(1; infinite) | select(IN($s.taken[]) | not)) as $n
+        | .items[$i].n = $n | .taken += [$n] end)
+  | .items;
+
+# A numbered item's line in waiting.md, its number in bold rather than an ordered list's marker,
+# which Discord and GitHub both renumber, and every URL in <>, which keeps Discord from showing a
+# preview card for it: an ask linked to the question's message in guild $guild (null when unknown),
+# to the task's thread when either is unknown, and to nothing with no thread; a PR with its URL; an
+# interview with its thread.
+def waiting_line($guild):
   def named: .task + if .title == null then "" else " \(.title | clip(80))" end;
-  [["**Asks**", [.asks[] | "- \(.task) \(.id): \(.text | clip(150))" + link]],
-   ["**PRs ready to merge**", [.prs[] | "- \(named): \(.url)"]],
-   ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]]] as $sections
-  | ([$sections[][1][]] | length) as $total
-  | [(.standing // [])[] | "-# Standing merge word on \(.projects | projects_text) since"
-      + " https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)"] as $words
-  | ["-# team-inbox keeps this current; updated <t:\($now):R>"] as $foot
-  | [$resources, $health | select(. != null)] as $level
-  | def render($n):
-      (reduce $sections[] as $s ({left: $n, lines: []};
-        $s[1][:.left] as $take
-        | if $take == [] then . else .lines += [$s[0]] + $take | .left -= ($take | length) end)
-       | .lines)
-      + (if $n < $total then ["- and \($total - $n) more, which team-snapshot lists"] else [] end)
-      | ["**Waiting on you**"] + . + $words + $level + $foot | join("\n");
-    if $total == 0 then ["**Waiting on you**", "Nothing waits on you."] + $words + $level + $foot | join("\n")
-    else first(range($total; -1; -1) as $n | render($n) | select(length <= $limit)) end;
+  "- **\(.n)** "
+  + if .kind == "ask" then "\(.task) \(.id): \(.text | clip(150))"
+      + if .thread == null then ""
+        elif .message != null and $guild != null then " <https://discord.com/channels/\($guild)/\(.thread)/\(.message)>"
+        else " <#\(.thread)>" end
+    elif .kind == "pr" then "\(named): <\(.url)>"
+    else "\(named): <#\(.thread)>" end;
+
+# waiting.json from inbox_items' answer: the items numbered (waiting_numbered, from $previous), in
+# the order waiting.md shows them (the asks, the PRs, the interviews, each in number order), each
+# with its line (waiting_line, in guild $guild), the standing words as inbox_items has them, and
+# $previous's post, null until team-inbox --post records one.
+def waiting_list($previous; $guild):
+  {schema: "team-waiting/1",
+   items: (.items | waiting_numbered($previous)
+     | sort_by(.kind as $kind | [(["ask", "pr", "interview"] | index($kind)), .n])
+     | map({n} + . + {line: waiting_line($guild)})),
+   standing: .standing,
+   posted: ($previous.posted // null)};
+
+# waiting.md from waiting_list's answer, with a final newline: its title; "Nothing waits on you."
+# or each section with items, its heading then its items' lines; and one line per standing word,
+# linked to Daniel's message in its channel in guild $guild (named by its id and channel when the
+# guild is unknown).
+def waiting_text($guild):
+  .items as $items
+  | ["**Waiting on you**"]
+  + if $items == [] then ["Nothing waits on you."]
+    else [[["ask", "**Asks**"], ["pr", "**PRs ready to merge**"], ["interview", "**Interviews under way**"]][]
+      as [$kind, $heading]
+      | [$items[] | select(.kind == $kind) | .line] | select(. != []) | $heading, .[]]
+    end
+  + [.standing[] | "-# Standing merge word on \(.projects | projects_text) since "
+      + if $guild != null then "<https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)>"
+        else "message \(.word.discord_message) in <#\(.word.discord_channel)>" end]
+  | join("\n") + "\n";
+
+# The messages of team-inbox --post from its lines, an array: packed greedily in order, each line
+# whole, into messages of at most $max characters joined by newlines.
+def post_messages($max):
+  reduce .[] as $line ([];
+    if length > 0 and (.[-1] | length) + 1 + ($line | length) <= $max then .[-1] += "\n" + $line
+    else . + [$line] end);
+
+# waiting.json with its post recorded: at $at, as the messages $ids, whose contents were $sent;
+# the items it showed are those whose lines are in them.
+def waiting_posted($at; $ids; $sent):
+  ([$sent[] | split("\n")[]]) as $lines
+  | .posted = {at: $at, messages: $ids, items: [.items[] | select(.line | IN($lines[]))]};
+
+# team-inbox --item's answer for the number $n, over waiting.json read whole (jq -s): {item} for
+# the standing item numbered $n, the line naming it ("ask <task> <id>", "pr <task> <url>" or
+# "interview <task> <thread>"), else {refusal}: the item the latest post showed as $n, which no
+# longer waits, or the numbers that do; or a waiting.json of another schema.
+def waiting_item($n):
+  if length != 1 or (.[0] | type != "object" or .schema != "team-waiting/1") then
+    {refusal: "waiting.json cannot be read: its schema is not team-waiting/1; team-inbox writes it afresh"}
+  else .[0]
+    | ([.items[]? | objects | select(.n == $n)] | first) as $item
+    | ([.posted.items[]? | objects | select(.n == $n)] | first) as $shown
+    | if $item != null then
+        {item: (if $item.kind == "ask" then "ask \($item.task) \($item.id)"
+          elif $item.kind == "pr" then "pr \($item.task) \($item.url)"
+          else "\($item.kind) \($item.task) \($item.thread)" end)}
+      elif $shown != null then {refusal: "item \($n) no longer waits: the list posted \(.posted.at) showed it as \($shown.line)"}
+      else {refusal: ("no item \($n) waits; "
+        + ([.items[]?.n | numbers] | sort | map(tostring) | if . == [] then "nothing waits" else "the list holds \(and_text)" end))}
+      end
+  end;
 
 # The following defs serve team-retro, over every ledger event as one array.
 

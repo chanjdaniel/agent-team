@@ -552,7 +552,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 115 lines and 24770 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25280 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message.
   found=$(grep -nE 'team-log T<n> (done|ticket-done|review|pr|paused|question|gate-run)\b' "${files[@]}" || true)
@@ -574,10 +574,38 @@ $WORKER_INSTRUCTIONS"
   # (24220, 24280 once the ops bullet named vercel-read, 24460 once the ops lines named the
   # message of Daniel's each ops launch needs, 24590 once the ops line named the logging of its
   # answer as its length, with the pointer to its relay, 24640 once the load check's line named
-  # team-drill status, 24690 once it named the probe form, and 24770 once the heartbeat's line
-  # named team-uptime).
-  (($(wc -l <"$manual") <= 115))
-  (($(wc -c <"$manual") <= 24770))
+  # team-drill status, 24690 once it named the probe form, and 117 lines and 25190 bytes once
+  # waiting.md, team-inbox --post and the reply by number replaced the Waiting on you message, and
+  # 25280 once the heartbeat's line named team-uptime).
+  (($(wc -l <"$manual") <= 117))
+  (($(wc -c <"$manual") <= 25280))
+}
+
+@test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {
+  local skill=$plugin/skills/status-report/SKILL.md
+  local discord
+  discord=$(section coordinator Discord)
+  # The manual's Discord section: the thread, the file and who writes it, the post, the routing.
+  grep -qxF -- "- Every task has its thread under \`#coordinator\`; the task's updates go there, and cross-task news in \`#coordinator\` itself." <<<"$discord"
+  grep -qxF -- "  What waits on Daniel, every open ask, PR ready to merge and interview, is numbered in the team home's \`waiting.md\`, which \`team-inbox\` writes: \`team-ask\`, \`team-answer\`, \`team-merge\`, \`team-close\` and the heartbeat run it, and you run it after logging an \`asked\`, \`answered\` or any merge word or its withdrawal with \`team-log\`." <<<"$discord"
+  grep -qxF -- "  When Daniel asks what waits, \`team-inbox --post\` posts it as a new message at the bottom of \`#coordinator\`; nothing edits an old one." <<<"$discord"
+  grep -qxF -- "- A reply that answers by number (\"3 yes, 5 no\") goes to each number's item, which \`team-inbox --item <n>\` names: an ask's answer is \`team-answer --item <n> <message id>\`, a PR's merge word its \`merge-approved\` as step 6 says, and an interview is answered in its thread; tell Daniel of a number that no longer waits, as \`--item\` says." <<<"$discord"
+  # Step 6 is the one that logs the merge word, as the routing line points.
+  grep -qE '^6\. \*\*Merge\.\*\*' "$manual"
+  grep -qF 'log the message it came in with `team-log T<n> merge-approved url=<PR url> discord_message=<id> head=<the full sha you asked on>`' "$manual"
+  # The status-report skill leads with the count and posts the list once the answer is sent.
+  grep -qxF -- "- Lead with what waits on Daniel: say in the answer's first line how many items wait, or that nothing does, and once the answer is sent run \`team-inbox --post\`, which posts the numbered list as the newest message in \`#coordinator\`, so Daniel answers right under it; never repeat its list, and in a task's thread name that task's items by their numbers in the team home's \`waiting.md\`; when it fails, list them yourself from the snapshot." "$skill"
+  grep -qxF -- "- When Daniel asks only what waits on them, run \`team-inbox --post\` alone, with no status." "$skill"
+  # The commands those lines name are team-inbox's and team-answer's forms.
+  "$REPO_ROOT/bin/team-inbox" --help | grep -qF -- '--item <n>'
+  "$REPO_ROOT/bin/team-inbox" --help | grep -qF -- '--post'
+  "$REPO_ROOT/bin/team-answer" --help | grep -qF -- 'team-answer --item <n> <discord message id>'
+}
+
+@test "no doc, prompt, skill or script but team-inbox names the Waiting on you message" {
+  local found
+  found=$(cd "$REPO_ROOT" && grep -rlF 'Waiting on you message' bin roles plugins sops CLAUDE.md | grep -vxF bin/team-inbox || true)
+  assert_equal "$found" ""
 }
 
 @test "reviewers and planners add the memories the hook keeps them from writing to their task directory, and the coordinator files them at close" {

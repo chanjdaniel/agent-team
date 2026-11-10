@@ -91,9 +91,10 @@
 # on stderr with why; the merge stands and the exit stays 0.
 # Then, on the plan-time or standing word only, team-post posts one message to the task's thread
 # and one to #coordinator: the task, the PR's URL, which word it merged on, the merge commit,
-# Daniel's message as a link (its guild the one team-inbox keeps, else #coordinator's channel's;
-# its channel the one the message was read in; with none, the message is named and a line on
-# stderr says why), and how to revert: the PR page's Revert button, or on the base
+# Daniel's message as a link (its guild the one team-inbox keeps in inbox.json, else
+# #coordinator's channel's; its channel the one the message was read in; with none, the message
+# is named and a line on stderr says why), and how to revert: the PR page's Revert button, or on
+# the base
 # git revert -m 1 <merge> for a merge, git revert <merge> for a squash, and for a rebase
 # git revert <merge>~<n>..<merge>, the PR's n commits less its merges; with no thread, it posts to
 # #coordinator alone, saying so on stderr. A post that fails (Discord refuses it, or team-post
@@ -106,7 +107,7 @@
 # detached HEAD, with local changes, ahead or diverged, with untracked files in the way, or with
 # origin out of reach, it is left as it is, with the reason and the command to run, and the exit
 # stays 0.
-# Last, team-inbox takes the PR out of the Waiting on you message; when that fails, a line on
+# Last, team-inbox takes the PR out of the team home's waiting.md; when that fails, a line on
 # stderr says so, and the exit stays 0.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
@@ -614,7 +615,8 @@ fi
 # post in the task's thread and one in #coordinator, through team-post. A post that fails is said
 # on stderr with its text, for the coordinator to post; the merge stands and the exit stays 0.
 if [[ $word != head ]]; then
-  # Daniel's message as a link, which needs the guild: the one team-inbox keeps, else Discord's.
+  # Daniel's message as a link, which needs the guild: the one team-inbox keeps in inbox.json,
+  # else Discord's.
   guild=$(jq -r --arg c "$COORDINATOR_CHANNEL" 'select((.channel | tostring) == $c) | .guild | tostring | select(test("^[0-9]+$"))' \
     "$HOME/.local/state/agent-team/inbox.json" 2>/dev/null) || guild=''
   if [[ -z $guild ]] && reply=$(discord_api "channels/$COORDINATOR_CHANNEL" --max-time 20 2>"$scratch/guild"); then

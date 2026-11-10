@@ -1556,13 +1556,13 @@ answer_message() {
   printf '%s\n' "$word"
 }
 
-# Bring the Waiting on you message in #coordinator up to date with this checkout's team-inbox, at
-# the end of a script that changed what waits on Daniel; a failure is one line on stderr, "<script>:
-# the Waiting on you message is not updated: <why>", and never the caller's: refresh_inbox
+# Bring the team home's waiting.md up to date with this checkout's team-inbox, at the end of a
+# script that changed what waits on Daniel; a failure is one line on stderr, "<script>: waiting.md
+# is not updated: <why>", and never the caller's: refresh_inbox
 refresh_inbox() {
   local error
   error=$(TEAM_HOME=$TEAM_HOME "$TEAM_LIB/../team-inbox" 2>&1 >/dev/null) && return 0
-  echo "${0##*/}: the Waiting on you message is not updated: $(grep -m 1 . <<<"$error" | sed 's/^team-inbox: //' || echo "team-inbox failed")" >&2
+  echo "${0##*/}: waiting.md is not updated: $(grep -m 1 . <<<"$error" | sed 's/^team-inbox: //' || echo "team-inbox failed")" >&2
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]

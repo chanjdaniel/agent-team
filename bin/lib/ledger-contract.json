@@ -96,7 +96,7 @@
     },
     "asked": {
       "writer": ["team-log", "team-ask"],
-      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs only once Daniel's latest answer to the ask, read back from Discord, has a line that starts with yes, and only while the file hashes the same",
+      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs only once Daniel's latest answer to the ask, read back from Discord, has a line that starts with yes, or, when that answered names an item, a part with that number, every such part starting with yes, and only while the file hashes the same",
       "required": {"id": "string", "text": "string"},
       "optional": {"discord_message": "id", "script": "string", "sha256": "string"},
       "field_writers": {"script": "team-ask", "sha256": "team-ask"}
@@ -104,9 +104,10 @@
     "answered": {
       "writer": ["team-log", "team-answer"],
       "push": true,
-      "about": "Daniel's answer to the asked of its id; discord_message: the message team-answer read it from, never logged twice for one ask",
+      "about": "Daniel's answer to the asked of its id; discord_message: the message team-answer read it from, never logged twice for one ask; item: the waiting list's number Daniel's message answered it by, logged by team-answer --item alone",
       "required": {"id": "string", "answer": "string"},
-      "optional": {"discord_message": "id"}
+      "optional": {"discord_message": "id", "item": "number"},
+      "field_writers": {"item": "team-answer"}
     },
     "ran": {
       "writer": "team-run-approved",

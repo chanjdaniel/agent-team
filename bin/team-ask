@@ -11,8 +11,8 @@
 # line>", the question's first line cut to 200 characters. Once both are posted it logs, in
 # order: question role=<role> text=<the question> when --from names the worker role that asked
 # it; asked id=<id> text=<the question's first line> discord_message=<the question's first
-# message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask in the Waiting on
-# you message; when that fails, a line on stderr says so, and the ask stands.
+# message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask, numbered, in the
+# team home's waiting.md; when that fails, a line on stderr says so, and the ask stands.
 # --from ops, an ops session's question, which may hold production data, is posted whole in the
 # thread, but its first line is the fixed line "An ops question of <n> characters, in T<n>'s
 # thread." in the ping and the asked's text, n its length in characters, and its question is
@@ -22,11 +22,12 @@
 # while the file hashes the same: before anything is posted it hashes the file (a regular file,
 # its path made absolute, its links resolved), ends the question with the lines "Script: <path>"
 # and "sha256: <its sha256sum>", so Daniel's OK names those bytes, then "It runs only on a reply
-# in Discord with a line that starts with yes.", the rule team-run-approved holds the answer to,
-# and the asked carries script= and sha256= too, which no other script logs. A script
-# team-run-approved would never run, one outside the task's open worktrees and its tasks/T<n>/
-# once its links are resolved, is refused before anything is posted, as team-run-approved refuses
-# it (script_place_refusal in bin/lib/team.sh).
+# in Discord with a line that starts with yes, or, by its number on the waiting list, "<number>
+# yes".", the rules team-run-approved holds the answer to, and the asked carries script= and
+# sha256= too, which no other script logs. A script team-run-approved would never run, one
+# outside the task's open worktrees and its tasks/T<n>/ once its links are resolved, is refused
+# before anything is posted, as team-run-approved refuses it (script_place_refusal in
+# bin/lib/team.sh).
 # A post that fails logs nothing: when the ping fails, the question stays posted, its id said.
 # A worker session may not run it (worker_refusal in bin/lib/team.sh): its questions go to the
 # coordinator.
@@ -73,7 +74,7 @@ if [[ -n $script ]]; then
   script=$(realpath -e -- "$script")
   sha256=$(sha256sum -- "$script" | cut -d' ' -f1)
   question=$(printf '%s\n\nScript: %s\nsha256: %s\n%s' "$question" "$script" "$sha256" \
-    "It runs only on a reply in Discord with a line that starts with yes.")
+    'It runs only on a reply in Discord with a line that starts with yes, or, by its number on the waiting list, "<number> yes".')
 fi
 # An ops session's question may hold production data, so the ledger and the ping carry only its
 # length and where it is; any other's first line.

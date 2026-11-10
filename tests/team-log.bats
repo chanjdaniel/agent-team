@@ -207,7 +207,7 @@ TABLE
   assert_equal "$actual" "$expected"
   assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","discord_message":"id","brief":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
-  assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id"}'
+  assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id","item":"number"}'
   assert_equal "$(jq -c '.kinds.asked.optional' "$CONTRACT")" '{"discord_message":"id","script":"string","sha256":"string"}'
   assert_equal "$(jq -c '.kinds.ran.required' "$CONTRACT")" '{"id":"string","exit":"number"}'
   assert_equal "$(jq -c '.kinds.done.optional' "$CONTRACT")" '{"report":"string","report_chars":"number","relay":"id"}'
@@ -257,7 +257,7 @@ TABLE
   grep -Eq '^  walk +team-ui +state \(on\|off\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head; pushed at once  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, discord_message \(id\), brief  \(request is the link to Daniel.s Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on \(team-worker refuses one that did\), which only an ops launch carries; model is the --model the session launched on, .*\)$' <<<"$output"
-  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\); pushed at once  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
+  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\), item \(number\); pushed at once  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask; item: .*team-answer --item alone\)$' <<<"$output"
   grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
   grep -Eq '^  ran +team-run-approved +id, exit \(number\); pushed at once  \(.*\)$' <<<"$output"
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
@@ -1109,6 +1109,24 @@ LINES
   run_bin -0 team-log T7 answered id=sign-in answer=five
   assert_equal "$(jq -c 'select(.event == "answered") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" '{"task":"T7","event":"answered","id":"sign-in","answer":"five"}
 {"task":"T7","event":"answered","id":"sign-in","answer":"five"}'
+}
+
+@test "an answered naming an item of the waiting list is refused, naming team-answer --item" {
+  open_t7
+  # team-answer --item checks Daniel's message names the number, so team-log never writes one.
+  run_bin -1 team-log T7 answered id=sign-in answer=five item=3
+  assert_equal "$output" "team-log: an answered that names an item of the waiting list is logged only by team-answer --item, which reads Daniel's message and checks it names that number: team-answer --item 3 <the message's id>"
+  run_bin -1 team-log T7 answered id=sign-in answer=five item=3 discord_message=1564000000000000001
+  assert_contains "$output" "team-answer --item 3 <the message's id>"
+  assert_equal "$(ledger_events)" "opened"
+  # --check takes the field as a number, and refuses it as anything else.
+  echo '{"ts":"2026-11-01T10:00:09Z","task":"T7","event":"answered","id":"sign-in","answer":"3 yes","discord_message":"1564000000000000001","item":3}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log --check
+  echo '{"ts":"2026-11-01T10:00:10Z","task":"T7","event":"answered","id":"sign-in","answer":"3 yes","discord_message":"1564000000000000001","item":"3"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-log --check
+  assert_contains "$output" "item must be a number, got a string"
 }
 
 @test "an asked names no script or sha256: team-ask --script is their one writer" {

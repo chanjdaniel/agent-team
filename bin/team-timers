@@ -195,11 +195,13 @@
 #                     production for an hour is the step-uptime alert. It is stopped after 180 s,
 #                     which holds ten checks of 10 s, the known-good probe's 10 s and three posts
 #                     of 20 s, killed 10 s later ("uptime: failed: timed out after 180 s").
-#              inbox  On the holder, after the uptime step: team-inbox, which edits the
-#                     Waiting on you message in #coordinator, so what waits on Daniel shows there
-#                     within five minutes whatever changed it. It logs only a new message
-#                     ("posted <link>", when the old one is gone) and a failure, and a failure
-#                     never fails the run.
+#              inbox  On the holder, after the uptime step: team-inbox, which writes the team
+#                     home's waiting.md, so what waits on Daniel is there within five minutes
+#                     whatever changed it. It logs only the one edit that retires the message
+#                     team-inbox kept in #coordinator before waiting.md ("retired <link>"), a
+#                     waiting.json it could not read and numbered afresh ("numbers the list afresh,
+#                     since waiting.json cannot be read: <why>", on a failure too, which the
+#                     line after it names), and a failure, and a failure never fails the run.
 #              finished  On the holder, after the inbox step, every run, whatever the level and
 #                     budget: claude stop (30 s, killed 10 s later) of each finished session of
 #                     every open task, the idle live session of a launch whose work is handed on
@@ -1162,14 +1164,23 @@ checkpoint_step() {
   fi
 }
 
-# The inbox step, on the holder after the ledger step: team-inbox, logged only when it
-# posted a new message or failed, and never failing the run, since Discord holds no lease.
+# The inbox step, on the holder after the alert step: team-inbox, logged only when it retired the
+# message it kept in #coordinator before waiting.md, numbered the list afresh (which no later run
+# would show), or failed, and never failing the run, since the next run writes the list again.
 inbox_step() {
-  local rc=0 out why
+  local rc=0 out why line
   out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$INBOX_TIMEOUT" "$bin/team-inbox" 2>"$err" {run_fd}>&-) || rc=$?
+  # A numbering afresh is logged however the run ends, since it may have written waiting.json
+  # before it failed, and is taken out of what a failure is named by.
+  while IFS= read -r line; do
+    log inbox "${line#team-inbox: }"
+  done < <(grep '^team-inbox: numbers the list afresh' "$err" || true)
+  sed -i '/^team-inbox: numbers the list afresh/d' "$err"
   case $rc in
     0)
-      [[ $out != posted* ]] || log inbox "$out"
+      while IFS= read -r line; do
+        [[ $line != retired* ]] || log inbox "$line"
+      done <<<"$out"
       step_ok inbox
       ;;
     124 | 137)

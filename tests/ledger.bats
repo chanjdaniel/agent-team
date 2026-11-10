@@ -369,6 +369,14 @@ awaiting() {
   assert_equal "$status" "0"
   assert_equal "$(jq -c '[.id, .script != null]' "$TEAM_HOME/ledger.jsonl")" '["fix",true]
 ["fix",false]'
+  # An answered's item, the waiting list's number, is team-answer's alone.
+  assert_equal "$(jq -c '.kinds.answered.field_writers' "$REPO_ROOT/bin/lib/ledger-contract.json")" '{"item":"team-answer"}'
+  at='"ts":"2026-10-22T02:00:01Z","task":"T7","event":"answered","id":"fix","answer":"3 yes"'
+  append_as team-log "{$at,\"item\":3}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "an answered's item is written by team-answer, not team-log"
+  append_as team-answer "{$at,\"discord_message\":\"1564000000000000001\",\"item\":3}"
+  assert_equal "$status" "0"
 }
 
 @test "ledger_push never fails its caller: a commit that fails with nothing on stderr is the one line with its fallback reason, and the script goes on" {
