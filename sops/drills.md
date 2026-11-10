@@ -89,12 +89,12 @@ A drill runs, for real, a path the team rests on and seldom takes: a move betwee
 
 The handoff and the steal need a second machine the team can run on.
 
-- Until the macOS backend is built (T175), that is a Linux machine `team-bootstrap` supports (Arch), with its own kernel, clock, network link and logins: a second physical machine, or a virtual machine on the home PC with 4 cores, 8 GiB of memory, 60 GB of disk and a graphical session for the 1Password app.
+- It is the MacBook, `laptop` in the lease and the ledger: a macOS host with its own kernel, clock, network link and logins, on the macOS backend, admission and stow only (`sops/resources.md`, "On macOS").
 - A container is not one: it shares the PC's kernel and clock and has no systemd user session for the heartbeat.
-- It is set up once as `SETUP.md` and `sops/machine-setup.md` say ("set up as host" in a Claude Code session there), under its own team name, until `team-doctor` there has no FAIL and `team-load-check` there passes.
-  That takes 2 to 3 hours, about 1 hour of it Daniel's (the `sudo` stages, the GitHub and Claude logins, the 1Password app, the trust dialogs).
+- It held the team before, so it is brought up to date as `sops/machine-setup.md`, "A host that held the team before", says ("set up as host" in a Claude Code session there), until `team-doctor` there has no FAIL and `team-load-check` there passes.
 - Every project with an open task must be set up there, since a handoff moves every open task.
-- A virtual machine is shut down between drills; before each drill, its code checkout and team home are brought level by `team-resume --wait` itself.
+- During a drill it stays on power with its lid open, since a closed lid or a flat battery sleeps it and stops the team; the doctor's `power` line there warns while it runs on battery.
+- Before each drill, its code checkout and team home are brought level by `team-resume --wait` itself.
 
 ## `handoff`: the team to the second machine and back
 
@@ -133,7 +133,7 @@ The handoff and the steal need a second machine the team can run on.
   1. As the handoff drill's steps 1 and 2: one trivial task with its builder at work, both doctors clean.
   2. The team moves to the second machine by a planned handoff (the handoff drill's steps 3 to 7), and the trivial task's builder is at work there, not stowed.
 - The cut:
-  3. Daniel turns the second machine's network off (the link down, or the virtual machine's interface disconnected), and notes the time.
+  3. Daniel turns the second machine's network off, with Wi-Fi off from the menu bar and any Ethernet adapter unplugged, and notes the time.
   4. Within two heartbeats (10 minutes) the second machine holds offline: `team-timers health` there says so, and its coordinator's workers answer `PAUSED held`.
      The builder there makes one more local commit and the coordinator there logs one more ledger line, so there is something to salvage.
 - The steal:
@@ -142,7 +142,7 @@ The handoff and the steal need a second machine the team can run on.
   7. The coordinator's `resume` skill relaunches the trivial task's builder with the crash brief.
   8. Check on the PC: `team-lease status` names the PC, `git log origin/lease` shows the take with `stolen_from`; the report's task has `crashed` naming the second machine and its checkpoint; the builder's brief says what may be missing; the ledger has no `rehome-failed`.
 - The fence:
-  9. Daniel turns the second machine's network on.
+  9. Daniel turns the second machine's network on the same way, with Wi-Fi on from the menu bar and any Ethernet adapter plugged back in.
   10. Within one heartbeat it finds the new holder and fences itself: its coordinator and workers are stopped, its heartbeat disabled.
   11. Check there: a Bash call in any session left there is blocked by `lease-fence`; `team-doctor` shows the fence, its `salvage records` line names the ledger line of step 4 as unpushed, and its `salvage T<n> agent-team` line the builder's commit of step 4, each with the commands that push them.
   12. Daniel runs those commands there; `team-doctor` there then passes both lines.
