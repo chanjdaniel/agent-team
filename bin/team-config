@@ -27,8 +27,8 @@
 # and digits as "-", as Claude Code names it). The team home itself, where the coordinator runs,
 # is set up the same way with memory/coordinator/, listed as "coordinator" (a name team-project
 # reserves), unless it is a registered project's primary checkout, whose folder then serves.
-# A worker session loads no project settings, so team-worker writes the same folder into its own
-# settings, by the one definition this script writes (memory_setting in bin/lib/team.sh).
+# A planner, builder or reviewer loads no project settings, so team-worker writes the same
+# folder into its own settings, by the one definition this script writes (memory_setting).
 # memory/ is committed by team-checkpoint and team-handoff, never here.
 #
 # Usage: team-config diff [--full] [--json] | apply | capture | own [--json]
