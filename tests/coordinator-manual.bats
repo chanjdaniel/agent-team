@@ -417,7 +417,7 @@ $WORKER_INSTRUCTIONS"
 @test "the reviewer's DONE carries each finding kind's count and the guarded areas, in review.md too" {
   local talk
   talk=$(section reviewer 'Talking to the coordinator')
-  grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>`, with ` memory=.scratch/task/memory.md` after it when you added a memory, or `T<n> DONE findings <path>` with the same `findings=`, `before=`, `guarded=` and `memory=` after it' <<<"$talk"
+  grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>`, with ` widening=<numbers, comma-separated, or none>` after it on a rereview and ` memory=.scratch/task/memory.md` after that when you added a memory, or `T<n> DONE findings <path>` with the same `findings=`, `before=`, `guarded=`, `widening=` and `memory=` after it' <<<"$talk"
   section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`, `guardrails`)'
   section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
 }
@@ -585,8 +585,8 @@ $WORKER_INSTRUCTIONS"
     grep -qxF -- "$line" <<<"$(section "$role" 'What you do')"
     grep -qF 'memory=.scratch/task/memory.md' <<<"$(section "$role" 'Talking to the coordinator')"
   done
-  # The reviewer names it after guarded=, the pair team-log --from-message takes.
-  grep -qF 'guarded=<areas, comma-separated, or none>`, with ` memory=.scratch/task/memory.md` after it' "$REPO_ROOT/roles/reviewer.md"
+  # The reviewer names it after guarded= (and a rereview's widening=), the pairs team-log --from-message takes.
+  grep -qF 'on a rereview and ` memory=.scratch/task/memory.md` after that' "$REPO_ROOT/roles/reviewer.md"
   grep -qF "7. **Close.** File each memory of a worker's \`.scratch/task/memory.md\` that holds in the project's memory, then run \`team-close T<n>\` once the PRs are merged:" "$manual"
   grep -qF "You write directly only \`tasks/\`, the projects' \`memory/<project>/\`," "$manual"
 }
