@@ -48,22 +48,6 @@ owner=''
 [[ $policy == code ]] || owner=$(git config user.email || true)
 owner=${owner,,}
 
-# The image type of the blob <sha>, by its first bytes, or nothing: image_magic <sha>
-image_magic() {
-  local hex
-  hex=$(git cat-file blob "$1" | head -c 16 | od -An -tx1 | tr -d ' \n')
-  case $hex in
-    89504e47*) echo png ;;
-    ffd8ff*) echo jpeg ;;
-    474946383*) echo gif ;;
-    52494646????????57454250*) echo webp ;;
-    424d*) echo bmp ;;
-    49492a00* | 4d4d002a*) echo tiff ;;
-    00000100*) echo ico ;;
-    ????????66747970*) echo heif ;;
-  esac
-}
-
 # What the lines <path> adds hold that this policy refuses (the whole blob <sha> when git
 # takes it for binary), or nothing: refused_text <sha> <path>
 refused_text() {
@@ -88,7 +72,7 @@ while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
   ((!package)) || [[ $policy == code ]] || continue
   if ((package)); then
     found="a package tree (node_modules/)"
-  elif [[ -n $(image_magic "$sha") || ${path,,} =~ \.($IMAGE_TYPE)$ ]]; then
+  elif [[ -n $(git cat-file blob "$sha" | image_magic) || ${path,,} =~ \.($IMAGE_TYPE)$ ]]; then
     found="an image"
   else
     found=$(refused_text "$sha" "$path")

@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
+# own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
 # discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, OPS_REQUEST_MAX_AGE, and
 # LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push.
@@ -1352,6 +1352,25 @@ OPS_REQUEST_MAX_AGE=3600
 # included, which the scripts refuse as none set.
 # shellcheck disable=SC2034 # read by the scripts that source this library
 INTERVIEW_CHANNEL=${TEAM_INTERVIEW_CHANNEL-1565336720998928556}
+
+# Print the type of the image whose bytes are on stdin, by its first 16, png, jpeg, gif, webp, bmp,
+# tiff, ico or heif, or nothing: the images the data rules refuse (data-check) and the archive leaves
+# out (archive_left_out), whatever a file's name, which image_type below narrows to those a worker
+# may post: image_magic <bytes
+image_magic() {
+  local hex
+  hex=$(head -c 16 | od -An -tx1 | tr -d ' \n')
+  case $hex in
+    89504e47*) echo png ;;
+    ffd8ff*) echo jpeg ;;
+    474946383*) echo gif ;;
+    52494646????????57454250*) echo webp ;;
+    424d*) echo bmp ;;
+    49492a00* | 4d4d002a*) echo tiff ;;
+    00000100*) echo ico ;;
+    ????????66747970*) echo heif ;;
+  esac
+}
 
 # Print the type of the image <file> holds by its first bytes, png, jpeg, gif or webp, the images a
 # worker session may post, or nothing: image_type <file>
