@@ -48,12 +48,12 @@
 #   Production back: <project> <name> (<<url>>) answers again at <HH:MM>, down since <HH:MM> (<duration>).
 # times as this machine's local hours and minutes, durations as "<n> minutes", "<h> hours" or
 # "<h> hours <n> minutes", singular for 1. A post that went through is recorded, so neither a
-# later run nor a restart posts it again; one Discord refused is not, so it is due again at the next run,
-# and it fails this one ("team-uptime: the post to #coordinator failed (<reason>); it is tried
-# again next run" on stderr). A check the registry no longer names, or names with another url or
-# expect, is dropped from the state, so a changed one starts fresh; one dropped after its down
-# post went through gets the line "<project>/<name>: no longer checked as it was; its open outage
-# is closed without a post".
+# later run nor a restart posts it again; one Discord refused is not, so it is due again at the
+# next run, and it fails this one ("team-uptime: the post to #coordinator failed (<reason>); it
+# is tried again next run" on stderr). A check the registry no longer names, or names with
+# another url or expect, is dropped from the state, so a changed one starts fresh; one dropped
+# after its down post went through gets the line "<project>/<name>: no longer checked as it was;
+# its open outage is closed without a post".
 #
 # It prints, a line each, every failing check ("<project>/<name>: failed: <reason> (<n> in a row,
 # since <UTC time>)"), every outage closed with no post, and every post ("posted to #coordinator
@@ -76,17 +76,17 @@
 #   <project>/<name> <state>[ since <HH:MM>][: <reason>], checked <HH:MM> (<url>)
 # its state up, down (2 failures or more in a row, or any while its outage is open, since the
 # outage began) or failing (any other failure), or "<project>/<name> not checked yet (<url>)" for
-# one with no state, or a state for another url or expect; nothing with no check in the registry. With --json, the object team-snapshot carries as
-# production: {schema: team-uptime/1, written (when a run last wrote the state, null for none),
-# line, checks: [{project, name, url, expect, state (up, failing, down or unchecked), checked,
-# since, failures, reason, alert}]}, the state's fields of each check (null, and failures 0, for an
-# unchecked one). line is the digest's Production line, null with no check: "Production: all <n>
-# checks up, last checked <HH:MM>", or each check not up ("<project> <name> down since <HH:MM>:
-# <reason>", "<project> <name> failed once: <reason>" or "<project> <name> not checked yet")
-# joined by "; ", then "; <n> more up" when any is, then ", last checked <HH:MM>" when the state
-# was written, cut to 200 characters. A state file that is not team-uptime/1 is left as it is and
-# fails it ("team-uptime: <file> is not a team-uptime/1 state"), as a registry that cannot be read
-# does.
+# one with no state, or a state for another url or expect; nothing with no check in the registry.
+# With --json, the object team-snapshot carries as production: {schema: team-uptime/1, written
+# (when a run last wrote the state, null for none), line, checks: [{project, name, url, expect,
+# state (up, failing, down or unchecked), checked, since, failures, reason, alert}]}, the state's
+# fields of each check (null, and failures 0, for an unchecked one). line is the digest's
+# Production line, null with no check: "Production: all <n> checks up, last checked <HH:MM>", or
+# each check not up ("<project> <name> down since <HH:MM>: <reason>", "<project> <name> failed
+# once: <reason>" or "<project> <name> not checked yet") joined by "; ", then "; <n> more up"
+# when any is, then ", last checked <HH:MM>" when the state was written, cut to 200 characters. A
+# state file that is not team-uptime/1 is left as it is and fails it ("team-uptime: <file> is not
+# a team-uptime/1 state"), as a registry that cannot be read does.
 #
 # Seams for the tests: TEAM_UPTIME_SECONDS replaces each fetch's 10 seconds,
 # TEAM_UPTIME_KNOWN_GOOD the known-good site, and TEAM_UPTIME_REMIND_MINUTES the 240 minutes
