@@ -514,7 +514,10 @@ def code_text(command):
 # A redirection operator where a word would start, with the fd or {name} before it.
 REDIRECT = re.compile(r"(?:[0-9]+|\{[A-Za-z_]\w*\})?(?:&>>?|<<<|<<-?|<>|[<>]&|>\||>>|[<>])")
 # The reserved words a simple command's words may start with, which are no part of it.
-LEADING = frozenset(("!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac", "coproc"))
+LEADING = frozenset(
+    ("!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac",
+     "coproc")
+)
 
 
 def _closed(text, i, j, end):
@@ -555,7 +558,8 @@ def _command_word(text, i, end):
             j = _pair_end(text, i + 1, "`", "`")
         elif c in "'\"" or text.startswith("$'", i):
             ansi = c == "$"
-            j = _pair_end(text, i + 1 + ansi, "'" if ansi else c, "'" if ansi else c, "esc" if ansi else "")
+            mark = "'" if ansi else c
+            j = _pair_end(text, i + 1 + ansi, mark, mark, "esc" if ansi else "")
             if not _closed(text, i + ansi, j, end):
                 return "".join(out), end
             inner = text[i + 1 + ansi : j - 1]
@@ -633,8 +637,9 @@ def simple_commands(command):
     command yields its words too, split at its separators, beside the group's own commands."""
     reading = read_command(command)
     bodies = {h.body[0]: h.end for h in reading.heredocs}
-    found = [words for _, segments in reading.pipelines for start, end in segments for words in _segment_commands(command, start, end, bodies)]
-    yield from found
+    for _, segments in reading.pipelines:
+        for start, end in segments:
+            yield from _segment_commands(command, start, end, bodies)
 
 
 if __name__ == "__main__":

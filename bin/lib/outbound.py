@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Whether a Bash command's curl or wget uploads to a host outside the team's own.
 
-Usage: python3 -I outbound.py   (the command on stdin; prints the reason when it uploads, else nothing)
+Usage: python3 -I outbound.py   (the command on stdin; prints the reason when it uploads)
 
 bin/hooks/command-guard runs this file on a Bash call's code text, as bin/lib/command_text.py
 prints it, and refuses the call when it prints a reason; so every role whose settings layer on
@@ -12,10 +12,11 @@ It reads each simple command of the command (command_text.simple_commands: those
 substitution, a pipeline or a list too), past its assignments and the wrappers env, command, exec,
 nohup, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock
 with their options, numbers and flock's file, parallel's inputs after its ::: or :::: left out but
-for those with a scheme (https://host/u), read as URLs; env -S's and flock -c's value is the
-command. A command word holding a blank is a command given as one string, as watch, parallel and
-sudo -s or -i run it through a shell, and is read as a command, its words after it joined on.
-Else the command's name by its basename decides:
+for those with a scheme (https://host/u), read as URLs. A command string is read where the tool
+itself takes one: what watch and parallel join of their command's words (from the first word that
+is no option, and the next too when an option may take that one), env's -S or --split-string
+value with the words after it, and flock's -c or --command value, each after the assignments
+before it, quoted. Else the command's name by its basename decides:
   - curl uploads with a request body or a file: -d, --data, --data-ascii, --data-binary,
     --data-urlencode, --data-raw, -F, --form, --form-string, --json, -T or --upload-file, each
     also as --expand-<flag>, a short one alone or in a cluster (-sSd@f), a long one as --flag
@@ -26,6 +27,9 @@ Else the command's name by its basename decides:
     --session-command, script's -c or --command, eval's words, and each command find's -exec,
     -execdir, -ok or -okdir runs are read as a command too; a -c string behind another command
     (docker exec web sh -c '...') is read on the code text, which adds it as a line of its own.
+env's, flock's, su's and script's long options are taken by any prefix getopt_long takes as one
+alone (su --comm), and their short ones in a cluster as getopt reads it (env -uSPATH is -u SPATH).
+A command string is never read again when it is the command being read.
 Each tool's options that take a value skip it, so a value is never read as a URL; an option it
 does not know takes none.
 A URL is curl's positional word, --url's value or a word after --, or wget's positional word; - is
@@ -48,12 +52,15 @@ It is a speed bump, as command-guard's other refusals are: a host held in a vari
 in a curl -K config, a URL in a wget -i list, a proxy exported earlier or set in a config file, a
 script file a shell runs, ssh's remote command (it runs on the other host) and ssh itself, a
 command another tool runs from its arguments (nsenter, chroot, unshare, systemd-run, tmux
-send-keys), another tool's upload and an interpreter's own request go unseen, held by auto mode and
-the role's rule against reaching a refused thing another way.
+send-keys), a command word built by a substitution ($(command -v curl)), a command given as one
+string where its tool takes words (sudo -s escapes each word it passes its shell), another tool's
+upload and an interpreter's own request go unseen, held by auto mode and the role's rule against
+reaching a refused thing another way.
 """
 
 import os
 import re
+import shlex
 import sys
 
 sys.dont_write_bytecode = True
@@ -64,9 +71,12 @@ REASON = "an upload to a host outside the team's own; a file's contents never go
 
 ASSIGNMENT = re.compile(r"[A-Za-z_]\w*\+?=")
 NUMBER = re.compile(r"[0-9][0-9.]*[smhd]?")
-WRAPPERS = frozenset("env command exec nohup time nice ionice stdbuf timeout setsid sudo doas xargs parallel watch flock".split())
+WRAPPERS = frozenset(
+    "env command exec nohup time nice ionice stdbuf timeout setsid sudo doas xargs parallel watch"
+    " flock".split()
+)
 SHELLS = frozenset("bash sh zsh dash ksh".split())
-TOOLS = frozenset(("curl", "wget", "eval")) | SHELLS
+TOOLS = frozenset(("curl", "wget", "eval", "su", "script", "find")) | SHELLS
 
 # curl 8's flags that send a body or a file, and its options that take a value (curl --help all).
 CURL_UPLOAD_SHORT = frozenset("dFT")
@@ -143,16 +153,50 @@ WGET_PROXY_COMMANDS = frozenset(("httpproxy", "httpsproxy", "ftpproxy"))
 # An assignment of a proxy curl or wget reads from the environment (http_proxy, ALL_PROXY), but
 # no_proxy.
 PROXY_ASSIGNMENT = re.compile(r"(?i)(?!no_proxy=)\w*_proxy=")
-# A blank, which a word holds when it is a command given as one string ('curl -d @x https://host').
-BLANK = re.compile(r"\s")
-# The wrappers' options whose value is their command as one string: the short ones, the long ones,
-# and the short options that take a value, so a cluster is read as getopt reads it (env -uSPATH).
-STRING_OPTIONS = {"env": ("S", ("split-string",), "aCSu"), "flock": ("c", ("command",), "Ecw")}
-# su's and script's options that name the command they run as one string, in the same shape.
-RUNS_OPTION = {
-    "su": ("cC", ("command", "session-command"), "cCgGsw"),
-    "script": ("c", ("command",), "BEIOTcmo"),
+# The tools with an option whose value is the command they run as one string: its short names, its
+# long names, all the tool's long options (getopt_long takes one by any prefix that names it
+# alone), and its short options that take a value, so a cluster is read as getopt reads it
+# (env -uSPATH is -u SPATH). env and flock are wrappers, su and script commands of their own.
+STRING_OPTIONS = {
+    "env": (
+        "S",
+        {"split-string"},
+        frozenset(
+            "ignore-environment null unset chdir split-string block-signal default-signal"
+            " ignore-signal list-signal-handling debug help version argv0".split()
+        ),
+        "aCSu",
+    ),
+    "flock": (
+        "c",
+        {"command"},
+        frozenset(
+            "shared exclusive write unlock nonblock nb timeout wait conflict-exit-code close"
+            " command no-fork fcntl verbose help version".split()
+        ),
+        "Ecw",
+    ),
+    "su": (
+        "cC",
+        {"command", "session-command"},
+        frozenset(
+            "command session-command fast login group supp-group preserve-environment pty shell"
+            " whitelist-environment help version".split()
+        ),
+        "cCgGsw",
+    ),
+    "script": (
+        "c",
+        {"command"},
+        frozenset(
+            "append command echo log-in log-out log-io log-timing logging-format return flush force"
+            " quiet timing output-limit help version".split()
+        ),
+        "BEIOTcmo",
+    ),
 }
+# The wrappers that join their command's words into one string a shell runs.
+JOINING = frozenset(("watch", "parallel"))
 # find's actions that run a command, its words up to a ; or a +.
 FIND_EXEC = frozenset(("-exec", "-execdir", "-ok", "-okdir"))
 # parallel's separators, after which its words are inputs, not the command's.
@@ -165,25 +209,59 @@ LOOPBACK = frozenset(
 LOOPBACK_V4 = re.compile(r"127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}")
 
 
-def _string_option(word, shorts, longs, values):
+def _long_options(name, options):
+    """The long options name stands for, as getopt_long takes it: itself, or those it is a prefix
+    of."""
+    if name in options:
+        return {name}
+    return {option for option in options if option.startswith(name)} if name else set()
+
+
+def _string_option(word, shorts, longs, options, values):
     """The value word gives an option that names a command as one string (env's -S, flock's -c):
     the text joined to it, "" when it is the next word, or None when word is not it."""
     if word.startswith("--"):
         name, eq, value = word[2:].partition("=")
-        return (value if eq else "") if name in longs else None
+        named = _long_options(name, options)
+        return (value if eq else "") if len(named) == 1 and named <= longs else None
     if word.startswith("-") and word != "-":
         _, flag, joined = _short(word, values)
         return joined if flag and flag in shorts else None
     return None
 
 
+def _assigned(assignments):
+    """The assignments as a command's text puts them, each value quoted."""
+    pairs = (assignment.partition("=") for assignment in assignments)
+    return "".join(f"{name}={shlex.quote(value)} " for name, _, value in pairs)
+
+
+def _joined(args, parallel):
+    """The command strings watch or parallel may run of its words after its name: its command's
+    words joined with blanks, unquoted, as the tool joins them, from its first word that is no
+    option, and from the next one too when an option before it may take that word as its value;
+    under parallel, only the words before its first ::: and the inputs with a scheme after it."""
+    cut = len(args)
+    if parallel:
+        cut = next((k for k, word in enumerate(args) if word in PARALLEL_INPUTS), cut)
+    inputs = [word for word in args[cut:] if SCHEME.match(word)]
+    first = next((k for k in range(cut) if not args[k].startswith("-")), None)
+    if first is None:
+        return []
+    starts = [first]
+    if first and args[first - 1].startswith("-") and first + 1 < cut:
+        starts.append(first + 1)
+    return [" ".join(args[start:cut] + inputs) for start in starts]
+
+
 def _command(words):
-    """The assignments before the command's own name, env's among them, and the words from that
-    name on, past its wrappers, as the header says: a word after a wrapper's option is its value
-    unless it names a command read here or holds a blank, a command given as one string; env -S's
-    and flock -c's value is the command; under parallel, the words from its first ::: on are its
-    inputs, left out but for those with a scheme, which its command takes as URLs."""
-    i, n, inputs = 0, len(words), False
+    """The assignments before the command's own name, env's among them, the words from that name
+    on, past its wrappers, as the header says, and the command strings those wrappers run: a word
+    after a wrapper's option is its value unless it names a command read here; env -S's and
+    flock -c's value is a command string, and so is what watch and parallel join; under parallel,
+    the words from its first ::: on are its inputs, left out but for those with a scheme, which its
+    command takes as URLs."""
+    i, n, inputs, strings = 0, len(words), False, []
     while i < n and ASSIGNMENT.match(words[i]):
         i += 1
     assignments = words[:i]
@@ -191,19 +269,26 @@ def _command(words):
         wrapper = os.path.basename(words[i])
         file_left, option = wrapper == "flock", False
         inputs = inputs or wrapper == "parallel"
+        if wrapper in JOINING:
+            joined = _joined(words[i + 1 :], wrapper == "parallel")
+            strings += [_assigned(assignments) + text for text in joined]
         i += 1
         while i < n:
             word = words[i]
-            string = _string_option(word, *STRING_OPTIONS[wrapper]) if wrapper in STRING_OPTIONS else None
+            string = None
+            if wrapper in STRING_OPTIONS:
+                string = _string_option(word, *STRING_OPTIONS[wrapper])
             if string is not None:
-                # The command is the option's value: the rest of the word, or the next word.
-                words = words[:i] + ([string] if string else []) + words[i + 1 :]
-                n = len(words)
-                break
+                # The option's value, the rest of the word or the next word, is the command, the
+                # words after it its arguments.
+                rest = words[i + 1 :] if string else words[i + 2 :]
+                string = string or (words[i + 1] if i + 1 < n else "")
+                tail = " " + shlex.join(rest) if wrapper == "env" and rest else ""
+                return assignments, [], strings + [_assigned(assignments) + string + tail]
             if ASSIGNMENT.match(word):
                 assignments.append(word)
                 option = False
-            elif BLANK.search(word) or os.path.basename(word) in TOOLS | WRAPPERS:
+            elif os.path.basename(word) in TOOLS | WRAPPERS:
                 break
             elif word.startswith("-") and word != "-":
                 option = True
@@ -220,16 +305,17 @@ def _command(words):
     if inputs:
         cut = next((k for k, word in enumerate(words) if word in PARALLEL_INPUTS), len(words))
         words = words[:cut] + [word for word in words[cut:] if SCHEME.match(word)]
-    return assignments, words
+    return assignments, words, strings
 
 
-def _option_string(args, shorts, longs, values):
+def _option_string(args, shorts, longs, options, values):
     """The value of the option of su or script that names the command they run as one string (-c
-    alone or in a cluster, or a long one as --name value or --name=value), or None."""
+    alone or in a cluster, or a long one by its name or a prefix, with its value joined by = or
+    next), or None."""
     for k, word in enumerate(args):
         if word == "--":
             break
-        string = _string_option(word, shorts, longs, values)
+        string = _string_option(word, shorts, longs, options, values)
         if string is not None:
             return string or (args[k + 1] if k + 1 < len(args) else "")
     return None
@@ -314,13 +400,6 @@ def _curl(args):
     return uploads, urls, via
 
 
-def _wget_long(name):
-    """The wget long options name stands for, as getopt takes it: itself, or those it is a prefix of."""
-    if name in WGET_LONG:
-        return {name}
-    return {option for option in WGET_LONG if option.startswith(name)} if name else set()
-
-
 def _wgetrc(command):
     """A wgetrc command's name, its case, -, _ and blanks dropped, and its value."""
     name, _, value = command.partition("=")
@@ -338,7 +417,7 @@ def _wget(args):
             break
         if word.startswith("--"):
             name, eq, value = word[2:].partition("=")
-            options = _wget_long(name)
+            options = _long_options(name, WGET_LONG)
             # A prefix of more than one option is refused by wget, so it sends nothing either way.
             uploads = uploads or bool(options & set(WGET_UPLOAD))
             if options and options <= WGET_VALUE_LONG and not eq:
@@ -407,35 +486,35 @@ def _outside(url):
     return bool(re.search(r"[A-Za-z0-9]", host)) and not local
 
 
-def _uploads(words):
-    """Whether one simple command's words upload to a host outside the team's own."""
-    assignments, words = _command(words)
+def _uploads(words, command):
+    """Whether one simple command's words, of the command, upload to a host outside the team's own;
+    a command string it runs is read in turn, unless it is the command itself."""
+
+    def runs(text):
+        return text is not None and text != command and outbound_upload(text) is not None
+
+    assignments, words, strings = _command(words)
+    if any(runs(text) for text in strings):
+        return True
     if not words:
         return False
-    if BLANK.search(words[0]):
-        # A command given as one string, as watch, parallel and sudo -s or -i run it through a shell.
-        return bool(outbound_upload(" ".join(assignments + words)))
     name, args = os.path.basename(words[0]), words[1:]
     if name in ("curl", "wget"):
         uploads, urls, via = (_curl if name == "curl" else _wget)(args)
         via += [word.partition("=")[2] for word in assignments if PROXY_ASSIGNMENT.match(word)]
         return uploads and any(_outside(url) for url in urls + via)
+    if name == "find":
+        return any(_uploads(found, command) for found in _exec_commands(args))
     if name in SHELLS:
-        script = _shell_string(args)
-    elif name in RUNS_OPTION:
-        script = _option_string(args, *RUNS_OPTION[name])
-    elif name == "eval":
-        script = " ".join(args)
-    elif name == "find":
-        return any(_uploads(command) for command in _exec_commands(args))
-    else:
-        return False
-    return script is not None and bool(outbound_upload(script))
+        return runs(_shell_string(args))
+    if name in STRING_OPTIONS:
+        return runs(_option_string(args, *STRING_OPTIONS[name]))
+    return name == "eval" and runs(" ".join(args))
 
 
 def outbound_upload(command: str) -> str | None:
     """The reason the command uploads to a host outside the team's own, or None when it does not."""
-    return REASON if any(_uploads(words) for words in simple_commands(command)) else None
+    return REASON if any(_uploads(words, command) for words in simple_commands(command)) else None
 
 
 def main():

