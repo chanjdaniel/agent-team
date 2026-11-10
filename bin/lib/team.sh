@@ -460,12 +460,12 @@ archive_left_out() {
     walk . -type l -printf 'link\t%P\0' | sort -z
     # An image by its extension, or by its first bytes, which image_magic reads only in the files
     # that could start with an image's signature: those grep takes for binary (a NUL byte, as tiff's
-    # and ico's signatures hold) or empty, and the text files a line of which starts with png's,
-    # jpeg's, gif's, webp's or bmp's signature, or that hold heif's ftyp, so a directory of other
-    # text starts no process per file. A file grep cannot read is left to the mirror, which names
-    # it (grep -s).
+    # and ico's signatures hold) or empty, and the text files a line of which starts as png's,
+    # jpeg's, gif's (GIF8, whatever byte follows), webp's (RIFF) or bmp's (BM) signature does, or
+    # that hold heif's ftyp, so a directory of other text starts no process per file. A file grep
+    # cannot read is left to the mirror, which names it (grep -s).
     local -A image=() candidate=() secret=()
-    local path owner small=() signature=$'^(\x89PNG|\xff\xd8\xff|GIF8[0-9]|RIFF|BM)|ftyp'
+    local path owner small=() signature=$'^(\x89PNG|\xff\xd8\xff|GIF8|RIFF|BM)|ftyp'
     while IFS= read -r -d '' path; do image[$path]=1; done < <(walk . -type f "${is_image[@]}" -printf '%P\0')
     while IFS= read -r -d '' path; do candidate[$path]=1; done < <(
       walk . -type f ! \( "${is_image[@]}" \) -printf '%P\0' |

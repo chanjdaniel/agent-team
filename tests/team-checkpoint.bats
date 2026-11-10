@@ -729,6 +729,7 @@ tasks/T1/scratch/owner.md"
   # Text with no NUL byte whose first bytes are an image's signature to image_magic.
   echo "BM25 ranking notes" >"$dir/bm25.md"
   echo "GIF89a is the format's later version" >"$dir/gif.md"
+  echo "GIF8? a question about the format" >"$dir/gif8.md"
   printf 'RIFF1234WEBP notes\n' >"$dir/riff.md"
   printf 'abcdftyp notes\n' >"$dir/ftyp.md"
   # The same words anywhere but the first bytes are text.
@@ -739,6 +740,7 @@ tasks/T1/scratch/owner.md"
   assert_contains "$output" "T1 home: left out of tasks/T1/scratch: bm25.md (image)
 T1 home: left out of tasks/T1/scratch: ftyp.md (image)
 T1 home: left out of tasks/T1/scratch: gif.md (image)
+T1 home: left out of tasks/T1/scratch: gif8.md (image)
 T1 home: left out of tasks/T1/scratch: riff.md (image)
 T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/kept.md"
