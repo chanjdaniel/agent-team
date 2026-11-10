@@ -15,7 +15,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `bin/lib/`: the shared library.
     - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the worktrees held, a reading of the machine's load and the team's use per task, the cost samples and estimates, the reservations and the admission rule, the stow and resume plans, and their texts.
     - `code`: the paths every tracked path matches.
-    - `command_text.py`: the text of a Bash command that runs as code, each heredoc's body left out unless a shell may read it, and a shell's `-c` string and what is piped into a shell where a command starts read as code, for `bin/hooks/command-guard`; `team-tokens` takes its heredoc rule.
+    - `command_text.py`: the text of a Bash command that runs as code, each heredoc's body left out unless a shell may read it and a shell's `-c` string and what is piped into a shell added, for `bin/hooks/command-guard`; `team-tokens` takes its heredoc rule, `outbound.py` its `simple_commands`.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
     - `drills.jq`: the drills module, the one place that says what a line of the team home's `drills.jsonl` is, when a drill is due and how `team-drill status` shows it.
@@ -27,6 +27,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
     - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names on an opencode gate.
+    - `outbound.py`: whether a Bash command's `curl` or `wget` sends a request body or a file to a literal host outside the team's own loopback, for `bin/hooks/command-guard`.
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
     - `reading.sh`: one reading of the machine's load (its memory, its processes by directory and descent, the team's stacks), which `team-capacity sample` takes.
     - `records`: the team home's paths, which no tracked path matches.
