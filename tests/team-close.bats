@@ -177,20 +177,20 @@ rm 4f2a9c1e archive:2 worktrees:2"
 closed"
 }
 
-@test "a close takes the task out of the Waiting on you message, and Discord refusing that is a line on stderr" {
+@test "a close takes the task out of waiting.md, and a list team-inbox cannot write is a line on stderr" {
   run_bin -0 team-open home feature feat work "Do the work"
   ledger_line '{ts: "2026-10-22T02:11:00Z", task: "T1", event: "asked", id: "go", text: "Go on?"}'
   run_bin -0 team-inbox
-  assert_equal "$(inbox_items_shown)" "**Asks**
-- T1 go: Go on? <#1563000000000000001>"
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T1 go: Go on? <#1563000000000000001>"
   run_bin -0 --separate-stderr team-close T1
-  [[ $stderr != *"Waiting on you"* ]]
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  [[ $stderr != *"waiting.md"* ]]
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 
   run_bin -0 team-open home feature feat more "Do more"
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  waiting_unwritable
   run_bin -0 --separate-stderr team-close T2
-  assert_equal "$(tail -n 1 <<<"$stderr")" "team-close: the Waiting on you message is not updated: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-close: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(events closed | jq -r .task)" "T1
 T2"
 }

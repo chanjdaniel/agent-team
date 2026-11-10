@@ -80,27 +80,25 @@ exit 22
 EOF
 }
 
-# The Waiting on you message as the fake Discord now holds it: the message kept in inbox.json.
-inbox_shown() {
-  local message
-  message=$(jq -r .message "$HOME/.local/state/agent-team/inbox.json")
-  jq -r .content "$STUB_FIXTURES/inbox/$message.json"
+# The waiting list as team-inbox last wrote it, the team home's waiting.md.
+waiting_shown() {
+  cat "$TEAM_HOME/waiting.md"
 }
 
-# The message's lines between its title and its time, the items and section headings, without the
-# resources line and the health line.
-inbox_items_shown() {
-  inbox_shown | sed '1d;$d' | sed -E '/^Resources: /d;/^(-# Health|\*\*Health\*\*): /d'
+# The list's lines but its title, the items and section headings and the standing word lines,
+# without the resources line and the health line.
+waiting_items_shown() {
+  waiting_shown | sed '1d' | sed -E '/^Resources: /d;/^(-# Health|\*\*Health\*\*): /d'
 }
 
-# The message's resources line, none when it has none.
+# The list's resources line, none when it has none.
 inbox_resources_shown() {
-  inbox_shown | sed -n '/^Resources: /p'
+  waiting_shown | sed -n '/^Resources: /p'
 }
 
-# The message's health line, none when it has none.
+# The list's health line, none when it has none.
 inbox_health_shown() {
-  inbox_shown | sed -nE '/^(-# Health|\*\*Health\*\*): /p'
+  waiting_shown | sed -nE '/^(-# Health|\*\*Health\*\*): /p'
 }
 
 # team-inbox's calls to the fake Discord, one "<method> <path>" per line.
@@ -108,8 +106,8 @@ inbox_calls() {
   cat "$STUB_FIXTURES/inbox/calls" 2>/dev/null || true
 }
 
-# A Waiting on you message kept from an earlier run, 1569000000000000000 in #coordinator, so a run
-# only edits it.
+# The old Waiting on you message, kept in inbox.json by a team-inbox from before waiting.md:
+# 1569000000000000000 in #coordinator, which the next run retires with one edit.
 inbox_kept() {
   mkdir -p "$HOME/.local/state/agent-team"
   jq -n --arg guild "$INBOX_GUILD" '{channel: "1562486564871995482", guild: $guild, message: "1569000000000000000"}' \
@@ -125,4 +123,18 @@ alerts_shown() {
   while read -r id; do
     jq -c --arg id "$id" '{id: $id} + .' "$STUB_FIXTURES/inbox/$id.json"
   done <"$STUB_FIXTURES/inbox/alerts"
+}
+
+# #coordinator's guild kept in inbox.json, as team-inbox keeps it, so a run calls Discord for
+# nothing.
+inbox_guild_kept() {
+  mkdir -p "$HOME/.local/state/agent-team"
+  jq -n --arg guild "$INBOX_GUILD" '{channel: "1562486564871995482", guild: $guild}' \
+    >"$HOME/.local/state/agent-team/inbox.json"
+}
+
+# Make the team home's waiting.md a directory, so team-inbox cannot write the list.
+waiting_unwritable() {
+  rm -f "$TEAM_HOME/waiting.md"
+  mkdir "$TEAM_HOME/waiting.md"
 }

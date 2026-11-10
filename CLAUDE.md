@@ -104,6 +104,8 @@ It holds:
 | `ledger.jsonl` | The append-only record of every task's events |
 | `level.jsonl` | The team's resource level and mode, one line per change (`team-level`), committed with the ledger so a level holds across restarts and handoffs |
 | `drills.jsonl` | Each run of a drill, one line per run (`team-drill`): what ran, on which machine, code commit and Claude Code version, and its verdict, appended and never rewritten |
+| `waiting.md` | What waits on Daniel, every open ask, PR ready to merge and interview, numbered, as `team-inbox` last wrote it from the ledger |
+| `waiting.json` | The same list with each item's number and key and the latest post, which `team-inbox` reads to keep each number while its item stands |
 | `projects.toml` | The project registry, read only through `bin/team-project`, whose `--help` documents every key |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `projects/` | Each project's planning (Conventioner's backlog) |

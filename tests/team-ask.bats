@@ -66,9 +66,9 @@ logged() {
 {"task":"T7","event":"waiting","on":"Daniel","reason":"ask sign-in"}'
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
-  # The Waiting on you message lists it by the end of the command, linked to the question.
-  assert_equal "$(inbox_items_shown)" "**Asks**
-- T7 sign-in: Which of the two sign-in limits stays? https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001"
+  # waiting.md lists it by the end of the command, linked to the question.
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T7 sign-in: Which of the two sign-in limits stays? <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001>"
 }
 
 @test "--script hashes the script first, ends the question with its path, its sha256 and the yes rule, and logs one asked with both" {
@@ -120,11 +120,11 @@ asked
 waiting"
 }
 
-@test "a Waiting on you message Discord refuses is a line on stderr, and the ask stands" {
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+@test "a waiting list team-inbox cannot write is a line on stderr, and the ask stands" {
+  waiting_unwritable
   run_bin -0 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
   assert_equal "$output" '{"task":"T7","id":"sign-in","question":["1564000000000000001"],"ping":"1564000000000000002"}'
-  assert_equal "$stderr" "team-ask: the Waiting on you message is not updated: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 500"
+  assert_equal "$stderr" "team-ask: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(logged | jq -r .event)" "asked
 waiting"
 }
@@ -154,9 +154,9 @@ waiting"
   fi
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
-  # The Waiting on you message, and the snapshot's pending asks, show it by that line.
-  assert_equal "$(inbox_items_shown)" "**Asks**
-- T7 write-1: $line https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001"
+  # waiting.md, and the snapshot's pending asks, show it by that line.
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T7 write-1: $line <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001>"
 }
 
 @test "the ping mentions each of Daniel's ids and cuts a long first line" {

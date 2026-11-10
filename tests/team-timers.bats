@@ -26,7 +26,7 @@ setup() {
   log=$HOME/.local/state/agent-team/heartbeat.log
   failures=$HOME/.local/state/agent-team/heartbeat-failures.log
   inbox_discord alerts
-  inbox_kept
+  inbox_guild_kept
 }
 
 # The failures log's lines, each without its time.
@@ -372,13 +372,21 @@ EOF
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md"
+  # It takes the waiting list the first run's inbox step wrote, a record too.
+  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md
+waiting.json
+waiting.md"
   assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
+  # waiting.json, which did not change, is not committed again; waiting.md is, for its resources
+  # and health lines alone, which read the machine and the last checkpoint.
   echo "steps" >"$TEAM_HOME/manual-steps.md"
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md"
+  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md
+waiting.md"
+  assert_equal "$(git -C "$origin" diff dev^ dev -- waiting.md | grep -vE '^(\+\+\+|---) ' | grep -E '^[-+]' | cut -c 2- |
+    grep -vE '^(Resources: |-# Health: |\*\*Health\*\*: )')" ""
 
   # A machine that does not hold the lease never checkpoints, however old the last one.
   run -0 "$REPO_ROOT/bin/team-lease" release
@@ -665,28 +673,31 @@ SH
   ((SECONDS - start < 10))
 }
 
-@test "the inbox step edits the Waiting on you message once a run on the holder, logging only a new message or a failure, which never fails the run" {
+@test "the inbox step writes waiting.md once a run on the holder, logging only the old message's retire or a failure, which never fails the run" {
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  assert_equal "$(inbox_calls)" ""
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 
-  # Deleted by hand: posted again, and that is logged.
-  rm "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  # The old Waiting on you message is retired once, and that is logged.
+  inbox_kept
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: retired https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000000"$ ]]
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
   : >"$STUB_FIXTURES/inbox/calls"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "lease checkpoint inbox"
-  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"$ ]]
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000
-POST channels/1562486564871995482/messages"
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(inbox_calls)" ""
 
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  waiting_unwritable
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint inbox"
-  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"$ ]]
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"$ ]]
 }
 
 @test "the inbox step never runs off the lease, offline or on a fenced machine, and runs after the back step" {
+  inbox_kept
   make_machine laptop
   on_machine laptop run_bin -0 team-timers run
   assert_equal "$(inbox_calls)" ""
@@ -699,7 +710,7 @@ POST channels/1562486564871995482/messages"
   assert_equal "$(inbox_calls)" ""
   git -C "$TEAM_HOME" remote set-url origin "$origin"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "back checkpoint"
+  assert_equal "$(steps "$output")" "back checkpoint inbox"
   assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
 
   steal_lease laptop home-pc
@@ -1333,8 +1344,8 @@ day_report() {
   docker_machine
   discord_answers
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
-  # inbox: the Waiting on you message deleted by hand, so a new one is posted.
-  rm -f "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  # inbox: the old Waiting on you message, retired.
+  inbox_kept
   # coordinator: no session named coordinator is listed; finished: T7's idle reviewer, handed on
   # by its done, stopped; capacity: the same session, still listed by the stub and outside its
   # slice, placed.

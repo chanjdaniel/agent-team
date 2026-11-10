@@ -72,15 +72,15 @@ looked_in() {
   assert_equal "$(looked_in)" "2222"
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
-  # The Waiting on you message no longer lists the ask by the end of the command.
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  # waiting.md no longer lists the ask by the end of the command.
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 }
 
-@test "a Waiting on you message Discord refuses is a line on stderr, and the answer stands" {
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+@test "a waiting list team-inbox cannot write is a line on stderr, and the answer stands" {
+  waiting_unwritable
   run_bin -0 --separate-stderr team-answer T7 sign-in 1564000000000000001
   assert_equal "$output" $'Five a minute.\n\n  Keep "ten an hour" for the API, `not` the site.  '
-  assert_equal "$stderr" "team-answer: the Waiting on you message is not updated: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 500"
+  assert_equal "$stderr" "team-answer: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(logged | jq -r .event)" "answered
 resumed"
 }

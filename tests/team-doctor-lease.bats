@@ -285,7 +285,7 @@ FAIL salvage T2 site"
 @test "the health line: PASS with the plain healthy line on the holder, FAIL on a heartbeat or checkpoint problem, WARN on any other, PASS off the lease" {
   only_checks 245-health.sh
   tools_at arch
-  # The heartbeat's runs below edit the Waiting on you message in a fake Discord, and list one
+  # The heartbeat's runs below read the guild for waiting.md from a fake Discord, and list one
   # session, the coordinator.
   stub_script curl <<'EOF'
 source "$STUB_FIXTURES/inbox.sh"
@@ -320,11 +320,11 @@ EOF
   git -C "$TEAM_HOME" checkout -q dev
 
   # Any other problem warns: the inbox step failing.
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  waiting_unwritable
   run -0 "$CODE_CHECKOUT/bin/team-timers" run
   run_bin -0 team-doctor
-  [[ $(line_of health) =~ ^"WARN health: inbox failing since "[0-9T:-]+"Z (1 run): Discord refused ".*"; fix: fix what each problem names; team-timers health lists them"$ ]]
-  rm "$STUB_FIXTURES/inbox/fail"
+  [[ $(line_of health) =~ ^"WARN health: inbox failing since "[0-9T:-]+"Z (1 run): cannot write ".*"/waiting.md: it is a directory; fix: fix what each problem names; team-timers health lists them"$ ]]
+  rmdir "$TEAM_HOME/waiting.md"
 
   # A heartbeat that last ran 20 minutes ago fails, as the heartbeat problem.
   run -0 "$CODE_CHECKOUT/bin/team-timers" run
