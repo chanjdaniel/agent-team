@@ -6,12 +6,46 @@
 #
 # Usage: tests/bootstrap-drill <machine name>
 # Exit 0 when the bootstrap ends at a step of Daniel's or set up, 1 when it failed on its own.
+# Its last line, on every way it ends, is the run's record for team-drill import, which reads it
+# from the job's log: "drill-record: machine=<its argument> verdict=<pass, exactly when it exits 0,
+# else fail> commit=<the HEAD of its checkout, or unknown> claude=<the first word of claude
+# --version, claude looked for on PATH and then in ~/.local/bin, where the bootstrap installs it,
+# or none>". It is written with no jq, which a bootstrap that failed early may not have installed,
+# and the drill needs no team home, which a runner does not have.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+machine=${1-}
+out=''
+
+# The run's record line, from the exit status the drill ends with: drill_record <status>
+drill_record() {
+  local verdict=fail commit claude=none bin version=''
+  (($1 != 0)) || verdict=pass
+  commit=$(git -C "$root" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || commit=unknown
+  bin=$(command -v claude 2>/dev/null) || bin=$HOME/.local/bin/claude
+  if [[ -x $bin ]]; then
+    if command -v timeout >/dev/null; then
+      version=$(timeout 10 "$bin" --version 2>/dev/null </dev/null) || version=''
+    else
+      version=$("$bin" --version 2>/dev/null </dev/null) || version=''
+    fi
+    read -r version _ <<<"$version" || true
+  fi
+  claude=${version:-none}
+  echo "drill-record: machine=$machine verdict=$verdict commit=$commit claude=$claude"
+}
+
+on_exit() {
+  local status=$?
+  [[ -z $out ]] || rm -f "$out"
+  drill_record "$status"
+  exit "$status"
+}
+trap on_exit EXIT
+
 [[ $# -eq 1 ]] || { echo "usage: tests/bootstrap-drill <machine name>" >&2; exit 2; }
 out=$(mktemp)
-trap 'rm -f "$out"' EXIT
 
 for round in 1 2 3 4; do
   echo "== round $round: team-bootstrap, as the agent runs it"
