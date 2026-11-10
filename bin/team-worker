@@ -31,9 +31,9 @@
 # Then, after those refusals and the stop of the task's finished sessions below, the session must
 # fit the level's memory budget beside what the team's work reserves: `team-capacity admit --kind
 # session:<role> --task <task>`, with --freed for each session it stopped or saw end while it
-# waited on it, whose use the stored reading still holds (sops/resources.md). With no room, at level none above all, it exits 75 with
-# the reason, launching nothing else; a failure of the admission itself stops the launch with its
-# reason (exit 1). T0 and ops are never asked.
+# waited on it, whose use the stored reading still holds (sops/resources.md). With no room, at
+# level none above all, it exits 75 with the reason, launching nothing else; a failure of the
+# admission itself stops the launch with its reason (exit 1). T0 and ops are never asked.
 # Once the session runs, `team-capacity place <id>` adopts it into its task's slice (on Linux;
 # nothing on macOS), but T0's, waiting up to TEAM_CAPACITY_PLACE_SECONDS (30) for the claude
 # daemon to list it with a running process and for a call that names a process gone to succeed;
@@ -48,15 +48,17 @@
 # any other reason hands nothing on. A busy one whose work is so handed on (a builder still ending
 # the turn that reported its DONE) is waited on, so one worktree has one builder: it says
 # "waiting up to <n> s for T<n>-<role> <id> to go idle: its work is handed on", reads the session
-# list again every 2 seconds for all of them together until TEAM_WORKER_IDLE_SECONDS (180, a
-# whole number) have passed, stops each that goes idle, says "T<n>-<role> <id> ended while waited
-# on: nothing to stop" of one that leaves the list, and leaves one that turns to any other state,
-# or one "still busy <n> s after its work was handed on; the heartbeat's finished step stops it
-# once it is idle"; a list that cannot be read then ends the wait. It leaves at once a busy one
-# whose work is not handed on, one waiting for input, one whose status is not idle, one with no
-# such event and an ops session; team-close still removes every session at the close. Each stop and each session left is said on stderr; a stop that
-# fails, or a session list that cannot be read, is a warning, and the launch goes on. T0 stops
-# nothing.
+# list again every 2 seconds for all of them together until TEAM_WORKER_IDLE_SECONDS (60, a whole
+# number) have passed, stops each that goes idle, says "T<n>-<role> <id> ended while waited on:
+# nothing to stop" of one that leaves the list, and leaves one that turns to any other state, or
+# one "still busy <n> s after its work was handed on; the heartbeat's finished step stops it once
+# it is idle"; a list that cannot be read then ends the wait. The 60 s, with the placement's 30,
+# keep a launch within the 2 minutes Claude Code gives a foreground Bash call by default, as the
+# coordinator's team-next runs it. It leaves at once a busy one whose work is not handed on, one
+# waiting for input, one whose status is not idle, one with no such event and an ops session;
+# team-close still removes every session at the close. Each stop and each session left is said
+# on stderr; a stop that fails, or a session list that cannot be read, is a warning, and the
+# launch goes on. T0 stops nothing.
 # When the worktree's project names a model for the role in the registry (team-project's models),
 # or --model names one, the session launches on it (claude --model) and the launch logs it as
 # model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
@@ -174,7 +176,7 @@ prompt="$*"
 [[ -z $request || $role == ops ]] || usage_error "--request is for the ops role only"
 [[ -z $model || $role != ops ]] || usage_error "--model is not for the ops role, which runs on the default model"
 # How long a handed-on session still busy is waited on (the header's hand-off paragraph).
-IDLE_SECONDS=${TEAM_WORKER_IDLE_SECONDS:-180}
+IDLE_SECONDS=${TEAM_WORKER_IDLE_SECONDS:-60}
 [[ $IDLE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_WORKER_IDLE_SECONDS must be a whole number of seconds, not '$IDLE_SECONDS'"
 # Daniel's message, by its link: its channel and its id.
 request_channel='' request_message=''

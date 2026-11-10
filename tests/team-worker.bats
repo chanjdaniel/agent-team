@@ -2141,7 +2141,10 @@ if [[ $1 == agents ]]; then
   cat "$STUB_FIXTURES/agents.$n.json"
   exit 0
 fi
-if [[ $1 == stop ]]; then echo "Stopped $2"; exit 0; fi
+if [[ $1 == stop ]]; then
+  if grep -qx "$2" "$STUB_FIXTURES/stop-fails"; then echo "no such session $2" >&2; exit 1; fi
+  echo "Stopped $2"; exit 0
+fi
 echo "Started background session 9a8b7c6d (${*: -2:1}). Attach with: claude attach 9a8b7c6d"
 SH
 }
@@ -2177,6 +2180,30 @@ LINES
   assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "stop") | .[1]')" 4a4a4a4a
   # Its use is left out of the admission, which the budget holds only without it.
   assert_equal "$(jq -c 'map([.kind, .task])' "$HOME/.local/state/agent-team/capacity/admitted.json")" '[["session:builder","T9"]]'
+}
+
+@test "a handed-on builder that goes idle while waited on and cannot be stopped is a warning, its use kept, and the launch goes on" {
+  thread T9
+  log_lines <<LINES
+launch T9 builder 4a4a4a4a $wt1
+T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
+LINES
+  sequenced_agents '[{"id": "4a4a4a4a", "name": "T9-builder", "status": "busy"}]' \
+    '[{"id": "4a4a4a4a", "name": "T9-builder", "status": "idle"}]'
+  echo 4a4a4a4a >"$STUB_FIXTURES/stop-fails"
+  TEAM_WORKER_IDLE_SECONDS=20 run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$output" "9a8b7c6d"
+  assert_contains "$stderr" "team-worker: waiting up to 20 s for T9-builder 4a4a4a4a to go idle: its work is handed on"
+  assert_contains "$stderr" "team-worker: warning: could not stop T9-builder 4a4a4a4a (no such session 4a4a4a4a); the launch goes on"
+  [[ $stderr != *"stopped T9-builder"* ]]
+  assert_equal "$(claude_verbs)" "agents agents stop --bg "
+  assert_equal "$(launches | jq -r 'select(.session == "9a8b7c6d") | .role')" builder
+  # Its use is not freed: with a budget that holds the new session only without it, no room.
+  rm "$STUB_FIXTURES/agents.count" "$HOME/.local/state/agent-team/capacity/admitted.json"
+  held_use 4a4a4a4a builder
+  TEAM_WORKER_IDLE_SECONDS=20 run_bin -75 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_contains "$stderr" "team-worker: warning: could not stop T9-builder 4a4a4a4a (no such session 4a4a4a4a); the launch goes on"
+  assert_contains "$stderr" "team-worker: no room for session:builder"
 }
 
 @test "a handed-on session still busy at the bound is left and the launch goes on; one that ends while waited on is freed" {
