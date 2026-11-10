@@ -669,7 +669,7 @@ SH
   ((SECONDS - start < 10))
 }
 
-@test "the inbox step writes waiting.md once a run on the holder, logging only the old message's retire or a failure, which never fails the run" {
+@test "the inbox step writes waiting.md once a run on the holder, logging only the old message's retire, a numbering afresh or a failure, which never fails the run" {
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
   assert_equal "$(inbox_calls)" ""
@@ -685,6 +685,15 @@ SH
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
   assert_equal "$(inbox_calls)" ""
+
+  # A waiting.json it cannot read is numbered afresh, which the next run would not show, so it is
+  # logged.
+  echo '{"schema": "team-waiting/0"}' >"$TEAM_HOME/waiting.json"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: numbers the list afresh, since waiting.json cannot be read: its schema is not team-waiting/1"$ ]]
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
 
   waiting_unwritable
   run_bin -0 team-timers run

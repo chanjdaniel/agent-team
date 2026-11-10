@@ -170,8 +170,10 @@
 #              inbox  On the holder, after the alert step: team-inbox, which writes the team
 #                     home's waiting.md, so what waits on Daniel is there within five minutes
 #                     whatever changed it. It logs only the one edit that retires the message
-#                     team-inbox kept in #coordinator before waiting.md ("retired <link>") and a
-#                     failure, and a failure never fails the run.
+#                     team-inbox kept in #coordinator before waiting.md ("retired <link>"), a
+#                     waiting.json it could not read and numbered afresh ("numbers the list afresh,
+#                     since waiting.json cannot be read: <why>"), and a failure, and a failure
+#                     never fails the run.
 #              finished  On the holder, after the inbox step, every run, whatever the level and
 #                     budget: claude stop (30 s, killed 10 s later) of each finished session of
 #                     every open task, the idle live session of a launch whose work is handed on
@@ -1062,8 +1064,8 @@ checkpoint_step() {
 }
 
 # The inbox step, on the holder after the alert step: team-inbox, logged only when it retired the
-# message it kept in #coordinator before waiting.md, or failed, and never failing the run, since
-# the next run writes the list again.
+# message it kept in #coordinator before waiting.md, numbered the list afresh (which no later run
+# would show), or failed, and never failing the run, since the next run writes the list again.
 inbox_step() {
   local rc=0 out why line
   out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$INBOX_TIMEOUT" "$bin/team-inbox" 2>"$err" {run_fd}>&-) || rc=$?
@@ -1072,6 +1074,9 @@ inbox_step() {
       while IFS= read -r line; do
         [[ $line != retired* ]] || log inbox "$line"
       done <<<"$out"
+      while IFS= read -r line; do
+        log inbox "${line#team-inbox: }"
+      done < <(grep '^team-inbox: numbers the list afresh' "$err" || true)
       step_ok inbox
       ;;
     124 | 137)
