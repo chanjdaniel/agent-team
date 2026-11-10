@@ -20,7 +20,7 @@ setup() {
   log=$state/heartbeat.log
   record=$state/health.json
   inbox_discord alerts
-  inbox_kept
+  inbox_guild_kept
 }
 
 # The live session list with a coordinator in it, as claude agents --json gives it.
@@ -157,14 +157,19 @@ http_origin() {
   jq -e '.ok' <<<"$view"
 }
 
-@test "the Waiting on you message carries the view's line between the resources line and its last line: ok after a good run, the failing checkpoint after two failed runs" {
+@test "the post of the list carries the view's line after the resources line: ok after a good run, the failing checkpoint after two failed runs" {
   run_bin -0 team-timers run
   local checkpoint renewed
   checkpoint=$(date -u -r "$state/last-checkpoint" +%s)
   renewed=$(lease_json "$origin" | jq '.renewed_at | fromdateiso8601')
-  assert_equal "$(inbox_shown | tail -n 3 | head -n 2)" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget
--# Health: ok - last checkpoint <t:$checkpoint:R>, lease renewed <t:$renewed:R>, coordinator live"
-  [[ $(inbox_shown | tail -n 1) =~ ^"-# team-inbox keeps this current; updated <t:"[0-9]+":R>"$ ]]
+  run_bin -0 team-inbox --post
+  # The heartbeat took a reading, so the resources line names a budget.
+  [[ $(posted_shown | tail -n 3 | head -n 1) == "Resources: manual, full (90%): "*" GiB and "*" cores for the team; 0.0 GiB reserved" ]]
+  assert_equal "$(posted_shown | tail -n 2 | head -n 1)" \
+    "-# Health: ok - last checkpoint <t:$checkpoint:R>, lease renewed <t:$renewed:R>, coordinator live"
+  # waiting.md, which the heartbeat writes, holds neither line.
+  assert_equal "$(waiting_shown)" "**Waiting on you**
+Nothing waits on you."
 
   git -C "$TEAM_HOME" checkout -q --detach
   checkpoint_due
@@ -174,7 +179,8 @@ http_origin() {
   view
   local since
   since=$(jq -r '.problems[] | select(.key == "checkpoint") | .since' <<<"$view")
-  # The message shows this run's line: the record is written before the inbox step.
+  # The post shows the last run's line.
+  run_bin -0 team-inbox --post
   assert_equal "$(inbox_health_shown)" "$(jq -r .line <<<"$view")"
   assert_equal "$(inbox_health_shown)" \
     "**Health**: checkpoint failing since <t:$(date -d "$since" +%s):t> (2 runs): team home: not on a branch, so the records are not committed"

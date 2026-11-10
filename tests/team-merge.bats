@@ -117,19 +117,20 @@ pr: []"
   assert_equal "$(sed -n 's/^status: //p' "$TEAM_HOME/projects/proj/backlog/E40-h/F01-m/S02-w.md" | head -n 1)" ready
 }
 
-@test "a merge brings the Waiting on you message up to date" {
+@test "a merge brings waiting.md up to date" {
   # Reviewed at the head and not yet approved, the PR waits on Daniel.
   jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   event T14 review '{head: "a1b2c3d4", verdict: "pass"}'
   run_bin -0 team-inbox
-  assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
-- T14 The tooling: https://github.com/owner/proj/pull/5"
+  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
+- **1** T14 The tooling: <https://github.com/owner/proj/pull/5>"
   event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000", head: "a1b2c3d4"}'
   : >"$STUB_FIXTURES/inbox/calls"
   run_bin -0 --separate-stderr team-merge T14
-  [[ $stderr != *"Waiting on you"* ]]
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000001"
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  [[ $stderr != *"waiting.md"* ]]
+  # The guild is kept, so the refresh calls Discord for nothing.
+  assert_equal "$(inbox_calls)" ""
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 }
 
 @test "the merged event is on origin when the merge ends, and when the steps after it fail" {
@@ -144,23 +145,23 @@ pr: []"
   assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
   assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
 
-  # The story cannot be marked and Discord refuses the Waiting on you message, both after the merge.
+  # The story cannot be marked and waiting.md cannot be written, both after the merge.
   merge_again
   story_of E40/F01/S02
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  waiting_unwritable
   tip=$(git -C "$team_origin" rev-parse dev)
   run_bin -0 --separate-stderr team-merge T14
   assert_contains "$stderr" "its story E40/F01/S02 is not marked done"
-  assert_contains "$stderr" "the Waiting on you message is not updated"
+  assert_contains "$stderr" "waiting.md is not updated"
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T14 merged"
   assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
   assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
 }
 
-@test "Discord refusing the Waiting on you message is a line on stderr, and the merge stands" {
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+@test "a waiting list team-inbox cannot write is a line on stderr, and the merge stands" {
+  waiting_unwritable
   run_bin -0 --separate-stderr team-merge T14
-  assert_contains "$stderr" "team-merge: the Waiting on you message is not updated: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 500"
+  assert_contains "$stderr" "team-merge: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(merged_events | wc -l)" 1
 }
 
@@ -1075,16 +1076,15 @@ EOF
 1562486564871995482 $(merge_post 1563 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')"
   assert_equal "$(jq -r .merged "$discord/posts" | sort -u)" 1
   [[ $stderr != *post* ]]
-  # The guild for the link is read from #coordinator's channel, then the Waiting on you message is posted.
+  # The guild for the link is read from #coordinator's channel, then again by team-inbox, which
+  # keeps it for waiting.md's links and posts nothing.
   assert_equal "$(stub_calls curl | jq -r '.[-1] | capture("v10/(?<p>.*)").p' | grep -v '/messages/[0-9]*$')" \
     "channels/1562486564871995482
 channels/1563/messages
 channels/1562486564871995482/messages
-channels/1562486564871995482
-channels/1562486564871995482/messages"
+channels/1562486564871995482"
   assert_equal "$(inbox_calls)" "GET channels/1562486564871995482
-GET channels/1562486564871995482
-POST channels/1562486564871995482/messages"
+GET channels/1562486564871995482"
 }
 
 @test "the post's revert is the project's merge method's: git revert -m 1 for a merge, the rebased commits' range for a rebase" {

@@ -160,7 +160,7 @@ usage/home-pc/time/2026-10-26.jsonl"
 # team-handoff's) take whole, naming no paths of their own, and CLAUDE.md's table of the team home.
 # team-checkpoint's first commit, of the ledger files by name, is a command substitution, never
 # one of these lines.
-@test "the ledger, the level record and the drill record are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
+@test "the ledger, the level record, the drill record and the waiting list's two files are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
   local file script calls
   for script in team-checkpoint team-handoff; do
     calls=$(grep -E '^[[:space:]]*(records_by_group=1 )?commit_records ' "$REPO_ROOT/bin/$script")
@@ -170,7 +170,7 @@ usage/home-pc/time/2026-10-26.jsonl"
       return 1
     fi
   done
-  for file in ledger.jsonl level.jsonl drills.jsonl; do
+  for file in ledger.jsonl level.jsonl drills.jsonl waiting.md waiting.json; do
     grep -qxF "$file" "$REPO_ROOT/bin/lib/records" || { echo "$file is not in bin/lib/records" >&2; return 1; }
     grep -qF "| \`$file\` |" "$REPO_ROOT/CLAUDE.md" || { echo "$file is not in CLAUDE.md's team-home table" >&2; return 1; }
   done
