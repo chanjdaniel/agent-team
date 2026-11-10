@@ -1051,12 +1051,11 @@ posted to #coordinator (message 1569000000000000001): down: conventioner/api"
 @test "with the known-good site unreachable the uptime step fails the run and counts nothing, posting no production post" {
   production 503 'Service Unavailable'
   export TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/
-  local line
   run_bin -1 team-timers run
   run_bin -1 team-timers run
   [[ $(uptime_lines "$output") =~ ^"cannot reach the internet: http://127.0.0.1:9/: "[^$'\n']+"; 1 failing check(s) not counted"$'\n'"failed: this machine cannot reach the internet (http://127.0.0.1:9/: "[^$'\n']+"), so 1 failing check(s) were not counted"$ ]]
-  line=$(grep ' uptime: failed: ' <<<"$output" | cut -d' ' -f2-)
-  assert_equal "$(problems | grep -c -xF "$line")" 2
+  # Both runs' failures, curl's reason aside, which may name how many ms its connect took.
+  assert_equal "$(problems | grep -c -xE '^uptime: failed: this machine cannot reach the internet \(http://127\.0\.0\.1:9/: .+\), so 1 failing check\(s\) were not counted$')" 2
   assert_equal "$(production_posts)" ""
   jq -e '.steps.uptime.runs == 2 and (.steps.uptime.reason | startswith("this machine cannot reach the internet (http://127.0.0.1:9/: "))' \
     "$HOME/.local/state/agent-team/health.json"
