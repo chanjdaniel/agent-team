@@ -27,7 +27,7 @@ A drill runs, for real, a path the team rests on and seldom takes: a move betwee
 - Steps:
   1. `team-load-check` (with `--toolkit <name>` for each toolkit whose reach is to be checked).
   2. Read its last line: `PASS`, or each `FAIL` line.
-- Passes when the load check exits 0: the planner's MCP tools are the given toolkits', nothing of production or the coordinator reaches it, its transcript shows the write outside `.scratch/` attempted and blocked by the edit hook, and its effective autoMode holds its settings' lines.
+- Passes when the load check exits 0: the planner's MCP tools are the given toolkits', nothing of production or the coordinator reaches it, its transcript shows the write outside `.scratch/` attempted and blocked by the edit hook, its effective autoMode holds its settings' lines, and none of its worktree's own files configured or instructed it.
 - Record: the load check's own.
 
 ## `load-check-ops-prod-write` and `load-check-ops-vercel-read`: the production prompts
