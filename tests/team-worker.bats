@@ -359,6 +359,69 @@ team-worker: proj's AGENTS.md at origin/main imports @./ (line 4), which is not 
   assert_contains "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main imports @AGENTS.md (line 2), which is not inlined"
 }
 
+# base_link <repo> <link> <target>: commit the symbolic link <link> to <target> on the base branch
+# main and push it.
+base_link() {
+  ln -sfn -- "$3" "$1/$2"
+  git -C "$1" add -- "$2"
+  git -C "$1" commit -q -m "docs: link $2"
+  git -C "$1" push -q origin main
+}
+
+@test "a root CLAUDE.md or AGENTS.md that links to the other is given once with nothing on stderr; a link inside the base is followed, one leaving it or to no file is named" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  # Conventioner's shape: CLAUDE.md a link to AGENTS.md.
+  base_files "$primary" AGENTS.md "LINKED-MARKER"
+  base_link "$primary" CLAUDE.md AGENTS.md
+  local role file
+  for role in planner builder reviewer; do
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 --separate-stderr team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(notes "$stderr")" ""
+    file=$(prompt_file)
+    assert_equal "$(grep -cxF LINKED-MARKER "$file")" 1
+    grep -qxF 'Contents of `CLAUDE.md` at `origin/main`, a symbolic link to `AGENTS.md`:' "$file"
+    grep -qF '`AGENTS.md` at `origin/main` is the same file as `CLAUDE.md`, so it is given once.' "$file"
+  done
+
+  # The other way round: AGENTS.md a link to CLAUDE.md.
+  git -C "$primary" rm -q CLAUDE.md AGENTS.md
+  base_files "$primary" CLAUDE.md "OTHER-WAY-MARKER"
+  base_link "$primary" AGENTS.md ./CLAUDE.md
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$(notes "$stderr")" ""
+  assert_equal "$(grep -cxF OTHER-WAY-MARKER "$(prompt_file)")" 1
+  grep -qF '`AGENTS.md` at `origin/main` is the same file as `CLAUDE.md`, so it is given once.' "$(prompt_file)"
+
+  # A link to a file elsewhere in the base is given that file's text, as the base has it.
+  git -C "$primary" rm -q CLAUDE.md AGENTS.md
+  mkdir -p "$primary/docs"
+  base_files "$primary" docs/instructions.md "DOCS-MARKER"
+  base_link "$primary" CLAUDE.md docs/../docs/instructions.md
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$(notes "$stderr")" ""
+  grep -qxF DOCS-MARKER "$(prompt_file)"
+  grep -qxF 'Contents of `CLAUDE.md` at `origin/main`, a symbolic link to `docs/instructions.md`:' "$(prompt_file)"
+
+  # A link that leaves the repository, or names no file of the base, is not followed.
+  local target sha
+  for target in ../outside.md /etc/hostname missing.md docs; do
+    base_link "$primary" CLAUDE.md "$target"
+    sha=$(git -C "$primary" rev-parse origin/main)
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+    case $target in
+      ../* | /*) assert_contains "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main is a symbolic link to $target, outside the repository, so T7-builder is not given it" ;;
+      *) assert_contains "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main is a symbolic link to $target, which is no file at origin/main, so T7-builder is not given it" ;;
+    esac
+    assert_contains "$(notes "$stderr")" "team-worker: proj has no CLAUDE.md or AGENTS.md at origin/main ($sha), so T7-builder gets no project instructions"
+    run -1 grep -F DOCS-MARKER "$(prompt_file)"
+  done
+}
+
 @test "an origin/<base> the worktree's repository cannot read refuses the launch, nothing started, stopped or logged" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"
