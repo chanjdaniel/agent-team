@@ -17,10 +17,11 @@
 # uptime_requests          each request the stub served, one JSON line {path, method, headers}
 # uptime_check <project> <name> <url> <expect>
 #                          appends an [[<project>.uptime]] table to the sandbox's registry
-# uptime_curl              installs a curl stub that answers the fake Discord's calls
-#                          ($STUB_FIXTURES/inbox.sh), refuses any other call to discord.com, and
-#                          runs the machine's own curl for the rest, its argv still logged as
-#                          every stub's (stub_calls curl)
+# uptime_curl [answers]    installs a curl stub that answers the fake Discord's calls
+#                          ($STUB_FIXTURES/inbox.sh), refuses any other call to discord.com (with
+#                          answers, answers it with a message id, as tests/team-timers.bats'
+#                          discord_answers does), and runs the machine's own curl for the rest, its
+#                          argv still logged as every stub's (stub_calls curl)
 # uptime_posts             the content of each post that reached the fake Discord, in order (a
 #                          post of several checks is a line each)
 # uptime_bodies            each post's whole body, one compact JSON line per post, in order
@@ -78,8 +79,13 @@ uptime_curl() {
   {
     echo '[[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"'
     echo 'if [[ ${*: -1} == https://discord.com/* ]]; then'
-    echo '  echo "curl: (22) The requested URL returned error: 404" >&2'
-    echo '  exit 22'
+    if [[ ${1:-} == answers ]]; then
+      echo "  echo '{\"id\":\"1563000000000000001\"}'"
+      echo '  exit 0'
+    else
+      echo '  echo "curl: (22) The requested URL returned error: 404" >&2'
+      echo '  exit 22'
+    fi
     echo 'fi'
     printf 'exec %q "$@"\n' "$real"
   } | stub_script curl
