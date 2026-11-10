@@ -10,6 +10,8 @@ setup() {
   # This machine, home-pc, holds the lease; make_machine laptop builds the other one.
   hold_lease home-pc >/dev/null
   primary=$(make_repo proj)
+  # The base branch has the project's instructions, so a launch has nothing to say of them.
+  base_files "$primary" CLAUDE.md "# proj"
   wt1=$HOME/slots/proj/1 wt2=$HOME/slots/proj/2
   git -C "$primary" worktree add -q -b feat/T7-one "$wt1"
   git -C "$primary" worktree add -q -b feat/T8-two "$wt2"
@@ -88,6 +90,14 @@ TOML
 
 launches() {
   jq -c 'select(.event == "launch") | del(.ts)' "$TEAM_HOME/ledger.jsonl"
+}
+
+# generated <settings|mcp> <role>: the file team-worker generated for a T7 launch of <role> on a
+# worktree of proj, keyed by the project for every role but ops.
+generated() {
+  local stem=$2
+  [[ $2 == ops ]] || stem+=.proj
+  echo "$TEAM_HOME/tasks/T7/$1.$stem.json"
 }
 
 # ops_refused <message> <argument>...: the launcher run with those arguments exits 1 with
@@ -211,12 +221,230 @@ run_fake() {
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$wt1"
 
   local t=$TEAM_HOME/tasks/T7
-  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
-    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.builder.json",
-    "--settings", "\($t)/settings.builder.json",
-    "--append-system-prompt-file", "\($roles)/builder.md",
+  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg prompts "$HOME/.local/state/agent-team/prompts/T7" '["--bg",
+    "--setting-sources", "user",
+    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.builder.proj.json",
+    "--settings", "\($t)/settings.builder.proj.json",
+    "--append-system-prompt-file", "\($prompts)/builder.proj.md",
     "--permission-mode", "auto", "--name", "T7-builder", "Read your brief at \($t)/brief.md"]')"
-  assert_equal "$(jq -c . "$t/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$t/mcp.builder.proj.json")" '{"mcpServers":{}}'
+}
+
+
+# base_files <repo> <file> <text> [<file> <text>]...: commit each file with its text on the base
+# branch main and push it, so origin/main has them; the worktrees keep their own branch's.
+base_files() {
+  local repo=$1
+  shift
+  while (($#)); do
+    printf '%s\n' "$2" >"$repo/$1"
+    git -C "$repo" add -- "$1"
+    shift 2
+  done
+  git -C "$repo" commit -q -m "docs: instructions"
+  git -C "$repo" push -q origin main
+}
+
+# A launch's stderr <stderr> but the lines for the earlier sessions it leaves running: notes <stderr>
+notes() {
+  grep -v '^team-worker: left T7-' <<<"$1" || true
+}
+
+# The system prompt file a launch passed, by its last claude --bg call.
+prompt_file() {
+  bg_calls | tail -n 1 | jq -r 'index("--append-system-prompt-file") as $i | .[$i + 1]'
+}
+
+@test "a planner, builder and reviewer load user settings only, with the project's memory directory and the in-place key; ops keeps its command line" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ops_stub
+  local role settings
+  for role in planner builder reviewer; do
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(bg_calls | jq -c '[index("--setting-sources") as $i | .[$i], .[$i + 1]]')" '["--setting-sources","user"]'
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
+    assert_equal "$(jq -c .worktree "$settings")" '{"bgIsolation":"none"}'
+    # By team-config's one definition: the team home's memory/<project>, as ~/... under HOME.
+    assert_equal "$(jq -r .autoMemoryDirectory "$settings")" "$TEAM_HOME/memory/proj"
+  done
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(bg_calls | jq -c 'index("--setting-sources")')" null
+  assert_equal "$(bg_calls | jq -r 'index("--append-system-prompt-file") as $i | .[$i + 1]')" "$REPO_ROOT/roles/ops.md"
+  settings=$TEAM_HOME/tasks/T7/settings.ops.json
+  assert_equal "$(jq -c .worktree "$settings")" '{"bgIsolation":"none"}'
+  assert_equal "$(jq -c 'has("autoMemoryDirectory")' "$settings")" false
+
+  # A team home under HOME is named as ~/..., as team-config writes it.
+  local moved=$HOME/records
+  mv "$TEAM_HOME" "$moved"
+  TEAM_HOME=$moved run_bin -0 team-worker T7 builder "$wt1" -- go
+  # shellcheck disable=SC2088 # the setting holds the ~ itself, for Claude Code to expand
+  assert_equal "$(jq -r .autoMemoryDirectory "$moved/tasks/T7/settings.builder.proj.json")" "~/records/memory/proj"
+}
+
+@test "the system prompt is generated in the machine's state directory: the role, then the base branch's CLAUDE.md and AGENTS.md under the project, the ref and its commit" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  base_files "$primary" CLAUDE.md "BASE-CLAUDE-MARKER" AGENTS.md "BASE-AGENTS-MARKER"
+  local sha
+  sha=$(git -C "$primary" rev-parse origin/main)
+  # The worktree's branch has its own CLAUDE.md, the change a PR would bring.
+  echo "WORKTREE-CLAUDE-MARKER" >"$wt1/CLAUDE.md"
+  git -C "$wt1" add CLAUDE.md
+  git -C "$wt1" commit -q -m "docs: change the instructions"
+  local role file
+  for role in planner builder reviewer; do
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 --separate-stderr team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(notes "$stderr")" ""
+    file=$(prompt_file)
+    assert_equal "$file" "$HOME/.local/state/agent-team/prompts/T7/$role.proj.md"
+    [[ $file != "$TEAM_HOME"/* ]]
+    # The role's prompt comes first, whole.
+    assert_equal "$(head -n "$(wc -l <"$REPO_ROOT/roles/$role.md")" "$file")" "$(cat "$REPO_ROOT/roles/$role.md")"
+    grep -qxF "# Project instructions: proj, from origin/main at $sha" "$file"
+    grep -qxF "BASE-CLAUDE-MARKER" "$file"
+    grep -qxF "BASE-AGENTS-MARKER" "$file"
+    run -1 grep -F "WORKTREE-CLAUDE-MARKER" "$file"
+    # CLAUDE.md before AGENTS.md, both after the heading.
+    assert_equal "$(grep -nE '^(# Project instructions|BASE-)' "$file" | cut -d: -f2 | cut -c1-12 | tr '\n' ' ')" \
+      "# Project in BASE-CLAUDE- BASE-AGENTS- "
+  done
+  run_bin -0 team-worker --help
+  assert_contains "$output" "--setting-sources user"
+  assert_contains "$output" "origin/<base>"
+}
+
+@test "an identical second file is left out, an @AGENTS.md line stays as text, any other import is named on stderr, and a project with neither file gets no section" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  # Neither file: the role alone, said on stderr.
+  git -C "$primary" rm -q CLAUDE.md
+  git -C "$primary" commit -q -m "docs: drop the instructions"
+  git -C "$primary" push -q origin main
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$output" "4f2a9c1e"
+  assert_equal "$stderr" "team-worker: proj has no CLAUDE.md or AGENTS.md at origin/main ($(git -C "$primary" rev-parse origin/main)), so T7-builder gets no project instructions"
+  assert_equal "$(cat "$(prompt_file)")" "$(cat "$REPO_ROOT/roles/builder.md")"
+
+  # Two copies: the second is left out, and a line says so.
+  base_files "$primary" CLAUDE.md "SAME-MARKER" AGENTS.md "SAME-MARKER"
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$(notes "$stderr")" ""
+  assert_equal "$(grep -cxF SAME-MARKER "$(prompt_file)")" 1
+  grep -qF '`AGENTS.md` at `origin/main` is the same file as `CLAUDE.md`, so it is given once.' "$(prompt_file)"
+
+  # An @AGENTS.md line is the file that follows; any other import line is not inlined, outside a
+  # code fence.
+  base_files "$primary" CLAUDE.md $'# Proj\n@AGENTS.md\n  @docs/rules.md\n```\n@not/an/import.md\n```\nmail me @ home' \
+    AGENTS.md $'AGENTS-MARKER\n@./CLAUDE.md\n@~/.claude/mine.md\n@./'
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main imports @docs/rules.md (line 3), which is not inlined: T7-builder reads that line as text
+team-worker: proj's AGENTS.md at origin/main imports @~/.claude/mine.md (line 3), which is not inlined: T7-builder reads that line as text
+team-worker: proj's AGENTS.md at origin/main imports @./ (line 4), which is not inlined: T7-builder reads that line as text"
+  grep -qxF "@AGENTS.md" "$(prompt_file)"
+  grep -qxF "AGENTS-MARKER" "$(prompt_file)"
+
+  # An @AGENTS.md with no AGENTS.md to follow is named too.
+  git -C "$primary" rm -q AGENTS.md
+  git -C "$primary" commit -q -m "docs: drop AGENTS.md"
+  git -C "$primary" push -q origin main
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_contains "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main imports @AGENTS.md (line 2), which is not inlined"
+}
+
+# base_link <repo> <link> <target>: commit the symbolic link <link> to <target> on the base branch
+# main and push it.
+base_link() {
+  ln -sfn -- "$3" "$1/$2"
+  git -C "$1" add -- "$2"
+  git -C "$1" commit -q -m "docs: link $2"
+  git -C "$1" push -q origin main
+}
+
+@test "a root CLAUDE.md or AGENTS.md that links to the other is given once with nothing on stderr; a link inside the base is followed, one leaving it or to no file is named" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  # Conventioner's shape: CLAUDE.md a link to AGENTS.md.
+  base_files "$primary" AGENTS.md "LINKED-MARKER"
+  base_link "$primary" CLAUDE.md AGENTS.md
+  local role file
+  for role in planner builder reviewer; do
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 --separate-stderr team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(notes "$stderr")" ""
+    file=$(prompt_file)
+    assert_equal "$(grep -cxF LINKED-MARKER "$file")" 1
+    grep -qxF 'Contents of `CLAUDE.md` at `origin/main`, a symbolic link to `AGENTS.md`:' "$file"
+    grep -qF '`AGENTS.md` at `origin/main` is the same file as `CLAUDE.md`, so it is given once.' "$file"
+  done
+
+  # The other way round: AGENTS.md a link to CLAUDE.md.
+  git -C "$primary" rm -q CLAUDE.md AGENTS.md
+  base_files "$primary" CLAUDE.md "OTHER-WAY-MARKER"
+  base_link "$primary" AGENTS.md ./CLAUDE.md
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$(notes "$stderr")" ""
+  assert_equal "$(grep -cxF OTHER-WAY-MARKER "$(prompt_file)")" 1
+  grep -qF '`AGENTS.md` at `origin/main` is the same file as `CLAUDE.md`, so it is given once.' "$(prompt_file)"
+
+  # A link to a file elsewhere in the base is given that file's text, as the base has it.
+  git -C "$primary" rm -q CLAUDE.md AGENTS.md
+  mkdir -p "$primary/docs"
+  base_files "$primary" docs/instructions.md "DOCS-MARKER"
+  base_link "$primary" CLAUDE.md docs/../docs/instructions.md
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$(notes "$stderr")" ""
+  grep -qxF DOCS-MARKER "$(prompt_file)"
+  grep -qxF 'Contents of `CLAUDE.md` at `origin/main`, a symbolic link to `docs/instructions.md`:' "$(prompt_file)"
+
+  # A link that leaves the repository, or names no file of the base, is not followed.
+  local target sha
+  for target in ../outside.md /etc/hostname missing.md docs; do
+    base_link "$primary" CLAUDE.md "$target"
+    sha=$(git -C "$primary" rev-parse origin/main)
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+    case $target in
+      ../* | /*) assert_contains "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main is a symbolic link to $target, outside the repository, so T7-builder is not given it" ;;
+      *) assert_contains "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main is a symbolic link to $target, which is no file at origin/main, so T7-builder is not given it" ;;
+    esac
+    assert_contains "$(notes "$stderr")" "team-worker: proj has no CLAUDE.md or AGENTS.md at origin/main ($sha), so T7-builder gets no project instructions"
+    run -1 grep -F DOCS-MARKER "$(prompt_file)"
+  done
+}
+
+@test "an origin/<base> the worktree's repository cannot read refuses the launch, nothing started, stopped or logged" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  git -C "$primary" update-ref -d refs/remotes/origin/main
+  run_bin -1 team-worker T7 reviewer "$wt1" -- go
+  assert_equal "$output" "team-worker: $wt1's repository has no origin/main, where proj's instructions for T7-reviewer come from: fetch it (git -C $wt1 fetch origin main) and launch again"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.proj.json ]]
+  [[ ! -e $HOME/.local/state/agent-team/prompts/T7 ]]
+}
+
+@test "a launch with no project gets no memory directory and no project instructions, said on stderr" {
+  local loose
+  loose=$(make_repo loose)
+  git -C "$loose" worktree add -q -b feat/T0-x "$HOME/slots/loose/1"
+  base_files "$loose" CLAUDE.md "LOOSE-MARKER"
+  run_bin -0 --separate-stderr team-worker T0 planner "$HOME/slots/loose/1" -- go
+  assert_equal "$stderr" "team-worker: $HOME/slots/loose/1 is a worktree of $loose, which is no registered project's primary checkout in projects.toml, so T0-planner gets no project instructions and no memory directory"
+  assert_equal "$(jq -c 'has("autoMemoryDirectory")' "$TEAM_HOME/tasks/T0/settings.planner.json")" false
+  assert_equal "$(jq -c .worktree "$TEAM_HOME/tasks/T0/settings.planner.json")" '{"bgIsolation":"none"}'
+  assert_equal "$(prompt_file)" "$HOME/.local/state/agent-team/prompts/T0/planner.md"
+  assert_equal "$(cat "$(prompt_file)")" "$(cat "$REPO_ROOT/roles/planner.md")"
 }
 
 @test "a prompt naming a brief that is missing or unreadable, or saying 'your brief' with none, is refused: nothing started or logged" {
@@ -246,7 +474,7 @@ run_fake() {
   chmod 644 "$TEAM_HOME/tasks/T7/brief.md"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
-  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.json ]]
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.proj.json ]]
 }
 
 @test "a launch logs the brief its prompt names under the task's directory, and none for a prompt naming none" {
@@ -315,7 +543,8 @@ run_fake() {
   thread T7
   run_fake T7 planner "$wt1" -- go
   assert_equal "$status" "0"
-  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" '{
+  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" "$(jq -cnS --arg code "$code" --arg memory "$TEAM_HOME/memory/proj" '{
+    autoMemoryDirectory: $memory, worktree: {bgIsolation: "none"},
     disableClaudeAiConnectors: true, env: {A: "worker", B: "planner"},
     permissions: {deny: ["Bash(git clean*)", "Bash(gh pr merge*)", "Bash(git push*)"], allow: ["Read", "Edit"]},
     hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: "\($code)/bin/hooks/w"}]},
@@ -333,14 +562,14 @@ run_fake() {
   thread T7
   run_fake T7 planner "$wt1" -- go
   assert_equal "$status" 0
-  assert_equal "$(jq -cS .autoMode "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" '{
+  assert_equal "$(jq -cS .autoMode "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" "$(jq -cnS --arg code "$code" '{
     environment: ["$defaults", "shared fact", "planner fact at \($code)"],
     soft_deny: ["$defaults"], allow: ["$defaults", "planner allow"]}')"
 
   # With no autoMode in either file, the settings have none.
   fake_checkout
   run_fake T7 planner "$wt1" -- go
-  assert_equal "$(jq -c 'has("autoMode")' "$TEAM_HOME/tasks/T7/settings.planner.json")" false
+  assert_equal "$(jq -c 'has("autoMode")' "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" false
 }
 
 @test "every role's generated settings hold the worker settings' autoMode lines, \"\$defaults\" once per list" {
@@ -353,7 +582,7 @@ run_fake() {
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$(generated settings "$role")
     # Each line as the worker settings have it, a line with a registry fact rendered.
     assert_equal "$(jq -c --slurpfile w "$REPO_ROOT/settings/worker.json" '
       [.autoMode.environment, $w[0].autoMode.environment] | transpose
@@ -382,7 +611,7 @@ pool = { provider = "git", slots = ["slots/third/1"] }
 TOML
   thread T7
   run_bin -0 team-worker T7 builder "$wt1" -- go
-  local settings=$TEAM_HOME/tasks/T7/settings.builder.json
+  local settings=$TEAM_HOME/tasks/T7/settings.builder.proj.json
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Source control**"))' "$settings")" \
     "**Source control**: the team's repositories are on GitHub: its team home, chanjdaniel/agent-team-records (~/agent-team-records: the ledger, plans, briefs and memory), and the projects it works on, owner/proj (primary checkout ~/projects/proj), owner/other (primary checkout ~/projects/other) and someone/Third (primary checkout ~/elsewhere/third). agent-team is the team's own code, and no-mistakes is Daniel's fork of the gate, whose pull requests from the team go to the fork itself, never upstream."
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Repository visibility**"))' "$settings")" \
@@ -409,7 +638,7 @@ TOML
   local role settings
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
     assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$settings")" \
       "$REPO_ROOT/bin/hooks/lease-fence
 $REPO_ROOT/bin/hooks/command-guard"
@@ -435,7 +664,7 @@ $REPO_ROOT/bin/hooks/command-guard"
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$(generated settings "$role")
     expected="lease-fence block 60
 command-guard block 10"
     case $role in
@@ -459,7 +688,7 @@ command-guard block 10"
   thread T7
   run_fake T7 planner "$wt1" --toolkit kit-a --toolkit kit-b --toolkit kit-c -- go
   assert_equal "$status" "0"
-  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
+  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" \
     '{"mcpServers":{"alpha":{"command":"a"},"beta":{"command":"b"},"gamma":{"command":"c"}}}'
   assert_equal "$(bg_calls | jq -c '[index("--plugin-dir") as $i | .[$i:$i + 6]]')" \
     "$(jq -cn --arg k "$code/toolkits" '[["--plugin-dir", "\($k)/kit-a", "--plugin-dir", "\($k)/kit-b", "--plugin-dir", "\($k)/kit-c"]]')"
@@ -552,16 +781,44 @@ command-guard block 10"
     "$(jq -cn --arg wt "$HOME/slots/other/1" '["other", "chore/T7-two", $wt]')"
 }
 
+@test "a builder of a second project's worktree leaves the first project's builder its own settings, MCP config and prompt" {
+  local other
+  other=$(make_repo other)
+  git -C "$other" worktree add -q -b chore/T7-two "$HOME/slots/other/1"
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ledger_line --arg wt "$HOME/slots/other/1" '{ts: (now | todate), task: "T7", event: "worktree-added",
+    project: "other", branch: "chore/T7-two", base: "main", base_sha: "0123456", worktree: $wt}'
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  local first
+  first=$(bg_calls | tail -n 1)
+  files() { jq -r --arg flag "$1" '.[index($flag) + 1]' <<<"$2"; }
+  run_bin -0 team-worker T7 builder "$HOME/slots/other/1" -- go
+  local second t=$TEAM_HOME/tasks/T7
+  second=$(bg_calls | tail -n 1)
+  # The first session's settings still name its own project's memory folder.
+  assert_equal "$(jq -r .autoMemoryDirectory "$(files --settings "$first")")" "$TEAM_HOME/memory/proj"
+  assert_equal "$(jq -r .autoMemoryDirectory "$(files --settings "$second")")" "$TEAM_HOME/memory/other"
+  # Each launch has files of its own, keyed by role and project, as the prompt file is.
+  assert_equal "$(files --settings "$first")" "$t/settings.builder.proj.json"
+  assert_equal "$(files --settings "$second")" "$t/settings.builder.other.json"
+  assert_equal "$(files --mcp-config "$first")" "$t/mcp.builder.proj.json"
+  assert_equal "$(files --mcp-config "$second")" "$t/mcp.builder.other.json"
+  assert_equal "$(files --append-system-prompt-file "$first")" "$HOME/.local/state/agent-team/prompts/T7/builder.proj.md"
+  assert_equal "$(files --append-system-prompt-file "$second")" "$HOME/.local/state/agent-team/prompts/T7/builder.other.md"
+}
+
 @test "a project's model for the role is passed to claude and logged on the launch" {
   registry --first 'models = { reviewer = "sonnet", builder = "claude-sonnet-5-5" }' proj other
   thread T7
   opened T7 proj feat/T7-one "$wt1"
   run_bin -0 team-worker T7 reviewer "$wt1" -- Review it
   local t=$TEAM_HOME/tasks/T7
-  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
-    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.reviewer.json",
-    "--settings", "\($t)/settings.reviewer.json",
-    "--append-system-prompt-file", "\($roles)/reviewer.md",
+  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg prompts "$HOME/.local/state/agent-team/prompts/T7" '["--bg",
+    "--setting-sources", "user",
+    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.reviewer.proj.json",
+    "--settings", "\($t)/settings.reviewer.proj.json",
+    "--append-system-prompt-file", "\($prompts)/reviewer.proj.md",
     "--permission-mode", "auto", "--model", "sonnet", "--name", "T7-reviewer", "Review it"]')"
   assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "reviewer",
     session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one", machine: "home-pc",
@@ -706,7 +963,7 @@ command-guard block 10"
   assert_contains "$stderr" "team-worker: laptop holds the lease: run team-resume --wait here, then hand off there once it says this machine is ready"
   assert_equal "$(stub_calls claude)" ""
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
-  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.json ]]
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.proj.json ]]
 }
 
 @test "with GitHub unreachable it refuses: a worker never starts offline" {
@@ -761,7 +1018,7 @@ role_texts() {
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$(generated settings "$role")
     jq -e . "$settings" >/dev/null
     # The worker settings' rules come first, and its skill overrides hold unless the role's own
     # file overrides the same skill.
@@ -787,7 +1044,7 @@ role_texts() {
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$(generated settings "$role")
     assert_equal "$(jq -r .env.AGENT_TEAM_ROLE "$settings")" "$role"
     assert_equal "$(jq -c '[.hooks.SessionStart[].hooks[] | [.command, .timeout]]' "$settings")" \
       "$(jq -cn --arg code "$REPO_ROOT" '[["\"\($code)/bin/hooks/axi-banner\" gh-axi", 10]]')"
@@ -802,7 +1059,7 @@ role_texts() {
   local role
   for role in builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" --toolkit browser -- go
-    assert_equal "$(jq -r .env.CHROME_DEVTOOLS_AXI_SESSION "$TEAM_HOME/tasks/T7/settings.$role.json")" "T7-$role"
+    assert_equal "$(jq -r .env.CHROME_DEVTOOLS_AXI_SESSION "$TEAM_HOME/tasks/T7/settings.$role.proj.json")" "T7-$role"
   done
 }
 
@@ -811,7 +1068,7 @@ role_texts() {
   run_bin -0 team-worker T7 builder "$wt1" --toolkit browser -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/browser"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["browser"]'
 }
 
@@ -822,18 +1079,18 @@ role_texts() {
   run_bin -0 team-worker T7 builder "$wt1" --toolkit effect -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/effect"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" \
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" \
     "$(jq -cn --arg code "$REPO_ROOT" --arg wt "$(realpath "$wt1")" '{mcpServers: {"foldkit-devtools": {command: "node",
       args: ["\($code)/toolkits/effect/scripts/foldkit-devtools-mcp.mjs"], env: {FOLDKIT_PROJECT_ROOT: $wt}}}}')"
   assert_equal "$(launches | jq -c .toolkits)" '["effect"]'
   # A reviewer gets it too; a planner, who runs no dev server, gets the plugin and no server, as the
   # toolkit's mcp-roles.json says.
   run_bin -0 team-worker T7 reviewer "$wt1" --toolkit effect -- go
-  assert_equal "$(jq -c '.mcpServers | keys' "$TEAM_HOME/tasks/T7/mcp.reviewer.json")" '["foldkit-devtools"]'
+  assert_equal "$(jq -c '.mcpServers | keys' "$TEAM_HOME/tasks/T7/mcp.reviewer.proj.json")" '["foldkit-devtools"]'
   run_bin -0 team-worker T7 planner "$wt1" --toolkit effect -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/effect"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" '{"mcpServers":{}}'
 }
 
 @test "the codegraph toolkit adds its plugin directory and no MCP server" {
@@ -841,7 +1098,7 @@ role_texts() {
   run_bin -0 team-worker T7 builder "$wt1" --toolkit codegraph -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/codegraph"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["codegraph"]'
 }
 
@@ -850,7 +1107,7 @@ role_texts() {
   run_bin -0 team-worker T7 builder "$wt1" --toolkit spec-review -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/spec-review"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["spec-review"]'
 }
 
@@ -865,6 +1122,9 @@ fixture_projects() {
   for repo in "$conv" "$at"; do
     git init -q -b main "$repo"
     git -C "$repo" commit -q --allow-empty -m "chore: start"
+    # The base branches a launch reads the project's instructions from, holding none.
+    git -C "$repo" update-ref refs/remotes/origin/dev HEAD
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
   done
   git -C "$conv" worktree add -q -b feat/T8-conv "$conv_wt"
   git -C "$conv" worktree add -q -b feat/T9-conv "$conv_wt2"
@@ -973,7 +1233,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
   thread T7
   run_bin -0 team-worker T7 reviewer "$wt1" -- go
-  local settings=$TEAM_HOME/tasks/T7/settings.reviewer.json tool
+  local settings=$TEAM_HOME/tasks/T7/settings.reviewer.proj.json tool
   for tool in Artifact DesignSync ScheduleWakeup CronCreate RemoteTrigger SendFeedback AskUserQuestion EnterWorktree; do
     jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null ||
       { echo "no deny rule for $tool" >&2; return 1; }
@@ -1001,7 +1261,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
   local role
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    assert_equal "$(jq .isolatePeerMachines "$TEAM_HOME/tasks/T7/settings.$role.json")" true
+    assert_equal "$(jq .isolatePeerMachines "$TEAM_HOME/tasks/T7/settings.$role.proj.json")" true
   done
 }
 
@@ -1014,7 +1274,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
   local role settings command bin=$REPO_ROOT/bin
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
     assert_equal "$(jq -c .permissions.deny "$settings")" "$(jq -cs --arg code "$REPO_ROOT" --arg dir "$TEAM_HOME/tasks/T7" \
       --arg role "$role" '.[0].permissions.deny + (.[1].permissions.deny // [])
         | map(gsub("@TEAM_CODE@"; $code) | gsub("@TASK_DIR@"; $dir) | gsub("@TASK@"; "T7") | gsub("@ROLE@"; $role))' \
@@ -1047,9 +1307,9 @@ allowed_in() {
   local role settings command bin=$REPO_ROOT/bin
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    assert_equal "$(jq -r .env.AGENT_TEAM_TASK "$TEAM_HOME/tasks/T7/settings.$role.json")" T7
+    assert_equal "$(jq -r .env.AGENT_TEAM_TASK "$TEAM_HOME/tasks/T7/settings.$role.proj.json")" T7
   done
-  settings=$TEAM_HOME/tasks/T7/settings.planner.json
+  settings=$TEAM_HOME/tasks/T7/settings.planner.proj.json
   # --attach after --file needs no rule of its own; team-post holds what it may send.
   for command in "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md" \
     "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md --attach $HOME/w/.scratch/task/shots/1.png --attach $HOME/w/.scratch/task/shots/2.png" \
@@ -1071,7 +1331,7 @@ allowed_in() {
   thread T7
   local role settings command
   run_bin -0 team-worker T7 builder "$wt1" -- go
-  settings=$TEAM_HOME/tasks/T7/settings.builder.json
+  settings=$TEAM_HOME/tasks/T7/settings.builder.proj.json
   for command in "gh pr ready https://github.com/me/shop/pull/5" "gh pr ready 5 --repo me/shop" \
     "gh-axi pr ready 5"; do
     allowed_in "$settings" "$command" || { echo "builder may not: $command" >&2; return 1; }
@@ -1082,7 +1342,7 @@ allowed_in() {
   done
   for role in planner reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
     for command in "gh pr ready https://github.com/me/shop/pull/5" "gh-axi pr ready 5"; do
       if allowed_in "$settings" "$command"; then echo "$role may: $command" >&2; return 1; fi
     done
@@ -1545,7 +1805,7 @@ matcher_matches() {
   local role
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.$role.json" "$TEAM_HOME/tasks/T7/mcp.$role.json"
+    run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.$role.proj.json" "$TEAM_HOME/tasks/T7/mcp.$role.proj.json"
   done
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
@@ -1565,11 +1825,11 @@ matcher_matches() {
   run_fake T7 planner "$HOME/slot-link" --toolkit kit-a -- go
   assert_equal "$status" 0
   # The role's hook comes after the shared settings' own.
-  assert_equal "$(jq -c '.hooks.PreToolUse[-1].hooks[0] | [.command, .args[0]]' "$TEAM_HOME/tasks/T7/settings.planner.json")" \
+  assert_equal "$(jq -c '.hooks.PreToolUse[-1].hooks[0] | [.command, .args[0]]' "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" \
     "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '["\($code)/bin/hooks/x T7", $t]')"
-  assert_equal "$(jq -r .env.WHO "$TEAM_HOME/tasks/T7/settings.planner.json")" planner
-  assert_equal "$(jq -r .env.WHERE "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(realpath "$wt1")"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
+  assert_equal "$(jq -r .env.WHO "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" planner
+  assert_equal "$(jq -r .env.WHERE "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" "$(realpath "$wt1")"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" \
     "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" --arg wt "$(realpath "$wt1")" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t, "planner"], env: {ROOT: $wt}}}}')"
 }
 
@@ -1825,7 +2085,7 @@ LINES
   assert_equal "$stderr" "team-worker: no room for session:reviewer at full (90%): 0.0 GiB of 0.3 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises"
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
-  [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.json ]]
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.proj.json ]]
 
   # At none, nothing starts but the load check and an ops session.
   capacity_room $((16 * 1073741824)) none

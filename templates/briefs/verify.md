@@ -7,6 +7,10 @@ PR: {{pr}} against `{{base}}`, reviewed at `{{reviewed}}`, now at head `{{head}}
 Task directory: `{{task_dir}}/` in the worktree: `review.md` with the last review's findings.
 Sent back: the notes numbered {{findings}} in `{{task_dir}}/review.md`, each a plain `note` whose scope is `change`.
 
+## Instruction and settings files
+
+{{instruction_files}}
+
 ## Check
 
 1. First start the wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait {{pr}} {{head}}`, run with Bash `run_in_background`, so the run and your reading overlap, and run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `{{task_dir}}/rereview.md` says which local checks passed (they set no GitHub status).

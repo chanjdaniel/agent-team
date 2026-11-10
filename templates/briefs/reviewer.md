@@ -5,6 +5,10 @@ Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`; review `origin/{{base}}...{{head}}`.
 Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, `build-notes/`.{{ui}}
 
+## Instruction and settings files
+
+{{instruction_files}}
+
 ## GitHub checks
 
 {{> wait}}
