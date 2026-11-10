@@ -187,6 +187,17 @@ bootstrap-macos                                                              due
   assert_equal "$(row_of compaction | sed 's/.* pass //')" "due: ran on uncommitted changes"
 }
 
+@test "status: a drill whose run is over a day ahead of this machine's clock is ahead, and one a day ahead is not" {
+  record_line steal -2
+  record_line handoff -1
+  assert_equal "$(drill_json steal)" '{"due":["ahead"],"age_days":0,"changed_by":null}'
+  assert_equal "$(row_of steal | sed 's/.* pass //')" "due: ran at $(date -u -d '2 days' +%F), over a day ahead of this machine's clock"
+  assert_equal "$(drill_json handoff)" '{"due":[],"age_days":0,"changed_by":null}'
+  # A run 40 days ahead stays due, never passing for fresh.
+  record_line steal -40 fail
+  assert_equal "$(drill_json steal)" '{"due":["failed","ahead"],"age_days":0,"changed_by":null}'
+}
+
 @test "status: a drill that ran before a commit touching a path it proves is changed, and one before a commit touching only other paths is not due" {
   record_line compaction 0
   record_line handoff 0
@@ -449,5 +460,53 @@ team-drill: bootstrap-macos of run https://github.com/owner/agent-team/actions/r
   run_bin -1 team-drill import 4254
   assert_equal "$output" "team-drill: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine records no drill"
   assert_equal "$(stub_calls gh)" ""
+  [[ ! -e $RECORD ]]
+}
+
+@test "a worker session's record and import are refused, whatever its role, writing nothing; its status reads as the coordinator's" {
+  gh_runs
+  run_json 4242 completed Bootstrap bootstrap-macos=success bootstrap-arch=success
+  job_log 904242 bootstrap-macos "$(drill_record ci-macos pass)"
+  job_log 914242 bootstrap-arch "$(drill_record ci-arch pass)"
+  worker_refused team-drill "records no drill" record compaction --verdict pass
+  worker_refused team-drill "records no drill" import 4242
+  [[ ! -e $RECORD ]]
+  record_line compaction 0
+  local form today
+  for form in "status --json" status; do
+    # shellcheck disable=SC2086 # each form is its words
+    run_bin -0 --separate-stderr team-drill $form
+    today=$output
+    # shellcheck disable=SC2086
+    AGENT_TEAM_ROLE=builder AGENT_TEAM_TASK=T7 run_bin -0 --separate-stderr team-drill $form
+    assert_equal "$output" "$today"
+  done
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-drill record compaction --verdict pass
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-drill import 4242
+  assert_equal "$(wc -l <"$RECORD")" 4
+}
+
+@test "import refuses, writing nothing, a run whose fields would make a line that is no drill record" {
+  gh_runs
+  run_json 4242 completed Bootstrap bootstrap-macos=success bootstrap-arch=success
+  # A completedAt with fractional seconds is no record's time.
+  jq '.jobs[0].completedAt = "2026-11-10T10:31:22.5Z"' "$STUB_FIXTURES/run-4242.json" >"$STUB_FIXTURES/run.tmp"
+  mv "$STUB_FIXTURES/run.tmp" "$STUB_FIXTURES/run-4242.json"
+  job_log 904242 bootstrap-macos "$(drill_record ci-macos pass)"
+  job_log 914242 bootstrap-arch "$(drill_record ci-arch pass)"
+  run_bin -1 --separate-stderr team-drill import 4242
+  assert_equal "$output" ""
+  assert_equal "${stderr%%: \{*}" "team-drill: run 4242 gives bootstrap-macos a line that is no drill record, so nothing is written"
+  assert_contains "$stderr" '"at":"2026-11-10T10:31:22.5Z","drill":"bootstrap-macos"'
+  [[ ! -e $RECORD ]]
+  # A run with no headSha, for a job with no record line, whose commit it would be.
+  run_json 4243 completed Bootstrap bootstrap-macos=success bootstrap-arch=failure
+  jq 'del(.headSha)' "$STUB_FIXTURES/run-4243.json" >"$STUB_FIXTURES/run.tmp"
+  mv "$STUB_FIXTURES/run.tmp" "$STUB_FIXTURES/run-4243.json"
+  job_log 904243 bootstrap-macos "$(drill_record ci-macos pass)"
+  job_log 914243 bootstrap-arch "Error: the bootstrap failed"
+  run_bin -1 --separate-stderr team-drill import 4243
+  assert_equal "${stderr%%: \{*}" "team-drill: run 4243 gives bootstrap-arch a line that is no drill record, so nothing is written"
+  assert_contains "$stderr" '"commit":null'
   [[ ! -e $RECORD ]]
 }
