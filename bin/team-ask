@@ -11,8 +11,8 @@
 # line>", the question's first line cut to 200 characters. Once both are posted it logs, in
 # order: question role=<role> text=<the question> when --from names the worker role that asked
 # it; asked id=<id> text=<the question's first line> discord_message=<the question's first
-# message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask in the Waiting on
-# you message; when that fails, a line on stderr says so, and the ask stands.
+# message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask, numbered, in the
+# team home's waiting.md; when that fails, a line on stderr says so, and the ask stands.
 # --from ops, an ops session's question, which may hold production data, is posted whole in the
 # thread, but its first line is the fixed line "An ops question of <n> characters, in T<n>'s
 # thread." in the ping and the asked's text, n its length in characters, and its question is

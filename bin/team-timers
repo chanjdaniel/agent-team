@@ -169,8 +169,9 @@
 #                         <reason>."
 #              inbox  On the holder, after the alert step: team-inbox, which writes the team
 #                     home's waiting.md, so what waits on Daniel is there within five minutes
-#                     whatever changed it. It logs only the old Waiting on you message's retire
-#                     ("retired <link>") and a failure, and a failure never fails the run.
+#                     whatever changed it. It logs only the one edit that retires the message
+#                     team-inbox kept in #coordinator before waiting.md ("retired <link>") and a
+#                     failure, and a failure never fails the run.
 #              finished  On the holder, after the inbox step, every run, whatever the level and
 #                     budget: claude stop (30 s, killed 10 s later) of each finished session of
 #                     every open task, the idle live session of a launch whose work is handed on
@@ -1060,9 +1061,9 @@ checkpoint_step() {
   fi
 }
 
-# The inbox step, on the holder after the ledger step: team-inbox, logged only when it retired
-# the old Waiting on you message or failed, and never failing the run, since the next run writes
-# the list again.
+# The inbox step, on the holder after the alert step: team-inbox, logged only when it retired the
+# message it kept in #coordinator before waiting.md, or failed, and never failing the run, since
+# the next run writes the list again.
 inbox_step() {
   local rc=0 out why line
   out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$INBOX_TIMEOUT" "$bin/team-inbox" 2>"$err" {run_fd}>&-) || rc=$?

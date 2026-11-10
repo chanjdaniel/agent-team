@@ -18,7 +18,7 @@ Each applies the limits at once and prints the acknowledgement the coordinator p
 `team-level` alone says the mode, the level, the budget and what bounds it, the team's use and the last change; `team-level apply` applies the recorded level's limits again, after a reboot or a reset slice.
 A change, `apply` and `tick` refuse on a machine that does not hold the lease; `status` only reads.
 The coordinator runs each change on Daniel's word and posts the acknowledgement, and stows and relaunches tasks to fit, as its `level` skill says.
-Daniel sees the level where they look: `team-inbox`'s Waiting on you message after its items, and `team-snapshot` after its open tasks, say one line, "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 stowed, waiting to resume", from `team-level status --stored --json`, naming the open tasks stowed and not yet relaunched.
+Daniel sees the level where they look: the list `team-inbox --post` posts in `#coordinator`, after its items, and `team-snapshot` after its open tasks, say one line, "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 stowed, waiting to resume", from `team-level status --stored --json`, naming the open tasks stowed and not yet relaunched.
 
 ## Automatic mode
 
