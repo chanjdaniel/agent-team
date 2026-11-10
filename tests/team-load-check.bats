@@ -35,6 +35,9 @@ setup() {
   doctor_results
   registry
   planner_transcript hook
+  # team-drill names the machine it records the run on.
+  mkdir -p "$HOME/.config/agent-team"
+  echo home-pc >"$HOME/.config/agent-team/machine"
   stub_script claude <<'SH'
 case $1 in
   --bg)
@@ -61,6 +64,7 @@ case $1 in
     if [[ -f $STUB_FIXTURES/automode.json ]]; then cat "$STUB_FIXTURES/automode.json"
     else jq '(.autoMode // {}) | map_values(map(if . == "$defaults" then "a built-in line" else . end))' "$2"; fi
     ;;
+  --version) echo '2.1.321 (Claude Code)' ;;
   stop | rm) ;;
   *) exit 64 ;;
 esac
@@ -137,7 +141,7 @@ hook_passed="load check: the planner's edit hook blocked its write of outside.tx
   assert_contains "$output" "load check: 0 MCP tools, 2 skills"
   assert_contains "$output" "PASS"
   assert_equal "$(cat "$TEAM_HOME/tasks/T0/inventory.txt")" "$(printf '%s\n' --- tdd implement)"
-  assert_equal "$(stub_calls claude | jq -c 'select(.[0] != "--bg")')" \
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] != "--bg" and .[0] != "--version")')" \
     "$(printf '%s\n' "[\"--settings\",\"$TEAM_HOME/tasks/T0/settings.planner.json\",\"auto-mode\",\"config\"]" \
       '["agents","--json"]' '["agents","--json","--all"]' '["stop","4f2a9c1e"]' '["rm","4f2a9c1e"]')"
   assert_contains "$output" "$hook_passed"
@@ -514,6 +518,7 @@ case $1 in
     if [[ -f $STUB_FIXTURES/automode.json ]]; then cat "$STUB_FIXTURES/automode.json"
     else jq '(.autoMode // {}) | map_values(map(if . == "$defaults" then "a built-in line" else . end))' "$2"; fi
     ;;
+  --version) echo '2.1.321 (Claude Code)' ;;
   stop) ;;
   rm) touch "$STUB_FIXTURES/removed" ;;
   *) exit 64 ;;
@@ -1301,4 +1306,194 @@ $(going_on 'gate proj')"
     [[ ! -e $wt ]]
     assert_equal "$(stub_calls claude)" ""
   done
+}
+
+# The drill record: the planner form and the ops form's prod-write and vercel-read sets record
+# their run in the team home's drills.jsonl, through this checkout's team-drill, once they have
+# launched their session.
+
+# The team home's drill record, each line's fields but at.
+drill_lines() {
+  if [[ -e $TEAM_HOME/drills.jsonl ]]; then jq -c 'del(.at)' "$TEAM_HOME/drills.jsonl"; fi
+}
+
+# The one line a run of <drill> should have recorded from this checkout, but at:
+# drill_line <drill> <verdict> [<detail>]
+drill_line() {
+  jq -cn --arg drill "$1" --arg commit "$(git -C "$REPO_ROOT" rev-parse HEAD)" --argjson dirty \
+    "$([[ -z $(git -C "$REPO_ROOT" status --porcelain --untracked-files=no) ]] && echo false || echo true)" \
+    --arg verdict "$2" --arg detail "${3:-}" \
+    '{drill: $drill, machine: "home-pc", commit: $commit, dirty: $dirty, claude: "2.1.321",
+      verdict: $verdict, detail: $detail}'
+}
+
+# recorded <drill> <verdict>: team-drill's line for this checkout's run of <drill>
+recorded() {
+  echo "team-drill: recorded $1 $2 on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
+}
+
+@test "the planner form records load-check-planner: pass on exit 0 with its toolkits, fail otherwise, before its verdict line" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner pass "no toolkit")"
+  assert_equal "${lines[-2]}" "$(recorded load-check-planner pass)"
+  assert_equal "${lines[-1]}" PASS
+
+  # A check that fails records fail.
+  rm "$TEAM_HOME/drills.jsonl"
+  planner_transcript
+  run_bin -1 team-load-check
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner fail "no toolkit")"
+  assert_equal "${lines[-2]}" "$(recorded load-check-planner fail)"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+}
+
+@test "the planner form's record names the toolkits it was given, in their order" {
+  toolkit_checkout
+  inventory mcp__served__look mcp__plugin_served_spare__look --- served:a-skill plain:a-skill
+  run_bin -0 team-load-check --toolkit served --toolkit plain
+  # Run from the toolkit checkout, which is no repository, team-drill cannot read its HEAD.
+  assert_contains "$output" "load check: not recorded: team-drill: cannot read the HEAD of the code checkout $CODE_CHECKOUT"
+  git -C "$CODE_CHECKOUT" init -q
+  git -C "$CODE_CHECKOUT" add -A
+  git -C "$CODE_CHECKOUT" commit -q -m "chore: the toolkit checkout"
+  run_bin -0 team-load-check --toolkit served --toolkit plain
+  assert_equal "$(jq -r '[.drill, .verdict, .detail, .commit] | join(" ")' "$TEAM_HOME/drills.jsonl")" \
+    "load-check-planner pass toolkits: served plain $(git -C "$CODE_CHECKOUT" rev-parse HEAD)"
+}
+
+@test "a planner form that ends early after its launch records fail: no inventory within 5 minutes" {
+  # Its 60 waits of 5 seconds pass at once.
+  stub_command sleep
+  stub_reply sleep ''
+  export TEAM_PATH_FIRST=$BATS_TEST_TMPDIR/stubs
+  rm "$STUB_FIXTURES/inventory.txt" 2>/dev/null || true
+  sed -i 's|^    cp "\$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt$|    [[ ! -f $STUB_FIXTURES/inventory.txt ]] \|\| cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt|' "$STUB_FIXTURES/claude.sh"
+  run_bin -1 team-load-check
+  assert_equal "${lines[-2]}" "FAIL: the worker wrote no inventory within 5 minutes"
+  assert_equal "${lines[-1]}" "$(recorded load-check-planner fail)"
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner fail "no toolkit")"
+  left_nothing
+}
+
+@test "a planner form interrupted after its launch records fail" {
+  rm -f "$STUB_FIXTURES/inventory.txt"
+  sed -i 's|^    cp "\$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt$|    touch "$BATS_TEST_TMPDIR/launched"|' "$STUB_FIXTURES/claude.sh"
+  guard_sandbox
+  "$REPO_ROOT/bin/team-load-check" >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  local pid=$!
+  for _ in $(seq 1 100); do [[ ! -e $BATS_TEST_TMPDIR/launched ]] || break; sleep 0.1; done
+  [[ -e $BATS_TEST_TMPDIR/launched ]]
+  sleep 0.5
+  kill -TERM "$pid"
+  local status=0
+  wait "$pid" || status=$?
+  assert_equal "$status" 143
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner fail "no toolkit")"
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/out")" "$(recorded load-check-planner fail)"
+}
+
+@test "a run the doctor stops, a malformed command line, and a lease rehearsal stopped before the launch record nothing" {
+  doctor_results FAIL machine
+  run_bin -1 team-load-check
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+
+  doctor_results
+  run_bin -2 team-load-check --role nobody
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+
+  lease_setup
+  printf '%s\n' "touch '$BATS_TEST_TMPDIR/leasing'" 'sleep 1' >"$BATS_TEST_TMPDIR/prewarm"
+  guard_sandbox
+  "$REPO_ROOT/bin/team-load-check" >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  local pid=$!
+  for _ in $(seq 1 100); do [[ ! -e $BATS_TEST_TMPDIR/leasing ]] || break; sleep 0.1; done
+  kill -TERM "$pid"
+  wait "$pid" || true
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+  assert_equal "$(stub_calls claude)" ""
+}
+
+@test "a lease rehearsal that fails, but lets the planner launch, records the planner's fail" {
+  lease_setup
+  echo 'echo changed >>README.md' >"$BATS_TEST_TMPDIR/prewarm"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL lease proj: "
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner fail "no toolkit")"
+}
+
+@test "a refused record says why on stderr and leaves the load check's exit status" {
+  inventory --- tdd
+  rm "$HOME/.config/agent-team/machine"
+  run_bin -0 --separate-stderr team-load-check
+  assert_equal "${lines[-1]}" PASS
+  assert_equal "$stderr" "load check: not recorded: team-drill: this machine has no team name; write one with: echo <name> > ~/.config/agent-team/machine"
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+
+  planner_transcript
+  run_bin -1 --separate-stderr team-load-check
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  assert_contains "$stderr" "load check: not recorded: team-drill: this machine has no team name"
+}
+
+@test "the ops form records load-check-ops-prod-write with prod-read and prod-write, pass or fail, with no detail" {
+  ops_setup
+  write_session
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-write --toolkit prod-read
+  assert_equal "$(drill_lines)" "$(drill_line load-check-ops-prod-write pass)"
+  assert_equal "${lines[-2]}" "$(recorded load-check-ops-prod-write pass)"
+  assert_equal "${lines[-1]}" PASS
+
+  rm "$TEAM_HOME/drills.jsonl"
+  relaunch
+  sed -i '/^drop-index: denied/d' "$STUB_FIXTURES/session/writes.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
+  assert_contains "$output" "FAIL: the session did not report drop-index as denied"
+  assert_equal "$(drill_lines)" "$(drill_line load-check-ops-prod-write fail)"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+}
+
+@test "the ops form records load-check-ops-vercel-read with vercel-read alone, pass or fail" {
+  ops_setup
+  vercel_session
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
+  assert_equal "$(drill_lines)" "$(drill_line load-check-ops-vercel-read pass)"
+  assert_equal "${lines[-2]}" "$(recorded load-check-ops-vercel-read pass)"
+
+  rm "$TEAM_HOME/drills.jsonl"
+  relaunch
+  echo simplify >>"$STUB_FIXTURES/session/skills.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
+  assert_equal "$(drill_lines)" "$(drill_line load-check-ops-vercel-read fail)"
+}
+
+@test "the ops form's prod-read set, alone or with vercel-read, records nothing and says so, and the context form records nothing" {
+  ops_setup
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
+  assert_equal "${lines[-2]}" "load check: no drill is registered for this toolkit set, so nothing is recorded"
+  assert_equal "${lines[-1]}" PASS
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+
+  relaunch
+  vercel_session prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
+  assert_equal "${lines[-2]}" "load check: no drill is registered for this toolkit set, so nothing is recorded"
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--version")')" ""
+
+  context_setup
+  run_bin -0 team-load-check --context
+  [[ $output != *"recorded"* ]]
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--version")')" ""
+}
+
+@test "the header says which forms record which drill" {
+  run_bin -0 team-load-check --help
+  assert_contains "$output" "drills.jsonl"
+  assert_contains "$output" "load-check-planner"
+  assert_contains "$output" "load-check-ops-prod-write"
+  assert_contains "$output" "load-check-ops-vercel-read"
+  assert_contains "$output" "not recorded: <team-drill's first error line>"
 }

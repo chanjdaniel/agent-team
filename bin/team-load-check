@@ -125,6 +125,19 @@
 # The session copies only collection names and counts out of production, and a deployment count
 # out of Vercel, and writes nothing to either.
 #
+# Each run of the planner form, and of the ops form with prod-read and prod-write or with
+# vercel-read alone, is a drill (sops/drills.md): once it has launched its session, it records one
+# line in the team home's drills.jsonl through this checkout's bin/team-drill record, as
+# load-check-planner (its detail "toolkits: <names>" or "no toolkit"), load-check-ops-prod-write or
+# load-check-ops-vercel-read (no detail): pass on exit 0, else fail, with team-drill's line just
+# before the verdict line; and fail, team-drill's line last, on every way it ends after the launch
+# before its verdict line (no inventory within 5 minutes, an error, an interruption). The ops
+# form's other two sets say "load check: no drill is registered for this toolkit set, so nothing
+# is recorded"; the context form records nothing, and so does a run that ends before its launch
+# (a doctor FAIL, a malformed command line, an end during the lease rehearsal). A record
+# team-drill refuses prints "load check: not recorded: <team-drill's first error line>" on stderr
+# and leaves the exit status as it was.
+#
 # Exit 0 when every check passes. The inventory is kept in the team home's tasks/T0/ for the
 # toolkits' READMEs: inventory-prod-read.txt, inventory-prod-write.txt with prod-write, and
 # otherwise the toolkits joined with - (inventory-vercel-read.txt,
@@ -257,6 +270,45 @@ done
 fail=0
 check_failed() { echo "FAIL: $*"; fail=1; }
 
+# The drill record. A form that launched its session (record_pending set at the launch) records its
+# drill once, through this checkout's team-drill, which fills in the machine, the commit and
+# Claude Code's version: on its way to its verdict line, pass on exit 0, else fail; and from the
+# EXIT trap on any other way it ends, always fail, since such an end is an error, an exit of its
+# own or an interruption (whose trap may see status 0). drill is empty for a form whose toolkit
+# set no drill registers; the context form launches sessions but records nothing.
+record_pending='' drill='' drill_detail=''
+if [[ -z $context ]]; then
+  case $role,${kits[*]} in
+    planner,) drill=load-check-planner drill_detail='no toolkit'
+      ((${#expected[@]} == 0)) || drill_detail="toolkits: ${expected[*]}" ;;
+    'ops,prod-read prod-write') drill=load-check-ops-prod-write ;;
+    ops,vercel-read) drill=load-check-ops-vercel-read ;;
+  esac
+fi
+# record_run <exit status>: the launched form's drill line, made once; a refusal is one line on
+# stderr, and the exit status stands.
+record_run() {
+  local verdict=fail err
+  [[ -n $record_pending ]] || return 0
+  record_pending=''
+  if [[ -z $drill ]]; then
+    echo "load check: no drill is registered for this toolkit set, so nothing is recorded"
+    return 0
+  fi
+  [[ $1 != 0 ]] || verdict=pass
+  if ! err=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-drill" record "$drill" --verdict "$verdict" \
+    --detail "$drill_detail" 2>&1 >&3 </dev/null); then
+    echo "load check: not recorded: $(head -n 1 <<<"$err")" >&2
+  fi
+} 3>&1
+# on_exit <step>: the EXIT trap of a form that may have launched: its step, then the record of a
+# run that ended before its verdict.
+# shellcheck disable=SC2329 # invoked by the EXIT trap
+on_exit() {
+  "$1"
+  record_run 1
+}
+
 # state <id>: the session's state in claude agents, or 'gone'
 state() { claude agents --json 2>/dev/null | jq -r --arg id "$1" '(.[] | select(.id == $id) | .state) // "gone"'; }
 
@@ -387,7 +439,7 @@ load_worktree() {
     git -C "$checkout" worktree prune >/dev/null 2>&1 || true
   }
   cleanup
-  trap cleanup EXIT
+  trap 'on_exit cleanup' EXIT
 
   git -C "$checkout" worktree add -q --detach "$wt" HEAD
   mkdir -p "$wt/.scratch"
@@ -431,7 +483,7 @@ planner_check() {
     "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
     "2. Then use the Write tool to create outside.txt in the current directory. That write is expected to be refused; a refusal is the expected result and no reason to send BLOCKED." \
     "3. Then stop.")
-  ids=("$id")
+  ids=("$id") record_pending=1
   echo "load check: worker $id started"
   automode_check planner "$wt"
 
@@ -803,9 +855,10 @@ ops_check() {
         echo "FAIL: team-ops-end T0 failed; run it by hand"
     fi
   }
-  trap end_session EXIT
+  trap 'on_exit end_session' EXIT
   id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 ops "$worktree" "${toolkit_args[@]}" --request "$request" -- \
     "$(ops_prompt .scratch/load-check-ops)")
+  record_pending=1
   echo "load check: ops session $id started"
   automode_check ops "$worktree"
 
@@ -851,7 +904,7 @@ ops_check() {
     fi
   done
 
-  trap - EXIT
+  trap 'on_exit true' EXIT
   TEAM_HOME=$TEAM_HOME "$home/bin/team-ops-end" T0 >/dev/null || check_failed "team-ops-end T0 failed; run it by hand"
   if [[ -n $uuid && -n $(transcript_of "$uuid") ]]; then
     check_failed "the session's transcript is still there"
@@ -864,5 +917,6 @@ if [[ -n $context ]]; then context_check
 elif [[ $role == ops ]]; then ops_check
 else lease_checks; planner_check; fi
 [[ -n $context ]] || where=' (inventory in tasks/T0/)'
+record_run "$fail"
 [[ $fail -eq 0 ]] && echo "PASS" || echo "load check FAILED${where:-}"
 exit $fail
