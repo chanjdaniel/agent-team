@@ -8,8 +8,8 @@
 #
 # Input it cannot read is refused, naming why: not JSON, no tool_name, or a Bash call whose
 # tool_input.command is missing or not a string. Another tool's call passes, and so does a command
-# naming none of team-worker, team-load-check, ui-capture and AGENT_TEAM_, nor env or exec before
-# an option together with team- or claude-coordinator, at once. Any other is read as
+# naming none of team-worker, team-load-check, ui-capture, AGENT_TEAM_, curl and wget, nor env or
+# exec before an option together with team- or claude-coordinator, at once. Any other is read as
 # bin/lib/command_text.py prints it (each heredoc's body left out but an unquoted one's command
 # substitutions, and all of one a shell may read as its script; the string after a shell's -c,
 # eval, env -S and find -exec read as code, and the text piped into a shell where a command
@@ -29,6 +29,11 @@
 #     emptied environment, env -i (alone or among env's short options), env --ignore-environment,
 #     env - or exec -c, past any wrappers between: it would run with no AGENT_TEAM_ROLE, so its
 #     own worker_refusal would not see the worker.
+# It also refuses uploading a file or body to a host outside the team's own: a curl or wget that
+# sends one to a literal host other than the local ones, directly or through a proxy, as
+# bin/lib/outbound.py reads the code text (its header says which flags and hosts), which prints
+# the reason; a host held in a variable is not seen, nor another tool's or an interpreter's upload.
+# When outbound.py cannot decide, the command is refused, naming its exit.
 # The text is matched as written, quotes and all, so a separator inside quotes counts as one,
 # which refuses more, never less. Not seen: a name spelled across quotes or held in a variable; a
 # script or function of one's own, or a copy or link of a guarded one; a string another
@@ -63,7 +68,8 @@ tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<
 command=$(jq -er '.tool_input.command | strings' <<<"$input" 2>/dev/null) ||
   block "it could not read the Bash call's command (tool_input.command, a string)"
 [[ $command == *team-worker* || $command == *team-load-check* || $command == *ui-capture* ||
-  $command == *AGENT_TEAM_* || (($command == *env*[[:space:]]-* || $command == *exec*[[:space:]]-*) &&
+  $command == *AGENT_TEAM_* || $command == *curl* || $command == *wget* ||
+  (($command == *env*[[:space:]]-* || $command == *exec*[[:space:]]-*) &&
   ($command == *team-* || $command == *claude-coordinator*)) ]] || exit 0
 
 code=$(python3 -I "$TEAM_LIB/command_text.py" <<<"$command" 2>&1) ||
@@ -104,4 +110,10 @@ elif [[ $code =~ $unset_var || $code =~ $env_unset ]]; then
 elif [[ $code =~ $emptied ]]; then
   block "a worker's role and task are its settings' (a team script run with its environment emptied, by env -i, env --ignore-environment, env - or exec -c)"
 fi
+
+# A curl or wget sending a file or body to a literal host outside the team's own, read on the code
+# text so a heredoc's body that is data counts for nothing.
+upload=$(python3 -I "$TEAM_LIB/outbound.py" <<<"$code" 2>&1) ||
+  block "it could not check the command for an upload (bin/lib/outbound.py exited $?: ${upload##*$'\n'})"
+[[ -z $upload ]] || block "$upload"
 exit 0

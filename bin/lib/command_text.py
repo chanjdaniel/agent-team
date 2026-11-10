@@ -3,16 +3,17 @@
 
 Usage: python3 -I command_text.py   (the command on stdin; prints the text on stdout)
 
-bin/hooks/command-guard runs this file on a Bash call's command, and team-tokens imports
-without_heredocs from it. It reads the command far enough to know its quotes ('...', "..." and
-$'...'), backslashes, comments, arithmetic ($[, and $(( or (( whose two closing parentheses are
-adjacent, matched as Bash's parse_matched_pair does, past quotes, backticks and a $(...) read
-by this scan: ((cmd) ) is two subshells), groups ((, $(, a backtick, ${ in which quotes
-nest up to its first }, [[ ... ]], in which a comment and a newline's heredoc bodies are read as
-outside it, a { ... }, and after = an array assignment's list, a word's part in which no word is
-reserved), case's patterns, pipelines, here-strings and heredocs, whose marker is its word up to
-a blank or an operator with its quotes removed, as Bash takes it; a << inside quotes, a comment,
-arithmetic, ${ or [[ opens none.
+bin/hooks/command-guard runs this file on a Bash call's command, team-tokens imports
+without_heredocs from it, and outbound.py simple_commands, each simple command's words. It reads
+the command far enough to know its quotes ('...', "..." and $'...'), backslashes, comments,
+arithmetic ($[, and $(( or (( whose two closing parentheses are adjacent, matched as Bash's
+parse_matched_pair does, past quotes, backticks and a $(...) read by this scan: ((cmd) ) is two
+subshells), groups ((, $(, a backtick, ${ in which quotes nest up to its first }, [[ ... ]], in
+which a comment and a newline's heredoc bodies are read as outside it, a { ... }, and after = an
+array assignment's list, a word's part in which no word is reserved), case's patterns,
+pipelines, here-strings and heredocs, whose marker is its word up to a blank or an operator with
+its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic, ${ or [[ opens
+none.
 A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it as one, as its
 reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
 a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time, its -p or the -- after
@@ -508,6 +509,137 @@ def code_text(command):
                     words = simple.split(None, 1)
                     added += words[1:]
     return "\n".join([text] + [inner for inner in added if inner])
+
+
+# A redirection operator where a word would start, with the fd or {name} before it.
+REDIRECT = re.compile(r"(?:[0-9]+|\{[A-Za-z_]\w*\})?(?:&>>?|<<<|<<-?|<>|[<>]&|>\||>>|[<>])")
+# The reserved words a simple command's words may start with, which are no part of it.
+LEADING = frozenset(
+    ("!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac",
+     "coproc")
+)
+
+
+def _closed(text, i, j, end):
+    """Whether the quote opened at i and read to j, just past what closes it, closes before end."""
+    return i + 1 < j <= end and text[j - 1] == text[i]
+
+
+def _command_word(text, i, end):
+    """The word at i, before end, as a command's argument, and where it ends: its quotes removed,
+    as _word reads them, but for a quote's text holding $ or a backtick and a substitution, $(...),
+    `...`, ${...}, $((...)) or $[...], which are kept as written, so a word built by one still holds
+    its $ or backtick (in a double quote holding one, an escaped double quote or backslash is
+    undone all the same, an escaped $ or backtick kept); a quote that does not close before end
+    ends the word, and the segment with it (end is where it returns): code_text adds a -c string's
+    line with its closing quote left on, and what follows that quote is the outer command's, never
+    the string's."""
+    out = []
+    while i < end:
+        c = text[i]
+        if c in METACHARACTERS:
+            if c != "(" or not out or text[i - 1] != "=":
+                break
+            # An array assignment's list.
+            j = _group_end(text, i + 1)
+        elif c == "\\":
+            out.append(text[i + 1 : i + 2].replace("\n", ""))
+            i += 2
+            continue
+        elif text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
+            j = arith
+        elif text.startswith("$(", i):
+            j = _group_end(text, i + 2)
+        elif text.startswith("${", i):
+            j = _pair_end(text, i + 2, "{", "}", "first")
+        elif text.startswith("$[", i):
+            j = _pair_end(text, i + 2, "[", "]")
+        elif c == "`":
+            j = _pair_end(text, i + 1, "`", "`")
+        elif c in "'\"" or text.startswith("$'", i):
+            ansi = c == "$"
+            mark = "'" if ansi else c
+            j = _pair_end(text, i + 1 + ansi, mark, mark, "esc" if ansi else "")
+            if not _closed(text, i + ansi, j, end):
+                return "".join(out), end
+            inner = text[i + 1 + ansi : j - 1]
+            if c == '"':
+                # One holding $ or a backtick keeps its escaped ones, so it still holds one.
+                escaped = r"\\([\\\"])" if "$" in inner or "`" in inner else r"\\([\\\"$`])"
+                inner = re.sub(escaped, r"\1", inner).replace("\\\n", "")
+            out.append(inner)
+            i = j
+            continue
+        else:
+            out.append(c)
+            i += 1
+            continue
+        out.append(text[i : min(j, end)])
+        i = j
+    return "".join(out), i
+
+
+def _segment_commands(text, start, end, bodies):
+    """The simple commands of the segment from start to end, each its words, as simple_commands
+    says; bodies maps where each heredoc body starts to where its closing line ends."""
+    commands, words, i = [], [], start
+
+    def close():
+        while words and words[0] in LEADING:
+            words.pop(0)
+        if words:
+            commands.append(list(words))
+        words.clear()
+
+    while i < end:
+        c = text[i]
+        if i in bodies:
+            i = bodies[i]
+        elif c in " \t":
+            i += 1
+        elif c == "#" and (i == start or text[i - 1] in " \t\n;&|()"):
+            found = text.find("\n", i, end)
+            i = end if found < 0 else found
+        elif c in "<>" and text[i + 1 : i + 2] == "(":
+            # A process substitution, an argument whose commands are a group of their own.
+            j = _group_end(text, i + 2)
+            words.append(text[i : min(j, end)])
+            i = j
+        elif (found := REDIRECT.match(text, i)) and found.end() <= end:
+            # The operator and its target, a file, an fd or a heredoc's marker, are no words.
+            i = _past_blanks(text, found.end())
+            if text[i : i + 2] in ("<(", ">("):
+                i = _group_end(text, i + 2)
+            elif i < end and text[i] not in METACHARACTERS:
+                i = _command_word(text, i, end)[1]
+        elif c == "(":
+            # A subshell or an arithmetic command, whose commands are a group of their own.
+            arith = _arith_end(text, i) if text.startswith("((", i) else None
+            i = arith or _group_end(text, i + 1)
+        elif c in METACHARACTERS:
+            # A separator in a compound command, whose commands are its own pipelines too, or in a
+            # quote read_command found open.
+            close()
+            i += 1
+        else:
+            word, i = _command_word(text, i, end)
+            words.append(word)
+    close()
+    return commands
+
+
+def simple_commands(command):
+    """Each simple command of every pipeline segment of the command, those in its groups and
+    substitutions too, as the list of its words with their quotes removed (_command_word): its
+    redirections, their targets, its comments, its heredocs' bodies and the reserved words it
+    starts with left out. A word holding a substitution keeps its text, $ or backtick and all; a
+    quote that never closes ends its word and the rest of its segment. A segment holding a compound
+    command yields its words too, split at its separators, beside the group's own commands."""
+    reading = read_command(command)
+    bodies = {h.body[0]: h.end for h in reading.heredocs}
+    for _, segments in reading.pipelines:
+        for start, end in segments:
+            yield from _segment_commands(command, start, end, bodies)
 
 
 if __name__ == "__main__":
