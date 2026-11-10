@@ -135,6 +135,7 @@ lock_has_its_shape() {
     echo 'interview channel'
     echo gate-agent
     echo records
+    echo drills
     echo 'trust team home'
     echo captures
     echo 'heavy runs'
@@ -165,6 +166,7 @@ lock_has_its_shape() {
     echo 'interview channel'
     echo gate-agent
     echo records
+    echo drills
     echo 'trust team home'
     echo captures
     echo 'heavy runs'
