@@ -30,11 +30,12 @@
 #     emptied environment, env -i (alone or among env's short options), env --ignore-environment,
 #     env - or exec -c, past any wrappers between: it would run with no AGENT_TEAM_ROLE, so its
 #     own worker_refusal would not see the worker;
-#   team-lease or team-resume with --steal among its words, by any path: a lease steal is Daniel's
-#     word, through the coordinator;
+#   team-lease or team-resume with --steal among its words, by any path or read by source or `.`:
+#     a lease steal is Daniel's word, through the coordinator;
 #   team-ask, team-answer, team-inbox or team-run-approved, with any arguments or none, or
-#     team-thread with a task id (T and digits) as its first word, by any path: the coordinator's
-#     commands (team-thread wait T<n> passes, which each role's settings allow or deny).
+#     team-thread with a task id (T and digits) as its first word, by any path or read by source
+#     or `.`: the coordinator's commands (team-thread wait T<n> passes, which each role's settings
+#     allow or deny).
 # It also refuses uploading a file or body to a host outside the team's own: a curl or wget that
 # sends one to a literal host other than the local ones, directly or through a proxy, as
 # bin/lib/outbound.py reads the code text (its header says which flags and hosts), which prints
@@ -105,8 +106,10 @@ env_unset=$lead"env([[:space:]]+[^[:space:];&|]+)*[[:space:]]+(-[[:alnum:]]*u[[:
 # then what it runs, past any wrappers: a team script by its name.
 value='([^[:space:];&|]+|[[:space:]]+[^[:space:];&|]+)'
 emptier="(env($arg)*[[:space:]]+(-[[:alnum:]]*i([[:alnum:]]*[CuS]$value|[[:alnum:]]*)|--ignore-e[a-z-]*|-)|exec($arg)*[[:space:]]+-[[:alnum:]]*c([[:alnum:]]*a$value|[[:alnum:]]*))"
-steal=$lead"['\"]?team-(lease|resume)['\"]?${words}[[:space:]]['\"]?--steal['\"]?$end"
-coordinator=$lead"['\"]?(team-(ask|answer|inbox|run-approved)['\"]?|team-thread['\"]?[[:space:]]+['\"]?T[0-9]+['\"]?)$end"
+# A script read by source or ., as ui-capture's rule takes it.
+sourced="((source|\\.)($arg)*[[:space:]]+([^[:space:];&|]*/)?)?"
+steal=$lead$sourced"['\"]?team-(lease|resume)['\"]?${words}[[:space:]]['\"]?--steal['\"]?$end"
+coordinator=$lead$sourced"['\"]?(team-(ask|answer|inbox|run-approved)['\"]?|team-thread['\"]?[[:space:]]+['\"]?T[0-9]+['\"]?)$end"
 emptied=$lead"$emptier($arg)*[[:space:]]+($wrapper($arg)*[[:space:]]+)*([^[:space:];&|]*/)?['\"]?(team-[^[:space:];&|/'\"]+|claude-coordinator)['\"]?$end"
 
 if [[ $code =~ $ops ]]; then

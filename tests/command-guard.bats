@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
 # hooks/command-guard: the PreToolUse hook on a worker's Bash that refuses an ops launch, the
-# frontend toolkit's capture script, a change of the session's role or task, a lease steal and
-# the coordinator's commands where a command starts, in place of the deny rules that matched their names anywhere in a call's text, and a
-# curl or wget upload of a file or body to a host outside the team's own. Every command those
-# rules refused when run is still refused (a test per rule), and the reads, searches, diffs,
-# commits and file writes that only name them pass, the hook and the worker deny list both.
+# frontend toolkit's capture script, a change of the session's role or task, a lease steal and the
+# coordinator's commands where a command starts, in place of the deny rules that matched their
+# names anywhere in a call's text, and a curl or wget upload of a file or body to a host outside
+# the team's own. Every command those rules refused when run is still refused (a test per rule),
+# and the reads, searches, diffs, commits and file writes that only name them pass, the hook and
+# the worker deny list both.
 
 load helpers/common
 
@@ -345,7 +346,7 @@ passes() {
   refuses "$STEAL" 'team-lease --steal' 'team-lease take --steal' 'cd x && bin/team-resume --steal' \
     '~/agent-team/bin/team-lease take --steal' "team-lease take '--steal'" '"team-resume" --steal' \
     'nohup team-resume --steal &' 'timeout 60 team-lease take --steal' "bash -c 'team-resume --steal'" \
-    'team-lease --help --steal' $'git status\nteam-lease take --steal'
+    'team-lease --help --steal' $'git status\nteam-lease take --steal' 'source bin/team-lease take --steal'
 }
 
 # Rules Bash(*/bin/team-ask *), Bash(*/bin/team-answer *), Bash(*/bin/team-inbox),
@@ -357,7 +358,8 @@ passes() {
     'team-thread T1 agent-team title' 'team-thread T1 --interview' 'env FOO=1 team-answer T1 x' 'team-inbox' \
     "bash -c 'team-inbox --post'" 'bin/team-ask --help' 'team-ask --help' '/home/me/agent-team/bin/team-inbox' \
     'cd x && team-answer T1 "yes"' "team-thread 'T12' x y" 'echo "$(team-inbox)"' \
-    'nohup ~/agent-team/bin/team-run-approved T1 &' $'bash <<\'EOF\'\nteam-ask T1 q --file f\nEOF'
+    'nohup ~/agent-team/bin/team-run-approved T1 &' $'bash <<\'EOF\'\nteam-ask T1 q --file f\nEOF' \
+    'source ~/agent-team/bin/team-ask T1 q --file f' '. bin/team-inbox'
 }
 
 @test "a read, search or file write naming a steal or the coordinator's commands, team-thread wait and team-lease with no --steal pass" {
