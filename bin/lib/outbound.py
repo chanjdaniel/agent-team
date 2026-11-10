@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Whether a Bash command's curl or wget uploads to a host outside the team's own loopback.
+"""Whether a Bash command's curl or wget uploads to a host outside the team's own.
 
 Usage: python3 -I outbound.py   (the command on stdin; prints the reason when it uploads, else nothing)
 
 bin/hooks/command-guard runs this file on a Bash call's code text, as bin/lib/command_text.py
-prints it, and refuses the call when it prints a reason. It exits 0 either way; input that is not
+prints it, and refuses the call when it prints a reason; so every role whose settings layer on
+settings/worker.json gets the refusal, ops among them. It exits 0 either way; input that is not
 UTF-8, or an error of its own, exits 1 naming it on stderr, so the hook refuses: a guard that
 cannot decide refuses.
 It reads each simple command of the command (command_text.simple_commands: those in a group, a
 substitution, a pipeline or a list too), past its assignments and the wrappers env, command, exec,
 nohup, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock
-with their options, numbers and flock's file, and the command's name by its basename decides:
+with their options, numbers and flock's file, parallel's inputs after its ::: or :::: left out,
+and the command's name by its basename decides:
   - curl uploads with a request body or a file: -d, --data, --data-ascii, --data-binary,
     --data-urlencode, --data-raw, -F, --form, --form-string, --json, -T or --upload-file, each
     also as --expand-<flag>, a short one alone or in a cluster (-sSd@f), a long one as --flag
@@ -21,16 +23,25 @@ with their options, numbers and flock's file, and the command's name by its base
 Each tool's options that take a value skip it, so a value is never read as a URL; an option it
 does not know takes none.
 A URL is curl's positional word, --url's value or a word after --, or wget's positional word; - is
-stdin, not a URL. It counts only as a literal: one that, its quotes removed, holds no $ and no
-backtick (nor is a process substitution), since a host held in a variable ("$B/markets") is not
-known here. Its host is what follows an optional scheme up to the first /, ? or #, past any
-userinfo and before a port, a [...] IPv6 address kept whole, lowercased; the team's own is
-localhost, 127.x.y.z, ::1, [::1] and 0:0:0:0:0:0:0:1.
-An upload is reported when one of its invocation's URLs is a literal host outside the team's own;
-a request with no body (curl -X POST alone) is not an upload.
+stdin, not a URL. Its authority is what follows an optional scheme up to the first /, ? or #, and
+it counts only when that authority is a literal: one that, its quotes removed, holds no $ and no
+backtick (nor is the URL a process substitution), since a host held in a variable ("$B/markets")
+is not known here, though a variable in the path or query ("https://host/u?t=$RANDOM") is no
+matter. Its host is that authority past any userinfo and before a port, a [...] IPv6 address kept
+whole, lowercased; a host with no letter or digit (find's ; or +, a {}) is none. The team's own
+hosts are the local ones: localhost, 127.x.y.z, ::1, [::1], 0:0:0:0:0:0:0:1, and 0.0.0.0, :: and
+[::], which reach the local machine on Linux and macOS.
+The request also goes through the hosts a proxy or an override names, each read as a URL is: curl's
+-x, --proxy, --proxy1.0, --preproxy, --socks4, --socks4a, --socks5 and --socks5-hostname, the
+third field of --connect-to (an empty one is the URL's own host) and the addresses of --resolve
+(none for -HOST:PORT); wget's http_proxy, https_proxy and ftp_proxy set by -e; and for both, an
+assignment before the command of a variable ending in _proxy, any case, no_proxy apart.
+An upload is reported when one of its invocation's URLs or those hosts is a literal outside the
+team's own; a request with no body (curl -X POST alone) is not an upload.
 It is a speed bump, as command-guard's other refusals are: a host held in a variable, a body or URL
-in a curl -K config, a URL in a wget -i list, another tool and an interpreter's own request go unseen,
-held by auto mode and the role's rule against reaching a refused thing another way.
+in a curl -K config, a URL in a wget -i list, a proxy exported earlier or set in a config file,
+another tool and an interpreter's own request go unseen, held by auto mode and the role's rule
+against reaching a refused thing another way.
 """
 
 import os
@@ -67,6 +78,7 @@ CURL_VALUE_LONG = frozenset(
     knownhosts krb libcurl limit-rate local-port login-options mail-auth mail-from mail-rcpt
     max-filesize max-redirs max-time netrc-file noproxy oauth2-bearer output output-dir
     parallel-max parallel-max-host pass pinnedpubkey preproxy proto proto-default proto-redir proxy
+    proxy1.0
     proxy-cacert proxy-capath proxy-cert proxy-cert-type proxy-ciphers proxy-crlfile proxy-header
     proxy-key proxy-key-type proxy-pass proxy-pinnedpubkey proxy-service-name proxy-tls13-ciphers
     proxy-tlsauthtype proxy-tlspassword proxy-tlsuser proxy-user pubkey quote random-file range
@@ -77,6 +89,11 @@ CURL_VALUE_LONG = frozenset(
     upload-flags url url-query user user-agent variable vlan-priority write-out
     """.split()
 )
+
+# curl's options whose value is a host the request goes through: a proxy, or a connect override's
+# or a resolve's target.
+CURL_PROXY_SHORT = frozenset("x")
+CURL_PROXY_LONG = frozenset("proxy proxy1.0 preproxy socks4 socks4a socks5 socks5-hostname".split())
 
 # wget 1's flags that send a body, and its long options (wget --help), those taking a value apart;
 # getopt takes a long one by any prefix that names one alone.
@@ -111,22 +128,35 @@ WGET_LONG = WGET_VALUE_LONG | frozenset(
     span-hosts spider strict-comments timestamping trust-server-names unlink verbose version xattr
     """.split()
 )
-# A wgetrc command that sets a body, as -e runs it: its name is read with case, - and _ ignored.
-WGET_UPLOAD_COMMAND = re.compile(r"(?:postdata|postfile|bodydata|bodyfile)\s*=")
+# The wgetrc commands, as -e runs them, that set a body or a proxy: a name is read with case, -, _
+# and blanks ignored.
+WGET_UPLOAD_COMMANDS = frozenset(("postdata", "postfile", "bodydata", "bodyfile"))
+WGET_PROXY_COMMANDS = frozenset(("httpproxy", "httpsproxy", "ftpproxy"))
+# An assignment of a proxy curl or wget reads from the environment (http_proxy, ALL_PROXY), but
+# no_proxy.
+PROXY_ASSIGNMENT = re.compile(r"(?i)(?!no_proxy=)\w*_proxy=")
+# parallel's separators, after which its words are inputs, not the command's.
+PARALLEL_INPUTS = frozenset((":::", "::::", ":::+", "::::+"))
 
-SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
-LOOPBACK = frozenset(("localhost", "::1", "[::1]", "0:0:0:0:0:0:0:1", "[0:0:0:0:0:0:0:1]"))
+SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+LOOPBACK = frozenset(
+    ("localhost", "::1", "[::1]", "0:0:0:0:0:0:0:1", "[0:0:0:0:0:0:0:1]", "0.0.0.0", "::", "[::]")
+)
 LOOPBACK_V4 = re.compile(r"127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}")
 
 
 def _command(words):
-    """The words from the command's own name on, past its assignments and wrappers, as the header
-    says: a word after a wrapper's option is its value unless it names a command read here."""
-    i, n = 0, len(words)
+    """The assignments before the command's own name, env's among them, and the words from that
+    name on, past its wrappers, as the header says: a word after a wrapper's option is its value
+    unless it names a command read here; under parallel, the words from its first ::: on are its
+    inputs and left out."""
+    i, n, inputs = 0, len(words), False
     while i < n and ASSIGNMENT.match(words[i]):
         i += 1
+    assignments = words[:i]
     while i < n and os.path.basename(words[i]) in WRAPPERS:
         file_left, option = os.path.basename(words[i]) == "flock", False
+        inputs = inputs or os.path.basename(words[i]) == "parallel"
         i += 1
         while i < n:
             word = words[i]
@@ -135,6 +165,8 @@ def _command(words):
             if word.startswith("-") and word != "-":
                 option = True
             elif ASSIGNMENT.match(word) or NUMBER.fullmatch(word):
+                if ASSIGNMENT.match(word):
+                    assignments.append(word)
                 option = False
             elif option:
                 option = False
@@ -143,7 +175,11 @@ def _command(words):
             else:
                 break
             i += 1
-    return words[i:]
+    words = words[i:]
+    if inputs:
+        cut = next((k for k, word in enumerate(words) if word in PARALLEL_INPUTS), len(words))
+        words = words[:cut]
+    return assignments, words
 
 
 def _short(word, value_flags):
@@ -155,9 +191,36 @@ def _short(word, value_flags):
     return word[1:], None, ""
 
 
+def _fields(value):
+    """A host:port:host:port value's fields, split at each : outside a [...] IPv6 address."""
+    fields, field, bracket = [], [], False
+    for c in value:
+        bracket = (bracket or c == "[") and c != "]"
+        if c == ":" and not bracket:
+            fields.append("".join(field))
+            field = []
+        else:
+            field.append(c)
+    return fields + ["".join(field)]
+
+
+def _curl_via(name, value):
+    """The hosts a curl option with its value sends the request through: a proxy's, a connect
+    override's target (HOST1:PORT1:HOST2:PORT2, an empty HOST2 the URL's own) or a resolve's
+    addresses ([+]HOST:PORT:ADDRESS[,ADDRESS]..., none for -HOST:PORT, which drops one)."""
+    if name in CURL_PROXY_LONG or name in CURL_PROXY_SHORT:
+        return [value]
+    if name == "connect-to":
+        fields = _fields(value)
+        return [fields[2]] if len(fields) > 2 and fields[2] else []
+    if name == "resolve" and not value.startswith("-"):
+        return ":".join(_fields(value.removeprefix("+"))[2:]).split(",")
+    return []
+
+
 def _curl(args):
-    """Whether curl's arguments send a body or a file, and its URLs."""
-    uploads, urls, k = False, [], 0
+    """Whether curl's arguments send a body or a file, its URLs and the hosts it goes through."""
+    uploads, urls, via, k = False, [], [], 0
     while k < len(args):
         word = args[k]
         k += 1
@@ -173,13 +236,17 @@ def _curl(args):
                 k += 1
             if name == "url":
                 urls.append(value)
+            via += _curl_via(name, value)
         elif word.startswith("-") and word != "-":
-            flags, flag, joined = _short(word, CURL_VALUE_SHORT)
+            flags, flag, value = _short(word, CURL_VALUE_SHORT)
             uploads = uploads or bool(set(flags + (flag or "")) & CURL_UPLOAD_SHORT)
-            k += bool(flag) and not joined
+            if flag and not value:
+                value = args[k] if k < len(args) else ""
+                k += 1
+            via += _curl_via(flag, value)
         elif word != "-":
             urls.append(word)
-    return uploads, urls
+    return uploads, urls, via
 
 
 def _wget_long(name):
@@ -189,9 +256,15 @@ def _wget_long(name):
     return {option for option in WGET_LONG if option.startswith(name)} if name else set()
 
 
+def _wgetrc(command):
+    """A wgetrc command's name, its case, -, _ and blanks dropped, and its value."""
+    name, _, value = command.partition("=")
+    return re.sub(r"[-_\s]", "", name.lower()), value.strip()
+
+
 def _wget(args):
-    """Whether wget's arguments send a body, and its URLs."""
-    uploads, urls, k = False, [], 0
+    """Whether wget's arguments send a body, its URLs and the proxies -e sets."""
+    uploads, urls, via, k = False, [], [], 0
     while k < len(args):
         word = args[k]
         k += 1
@@ -217,8 +290,10 @@ def _wget(args):
             urls.append(word)
             continue
         if executes:
-            uploads = uploads or bool(WGET_UPLOAD_COMMAND.match(re.sub(r"[-_]", "", value.lower()).lstrip()))
-    return uploads, urls
+            name, setting = _wgetrc(value)
+            uploads = uploads or name in WGET_UPLOAD_COMMANDS
+            via += [setting] if name in WGET_PROXY_COMMANDS else []
+    return uploads, urls, via
 
 
 def _shell_string(args):
@@ -240,9 +315,14 @@ def _shell_string(args):
     return args[k] if runs and k < len(args) else None
 
 
-def _host(url):
-    """The lowercased host of a URL, as the header says."""
-    authority = re.split(r"[/?#]", SCHEME.sub("", url, count=1), maxsplit=1)[0].rpartition("@")[2].lower()
+def _authority(url):
+    """A URL's authority: what follows an optional scheme up to the first /, ? or #."""
+    return re.split(r"[/?#]", SCHEME.sub("", url, count=1), maxsplit=1)[0]
+
+
+def _host(authority):
+    """The lowercased host of an authority, as the header says."""
+    authority = authority.rpartition("@")[2].lower()
     if authority in LOOPBACK:
         return authority
     if authority.startswith("["):
@@ -252,23 +332,27 @@ def _host(url):
 
 
 def _outside(url):
-    """Whether a URL is a literal whose host is outside the team's own."""
-    if "$" in url or "`" in url or url.startswith(("<(", ">(")):
+    """Whether a URL's authority is a literal whose host is outside the team's own; a host with no
+    letter or digit (find's ; or +, a {}) is none."""
+    authority = _authority(url)
+    if "$" in authority or "`" in authority or url.startswith(("<(", ">(")):
         return False
-    host = _host(url)
-    return not (host in LOOPBACK or LOOPBACK_V4.fullmatch(host))
+    host = _host(authority)
+    local = host in LOOPBACK or LOOPBACK_V4.fullmatch(host)
+    return bool(re.search(r"[A-Za-z0-9]", host)) and not local
 
 
 def outbound_upload(command: str) -> str | None:
     """The reason the command uploads to a host outside the team's own, or None when it does not."""
     for words in simple_commands(command):
-        words = _command(words)
+        assignments, words = _command(words)
         if not words:
             continue
         name, args = os.path.basename(words[0]), words[1:]
         if name in ("curl", "wget"):
-            uploads, urls = (_curl if name == "curl" else _wget)(args)
-            if uploads and any(_outside(url) for url in urls):
+            uploads, urls, via = (_curl if name == "curl" else _wget)(args)
+            via += [word.partition("=")[2] for word in assignments if PROXY_ASSIGNMENT.match(word)]
+            if uploads and any(_outside(url) for url in urls + via):
                 return REASON
         elif name in SHELLS:
             script = _shell_string(args)

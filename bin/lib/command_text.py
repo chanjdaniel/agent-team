@@ -4,16 +4,16 @@
 Usage: python3 -I command_text.py   (the command on stdin; prints the text on stdout)
 
 bin/hooks/command-guard runs this file on a Bash call's command, team-tokens imports
-without_heredocs from it, and outbound.py simple_commands, each simple command's words. It
-reads the command far enough to know its quotes ('...', "..." and
-$'...'), backslashes, comments, arithmetic ($[, and $(( or (( whose two closing parentheses are
-adjacent, matched as Bash's parse_matched_pair does, past quotes, backticks and a $(...) read
-by this scan: ((cmd) ) is two subshells), groups ((, $(, a backtick, ${ in which quotes
-nest up to its first }, [[ ... ]], in which a comment and a newline's heredoc bodies are read as
-outside it, a { ... }, and after = an array assignment's list, a word's part in which no word is
-reserved), case's patterns, pipelines, here-strings and heredocs, whose marker is its word up to
-a blank or an operator with its quotes removed, as Bash takes it; a << inside quotes, a comment,
-arithmetic, ${ or [[ opens none.
+without_heredocs from it, and outbound.py simple_commands, each simple command's words. It reads
+the command far enough to know its quotes ('...', "..." and $'...'), backslashes, comments,
+arithmetic ($[, and $(( or (( whose two closing parentheses are adjacent, matched as Bash's
+parse_matched_pair does, past quotes, backticks and a $(...) read by this scan: ((cmd) ) is two
+subshells), groups ((, $(, a backtick, ${ in which quotes nest up to its first }, [[ ... ]], in
+which a comment and a newline's heredoc bodies are read as outside it, a { ... }, and after = an
+array assignment's list, a word's part in which no word is reserved), case's patterns,
+pipelines, here-strings and heredocs, whose marker is its word up to a blank or an operator with
+its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic, ${ or [[ opens
+none.
 A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it as one, as its
 reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
 a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time, its -p or the -- after
@@ -526,7 +526,9 @@ def _command_word(text, i, end):
     """The word at i, before end, as a command's argument, and where it ends: its quotes removed,
     as _word reads them, but for a quote's text holding $ or a backtick and a substitution, $(...),
     `...`, ${...}, $((...)) or $[...], which are kept as written, so a word built by one still holds
-    its $ or backtick; a quote that does not close before end is dropped, its text read as unquoted."""
+    its $ or backtick; a quote that does not close before end ends the word, and the segment with it
+    (end is where it returns): code_text adds a -c string's line with its closing quote left on, and
+    what follows that quote is the outer command's, never the string's."""
     out = []
     while i < end:
         c = text[i]
@@ -553,8 +555,7 @@ def _command_word(text, i, end):
             ansi = c == "$"
             j = _pair_end(text, i + 1 + ansi, "'" if ansi else c, "'" if ansi else c, "esc" if ansi else "")
             if not _closed(text, i + ansi, j, end):
-                i += 1 + ansi
-                continue
+                return "".join(out), end
             inner = text[i + 1 + ansi : j - 1]
             if c == '"' and not ("$" in inner or "`" in inner):
                 inner = re.sub(r"\\([\\\"$`])", r"\1", inner).replace("\\\n", "")
@@ -623,8 +624,8 @@ def simple_commands(command):
     """Each simple command of every pipeline segment of the command, those in its groups and
     substitutions too, as the list of its words with their quotes removed (_command_word): its
     redirections, their targets, its comments, its heredocs' bodies and the reserved words it
-    starts with left out. A word holding a substitution keeps its text, $ or backtick and all; one
-    whose quote never closes keeps its text, unquoted. A segment holding a compound command yields
+    starts with left out. A word holding a substitution keeps its text, $ or backtick and all; a
+    quote that never closes ends its word and the rest of its segment. A segment holding a compound command yields
     its words too, split at its separators, beside the group's own commands."""
     reading = read_command(command)
     bodies = {h.body[0]: h.end for h in reading.heredocs}

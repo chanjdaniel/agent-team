@@ -30,10 +30,10 @@
 #     env - or exec -c, past any wrappers between: it would run with no AGENT_TEAM_ROLE, so its
 #     own worker_refusal would not see the worker.
 # It also refuses uploading a file or body to a host outside the team's own: a curl or wget that
-# sends one to a literal host other than the loopback, as bin/lib/outbound.py reads the code text
-# (its header says which flags and hosts), which prints the reason; a host held in a variable is
-# not seen, nor another tool's or an interpreter's upload. When outbound.py cannot decide, the
-# command is refused, naming its exit.
+# sends one to a literal host other than the local ones, directly or through a proxy, as
+# bin/lib/outbound.py reads the code text (its header says which flags and hosts), which prints
+# the reason; a host held in a variable is not seen, nor another tool's or an interpreter's upload.
+# When outbound.py cannot decide, the command is refused, naming its exit.
 # The text is matched as written, quotes and all, so a separator inside quotes counts as one,
 # which refuses more, never less. Not seen: a name spelled across quotes or held in a variable; a
 # script or function of one's own, or a copy or link of a guarded one; a string another
