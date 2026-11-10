@@ -183,6 +183,8 @@ On a fresh machine, Daniel meets them in this order (recorded from `team-bootstr
 | 1Password unlock | system authentication (PolKit); the native AUR app, not Snap or Flatpak | Touch ID |
 | rc file the bootstrap writes `PATH` lines to | `~/.bashrc` | `~/.zshrc` |
 | Heartbeat | systemd user units `agent-team-heartbeat.{service,timer}` in `~/.config/systemd/user/`, `Persistent=true` | LaunchAgents `agent-team.heartbeat` (missed runs happen on wake) and `agent-team.caffeinate` (`caffeinate -i` while the heartbeat is enabled, so the Mac does not idle-sleep) in `~/Library/LaunchAgents/` |
+| Resource levels | `agent-team.slice` with `CPUQuota`, `MemoryHigh` and `MemoryMax`, which `team-capacity install` writes on Daniel's yes | admission and stow only, with no hard CPU or memory limit on the team's sessions, heavy runs or gate; the containers' CPU held by `docker update`, their memory by Docker Desktop's VM (`sops/resources.md`, "On macOS") |
+| Sleep | none | `caffeinate -i` stops idle sleep only, so the lid stays open and the Mac on power while it holds the team; the doctor's `power` line warns on battery power |
 | Claude Code login | `~/.claude/.credentials.json` | the macOS Keychain |
 | Home path | `/home/<user>` | `/Users/<user>`; recorded paths under either are read as the same path under this `$HOME` |
 | Filesystem | case-sensitive | APFS, case-insensitive by default; no repo has case-only name clashes today, and path case no longer matters for the registry: the scripts compare checkout paths by file identity, so `Documents/projects` in `projects.toml` names `~/Documents/Projects` |

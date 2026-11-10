@@ -2,8 +2,8 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the docker, chrome, 1password, secret, discord access, interview channel, gate-agent
-# and records lines.
+# This file: the docker, chrome, power, 1password, secret, discord access, interview channel,
+# gate-agent and records lines.
 
 load helpers/common
 load helpers/doctor
@@ -55,6 +55,47 @@ daemon_refuses() {
   run_bin -0 team-doctor
   [[ -e "/Applications/Google Chrome.app" ]] ||
     assert_equal "$(line_of chrome)" "WARN chrome: Google Chrome is not installed, so chrome-devtools-axi has no browser; fix: brew install --cask google-chrome"
+}
+
+@test "on macOS the power line passes on AC power and warns on battery power or an unread source, never failing; Linux has no power line" {
+  only_checks 248-power.sh
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of power)" ""
+  on_macos
+  tools_at macos
+  # as_macos's pmset answers AC power.
+  run_bin -0 team-doctor
+  assert_equal "$(line_of power)" "PASS power: on AC power; keep the lid open while this Mac holds the team, since caffeinate keeps it from idle sleep only"
+  assert_equal "$(stub_calls pmset)" '["-g","batt"]'
+  stub_reply pmset "Now drawing from 'Battery Power'
+ -InternalBattery-0 (id=4653155)	81%; discharging; 5:12 remaining present: true"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of power)" "WARN power: on battery power: a closed lid or a flat battery sleeps this Mac and stops the team, and the lease goes stale after 60 minutes; fix: plug this Mac in, and keep its lid open while it holds the team"
+  stub_reply pmset "Now drawing from 'UPS Power'"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of power)" "WARN power: could not read the power source (pmset -g batt: Now drawing from 'UPS Power'); fix: run pmset -g batt and read its first line"
+  stub_script pmset <<'EOF'
+echo "pmset: no power source information" >&2
+exit 1
+EOF
+  run_bin -0 team-doctor
+  assert_equal "$(line_of power)" "WARN power: could not read the power source (pmset -g batt: pmset: no power source information); fix: run pmset -g batt and read its first line"
+  rm "$STUB_FIXTURES/pmset.sh"
+  stub_reply pmset '' 1
+  run_bin -0 team-doctor
+  assert_equal "$(line_of power)" "WARN power: could not read the power source (pmset -g batt: no output); fix: run pmset -g batt and read its first line"
+  # With no pmset at all, on a machine that has none of its own to find instead.
+  rm "$BATS_TEST_TMPDIR/stubs/pmset"
+  if ! command -v pmset >/dev/null; then
+    run_bin -0 team-doctor
+    assert_equal "$(line_of power)" "WARN power: could not read the power source (pmset -g batt: no output); fix: run pmset -g batt and read its first line"
+  fi
+  # --help lists the line from its file's header, between the resources and the offline lines.
+  run_bin -0 team-doctor --help
+  assert_equal "$(grep '^  power  ' <<<"$output")" "  power         macOS only: the power source, from pmset -g batt's first line. Passes on AC"
+  [[ $(grep -n '^  resources  ' <<<"$output" | cut -d: -f1) -lt $(grep -n '^  power  ' <<<"$output" | cut -d: -f1) ]]
+  [[ $(grep -n '^  power  ' <<<"$output" | cut -d: -f1) -lt $(grep -n '^  offline  ' <<<"$output" | cut -d: -f1) ]]
 }
 
 @test "the 1password line warns without op or the app, never asking the vault" {

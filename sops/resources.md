@@ -104,6 +104,14 @@ Rootful Docker keeps its containers outside every user slice, so their CPU is he
 A slice that is not installed is said with its fix, `team-capacity install` (Daniel's yes), and the containers are still held.
 On macOS only the containers' CPU is held.
 
+## On macOS
+
+macOS has no cgroups, so its backend is admission and stow only.
+As on Linux, it holds admission by reservation, stowing and the automatic level, all from the readings, which find each task's processes by their working directory and descent (see "Readings").
+It holds the team's containers' CPU with `docker update --cpus`, as "The limits" says, and their memory inside Docker Desktop's VM, whose size Daniel sets in Docker Desktop's Settings, Resources.
+It holds no hard limit on the team's sessions, heavy runs or the gate: no slice, no `CPUQuota`, no `MemoryHigh` or `MemoryMax`, so a busy team can still slow Daniel's own programs at minor.
+The doctor's `resources` line says so, and its `power` line warns while the Mac runs on battery, since a closed lid or a flat battery sleeps it and stops the team.
+
 ## The team's slice
 
 On Linux every worker session, heavy run and gate run sits in one systemd user slice, `agent-team.slice`, so the kernel can measure and limit the team's work as one, apart from Daniel's own programs.
@@ -285,4 +293,7 @@ It fails on a `capacity.json` or a `level.jsonl` line that is malformed, naming 
 It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
 It warns on what the task slots left, which nothing reads since levels replaced them: `~/.config/agent-team/slots.json`, `~/.local/state/agent-team/slots/` (their readings) and `~/.local/state/agent-team/slots.lock`, naming whichever are present, its fix `rm -r` of them.
 On Linux with the slice installed it warns, naming `team-level apply`, when the limits last applied are missing or another mode and level's than the record's, or the slice's CPU quota is not theirs, as after a reboot.
-macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "no hard limits on macOS: admission and stow only".
+On Linux the passing reason, after the level's words, is "systemd backend: agent-team.slice holds the team, <n> live team session(s) in it".
+macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "macOS backend, admission and stow only: no cgroups, so no hard CPU or memory limit holds the team's sessions, heavy runs or gate; the team's containers' CPU is held with docker update, and their memory within Docker Desktop's VM"; its warnings and failures are only the ones on any OS above.
+`team-capacity check --json` carries the backend as `backend`, `systemd` on Linux and `macos` on macOS, on every verdict.
+On macOS only, the doctor's `power` line reads `pmset -g batt`'s first line: it passes on AC power ("on AC power; keep the lid open while this Mac holds the team, since caffeinate keeps it from idle sleep only"), and warns on battery power ("on battery power: a closed lid or a flat battery sleeps this Mac and stops the team, and the lease goes stale after 60 minutes", its fix "plug this Mac in, and keep its lid open while it holds the team") and when `pmset` is missing, fails or names neither source; it never fails, since a standby on battery is fine and `team-resume` stops only on a FAIL.

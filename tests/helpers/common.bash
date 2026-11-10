@@ -601,11 +601,15 @@ esac
 EOF
 }
 
-# Run the sandbox as macOS: uname stubbed to say Darwin, and a fake Homebrew (HOMEBREW_PREFIX)
-# with the directories of the GNU tools bin/lib/platform.sh puts first on PATH.
+# Run the sandbox as macOS: uname stubbed to say Darwin, pmset stubbed to say the Mac draws from
+# AC power (the doctor's power line; a test of that line rewrites its reply), and a fake Homebrew
+# (HOMEBREW_PREFIX) with the directories of the GNU tools bin/lib/platform.sh puts first on PATH.
 as_macos() {
   [[ -e $BATS_TEST_TMPDIR/stubs/uname ]] || stub_command uname
   stub_reply uname Darwin
+  [[ -e $BATS_TEST_TMPDIR/stubs/pmset ]] || stub_command pmset
+  stub_reply pmset "Now drawing from 'AC Power'
+ -InternalBattery-0 (id=4653155)	100%; charged; 0:00 remaining present: true"
   export HOMEBREW_PREFIX=$BATS_TEST_TMPDIR/brew
   local dir
   for dir in coreutils/libexec/gnubin findutils/libexec/gnubin gnu-sed/libexec/gnubin \

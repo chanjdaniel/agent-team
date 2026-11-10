@@ -18,6 +18,8 @@ UNITS_STATE=
 # The level's words on doctor_machine's machine: manual full with no record, 30.6 GiB less the
 # others' 8 and 4 kept free for them, and 12 cores less their 1 and 1 kept free.
 LEVEL="manual, full (90%): 18.6 GiB and 10.0 cores for the team; 0.0 GiB reserved"
+# The macOS backend's words, what holds and what does not.
+MACOS="macOS backend, admission and stow only: no cgroups, so no hard CPU or memory limit holds the team's sessions, heavy runs or gate; the team's containers' CPU is held with docker update, and their memory within Docker Desktop's VM"
 
 # The gate's daemon unit, as no-mistakes writes it, active in <cgroup>: gate_daemon <hash> <cgroup>
 gate_daemon() {
@@ -46,7 +48,7 @@ sessions() {
   fake_process 300 1 - claude
   sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-planner 200" "c0ffee00 coordinator 300" "d1b2c3d4 T11-builder 500"
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 2 live team sessions in it"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; systemd backend: agent-team.slice holds the team, 2 live team sessions in it"
   run_bin -0 --separate-stderr team-doctor --json
   assert_equal "$(jq -c '.[] | select(.check == "resources") | [.verdict, .fix]' <<<"$output")" '["PASS",""]'
 }
@@ -71,7 +73,7 @@ sessions() {
   # Restarted into the slice.
   user_cgroup no-mistakes-daemon-60757c3c.service agent-team.slice >"$UNITS_STATE/no-mistakes-daemon-60757c3c.service.ControlGroup"
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 1 live team session in it"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; systemd backend: agent-team.slice holds the team, 1 live team session in it"
 }
 
 @test "the resources line warns when the session list cannot be read" {
@@ -101,7 +103,7 @@ sessions() {
   echo '{"ts":"2026-11-01T14:05:00Z","mode":"manual","level":"minor","by":"Daniel","machine":"home-pc"}' >"$TEAM_HOME/level.jsonl"
   level_applied manual minor 360
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 0.0 GiB reserved; agent-team.slice holds the team, 0 live team sessions in it"
+  assert_equal "$(line_of resources)" "PASS resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 0.0 GiB reserved; systemd backend: agent-team.slice holds the team, 0 live team sessions in it"
 
   # A reboot or a reset slice drops the runtime quota.
   echo infinity >"$HOME/.fake-systemd/agent-team.slice.CPUQuotaPerSecUSec"
@@ -131,12 +133,12 @@ sessions() {
   assert_equal "$(line_of resources)" "FAIL resources: $HOME/.config/agent-team/capacity.json: full_share must be a number above 0 and at most 1, not 2; fix: fix or remove ~/.config/agent-team/capacity.json, then run team-doctor again"
 }
 
-@test "on macOS the resources line passes with admission and stow only" {
+@test "on macOS the resources line passes naming the macOS backend, what it holds and what it does not" {
   only_checks 247-resources.sh
   on_macos
   tools_at macos
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; no hard limits on macOS: admission and stow only"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; $MACOS"
 }
 
 @test "the resources line warns on the lease holder with no reading of the last 15 minutes, naming the heartbeat's log, or its enable when it is off" {
@@ -152,7 +154,7 @@ sessions() {
   capacity_reading 5
   "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 0 live team sessions in it"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; systemd backend: agent-team.slice holds the team, 0 live team sessions in it"
 }
 
 @test "the resources line warns on each leftover of the task slots, which levels replaced, on Linux and macOS, and there is no slots line" {
@@ -184,7 +186,7 @@ sessions() {
   assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots and ~/.local/state/agent-team/slots.lock are $why; fix: rm -r ~/.config/agent-team/slots.json ~/.local/state/agent-team/slots ~/.local/state/agent-team/slots.lock"
   rm -r "$config/slots.json" "$state/slots" "$state/slots.lock"
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; no hard limits on macOS: admission and stow only"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; $MACOS"
 }
 
 @test "the resources line fails on a team-capacity check that prints no JSON, and the checks after it still run" {

@@ -171,7 +171,7 @@ lock_has_its_shape() {
     echo captures
     echo 'heavy runs'
     project_checks
-    printf '%s\n' 'stack memory' clock lease heartbeat health resources offline)
+    printf '%s\n' 'stack memory' clock lease heartbeat health resources power offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }
