@@ -235,7 +235,7 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 2. Find what your branch made false: for each file, command, flag, setting and path it adds, renames or removes (`git diff --stat origin/dev...HEAD`), `git grep` its name in the repository's Markdown, `CLAUDE.md`, `AGENTS.md` and script headers, and fix every line that no longer holds, in the same PR.
 3. Push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send `T12 DONE review-ready <the full sha of HEAD>` to `coordinator`, then wait: the team reviews that head before the gate runs, so the gate runs once.
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
-4. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes." (under a Disclosure section, put in its terms, since the gate drafts the PR's title and body from it)
+4. Run `/no-mistakes` with an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is "rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes.": on a phase, this phase's part of it alone), under a Disclosure section put in its terms, since the gate drafts the PR's title and body from it.
    When the review step parks with no finding, only on "review coverage is incomplete", answer it yourself with `no-mistakes axi respond --action approve`, with no QUESTION: the team review reads this head, before the gate or after it. A finding, at any step, still goes to `coordinator` as a QUESTION.
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
 6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks, noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
@@ -320,9 +320,14 @@ EOF
     done < <(templates)
   done
   # The delivery partial follows the project's delivery.
-  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-builder-fix.md")" 'Run `/no-mistakes` with this intent: "T12: value of goal"'
+  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-builder-fix.md")" 'Run `/no-mistakes` with an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, this phase'"'"'s part of it alone), under a Disclosure section put in its terms'
   assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-builder-deliver.md")" \
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
+  # The PR body and the gate's intent open with what the PR changes, never the task's id and goal.
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-builder-deliver.md")" \
+    'its body opening with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, say this phase'"'"'s part of it alone and name the others as their own PRs), then'
+  refute_grep -F '"T12: value of goal"' "$TEAM_HOME/tasks/T12/brief-builder-fix.md"
+  refute_grep -F '"T14: value of goal"' "$TEAM_HOME/tasks/T14/brief-builder-deliver.md"
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
   # So do the review partials: a gated project's first review comes before its PR.
@@ -1606,7 +1611,7 @@ after"
   run_bin -0 team-brief T5 builder-deliver --project conv --set goal=g --name conv
   brief=$(<"$TEAM_HOME/tasks/T5/brief-conv.md")
   assert_contains "$brief" 'Worktree: `~/.treehouse/Conventioner-d4c77a/3/Conventioner`, branch `chore/T5-move-planning-out`.'
-  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T5: g"'
+  assert_contains "$brief" '(the task'"'"'s goal is "g": on a phase, this phase'"'"'s part of it alone)'
 
   run_bin -1 team-brief T5 builder-deliver --project other --set goal=g --name other
   assert_contains "$output" "T5 has no open worktree in other; its open worktrees: conv (~/.treehouse/Conventioner-d4c77a/3/Conventioner), home (~/agent-team/.claude/worktrees/1)"
@@ -1901,7 +1906,7 @@ findings_files() {
   assert_contains "$brief" "PR: https://github.com/chanjdaniel/shop/pull/5, against"
   assert_contains "$brief" "and findings 1 and 3 in \`.scratch/task/review.md\`."
   assert_contains "$brief" "\`.scratch/task/handoff.md\`"
-  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: the shop'"'"'s checkout"'
+  assert_contains "$brief" '(the task'"'"'s goal is "the shop'"'"'s checkout": on a phase, this phase'"'"'s part of it alone)'
   assert_contains "$brief" "when the PR exists, push to it where a step opens one"
   # A gated project's first review comes before its gate opens the PR: the round takes none, and
   # the builder checks its branch against what the stowed builder pushed, not a PR's head.
@@ -1910,7 +1915,7 @@ findings_files() {
   assert_contains "$brief" "PR: none, against \`dev\` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push)."
   assert_contains "$brief" "\`! git rev-parse -q --verify origin/fix/T12-applicant-sign-in-rate-limit || git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
   assert_contains "$brief" "when it is none, the delivery opens it as it says."
-  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: g"'
+  assert_contains "$brief" '(the task'"'"'s goal is "g": on a phase, this phase'"'"'s part of it alone)'
 }
 
 # team-catch-up pushes a merge of the base to a PR's branch from the primary checkout, so a builder
@@ -1994,7 +1999,7 @@ Nor guess them.'
   assert_contains "$brief" "PR: none, against \`dev\` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push)."
   assert_contains "$brief" "and findings 3 and 5 in \`.scratch/task/rereview.md\`."
   assert_contains "$brief" "When every one of findings 3 and 5 is a plain \`note\`"
-  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: Applicants cannot flood addresses with sign-in codes."'
+  assert_contains "$brief" '(the task'"'"'s goal is "Applicants cannot flood addresses with sign-in codes.": on a phase, this phase'"'"'s part of it alone)'
   refute_grep -F 'Nor guess them' "$output"
   assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T12/brief-round-1.json")" \
     '{"findings":"3 and 5","findings_file":".scratch/task/rereview.md","goal":"Applicants cannot flood addresses with sign-in codes.","pr":"none"}'
@@ -2037,7 +2042,7 @@ Nor guess them.'
   assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" \
     '{"findings":"4","findings_file":".work/task/review-2.md","goal":"the given goal.","pr":"https://github.com/chanjdaniel/agent-team/pull/10"}'
   assert_contains "$(<"$output")" "and findings 4 in \`.work/task/review-2.md\`."
-  assert_contains "$(<"$output")" '"T14: the given goal."'
+  assert_contains "$(<"$output")" '(the task'"'"'s goal is "the given goal.":'
 }
 
 @test "a deliver brief takes the goal from the plan's Goal section, its first sentence; a plan with none is refused naming --set goal=" {
@@ -2060,16 +2065,16 @@ Nor guess them.'
 The team'"'"'s tooling runs on both machines.
 Daniel moves it with one command.'
   run_bin -0 team-brief T14 builder-deliver
-  assert_contains "$(<"$output")" "its body opening with the task's goal: \"T14: The team's tooling runs on both machines.\", then"
+  assert_contains "$(<"$output")" "its body opening with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is \"The team's tooling runs on both machines.\": on a phase, say this phase's part of it alone and name the others as their own PRs), then"
   assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" '{"goal":"The team'"'"'s tooling runs on both machines.","tickets":"every ticket"}'
   # A goal written as a list: its first item, without the marker.
   plan_goal T14 '- The team home stays packed.
 - Stack logs stay out of it.'
   run_bin -0 team-brief T14 builder-deliver --force
-  assert_contains "$(<"$output")" '"T14: The team home stays packed."'
+  assert_contains "$(<"$output")" '(the task'"'"'s goal is "The team home stays packed.":'
   # A --set wins.
   run_bin -0 team-brief T14 builder-deliver --force --set goal='the given goal.'
-  assert_contains "$(<"$output")" '"T14: the given goal."'
+  assert_contains "$(<"$output")" '(the task'"'"'s goal is "the given goal.":'
 }
 
 # team-thread wait keeps Daniel's images there with no pick, so the item says what ui-pick.md holds
