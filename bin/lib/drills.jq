@@ -38,7 +38,9 @@ def drills_scan($registry):
 # the checkout lacks the commit, changed_by the last commit after it that touches a proves path, or
 # null) and now, in seconds: drills_status($registry; $scan; $git; $now)
 # A drill's due reasons, in this order: never (no record), failed (its last run failed),
-# unknown-commit, dirty (it ran on uncommitted changes), changed and old (over max_age_days).
+# unknown-commit, dirty (it ran on uncommitted changes), changed, ahead (its at over a day after
+# now: a clock ahead, whose run would otherwise read as fresh for 30 days past that time) and old
+# (over max_age_days).
 def drills_status($registry; $scan; $git; $now):
   {schema: "team-drill/1", max_age_days: $registry.max_age_days, malformed: $scan.malformed,
    drills: [$registry.drills[] | . as $drill
@@ -52,13 +54,15 @@ def drills_status($registry; $scan; $git; $now):
            if $code.known | not then "unknown-commit" else empty end,
            if $last.dirty then "dirty" else empty end,
            if $changed_by != null then "changed" else empty end,
+           if ($last.at | fromdate) - $now > 86400 then "ahead" else empty end,
            if $age > $registry.max_age_days then "old" else empty end] end),
         changed_by: $changed_by}]};
 
 # Why one drill of the status view (.) is due, its first reason in words, after its name: "never
 # ran", "failed on 2026-11-10", "ran on a commit this checkout lacks (1a2b3c4)", "ran on uncommitted
-# changes", "ran before 1a2b3c4 changed the code it proves" or "last ran 31 days ago"; null when it
-# is not due. The doctor's drills line words each due drill as its name and this.
+# changes", "ran before 1a2b3c4 changed the code it proves", "ran at 2026-12-20, over a day ahead of
+# this machine's clock" or "last ran 31 days ago"; null when it is not due. The doctor's drills
+# line words each due drill as its name and this.
 def drills_reason:
   .due[0] as $reason
   | if $reason == null then null
@@ -67,6 +71,7 @@ def drills_reason:
     elif $reason == "unknown-commit" then "ran on a commit this checkout lacks (\(.last.commit[0:7]))"
     elif $reason == "dirty" then "ran on uncommitted changes"
     elif $reason == "changed" then "ran before \(.changed_by[0:7]) changed the code it proves"
+    elif $reason == "ahead" then "ran at \(.last.at[0:10]), over a day ahead of this machine's clock"
     elif $reason == "old" then "last ran \(.age_days) days ago"
     else $reason end;
 

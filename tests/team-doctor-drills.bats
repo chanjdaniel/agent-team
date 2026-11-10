@@ -75,6 +75,11 @@ never_ran() {
   run_bin -0 team-doctor
   assert_equal "$output" "WARN drills: 6 of $(drill_count) drills are due: handoff failed on $today; steal never ran; load-check-planner ran on a commit this checkout lacks (0123456); load-check-ops-prod-write ran on uncommitted changes; load-check-ops-vercel-read last ran 31 days ago; compaction ran before ${changed:0:7} changed the code it proves; fix: $FIX"
 
+  # A run over a day ahead of the clock is due, never fresh.
+  drill_line bootstrap-arch -40
+  run_bin -0 team-doctor
+  assert_equal "$output" "WARN drills: 7 of $(drill_count) drills are due: handoff failed on $today; steal never ran; load-check-planner ran on a commit this checkout lacks (0123456); load-check-ops-prod-write ran on uncommitted changes; load-check-ops-vercel-read last ran 31 days ago; compaction ran before ${changed:0:7} changed the code it proves; bootstrap-arch ran at $(date -u -d '40 days' +%F), over a day ahead of this machine's clock; fix: $FIX"
+
   # One due drill is one that is due.
   drill_line handoff 0
   drill_line steal 0
@@ -82,6 +87,7 @@ never_ran() {
   drill_line load-check-ops-prod-write 0
   drill_line load-check-ops-vercel-read 0
   drill_line compaction 0 pass "$changed"
+  drill_line bootstrap-arch 0
   drill_line bootstrap-macos 0 fail
   run_bin -0 team-doctor
   assert_equal "$output" "WARN drills: 1 of $(drill_count) drills is due: bootstrap-macos failed on $today; fix: $FIX"
