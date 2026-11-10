@@ -753,6 +753,22 @@ tasks/queued/x.md"
 A  README.md"
 }
 
+@test "a drill team-drill records is committed and pushed by the next checkpoint, a record file of its own" {
+  run_bin -0 team-checkpoint
+  stub_reply claude '2.1.321 (Claude Code)'
+  run_bin -0 team-drill record compaction --verdict pass
+  run_bin -0 team-checkpoint --force
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
+  assert_equal "$(changed_in dev)" "drills.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:drills.jsonl)" "$(cat "$TEAM_HOME/drills.jsonl")"
+  # A second run's line goes in the next checkpoint.
+  run_bin -0 team-drill record compaction --verdict fail
+  run_bin -0 team-checkpoint --force
+  assert_equal "$(changed_in dev)" "drills.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:drills.jsonl | jq -r .verdict | paste -sd ' ')" "pass fail"
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+}
+
 @test "a checkpoint stopped while it archives has already pushed the new ledger line" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"

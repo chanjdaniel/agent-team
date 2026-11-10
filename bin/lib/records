@@ -4,6 +4,7 @@
 # tracked path matches.
 ledger.jsonl
 level.jsonl
+drills.jsonl
 manual-steps.md
 projects.toml
 tasks/**

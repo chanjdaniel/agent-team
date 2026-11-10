@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Record a drill's run, and show each drill's last run and whether it is due (sops/drills.md).
+# A drill is a live run of a path the team's portability or its guards rest on; the registry,
+# bin/lib/drills.json, names each one, who runs it (by: coordinator, or daniel when it needs them
+# present) and the code it proves. Each run is one line of the team home's drills.jsonl, appended
+# and never rewritten, which team-checkpoint and team-handoff commit and push with the other
+# records; team-drill itself commits nothing. bin/lib/drills.jq says what a line is and when a
+# drill is due.
+#
+# Usage: team-drill record <drill> --verdict pass|fail [--detail <text>]
+#        team-drill status [--json]
+#
+# record   Appends one line: {at (now, UTC), drill, machine (this machine's team name), commit
+#          (the HEAD of the code checkout team-drill runs from, the directory above bin/), dirty
+#          (true when that checkout has changes to tracked files), claude (the first word of
+#          claude --version, or null when there is none or it does not answer within 10 s),
+#          verdict, detail ("" without --detail)}, and prints "team-drill: recorded <drill>
+#          <verdict> on <machine> at <short commit>". It takes no option for the fields it fills.
+#          Refused, exit 1, with nothing written: a drill the registry lacks, naming the known
+#          ones; a drill with a workflow_job, which its workflow run records; a fenced machine or
+#          one that lost the lease (lease_refusal in bin/lib/team.sh), since such a machine
+#          commits and pushes no record; a machine with no team name; a code checkout whose HEAD
+#          it cannot read. A missing or other --verdict, and a --detail that holds a newline or is
+#          over 300 characters, are a malformed command line (exit 2).
+# status   One row per registered drill, in the registry's order, under a header: the drill, its
+#          last run's date and age in days, machine, short commit, Claude Code version and
+#          verdict, then ok or "due: <its first reason>"; a drill with no record shows only "due:
+#          never ran". A drill's last run is its last valid line in file order; a line that is no
+#          drill record is skipped, and a last line counts them. With --json one object:
+#          {schema: "team-drill/1", max_age_days, malformed (the lines skipped), drills: [{drill,
+#          by, what, last (the line, or null), age_days (whole days since its at, or null), due,
+#          changed_by}]}. due lists, in this order, each reason that holds: never (no record),
+#          failed (the last run's verdict is fail), unknown-commit (the code checkout has no
+#          commit of its commit), dirty (it ran on uncommitted changes), changed (a commit after
+#          its commit, on the code checkout's HEAD, touches a path it proves: changed_by, the
+#          latest such commit) and old (its age_days over max_age_days). It exits 0 whenever it
+#          could read the registry: the doctor's drills line decides what a due drill means.
+# A drill run on a PR's head stays proven after the PR merges with a merge commit, since the head
+# is then an ancestor of dev.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-drill record <drill> --verdict pass|fail [--detail <text>] | status [--json]"
+REGISTRY=$TEAM_LIB/drills.json
+RECORD=$TEAM_HOME/drills.jsonl
+CODE=$(cd "$TEAM_LIB/../.." && pwd)
+
+# git in the code checkout alone, never a repository above it.
+code_git() {
+  GIT_CEILING_DIRECTORIES=$(dirname "$CODE") git -C "$CODE" "$@"
+}
+
+registry() {
+  jq -e 'select(.drills | type == "array")' "$REGISTRY" 2>/dev/null || die "cannot read the drill registry $REGISTRY"
+}
+
+record() {
+  local drill='' verdict='' detail='' has_verdict=0 reg entry known job why machine commit dirty=false claude line
+  while (($#)); do
+    case $1 in
+      --verdict)
+        (($# >= 2)) || usage_error "record needs --verdict pass or --verdict fail"
+        [[ $2 == pass || $2 == fail ]] || usage_error "--verdict takes pass or fail, not '$2'"
+        verdict=$2 has_verdict=1
+        shift 2
+        ;;
+      --detail)
+        if (($# < 2)) || [[ $2 == *$'\n'* ]] || ((${#2} > 300)); then
+          usage_error "--detail takes one line of at most 300 characters"
+        fi
+        detail=$2
+        shift 2
+        ;;
+      -*) usage_error "unexpected argument '$1'; $USAGE" ;;
+      *)
+        [[ -z $drill ]] || usage_error "unexpected argument '$1'; $USAGE"
+        drill=$1
+        shift
+        ;;
+    esac
+  done
+  [[ -n $drill ]] || usage_error "record needs a drill; $USAGE"
+  ((has_verdict)) || usage_error "record needs --verdict pass or --verdict fail"
+
+  reg=$(registry) || exit 1
+  entry=$(jq -c --arg drill "$drill" '.drills[] | select(.name == $drill)' <<<"$reg")
+  if [[ -z $entry ]]; then
+    known=$(jq -r '[.drills[].name] | join(", ")' <<<"$reg")
+    die "no drill '$drill'; the drills are $known"
+  fi
+  job=$(jq -r '.workflow_job // empty' <<<"$entry")
+  [[ -z $job ]] || die "$drill runs as the Bootstrap workflow's job $job, whose run team-drill import <run id> records"
+  if why=$(lease_refusal "records no drill"); then die "$why"; fi
+  machine=$(machine_name) || exit 1
+  commit=$(code_git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) ||
+    die "cannot read the HEAD of the code checkout $CODE, so the drill's commit is unknown"
+  [[ -z $(code_git status --porcelain --untracked-files=no 2>/dev/null) ]] || dirty=true
+  claude=$(bounded 10 claude --version 2>/dev/null </dev/null) || claude=''
+  read -r claude _ <<<"$claude" || true
+
+  line=$(jq -cn --arg at "$(date -u +%FT%TZ)" --arg drill "$drill" --arg machine "$machine" --arg commit "$commit" \
+    --argjson dirty "$dirty" --arg claude "$claude" --arg verdict "$verdict" --arg detail "$detail" \
+    '{at: $at, drill: $drill, machine: $machine, commit: $commit, dirty: $dirty,
+      claude: (if $claude == "" then null else $claude end), verdict: $verdict, detail: $detail}')
+  # One write of under 4096 bytes, which the kernel appends whole, so no lock is taken.
+  printf '%s\n' "$line" >>"$RECORD"
+  echo "team-drill: recorded $drill $verdict on $machine at ${commit:0:7}"
+}
+
+status() {
+  local json=0 reg scan git_facts name commit proves changed known
+  local -a paths
+  while (($#)); do
+    case $1 in
+      --json) json=1 ;;
+      *) usage_error "unexpected argument '$1'; $USAGE" ;;
+    esac
+    shift
+  done
+  reg=$(registry) || exit 1
+  if [[ -e $RECORD ]]; then
+    scan=$(jq -nRc -L "$TEAM_LIB" --argjson registry "$reg" 'include "drills"; drills_scan($registry)' "$RECORD")
+  else
+    scan='{"last": {}, "malformed": 0}'
+  fi
+  # What the code checkout says of each drill's last commit: whether it has it, and the latest
+  # commit after it, on HEAD, that touches a path the drill proves.
+  git_facts='{}'
+  while IFS=$'\t' read -r name commit proves; do
+    known=false changed=''
+    if code_git cat-file -e "$commit^{commit}" 2>/dev/null; then
+      known=true
+      mapfile -t paths < <(jq -r '.[]' <<<"$proves")
+      changed=$(code_git rev-list -1 "$commit..HEAD" -- "${paths[@]}" 2>/dev/null) || changed=''
+    fi
+    git_facts=$(jq -c --arg name "$name" --argjson known "$known" --arg changed "$changed" \
+      '.[$name] = {known: $known, changed_by: (if $changed == "" then null else $changed end)}' <<<"$git_facts")
+  done < <(jq -r --argjson scan "$scan" '.drills[] | select($scan.last[.name] != null)
+    | [.name, $scan.last[.name].commit, (.proves | tojson)] | @tsv' <<<"$reg")
+  if ((json)); then
+    jq -n -L "$TEAM_LIB" --argjson registry "$reg" --argjson scan "$scan" --argjson git "$git_facts" \
+      'include "drills"; drills_status($registry; $scan; $git; now)'
+  else
+    jq -nr -L "$TEAM_LIB" --argjson registry "$reg" --argjson scan "$scan" --argjson git "$git_facts" \
+      'include "drills"; drills_status($registry; $scan; $git; now) | drills_text'
+  fi
+}
+
+command=${1:-}
+(($# == 0)) || shift
+case $command in
+  record) record "$@" ;;
+  status) status "$@" ;;
+  '') usage_error "$USAGE" ;;
+  *) usage_error "unknown subcommand '$command'; $USAGE" ;;
+esac

@@ -559,10 +559,11 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'the tickets done and the reviews are the ledger'"'"'s, which `team-state T<n>` reads' "$plugin/skills/recover-worker/SKILL.md"
   # Shorter than before team-next, in lines (120) and in the bytes the starting context carries
   # (24220, 24280 once the ops bullet named vercel-read, 24460 once the ops lines named the
-  # message of Daniel's each ops launch needs, and 24590 once the ops line named the logging of
-  # its answer as its length, with the pointer to its relay).
+  # message of Daniel's each ops launch needs, 24590 once the ops line named the logging of its
+  # answer as its length, with the pointer to its relay, and 24640 once the load check's line
+  # named team-drill status).
   (($(wc -l <"$manual") <= 115))
-  (($(wc -c <"$manual") <= 24590))
+  (($(wc -c <"$manual") <= 24640))
 }
 
 @test "reviewers and planners add the memories the hook keeps them from writing to their task directory, and the coordinator files them at close" {
