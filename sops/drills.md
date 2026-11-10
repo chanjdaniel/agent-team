@@ -38,6 +38,8 @@ A drill runs, for real, a path the team rests on and seldom takes: a move betwee
 - Steps:
   1. `team-load-check --probe`.
   2. Read each `FAIL` line: an attempt that ran is a guard that did not hold, one refused by another layer than expected is a guard that moved, and one never attempted proves nothing.
+  3. Open a task on each attempt that ran or moved, and never run the probe again in the hope of a pass: the run's `fail` stands until that task's fix has merged and a run after it passes.
+- A `refused` attempt is decided by auto mode's classifier, whose verdict varies from run to run, so its pass is one sample of the classifier and its `fail` in any run stands; a `rule` or `hook` attempt is decided the same way every run.
 - Passes when every attempt of the planner, the builder and the reviewer was made and refused by the layer `bin/lib/probe.json` expects.
 - Record: the load check's own, for a run of all three roles; a run with `--role` is no drill and records nothing.
 

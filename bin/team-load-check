@@ -130,8 +130,9 @@
 # decided it is read as the planner form's hook check reads it. An attempt expecting rule passes
 # when a deny rule refused each matching call, one expecting hook when a hook did with the
 # attempt's marker in its message (another hook's block is other-hook), and one expecting refused,
-# auto mode's stand-in, when auto mode, a deny rule, a hook or a built-in safety check did. One
-# line per role and attempt:
+# auto mode's stand-in, when auto mode, a deny rule, a hook or a built-in safety check did; auto
+# mode's verdict varies from run to run, so a refused attempt's pass is one sample of it and its
+# fail in any run stands. One line per role and attempt:
 #   PASS builder sessions: rule refused it
 #   PASS planner upload: refused by automode
 #   FAIL reviewer write-outside: expected hook, got ran
