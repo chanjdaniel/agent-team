@@ -75,10 +75,11 @@ attempts() {
 
 # probe_transcript <role> [<id>=<outcome>[,<outcome>]...]...: <role>'s transcript in
 # $STUB_FIXTURES/<role>.jsonl: one call per attempt, in order, refused as it expects (hook: the real
-# hook whose message holds the attempt's marker, on the call in the worktree; rule: a deny rule;
-# refused: auto mode), or for an attempt named, one call per outcome given: hook, other-hook (a
-# block by another hook's message), none (a call with no result), skip (no call at all), or any
-# outcome tool_result takes (ran, rule, automode, no-verdict, safety-check, user-rejected). A
+# hook whose message holds the attempt's marker, on the call in the worktree; rule: a deny rule,
+# file-rule's shape for a file tool; refused: auto mode), or for an attempt named, one call per
+# outcome given: hook, other-hook (a block by another hook's message), none (a call with no
+# result), skip (no call at all), or any outcome tool_result takes (ran, rule, file-rule, automode,
+# no-verdict, safety-check, user-rejected). A
 # Write's or Read's relative input is made by its absolute path in the worktree, as Claude Code
 # records it.
 probe_transcript() {
@@ -95,7 +96,7 @@ probe_transcript() {
       Write) [[ $input == /* ]] || input=$wt/$input; call=$(jq -cn --arg p "$input" '{file_path: $p, content: "probe"}') ;;
       *) [[ $input == /* ]] || input=$wt/$input; call=$(jq -cn --arg p "$input" '{file_path: $p}') ;;
     esac
-    case $expect in hook) outcomes=hook ;; rule) outcomes=rule ;; *) outcomes=automode ;; esac
+    case $expect:$tool in hook:*) outcomes=hook ;; rule:Bash) outcomes=rule ;; rule:*) outcomes=file-rule ;; *) outcomes=automode ;; esac
     outcomes=${given[$id]:-$outcomes}
     for outcome in ${outcomes//,/ }; do
       [[ $outcome != skip ]] || continue
@@ -111,6 +112,13 @@ probe_transcript() {
       esac
     done
   done < <(attempts "$role") >>"$STUB_FIXTURES/$role.jsonl"
+}
+
+# call_id <role> <pattern>: the id of the Bash call in <role>'s transcript whose command matches
+# the regular expression <pattern>
+call_id() {
+  jq -r --arg re "$2" 'select(.type == "assistant") | .message.content[0]
+    | select(.input.command? // "" | test($re)) | .id' "$STUB_FIXTURES/$1.jsonl"
 }
 
 # passes <role>...: the PASS line of each attempt of each role, refused as it expects (a refused
@@ -241,6 +249,28 @@ PASS builder proc: rule refused it"
   rm "$STUB_FIXTURES"/launched-* "$STUB_FIXTURES"/removed-*
   run_bin -0 team-load-check --probe
   assert_contains "$output" "PASS planner upload: refused by hook"
+}
+
+@test "a rejection with no toolDenialKind is read by its decision: a deny rule passes, another reason fails as rejected" {
+  probe_transcript planner sessions=file-rule merge=ran
+  # merge's call ran with a decision of accept; sudo's was rejected for a reason the reader does not
+  # model, with no toolDenialKind.
+  local merge sudo
+  merge=$(call_id planner '^gh pr merge ') sudo=$(call_id planner '^sudo ')
+  jq -c --arg merge "$merge" --arg sudo "$sudo" '.message.content[0].tool_use_id? as $id
+    | if $id == $merge then .permissionDecision = {decision: "accept", source: "config", reasonType: "classifier"}
+      elif $id == $sudo then del(.toolDenialKind)
+        | .permissionDecision = {decision: "reject", source: "config", reasonType: "mode"}
+      else . end' "$STUB_FIXTURES/planner.jsonl" >"$BATS_TEST_TMPDIR/planner.jsonl"
+  mv "$BATS_TEST_TMPDIR/planner.jsonl" "$STUB_FIXTURES/planner.jsonl"
+  probe_transcript builder
+  probe_transcript reviewer
+  run_bin -1 team-load-check --probe
+  assert_contains "$output" "PASS planner sessions: rule refused it"
+  assert_contains "$output" "FAIL planner merge: expected rule, got ran"
+  assert_contains "$output" "FAIL planner sudo: expected rule, got rejected"
+  assert_contains "$output" "PASS planner proc: rule refused it"
+  assert_contains "$output" "PASS planner channels: rule refused it"
 }
 
 @test "every call matching an attempt must pass, and a call with other input matches none" {

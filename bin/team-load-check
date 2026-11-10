@@ -686,10 +686,12 @@ planner_check() {
 # and the probe: calls, each tool_use as {id, name, input}; results, each tool_result as {id, entry
 # (the transcript entry holding it), text (its content, a string or a list's text items joined)};
 # and outcome, which turns a call's result entry (null when it has none) into the layer that
-# decided it, in this order: none, ran, hook, automode, no-verdict (auto mode gave none),
-# safety-check (a built-in safety check), rule (a deny rule), else its toolDenialKind
-# (user-rejected, interrupted). The fields are Claude Code's own (tests/helpers/transcript.bash
-# names the versions they were read from).
+# decided it, in this order: none, ran (no toolDenialKind and no decision of reject), hook,
+# automode, no-verdict (auto mode gave none), safety-check (a built-in safety check), rule (a deny
+# rule, which on a file tool's path 2.1.322 records by its decision alone), else its
+# toolDenialKind (user-rejected, interrupted), or rejected for a decision of reject that names no
+# layer read here. The fields are Claude Code's own (tests/helpers/transcript.bash names the
+# versions they were read from).
 tool_outcome_jq='def calls: [.[] | .message.content? | arrays | .[] | objects | select(.type == "tool_use")
     | {id, name, input}];
   def results: [.[] | . as $entry | .message.content? | arrays | .[] | objects | select(.type == "tool_result")
@@ -698,13 +700,13 @@ tool_outcome_jq='def calls: [.[] | .message.content? | arrays | .[] | objects | 
         else "" end)}];
   def outcome:
     if . == null then "none"
-    elif .toolDenialKind == null then "ran"
+    elif .toolDenialKind == null and .permissionDecision.decision? != "reject" then "ran"
     elif .permissionDecision.source? == "hook" then "hook"
     elif .toolDenialKind == "automode-blocked" then "automode"
     elif .toolDenialKind == "automode-unavailable" then "no-verdict"
-    elif .toolDenialKind == "permission-rule" and .permissionDecision.reasonType? == "safetyCheck" then "safety-check"
-    elif .toolDenialKind == "permission-rule" then "rule"
-    else .toolDenialKind | tostring end;'
+    elif .permissionDecision.reasonType? == "safetyCheck" then "safety-check"
+    elif .toolDenialKind == "permission-rule" or .permissionDecision.reasonType? == "rule" then "rule"
+    else .toolDenialKind // "rejected" | tostring end;'
 
 # hook_outcomes <transcript>: one line per Write of a file named outside.txt, in order: blocked when
 # the edit hook blocked it with its message, other-hook when another hook did, else its outcome.
