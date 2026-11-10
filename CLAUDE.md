@@ -18,6 +18,8 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `command_text.py`: the text of a Bash command that runs as code, each heredoc's body left out unless a shell may read it, and a shell's `-c` string and what is piped into a shell where a command starts read as code, for `bin/hooks/command-guard`; `team-tokens` takes its heredoc rule.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
+    - `drills.jq`: the drills module, the one place that says what a line of the team home's `drills.jsonl` is, when a drill is due and how `team-drill status` shows it.
+    - `drills.json`: the drill registry, each drill's name, what it is, who runs it (`coordinator`, or `daniel` when it needs them present) and the code it proves, with the one age past which a drill is due.
     - `gate-claude-settings.json`: the settings the gate's Claude takes with `--settings`, its commit attribution off, since it loads no user settings.
     - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode), and reads `agent_args_override`'s list for one agent.
     - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time or standing merge back to Daniel, read by `team-merge`.
@@ -59,6 +61,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
 - `settings/`: worker settings: `worker.json` shared, one file per role layered on it; with the user settings, all a planner, builder or reviewer loads (`--setting-sources user`), none of its worktree's `.claude/`.
 - `sops/`: standing procedures.
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.
+  - `drills.md`: the drills, live runs of the paths the team's portability and guards rest on: the record in `drills.jsonl`, who runs one, and each drill's runbook, its steps, who takes each, its duration, what passes and how it is recorded.
   - `frontend-patterns.md`: rules that hold beyond one project for a UI's dev-only component library, combobox, large list, dialog, realistic fixture and bundle growth, each with its why.
   - `knowledge-graph.md`: a project's knowledge graph.
   - `machine-setup.md`: a new machine, driven by `SETUP.md`.
@@ -70,8 +73,9 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `resources.md`: the team's resources: its systemd user slice and each task's, `team-capacity install`, the placement of worker sessions and the gate in it, the checked assumptions, the readings per task, the learned costs, heavy runs' scopes, and the doctor's `resources` line.
 - `templates/`: the task plan and the worker briefs `team-open` and `team-brief` render.
 - `tests/`: the bats suite, one `.bats` file per script (a long one split by topic, as `team-doctor-*.bats`).
-  - `tests/bootstrap-drill`: runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow.
-  - `tests/compaction-drill`: run by hand by the coordinator, since it starts a real Claude session; it compacts a coordinator-shaped session in a sandbox team home built from `tests/fixtures/compaction-drill/` and checks it still knows each task's wait and every current item.
+  - `tests/bootstrap-drill`: runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow, and ends with the record line `team-drill import` reads from the job's log.
+  - `tests/bootstrap-drill.bats`: runs `tests/bootstrap-drill` on a stub `team-bootstrap`.
+  - `tests/compaction-drill`: run by hand by the coordinator, since it starts a real Claude session; it compacts a coordinator-shaped session in a sandbox team home built from `tests/fixtures/compaction-drill/`, checks it still knows each task's wait and every current item, and records its run.
   - `tests/compaction-drill.bats`: dry-runs `tests/compaction-drill` on a stub `claude`.
   - `tests/drill.bats`: the two-machine drill (handoff, steal, crash, outage, and the records rewrite's cutover on one machine).
   - `tests/helpers/`: the helpers, with `docker.bash`, the opt-in stub `docker`.
@@ -98,6 +102,7 @@ It holds:
 | - | - |
 | `ledger.jsonl` | The append-only record of every task's events |
 | `level.jsonl` | The team's resource level and mode, one line per change (`team-level`), committed with the ledger so a level holds across restarts and handoffs |
+| `drills.jsonl` | Each run of a drill, one line per run (`team-drill`): what ran, on which machine, code commit and Claude Code version, and its verdict, appended and never rewritten |
 | `projects.toml` | The project registry, read only through `bin/team-project`, whose `--help` documents every key |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `projects/` | Each project's planning (Conventioner's backlog) |

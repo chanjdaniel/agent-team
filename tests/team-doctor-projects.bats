@@ -275,8 +275,8 @@ EOF
   # The whole doctor, since the assertions read every line and its order.
   TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL trust team home: claude --bg in $shown says Workspace not trusted; fix: Daniel runs claude once in $shown and accepts the trust dialog"
-  # Before the projects' lines, after the records'.
-  assert_equal "$(checks | grep -A1 -B1 '^trust team home$')" "records
+  # Before the projects' lines, after the records' and the drills'.
+  assert_equal "$(checks | grep -A1 -B1 '^trust team home$')" "drills
 trust team home
 captures"
   [[ $(checks | grep -n '^trust team home$' | cut -d: -f1) -lt $(checks | grep -n '^checkout conventioner$' | cut -d: -f1) ]]

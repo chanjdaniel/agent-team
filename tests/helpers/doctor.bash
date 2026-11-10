@@ -86,6 +86,15 @@ EOF
   rm "$STUB_CALLS/servers-install.log"
   git init -q "$CODE_CHECKOUT"
   git -C "$CODE_CHECKOUT" config core.hooksPath bin/hooks/git
+  # Its first commit, CODE_START, with no file, and every drill passed on it today, so the drills
+  # line passes. Made with git's plumbing, as code_commit makes the later ones: the dev guard's
+  # pre-commit refuses a commit on main.
+  export CODE_START
+  CODE_START=$(git -C "$CODE_CHECKOUT" commit-tree -m 'chore: start the code' 4b825dc642cb6eb9a060e54bf8d69288fbee4904)
+  git -C "$CODE_CHECKOUT" update-ref HEAD "$CODE_START"
+  jq -c --arg at "$(date -u +%FT%TZ)" --arg commit "$CODE_START" '.drills[] | {at: $at, drill: .name,
+    machine: "home-pc", commit: $commit, dirty: false, claude: "2.1.321", verdict: "pass", detail: ""}' \
+    "$REPO_ROOT/bin/lib/drills.json" >"$TEAM_HOME/drills.jsonl"
   # The team home, with the records guard on, as Daniel turns it on.
   git -C "$TEAM_HOME" config core.hooksPath "$CODE_CHECKOUT/bin/hooks/records-git"
 

@@ -1,0 +1,130 @@
+{
+  "max_age_days": 30,
+  "drills": [
+    {
+      "name": "handoff",
+      "what": "The team moves to a second machine and back, with one trivial task at work.",
+      "by": "daniel",
+      "proves": [
+        "bin/team-handoff",
+        "bin/team-resume",
+        "bin/team-lease",
+        "bin/team-stow",
+        "bin/lib/stow.sh",
+        "bin/team-open",
+        "bin/team-checkpoint",
+        "bin/team-config",
+        "bin/team-timers",
+        "plugins/coordinator-skills/skills/handoff/",
+        "plugins/coordinator-skills/skills/resume/"
+      ]
+    },
+    {
+      "name": "steal",
+      "what": "The home PC takes the lease from a holder whose network is off, which is then fenced and its unpushed records salvaged.",
+      "by": "daniel",
+      "proves": [
+        "bin/team-lease",
+        "bin/team-resume",
+        "bin/team-open",
+        "bin/team-checkpoint",
+        "bin/team-timers",
+        "bin/hooks/lease-fence",
+        "bin/lib/doctor.d/220-lease.sh",
+        "bin/lib/doctor.d/230-salvage.sh"
+      ]
+    },
+    {
+      "name": "load-check-planner",
+      "what": "The load check's planner form: a live planner session gets its tools and skills, and its edit hook blocks its write outside .scratch/.",
+      "by": "coordinator",
+      "proves": [
+        "bin/team-load-check",
+        "bin/team-worker",
+        "bin/hooks/scratch-only-edits",
+        "roles/planner.md",
+        "settings/worker.json",
+        "settings/planner.json",
+        "bin/lib/tools.lock"
+      ]
+    },
+    {
+      "name": "load-check-ops-prod-write",
+      "what": "The load check's ops form with prod-read and prod-write: a live ops session reads production, and each of its production writes raises a prompt Daniel declines.",
+      "by": "daniel",
+      "proves": [
+        "bin/team-load-check",
+        "bin/team-worker",
+        "bin/team-ops-end",
+        "bin/hooks/ops-log",
+        "roles/ops.md",
+        "settings/worker.json",
+        "settings/ops.json",
+        "toolkits/prod-read/",
+        "toolkits/prod-write/",
+        "servers/package-lock.json",
+        "bin/lib/tools.lock"
+      ]
+    },
+    {
+      "name": "load-check-ops-vercel-read",
+      "what": "The load check's ops form with vercel-read: a live ops session reads Vercel's deployments and logs.",
+      "by": "daniel",
+      "proves": [
+        "bin/team-load-check",
+        "bin/team-worker",
+        "bin/team-ops-end",
+        "bin/hooks/ops-log",
+        "roles/ops.md",
+        "settings/worker.json",
+        "settings/ops.json",
+        "toolkits/vercel-read/",
+        "servers/package-lock.json",
+        "bin/lib/tools.lock"
+      ]
+    },
+    {
+      "name": "compaction",
+      "what": "A coordinator-shaped session is compacted in a sandbox team home and still knows each task's wait and every current item.",
+      "by": "coordinator",
+      "proves": [
+        "tests/compaction-drill",
+        "tests/fixtures/compaction-drill/",
+        "roles/coordinator.md",
+        "coordinator.settings.json",
+        "bin/hooks/session-digest",
+        "bin/lib/tools.lock"
+      ]
+    },
+    {
+      "name": "bootstrap-arch",
+      "what": "The Bootstrap workflow's Arch job runs team-bootstrap in a fresh Arch container.",
+      "by": "coordinator",
+      "workflow_job": "bootstrap-arch",
+      "proves": [
+        "bin/team-bootstrap",
+        "bin/lib/tools.lock",
+        "bin/lib/tools.jq",
+        "bin/lib/platform.sh",
+        "servers/install",
+        "tests/bootstrap-drill",
+        ".github/workflows/bootstrap.yml"
+      ]
+    },
+    {
+      "name": "bootstrap-macos",
+      "what": "The Bootstrap workflow's macOS job runs team-bootstrap on a fresh macOS runner.",
+      "by": "coordinator",
+      "workflow_job": "bootstrap-macos",
+      "proves": [
+        "bin/team-bootstrap",
+        "bin/lib/tools.lock",
+        "bin/lib/tools.jq",
+        "bin/lib/platform.sh",
+        "servers/install",
+        "tests/bootstrap-drill",
+        ".github/workflows/bootstrap.yml"
+      ]
+    }
+  ]
+}

@@ -160,7 +160,7 @@ usage/home-pc/time/2026-10-26.jsonl"
 # team-handoff's) take whole, naming no paths of their own, and CLAUDE.md's table of the team home.
 # team-checkpoint's first commit, of the ledger files by name, is a command substitution, never
 # one of these lines.
-@test "the ledger and the level record are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
+@test "the ledger, the level record and the drill record are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
   local file script calls
   for script in team-checkpoint team-handoff; do
     calls=$(grep -E '^[[:space:]]*(records_by_group=1 )?commit_records ' "$REPO_ROOT/bin/$script")
@@ -170,10 +170,37 @@ usage/home-pc/time/2026-10-26.jsonl"
       return 1
     fi
   done
-  for file in ledger.jsonl level.jsonl; do
+  for file in ledger.jsonl level.jsonl drills.jsonl; do
     grep -qxF "$file" "$REPO_ROOT/bin/lib/records" || { echo "$file is not in bin/lib/records" >&2; return 1; }
     grep -qF "| \`$file\` |" "$REPO_ROOT/CLAUDE.md" || { echo "$file is not in CLAUDE.md's team-home table" >&2; return 1; }
   done
+}
+
+# A drill proves the code it names: each proves path of bin/lib/drills.json is a tracked file, or a
+# directory, ending in /, that holds tracked files, so a rename never leaves a drill proving
+# nothing; and each drill's name is lower-case kebab case, its by coordinator or daniel.
+@test "every drill's proves path is a tracked file or a directory holding tracked files" {
+  local registry=$REPO_ROOT/bin/lib/drills.json path missing=()
+  assert_equal "$(jq -r '[.drills[] | select((.name | test("^[a-z0-9]+(-[a-z0-9]+)*$") | not)
+    or (.by | IN("coordinator", "daniel") | not) or (.proves | length) == 0) | .name] | join(" ")' "$registry")" ""
+  while IFS= read -r path; do
+    if [[ $path == */ ]]; then
+      [[ -n $(git -C "$REPO_ROOT" ls-files -- "$path") ]] || missing+=("$path")
+    else
+      git -C "$REPO_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || missing+=("$path")
+    fi
+  done < <(jq -r '[.drills[].proves[]] | unique[]' "$registry")
+  assert_equal "${missing[*]}" ""
+}
+
+# The doctor's drills line sends Daniel to sops/drills.md for a due drill's runbook, so every
+# drill of the registry has a "## " heading there naming it in backquotes.
+@test "every drill has a section in sops/drills.md" {
+  local name missing=()
+  while IFS= read -r name; do
+    grep -qE "^## .*\`$name\`" "$REPO_ROOT/sops/drills.md" || missing+=("$name")
+  done < <(jq -r '.drills[].name' "$REPO_ROOT/bin/lib/drills.json")
+  assert_equal "${missing[*]}" ""
 }
 
 # The kinds the contract marks push, Daniel's word and outside facts, are on origin the moment

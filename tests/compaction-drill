@@ -27,6 +27,15 @@
 # tasks/current.md) and each turn's token totals. A turn that fails ends the drill with its error.
 # The sandbox and the session's state (claude purge) are removed either way.
 #
+# Once its first turn has started, every way the drill ends records one compaction line in the
+# team home's drills.jsonl, through this checkout's bin/team-drill record compaction, with the
+# team home of the environment it was run in (the sandbox's is the session's alone): pass when it
+# exits 0, every check passed, else fail; the detail "<passed> of <checks> checks passed, <cost>
+# USD" once it reached its checks, "turn <n> (<name>) failed" when a turn failed. A record
+# team-drill refuses, or no team home named, prints "compaction-drill: not recorded: <team-drill's
+# first error line>" on stderr and leaves the drill's exit status as it was. Before its first turn
+# nothing is recorded.
+#
 # Usage: tests/compaction-drill
 # Exit 0 when every check passes, 1 when any fails or a turn fails, 2 on a malformed command line.
 set -euo pipefail
@@ -43,13 +52,25 @@ base=${TMPDIR:-/tmp}
 [[ $base != */.claude/* && $base != */.claude ]] || base=/tmp
 sandbox=$(cd "$(mktemp -d "$base/compaction-drill.XXXXXX")" && pwd -P)
 team=$sandbox/team
-started=''
+started='' outcome=''
+# record <exit status>: the drill's compaction line, through team-drill, which fills in the
+# machine, the commit and Claude Code's version; a refusal is one line on stderr.
+record() {
+  local verdict=fail detail=${outcome:-"it stopped with exit $1 before its verdict"} err
+  [[ $1 != 0 ]] || verdict=pass
+  if ! err=$("$root/bin/team-drill" record compaction --verdict "$verdict" --detail "$detail" 2>&1 >&3 </dev/null); then
+    echo "compaction-drill: not recorded: $(head -n 1 <<<"$err")" >&2
+  fi
+} 3>&1
 cleanup() {
+  local status=$?
   if [[ -n $started ]]; then
+    record "$status"
     "$claude" purge -y "$team" >/dev/null 2>&1 ||
       echo "compaction-drill: claude purge -y $team failed; remove the session's state by hand" >&2
   fi
   rm -rf "$sandbox"
+  exit "$status"
 }
 trap cleanup EXIT
 cp -R "$root/tests/fixtures/compaction-drill/." "$sandbox/"
@@ -93,6 +114,7 @@ for turn in 1 2 3; do
   result=$(jq -Rc 'fromjson? | select(.type? == "result")' "$sandbox/turn-$turn.jsonl" | tail -n 1)
   result=${result:-null}
   if [[ $status -ne 0 || $result == null ]] || jq -e '.is_error' >/dev/null <<<"$result"; then
+    outcome="turn $turn (${names[turn - 1]}) failed"
     echo "FAIL turn $turn (${names[turn - 1]}) failed (exit $status):"
     cat "$sandbox/turn-$turn.err"
     jq -r '.result // empty' <<<"$result" 2>/dev/null || true
@@ -152,14 +174,19 @@ check "the new promise: a task to pin Node 22, in the answer" item 'node ?22'
 check "the new promise: a next item to pin Node 22, in tasks/current.md" \
   grep -Eiq '^- next .*node ?22' "$team/tasks/current.md"
 
+# A cost in USD, to the cent.
+cost='def cost: (. * 100 | round) as $c | "\($c / 100 | floor).\($c % 100 | tostring | if length == 1 then "0" + . else . end)";'
+results=("$sandbox/result-1.json" "$sandbox/result-2.json" "$sandbox/result-3.json")
+total=$(jq -rs "$cost"' map(.total_cost_usd // 0) | add | cost' "${results[@]}")
+outcome="$passed of $checks checks passed, $total USD"
+
 echo "== tokens: input, cache write, cache read, output, cost (USD)"
-jq -rs --argjson names "$(printf '%s\n' "${names[@]}" | jq -Rsc 'split("\n")[:-1]')" '
+jq -rs --argjson names "$(printf '%s\n' "${names[@]}" | jq -Rsc 'split("\n")[:-1]')" "$cost"'
   def row: [.usage.input_tokens, .usage.cache_creation_input_tokens, .usage.cache_read_input_tokens,
     .usage.output_tokens] | map(. // 0);
-  def cost: (. * 100 | round) as $c | "\($c / 100 | floor).\($c % 100 | tostring | if length == 1 then "0" + . else . end)";
   (to_entries[] | "turn \(.key + 1) (\($names[.key])): \(.value | row | join(" ")) \(.value.total_cost_usd // 0 | cost)"),
   "total: \(map(row) | transpose | map(add) | join(" ")) \(map(.total_cost_usd // 0) | add | cost)"' \
-  "$sandbox/result-1.json" "$sandbox/result-2.json" "$sandbox/result-3.json"
+  "${results[@]}"
 
 echo "== $passed of $checks checks passed"
 ((passed == checks))
