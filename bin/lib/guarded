@@ -43,7 +43,7 @@ migrations (.*/)?(migrate_[^/]*|[^/]*_migration\.[^/]*)
 migrations .*\.sql
 migrations (.*/)?((reset|init)_database[^/]*|mongo-init[^/]*|[^/]*_indexes\.[^/]*|db_config[^/]*)
 settings (.*/)?(\.claude|\.vscode|\.agents|\.cursor)/.*
-settings (.*/)?(\.mcp\.json|claude\.md|agents\.md|treehouse\.toml)
+settings (.*/)?(\.mcp\.json|claude\.md|claude\.local\.md|agents\.md|treehouse\.toml)
 settings (.*/)?\.env(\.[^/]*)?
 settings (.*/)?settings[^/]*
 settings (.*/)?(vercel\.json|netlify\.toml|fly\.toml|procfile|render\.ya?ml|railway\.(json|toml))
