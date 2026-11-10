@@ -25,8 +25,9 @@
 # stack block, so nothing of it is left running (its logs, saved in the task directory, stay out
 # of the archive; a kept worktree keeps its stack; a failed teardown stops the close with the
 # reason, the task half closed); tasks/T<n>/ui/, the
-# task's UI captures (team-ui, and the images team-thread wait saves), removed, since they stay on
-# this machine and are never archived;
+# task's UI captures (team-ui, and the images team-thread wait saves), and
+# ~/.local/state/agent-team/prompts/T<n>/, the system prompts team-worker generated for its
+# sessions, removed, since they stay on this machine and are never archived;
 # each worktree's task directory mirrored to tasks/T<n>/scratch/ (the opened project) or
 # tasks/T<n>/scratch-<project>/ (an added one), less what archive_left_out (bin/lib/team.sh)
 # leaves out, each named on stderr, a missing or empty one reported on stderr, a mirror that
@@ -284,6 +285,13 @@ teardown_stacks
 if [[ -e $TEAM_HOME/tasks/$task/ui ]]; then
   rm -rf -- "$TEAM_HOME/tasks/$task/ui"
   echo "team-close: removed tasks/$task/ui/, the task's UI captures" >&2
+fi
+
+# The system prompts team-worker generated for the task's sessions (each a role's prompt and a
+# copy of a project's instructions) stay on this machine and go with the task.
+if [[ -e $HOME/.local/state/agent-team/prompts/$task ]]; then
+  rm -rf -- "$HOME/.local/state/agent-team/prompts/$task"
+  echo "team-close: removed ~/.local/state/agent-team/prompts/$task/, the system prompts team-worker generated for the task's sessions" >&2
 fi
 
 # Mirror each worktree's task directory into tasks/T<n>/.

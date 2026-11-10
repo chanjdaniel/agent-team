@@ -105,21 +105,21 @@
 # autoMemoryDirectory, the project's memory folder in the team home by the one definition
 # team-config writes (memory_setting in bin/lib/team.sh); its system prompt file, generated under
 # ~/.local/state/agent-team/prompts/<task>/ as <role>.<project>.md (never the team home, so no
-# checkpoint commits it), is the role's prompt, then a section headed with the project,
-# origin/<base> and its commit holding the root CLAUDE.md and the root AGENTS.md as that ref has
-# them in the worktree's repository, read as it stands (nothing is fetched). A root file that is a
-# symbolic link gives the text of the base's file it names, so a link to the other (Conventioner's
-# CLAUDE.md, a link to AGENTS.md) is the same file; a link that leaves the repository or names no
-# file of the base is named on stderr and not given. The second is left out when it is the same
-# file; an import line (one holding only @<path>, outside a code fence) stays
-# as text, and is named on stderr as not inlined unless it imports the other file given (an
-# @AGENTS.md line before the AGENTS.md that follows). A project whose base has neither file
-# launches with no section, and a launch with no project (the launch's project as the toolkit rule
-# above finds it) with neither the memory directory nor a section (<role>.md), each said on
-# stderr. An origin/<base> the worktree's repository cannot read refuses the launch (exit 1),
-# before any session is stopped or started. An ops session keeps its command line: --restricted
-# loads only managed settings and --settings, and its prompt is roles/ops.md as it is, with no
-# memory directory, so no production result reaches the team home's memory.
+# checkpoint commits it, and team-close removes the task's), is the role's prompt, then a section
+# headed with the project, origin/<base> and its commit holding the root CLAUDE.md and the root
+# AGENTS.md as that ref has them in the worktree's repository, read as it stands (nothing is
+# fetched). A root file that is a symbolic link gives the text of the base's file it names, so a
+# link to the other (Conventioner's CLAUDE.md, a link to AGENTS.md) is the same file; a link that
+# leaves the repository or names no file of the base is named on stderr and not given. The second is
+# left out when it is the same file; an import line (one holding only @<path>, outside a code fence)
+# stays as text, and is named on stderr as not inlined unless it imports the other file given (an
+# @AGENTS.md line before the AGENTS.md that follows). A project whose base has neither file launches
+# with no section, and a launch with no project (the launch's project as the toolkit rule above
+# finds it) with neither the memory directory nor a section (<role>.md), each said on stderr. An
+# origin/<base> the worktree's repository cannot read refuses the launch (exit 1), before any
+# session is stopped or started. An ops session keeps its command line: --restricted loads only
+# managed settings and --settings, and its prompt is roles/ops.md as it is, with no memory
+# directory, so no production result reaches the team home's memory.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
