@@ -1062,6 +1062,30 @@ posted to #coordinator (message 1569000000000000001): down: conventioner/api"
   jq -e '.checks["conventioner/api"] == null' "$HOME/.local/state/agent-team/uptime.json"
 }
 
+@test "two unreachable runs whose curl names another connect time each are both counted in the failures log" {
+  production 503 'Service Unavailable'
+  # The known-good fetch refused as curl 8 says it, after 0 ms and then after 1 ms.
+  { cat <<'EOF'
+if [[ ${*: -1} == http://127.0.0.1:9/ ]]; then
+  ms=$(cat "$STUB_FIXTURES/connect-ms" 2>/dev/null || echo 0)
+  echo $((ms + 1)) >"$STUB_FIXTURES/connect-ms"
+  printf 000
+  echo "curl: (7) Failed to connect to 127.0.0.1 port 9 after $ms ms: Couldn't connect to server" >&2
+  exit 7
+fi
+EOF
+    cat "$STUB_FIXTURES/curl.sh"; } >"$STUB_FIXTURES/curl.sh.new"
+  mv "$STUB_FIXTURES/curl.sh.new" "$STUB_FIXTURES/curl.sh"
+  TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/ run_bin -1 team-timers run
+  TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/ run_bin -1 team-timers run
+  local fixed='uptime: failed: this machine cannot reach the internet (http://127.0.0.1:9/: Failed to connect to 127.0.0.1 port 9 after'
+  assert_equal "$(problems | grep -F "$fixed")" "$fixed 0 ms: Couldn't connect to server), so 1 failing check(s) were not counted
+$fixed 1 ms: Couldn't connect to server), so 1 failing check(s) were not counted"
+  # So the second run's whole line is in the log once, and the line's fixed part twice.
+  assert_equal "$(problems | grep -c -xF "$(grep ' uptime: failed: ' <<<"$output" | cut -d' ' -f2-)")" 1
+  assert_equal "$(problems | grep -c -xE '^uptime: failed: this machine cannot reach the internet \(http://127\.0\.0\.1:9/: .+\), so 1 failing check\(s\) were not counted$')" 2
+}
+
 @test "the uptime step logs after the alert step's lines and before the inbox step's" {
   production 503 'Service Unavailable'
   # ledger: a line no reader can parse, alerted at once; inbox: the old Waiting on you message,
