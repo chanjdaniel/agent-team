@@ -1567,6 +1567,67 @@ level_record() {
   assert_equal "$output" ""
 }
 
+# held_pair [<T3 event>...] -- [<T3 event>...]: the ledger afresh, T3 stowed for the level at 04:00
+# with its planner and T4 at 05:00 with its builder, each paused stowed, with each T3 event
+# (<kind>:<jq object of more fields>) logged before T3's stow, or after it when it follows the --.
+held_pair() {
+  local spec at=03:30
+  : >"$TEAM_HOME/ledger.jsonl"
+  level_task T3 03:00
+  level_task T4 03:00
+  for spec in "$@"; do
+    if [[ $spec == -- ]]; then
+      ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T3", event: "stowed", machine: "home-pc", worktrees: [],
+        roles: ["planner"], cause: "level"}'
+      ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T3", event: "paused", reason: "stowed"}'
+      at=04:30
+    else
+      ledger_line --arg e "${spec%%:*}" --arg ts "2026-10-22T$at:00Z" "{ts: \$ts, task: \"T3\", event: \$e} + ${spec#*:}"
+    fi
+  done
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T4", event: "stowed", machine: "home-pc", worktrees: [],
+    roles: ["builder"], cause: "level"}'
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T4", event: "paused", reason: "stowed"}'
+}
+
+# relaunch_t4: T4's builder launched again since its stow, and live.
+relaunch_t4() {
+  ledger_line '{ts: "2026-10-22T06:00:00Z", task: "T4", event: "launch", role: "builder", session: "4e4e4e4e",
+    worktree: "/w/4", toolkits: []}'
+  sessions "$(session 4e4e4e4e T4-builder busy working)"
+}
+
+@test "level-resume: a stowed task held, or waiting or blocked since its stow, is never named, until resumed" {
+  level_record minor
+  # Room for both stowed tasks' roles.
+  capacity_reading 0 8
+  local hold='{reason: "on hold by Daniel (1567157155797139608)"}'
+  # T3 stowed first, then Daniel put it on hold: the finding names T4, the next that fits.
+  held_pair -- "waiting:{on: \"Daniel\", reason: \"on hold by Daniel (1567157155797139608)\"}"
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T4 fits again: relaunch its builder"
+  # With T4 relaunched, T3 is the only one stowed: a held before its stow keeps it stowed.
+  held_pair "held:$hold" --
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # So does a block logged after its stow.
+  held_pair -- "blocked:{reason: \"the fixture server is down\"}"
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # A wait logged before the stow is the stowed planner's own interview, which its relaunch resumes.
+  held_pair "waiting:{on: \"Daniel\", reason: \"interview in <#1563>\"}" --
+  relaunch_t4
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T3 fits again: relaunch its planner"
+  # A resumed lifts the hold (and the stow's pause, so T3's own findings come back too).
+  held_pair "held:$hold" -- "resumed:{}"
+  relaunch_t4
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -r '.[] | select(.task == null) | .text' <<<"$output")" "level: T3 fits again: relaunch its planner"
+}
+
 @test "level-launch: a launch refused for room, not stowed, is named once its role fits again, until it launches" {
   # T5's builder opened its PR; the coordinator's reviewer launch was refused for room at minor.
   level_task T5 03:00 builder:5b5b5b5b

@@ -435,6 +435,21 @@ def stowed_awaiting_resume:
   latest_stowed as $stowed
   | $stowed >= 0 and (.[$stowed].roles // []) != [] and (any(.[$stowed + 1:][]; .event == "launch") | not);
 
+# What keeps the task, stowed and waiting to resume, from being relaunched, as text, or null: its
+# latest held while it stands, wherever it falls ("held: <reason>"); else its latest waiting
+# ("waiting on <on>: <reason>") or blocked ("blocked: <reason>") while it stands and was logged
+# after its latest stowed. A wait or block before the stow was the stowed worker's own state (a
+# planner interviewing Daniel), which its relaunch resumes, and a paused never holds it, since
+# every stow logs one; a resumed lifts each.
+def stow_hold:
+  latest_stowed as $stowed
+  | def since_stow($kind): standing_until_launch($kind) and latest_index($kind) > $stowed;
+    def latest($kind): map(select(.event == $kind)) | last;
+  if standing("held") then "held: \(latest("held").reason)"
+  elif since_stow("waiting") then latest("waiting") | "waiting on \(.on): \(.reason)"
+  elif since_stow("blocked") then "blocked: \(latest("blocked").reason)"
+  else null end;
+
 # The launches of the task refused for room and not launched since: the paused events after its
 # latest launch whose reason holds team-capacity admit's refusal of a session ("no room for
 # session:<role>", as team-worker's exit 75 says it and the coordinator logs it), as {at (the
@@ -1020,8 +1035,8 @@ def retro_due_finding:
 # team-sweep's level findings, from team-capacity plan --json's object (or {error} when it failed),
 # each with task and session null: level-stow while its stow list is not empty, naming the tasks
 # newest first ("level: over budget at minor (30%): stow T174, then T171"); level-resume for the
-# first task stowed, waiting to resume, whose roles fit again ("level: T171 fits again: relaunch its
-# builder"); level-launch for the first task whose launches refused for room fit again ("level: T5
+# first task stowed, waiting to resume, whose roles fit again and that nothing holds (its hold null)
+# ("level: T171 fits again: relaunch its builder"); level-launch for the first task whose launches refused for room fit again ("level: T5
 # has room again: launch its reviewer, refused for room at <time>"); one level finding naming the
 # error when team-capacity failed.
 def level_findings:
@@ -1033,7 +1048,7 @@ def level_findings:
     (select(.stow != []) | "stow \([.stow[].task] | join(", then "))" as $next
      | {task: null, kind: "level-stow", session: null, name: null, next: $next,
         text: "level: over budget at \(.level) (\(.share * 100 | round)%): \($next)"}),
-    (first(.resume[] | select(.fits)) | "relaunch its \(.roles | roles)" as $next
+    (first(.resume[] | select(.fits and .hold == null)) | "relaunch its \(.roles | roles)" as $next
      | {task: null, kind: "level-resume", session: null, name: null, next: $next,
         text: "level: \(.task) fits again: \($next)"}),
     (first(.launch // [] | .[] | select(.fits)) | "launch its \(.roles | roles)" as $next
@@ -1100,8 +1115,8 @@ def sweep($sessions; $plan; $activity; $covered; $health):
 # What team-capacity plan reads of the ledger, over every ledger event as one array, with the
 # session list <sessions>: one {task, opened (its opened's time, else its first event's),
 # finished ([{session, role}]: the idle live sessions whose work is handed on, handed_on_launches
-# with no new launch), stowed (while it is stowed_awaiting_resume, {at, roles} of its latest stowed,
-# else null), stowed_since (its latest stowed's time when no launch follows it, else null),
+# with no new launch), stowed (while it is stowed_awaiting_resume, {at, roles} of its latest stowed
+# and hold, stow_hold's, else null), stowed_since (its latest stowed's time when no launch follows it, else null),
 # refused (refused_launches')} per open task, in task number order.
 def plan_tasks($sessions):
   [by_task | to_entries[] | select(.value | is_open) | .key as $task | .value as $events
@@ -1109,7 +1124,7 @@ def plan_tasks($sessions):
       opened: (first($events[] | select(.event == "opened") | .ts) // $events[0].ts),
       finished: [$events | handed_on_launches(""; $home) | launch_states($sessions)[]
         | select(.state == "handed-on") | {session, role}],
-      stowed: (if $events | stowed_awaiting_resume then $events[$events | latest_stowed] | {at: .ts, roles: (.roles // [])}
+      stowed: (if $events | stowed_awaiting_resume then $events[$events | latest_stowed] | {at: .ts, roles: (.roles // []), hold: ($events | stow_hold)}
                else null end),
       stowed_since: ($events | latest_stowed as $i
         | if $i >= 0 and (any(.[$i + 1:][]; .event == "launch") | not) then .[$i].ts else null end),

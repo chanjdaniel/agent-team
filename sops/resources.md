@@ -264,8 +264,10 @@ Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks
 `team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
 
 A task is stowed, waiting to resume, while its latest `stowed` names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
-The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate) and whether that fits beside what is reserved now; at none nothing fits.
-`team-sweep`'s `level-resume` finding names the first that fits ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
+The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate), whether that fits beside what is reserved now, and what holds it, if anything; at none nothing fits.
+A stowed task is on hold while its latest `held` stands, or while a `waiting` or `blocked` logged after its latest `stowed` stands (`stow_hold` in `bin/lib/ledger.jq`), and the plan's line for it ends ", on hold, not relaunched: <what holds it>".
+A wait or block logged before the stow does not hold it, since it was the stowed worker's own state (a planner interviewing Daniel), which its relaunch resumes, and neither does a `paused`, which every stow logs; a `resumed` lifts the hold.
+`team-sweep`'s `level-resume` finding names the first that fits and is not on hold ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
 A launch refused with 75 for a task that is not stowed waits the same way: while the task's latest launch is followed by a `paused` whose reason is `team-worker`'s "no room for session:<role>" line, the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until the task's next launch.
 A `team-capacity plan` that fails is one `level` finding naming its reason, in their place.
 

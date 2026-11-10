@@ -1565,6 +1565,51 @@ Stowed, waiting to resume, oldest stow first:
 ["resume","T5",false]'
 }
 
+@test "plan: a stowed task held, or waiting or blocked since its stow, is on hold, with what holds it, until resumed" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  local stowed='{machine: "home-pc", worktrees: [], cause: "level"}'
+  # T5 waits on Daniel since its stow; T6 was held before its stow; T7 is blocked since its stow;
+  # T8's wait came before its stow (its planner's interview), so nothing holds it.
+  plan_task T5 08:00 planner:aaaa0051
+  plan_event T5 10:00 stowed "$stowed + {roles: [\"planner\"]}"
+  plan_event T5 10:00 paused '{reason: "stowed"}'
+  plan_event T5 10:30 waiting '{on: "Daniel", reason: "on hold by Daniel (1567157155797139608)"}'
+  plan_task T6 08:00 builder:aaaa0061
+  plan_event T6 10:30 held '{reason: "Daniel holds it for the release"}'
+  plan_event T6 11:00 stowed "$stowed + {roles: [\"builder\"]}"
+  plan_event T6 11:00 paused '{reason: "stowed"}'
+  plan_task T7 08:00 builder:aaaa0071
+  plan_event T7 12:00 stowed "$stowed + {roles: [\"builder\"]}"
+  plan_event T7 12:00 paused '{reason: "stowed"}'
+  plan_event T7 12:30 blocked '{reason: "the fixture server is down"}'
+  plan_task T8 08:00 planner:aaaa0081
+  plan_event T8 12:40 waiting '{on: "Daniel", reason: "interview in <#1563>"}'
+  plan_event T8 13:00 stowed "$stowed + {roles: [\"planner\"]}"
+  plan_event T8 13:00 paused '{reason: "stowed"}'
+  team_reading 8
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Within budget at full (90%): 0.0 GiB reserved of 20.0 GiB: nothing to stop or stow.
+Stowed, waiting to resume, oldest stow first:
+  T5 (planner): needs 0.5 GiB, fits, on hold, not relaunched: waiting on Daniel: on hold by Daniel (1567157155797139608)
+  T6 (builder): needs 0.5 GiB, fits, on hold, not relaunched: held: Daniel holds it for the release
+  T7 (builder): needs 0.5 GiB, fits, on hold, not relaunched: blocked: the fixture server is down
+  T8 (planner): needs 0.5 GiB, fits"
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '.resume | map([.task, .hold])' <<<"$output")" \
+    '[["T5","waiting on Daniel: on hold by Daniel (1567157155797139608)"],["T6","held: Daniel holds it for the release"],["T7","blocked: the fixture server is down"],["T8",null]]'
+
+  # A resumed lifts each hold; a hold that does not fit says so after its fits words.
+  plan_event T5 14:00 resumed
+  plan_event T6 14:00 resumed
+  plan_level 1 none
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '.resume | map([.task, .fits, .hold])' <<<"$output")" \
+    '[["T5",false,null],["T6",false,null],["T7",false,"blocked: the fixture server is down"],["T8",false,null]]'
+  run_bin -0 team-capacity plan
+  assert_contains "$output" "
+  T7 (builder): needs 0.5 GiB, does not fit yet, on hold, not relaunched: blocked: the fixture server is down"
+}
+
 @test "plan: a builder is finished only once a later builder launched in its worktree and a ticket-done, pr or done followed it" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   # T1's first builder delivered its ticket and the next ticket's builder launched in its worktree;
