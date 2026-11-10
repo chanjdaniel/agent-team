@@ -3,6 +3,7 @@
 // checks against the effect package servers/ pins: every name the GA column gives exists there, and
 // every name a v3 or early-beta column gives is gone; and its post-edit hook, run as Claude Code runs
 // a plugin's on a copy of the fixture project, against the effect-tsgo servers/ pins and stubs.
+// effect-devtools.test.mjs runs its Foldkit DevTools MCP server.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -20,14 +21,15 @@ const hooks = JSON.parse(readFileSync(join(toolkit, "hooks", "hooks.json"), "utf
 const deadlineSeconds = Number(readme.match(/The hook's deadline is (\d+) s/)?.[1]);
 
 describe("the effect toolkit", () => {
-  test("is a plugin named effect with one PostToolUse hook, no MCP server and one skill, effect-v4", () => {
+  test("is a plugin named effect with one PostToolUse hook, one MCP server and one skill, effect-v4", () => {
     const manifest = JSON.parse(readFileSync(join(toolkit, ".claude-plugin", "plugin.json"), "utf8"));
     assert.equal(manifest.name, "effect");
     assert.equal(manifest.author?.name, "Daniel Chan");
-    assert.ok(!existsSync(join(toolkit, ".mcp.json")), "the toolkit declares an MCP server");
-    assert.deepEqual(readdirSync(toolkit).sort(), [".claude-plugin", "README.md", "evals", "hooks", "scripts", "skills"]);
+    const mcp = JSON.parse(readFileSync(join(toolkit, ".mcp.json"), "utf8"));
+    assert.deepEqual(Object.keys(mcp.mcpServers), ["foldkit-devtools"]);
+    assert.deepEqual(readdirSync(toolkit).sort(), [".claude-plugin", ".mcp.json", "README.md", "evals", "hooks", "scripts", "skills"]);
     assert.deepEqual(readdirSync(join(toolkit, "hooks")), ["hooks.json"]);
-    assert.deepEqual(readdirSync(join(toolkit, "scripts")), ["effect-diagnostics.mjs"]);
+    assert.deepEqual(readdirSync(join(toolkit, "scripts")).sort(), ["effect-diagnostics.mjs", "foldkit-devtools-mcp.mjs"]);
     assert.deepEqual(readdirSync(join(toolkit, "skills")), ["effect-v4"]);
     assert.deepEqual(readdirSync(join(toolkit, "skills", "effect-v4")), ["SKILL.md"]);
     assert.deepEqual(Object.keys(hooks.hooks), ["PostToolUse"]);

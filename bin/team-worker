@@ -54,11 +54,12 @@
 # model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
 # T0 and tasks from before team-open none from the registry.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_CODE@
-# in either names this checkout, @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, and
-# @ROLE@ the role (the settings' AGENT_TEAM_ROLE, the signal a hook sees in a team session, and
-# with AGENT_TEAM_TASK, the task, what worker_refusal in bin/lib/team.sh reads). The registry's
-# projects, in its order, fill four more, for the autoMode lines: @PROJECT_REPOS@ each one's
-# repo and primary checkout ("owner/a (primary checkout ~/a) and owner/b (...)"),
+# in either names this checkout, @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/,
+# @WORKTREE@ the worktree by its real path (the effect toolkit's Foldkit DevTools server's project
+# root), and @ROLE@ the role (the settings' AGENT_TEAM_ROLE, the signal a hook sees in a team
+# session, and with AGENT_TEAM_TASK, the task, what worker_refusal in bin/lib/team.sh reads). The
+# registry's projects, in its order, fill four more, for the autoMode lines: @PROJECT_REPOS@ each
+# one's repo and primary checkout ("owner/a (primary checkout ~/a) and owner/b (...)"),
 # @PROJECT_ORIGINS@ each one's origin, its own owner's ("github.com/owner/a or github.com/c/d"),
 # @PROJECT_VISIBILITY@ which repositories are public and which private ("a and b are public, so
 # whatever reaches them is published; c is private"), and @PROJECT_BASES@ each base branch and
@@ -380,10 +381,10 @@ facts=$(while IFS= read -r name; do team_project "$name" || exit 1; done <<<"$re
          | if length <= 1 then .[0] // "" else (.[:-1] | join(", ")) + ", and " + .[-1] end)}') || exit 1
 
 # @TEAM_CODE@ names this checkout, where the hooks and toolkits live; @TASK@ names the task, and
-# @TASK_DIR@ its directory in the team home, where its records live (the ops log); @ROLE@ the role;
-# the @PROJECT_*@ four the registry's projects.
+# @TASK_DIR@ its directory in the team home, where its records live (the ops log); @WORKTREE@ the
+# worktree; @ROLE@ the role; the @PROJECT_*@ four the registry's projects.
 substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TASK@"; $task)
-  | gsub("@TASK_DIR@"; $taskdir) | gsub("@ROLE@"; $role) | gsub("@PROJECT_REPOS@"; $facts.repos)
+  | gsub("@TASK_DIR@"; $taskdir) | gsub("@WORKTREE@"; $worktree) | gsub("@ROLE@"; $role) | gsub("@PROJECT_REPOS@"; $facts.repos)
   | gsub("@PROJECT_VISIBILITY@"; $facts.visibility) | gsub("@PROJECT_BASES@"; $facts.bases)
   | gsub("@PROJECT_ORIGINS@"; $facts.origins) else . end)'
 
@@ -392,7 +393,7 @@ substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TA
 # shared hooks and its autoMode lines to the team's; an autoMode list keeps "$defaults" (the
 # built-in rules) once, where it first stands.
 settings=$taskdir/settings.$role.json
-jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" --argjson facts "$facts" '.[0] as $base | .[1] as $own
+jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg worktree "$worktree" --arg role "$role" --argjson facts "$facts" '.[0] as $base | .[1] as $own
   | ($base * $own)
   | .permissions.deny = (($base.permissions.deny // []) + ($own.permissions.deny // []))
   | .permissions.allow = (($base.permissions.allow // []) + ($own.permissions.allow // []))
@@ -420,7 +421,7 @@ for kit in "${toolkits[@]}"; do
   if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
 done
 if [[ ${#mcp_files[@]} -gt 0 ]]; then
-  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" --argjson facts "$facts" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
+  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg worktree "$worktree" --arg role "$role" --argjson facts "$facts" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
     "${mcp_files[@]}" >"$mcp"
 else
   echo '{"mcpServers": {}}' >"$mcp"
