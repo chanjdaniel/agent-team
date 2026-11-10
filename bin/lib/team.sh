@@ -460,13 +460,13 @@ archive_left_out() {
     walk . -type l -printf 'link\t%P\0' | sort -z
     # An image by its extension, or by its first bytes, which are read only for the files grep
     # takes for binary, as every image image_magic knows is: a directory of text starts no process
-    # per file.
+    # per file. A file grep cannot read is left to the mirror, which names it (grep -s).
     local -A image=() secret=()
     local path owner small=()
     while IFS= read -r -d '' path; do image[$path]=1; done < <(walk . -type f "${is_image[@]}" -printf '%P\0')
     while IFS= read -r -d '' path; do
       [[ -z $(image_magic <"$path") ]] || image[$path]=1
-    done < <(walk . -type f ! \( "${is_image[@]}" \) -printf '%P\0' | xargs -0r grep -ILZ -e '' -- || true)
+    done < <(walk . -type f ! \( "${is_image[@]}" \) -printf '%P\0' | xargs -0r grep -sILZ -e '' -- || true)
     ((${#image[@]} == 0)) || printf 'image\t%s\0' "${!image[@]}" | sort -z
     while IFS= read -r -d '' path; do
       [[ -n ${image[$path]:-} ]] || printf 'over 1 MiB\t%s\0' "$path"
@@ -484,7 +484,7 @@ archive_left_out() {
     ((${#small[@]} == 0)) || while IFS= read -r -d '' path; do
       [[ -n ${secret[$path]:-} || -z $(refused_emails records "${owner,,}" <"$path") ]] ||
         printf 'email at a public provider\t%s\0' "$path"
-    done < <(printf '%s\0' "${small[@]}" | xargs -0r grep -laEZ -e "$DATA_EMAIL" -- | sort -z || true)
+    done < <(printf '%s\0' "${small[@]}" | xargs -0r grep -slaEZ -e "$DATA_EMAIL" -- | sort -z || true)
   )
 }
 
