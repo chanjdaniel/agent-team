@@ -26,7 +26,7 @@ setup() {
   log=$HOME/.local/state/agent-team/heartbeat.log
   failures=$HOME/.local/state/agent-team/heartbeat-failures.log
   inbox_discord alerts
-  inbox_kept
+  inbox_guild_kept
 }
 
 # The failures log's lines, each without its time.
@@ -624,8 +624,12 @@ EOF
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md"
+  # It takes the waiting list the first run's inbox step wrote, a record too.
+  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md
+waiting.json
+waiting.md"
   assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
+  # The waiting list, which did not change, is not committed again.
   echo "steps" >"$TEAM_HOME/manual-steps.md"
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
@@ -917,28 +921,48 @@ SH
   ((SECONDS - start < 10))
 }
 
-@test "the inbox step edits the Waiting on you message once a run on the holder, logging only a new message or a failure, which never fails the run" {
+@test "the inbox step writes waiting.md once a run on the holder, logging only the old message's retire, a numbering afresh or a failure, which never fails the run" {
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  assert_equal "$(inbox_calls)" ""
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 
-  # Deleted by hand: posted again, and that is logged.
-  rm "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  # The old Waiting on you message is retired once, and that is logged.
+  inbox_kept
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: retired https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000000"$ ]]
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
   : >"$STUB_FIXTURES/inbox/calls"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "lease checkpoint inbox"
-  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"$ ]]
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000
-POST channels/1562486564871995482/messages"
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(inbox_calls)" ""
 
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  # A waiting.json it cannot read is numbered afresh, which the next run would not show, so it is
+  # logged.
+  echo '{"schema": "team-waiting/0"}' >"$TEAM_HOME/waiting.json"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint inbox"
-  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"$ ]]
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: numbers the list afresh, since waiting.json cannot be read: its schema is not team-waiting/1"$ ]]
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+
+  waiting_unwritable
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"$ ]]
+
+  # A run that numbers afresh and then fails names the failure's own cause, and logs the
+  # numbering too, since waiting.json was written before waiting.md failed.
+  echo '{"schema": "team-waiting/0"}' >"$TEAM_HOME/waiting.json"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  assert_equal "$(grep ' inbox: ' <<<"$output" | sed -E 's/^[0-9T:Z-]+ //')" "inbox: numbers the list afresh, since waiting.json cannot be read: its schema is not team-waiting/1
+inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"
 }
 
 @test "the inbox step never runs off the lease, offline or on a fenced machine, and runs after the back step" {
+  inbox_kept
   make_machine laptop
   on_machine laptop run_bin -0 team-timers run
   assert_equal "$(inbox_calls)" ""
@@ -951,7 +975,7 @@ POST channels/1562486564871995482/messages"
   assert_equal "$(inbox_calls)" ""
   git -C "$TEAM_HOME" remote set-url origin "$origin"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "back checkpoint"
+  assert_equal "$(steps "$output")" "back checkpoint inbox"
   assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
 
   steal_lease laptop home-pc
@@ -1585,8 +1609,8 @@ day_report() {
   docker_machine
   discord_answers
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
-  # inbox: the Waiting on you message deleted by hand, so a new one is posted.
-  rm -f "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  # inbox: the old Waiting on you message, retired.
+  inbox_kept
   # coordinator: no session named coordinator is listed; finished: T7's idle reviewer, handed on
   # by its done, stopped; capacity: the same session, still listed by the stub and outside its
   # slice, placed.

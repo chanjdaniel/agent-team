@@ -422,8 +422,9 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   assert_equal "$(laptop_launches | wc -l)" 1
 
   # home-pc comes back: its heartbeat fences it, and its doctor fails, listing what only home-pc
-  # holds (the park in its ledger, the later commit and edit) with the commands that push it to a
-  # salvage branch.
+  # holds (the park in its ledger, the later commit and edit, but not the waiting list written
+  # since its checkpoint, whose items laptop writes again from the ledger) with the commands that
+  # push it to a salvage branch.
   run -0 "$REPO_ROOT/bin/team-timers" run
   [[ -e $state/fenced ]]
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
@@ -451,6 +452,26 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
   assert_equal "$(jq -c '[.[] | select(.check | startswith("salvage")) | [.check, .verdict]]' <<<"$output")" \
     '[["salvage records","PASS"],["salvage","PASS"]]'
+}
+
+@test "crash after a post: the numbers home-pc's latest post showed stay reserved on laptop, which steals the lease before any checkpoint" {
+  run_bin -0 team-timers run
+  assert_contains "$output" "checkpoint: "
+  # After that checkpoint, home-pc asks A and posts the list, where Daniel reads A as item 1;
+  # A settles (an answer is pushed at once), and home-pc dies.
+  mkdir -p "$state"
+  jq -n '{channel: "1562486564871995482", guild: "1560000000000000000"}' >"$state/inbox.json"
+  run_bin -0 team-log T1 asked id=a text="Approve A?"
+  run_bin -0 team-inbox --post
+  assert_equal "$(jq -c '.posted.items | map([.n, .id])' "$TEAM_HOME/waiting.json")" '[[1,"a"]]'
+  run_bin -0 team-log T1 answered id=a answer=yes
+  age_lease 75
+
+  resume_by_stealing
+  # laptop asks B: 1 is still the number Daniel saw on A, so B takes 2.
+  on_machine laptop run_bin -0 team-log T1 asked id=b text="Approve B?"
+  on_machine laptop run_bin -0 team-inbox
+  assert_equal "$(jq -c '.items | map([.n, .id])' "$laptop/team/waiting.json")" '[[2,"b"]]'
 }
 
 @test "outage: home-pc's heartbeat holds the team offline, posting once and changing nothing on origin; when GitHub is back it renews, clears the hold and posts the window" {

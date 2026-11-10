@@ -89,8 +89,9 @@ case $tool in
     gh=$COMMAND_START'gh(-axi)?([[:space:]]|$)'
     # The team commands that write to GitHub and the ledger, where a command starts, as gh.
     team_write=$COMMAND_START'team-(merge|catch-up|open|close)([[:space:]]|$)'
-    # team-post, team-ask, which posts through it, or team-inbox, which edits the Waiting on you
-    # message, where a command starts, as gh: refused as the Discord tools are, for every role.
+    # team-post, team-ask, which posts through it, or team-inbox, which writes waiting.md, posts
+    # it with --post and retires the old message, where a command starts, as gh: refused as the
+    # Discord tools are, for every role.
     post=$COMMAND_START'team-(post|ask|inbox)([[:space:]]|$)'
     # team-answer, which logs Daniel's answer, where a command starts, as gh.
     answer=$COMMAND_START'team-answer([[:space:]]|$)'

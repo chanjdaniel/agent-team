@@ -21,14 +21,20 @@
 #   - that message, read back from Discord now, holds as team-answer held it (answer_message in
 #     bin/lib/team.sh: Daniel's, in the task's thread or #coordinator, sent after the question,
 #     never edited), or the refusal gives its reason;
-#   - its text has a line that starts with the word yes, in any case and ending at a word
-#     boundary, after an optional list marker (1., 2), - or *) and an optional task id, the
-#     ask's own (T<n>, any case, a colon or comma after it or not): for T7, "yes", "Yes, run it",
-#     "t7 yes" and a reply whose first line is "1. yes" pass, and "no", "not yet", "yesterday's
-#     plan", "wait" and "T8 yes", a line that names another task, run nothing, the refusal
-#     quoting the rule and saying to ask again; so a later answer, such as "no, wait" after a
-#     "yes", supersedes an earlier one, and which line of a batched reply answers which ask stays
-#     the coordinator's reading;
+#   - when that answered names no item, its text has a line that starts with the word yes, in
+#     any case and ending at a word boundary, after an optional list marker (1., 2), - or *) and
+#     an optional task id, the ask's own (T<n>, any case, a colon or comma after it or not): for
+#     T7, "yes", "Yes, run it", "t7 yes" and a reply whose first line is "1. yes" pass, and "no",
+#     "not yet", "yesterday's plan", "wait" and "T8 yes", a line that names another task, run
+#     nothing, the refusal quoting the rule and saying to ask again; so a later answer, such as
+#     "no, wait" after a "yes", supersedes an earlier one;
+#   - when it names item <n>, as team-answer --item <n> logs it for a reply by the waiting
+#     list's numbers, its text read as numbered parts (numbered_parts in bin/lib/ledger.jq) has
+#     at least one part numbered <n>, and every part numbered <n> has a text that starts with the
+#     word yes, by the same word rule, after an optional task id, the ask's own: with item 5,
+#     "3 no, 5 yes", "3 and 5 yes" and "5 T7 yes" pass, and "3 yes, 5 no", "5 yes" then "5 no"
+#     on two lines, "5 T8 yes" and "3 yes" run nothing, the refusal quoting the rule and saying
+#     to ask again;
 #   - no other run of the ask holds its lock, and no run of it started on this machine: a run
 #     that was killed, or could not log its ran, still used the OK.
 # So one OK runs the script once on one machine, never twice there: the mark of a started run is
@@ -91,14 +97,23 @@ actual=$(sha256sum "$copy" | cut -d' ' -f1)
 
 lease_gate "an approved script"
 
-# Daniel's latest answer, read back from Discord and held to what team-answer held it to, must
-# have a line that starts with yes, naming no task but this one: a line of a batched reply that
-# names another task answers that task's ask.
+# Daniel's latest answer, read back from Discord and held to what team-answer held it to. Logged
+# by its number on the waiting list, every part with that number must start with yes, naming no
+# task but this one; logged with none, it must have a line that starts with yes, naming no task
+# but this one: a line of a batched reply that names another task answers that task's ask.
 word=$(answer_message "$task" "$id" "$message" "$events" 2>"$scratch/error") ||
   die "$task's ask $id, at $asked_at, runs nothing on Daniel's latest answer: $(<"$scratch/error")"
-jq -e --arg n "${task#T}" '.message.content | strings | split("\n")
-  | any(test("^\\s*(?:(?:[0-9]+[.)]|[-*])\\s*)?(?:t\($n)(?:[:,]\\s*|\\s+))?yes\\b"; "i"))' <<<"$word" >/dev/null ||
-  die "$task's ask $id, at $asked_at, runs nothing: Daniel's latest answer, Discord message $message, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and this task's id, no other ($task, $task: or $task,); ask again with team-ask $task $id --file <question> --script <path>"
+item=$(jq -r '.item // empty' <<<"$answered")
+if [[ -n $item ]]; then
+  ledger_jq '[.message.content | strings | numbered_parts[] | select(.n == $item)]
+    | length > 0 and all(.text | test("^(?:t\($t)(?:[:,]\\s*|\\s+))?yes\\b"; "i"))' \
+    -e --argjson item "$item" --arg t "${task#T}" <<<"$word" >/dev/null ||
+    die "$task's ask $id, at $asked_at, runs nothing: Daniel's latest answer, Discord message $message, answers item $item with no yes, and the script runs only on a reply whose every part numbered $item starts with the word yes, in any case, after an optional task id, this task's alone; ask again with team-ask $task $id --file <question> --script <path>"
+else
+  jq -e --arg n "${task#T}" '.message.content | strings | split("\n")
+    | any(test("^\\s*(?:(?:[0-9]+[.)]|[-*])\\s*)?(?:t\($n)(?:[:,]\\s*|\\s+))?yes\\b"; "i"))' <<<"$word" >/dev/null ||
+    die "$task's ask $id, at $asked_at, runs nothing: Daniel's latest answer, Discord message $message, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and this task's id, no other ($task, $task: or $task,); ask again with team-ask $task $id --file <question> --script <path>"
+fi
 
 # The run's directory, with no symbolic link from agent-team/ down, then its lock, held to the end.
 state=${XDG_STATE_HOME:-$HOME/.local/state}/agent-team
