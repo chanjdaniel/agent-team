@@ -620,6 +620,51 @@ SH
   assert_equal "$(steps "$output")" "lease checkpoint"
 }
 
+# The ids of the processes whose arguments are exactly "sleep 4199", each killed, so a run that
+# leaves one never holds the file's run open.
+leftover_timers() {
+  local pid
+  command -p ps -A -o pid=,args= | awk '$2 == "sleep" && $3 == "4199" && NF == 3 { print $1 }' |
+    while read -r pid; do
+      kill -KILL "$pid" 2>/dev/null || true
+      echo "$pid"
+    done
+}
+
+@test "a run leaves no timer behind, even when the process list misses the timer's sleep" {
+  # The parent ids' snapshot taken before the timer's sleep was forked: it waits for that sleep,
+  # then lists every process but the sleeps. Every other form reads the real table.
+  stub_command ps
+  stub_script ps <<'SH'
+if [[ $* == "-A -o pid=,ppid=" ]]; then
+  for ((i = 0; i < 50; i++)); do
+    command -p ps -A -o args= | grep -x 'sleep 4199' >/dev/null && break
+    command -p sleep 0.1
+  done
+  command -p ps -A -o pid=,ppid=,comm= | awk '$3 != "sleep" && $3 !~ /\/sleep$/ { print $1, $2 }'
+  exit 0
+fi
+command -p ps "$@"
+exit
+SH
+  export TEAM_TIMERS_RUN_SECONDS=4199
+  local start lock=$HOME/.local/state/agent-team/heartbeat.lock
+  mkdir -p "${lock%/*}"
+
+  # A run that finds the lock held ends at once.
+  start=$SECONDS
+  flock "$lock" "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/out" 2>&1 || true
+  assert_contains "$(cat "$BATS_TEST_TMPDIR/out")" "run: another run is still going; skipped"
+  assert_equal "$(leftover_timers)" ""
+  ((SECONDS - start < 10))
+
+  # And an ordinary run.
+  start=$SECONDS
+  run_bin -0 team-timers run
+  assert_equal "$(leftover_timers)" ""
+  ((SECONDS - start < 10))
+}
+
 @test "the inbox step edits the Waiting on you message once a run on the holder, logging only a new message or a failure, which never fails the run" {
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"

@@ -150,7 +150,10 @@ sandbox() {
   # The user manager's D-Bus answers every call with a job (fake_placement makes it move the
   # processes), and the cgroup tree and /proc team-capacity reads are under TEAM_CGROUP_ROOT, empty
   # until a test writes them (user_controllers, fake_process), never the machine's own.
+  # team-capacity place <id> waits for nothing, as with no ids, unless a test of the wait sets
+  # its seconds: most launches' stubs never list the session they start.
   stub_reply busctl 'o "/org/freedesktop/systemd1/job/1"'
+  export TEAM_CAPACITY_PLACE_SECONDS=0
   # systemd-run starts no scope: it runs the command after --, in place, as `--scope` does, or, once
   # $STUB_FIXTURES/systemd-run-refuse exists, fails as one the user manager refused. Its fixture is
   # the file stub_script would write, written by printf, which starts no cat.

@@ -1869,9 +1869,11 @@ SH
 # first worktree's builders are), a reviewer with no status and one starting, all handed on by
 # the planner's done, a ticket-done and each reviewer's done beside the review; then a reviewer
 # and a planner launched after them, idle with no event of their own since (the planner's done
-# names another session); and T8's idle reviewer, handed on by its done beside T8's review, with
-# a session T9 never launched.
+# names another session), and a busy builder of the first worktree with nothing handing it on;
+# and T8's idle reviewer, handed on by its done beside T8's review, with a session T9 never
+# launched. The busy, handed-on builder is waited on for a second, the bound.
 finished_workers() {
+  export TEAM_WORKER_IDLE_SECONDS=1
   thread T8
   thread T9
   log_lines <<LINES
@@ -1897,6 +1899,7 @@ T8 {event: "done", role: "reviewer", session: "77777777"}
 launch T9 reviewer 5c5c5c5c $wt1
 launch T9 planner 1e1e1e1e $wt1
 T9 {event: "done", role: "planner", session: "0e0e0e0e"}
+launch T9 builder 4c4c4c4c $wt1
 LINES
   cat >"$STUB_FIXTURES/agents.json" <<'JSON'
 [{"id": "11111111", "name": "T9-planner", "status": "idle"},
@@ -1911,7 +1914,8 @@ LINES
  {"id": "3a3a3a3a", "name": "T9-reviewer"},
  {"id": "3b3b3b3b", "name": "T9-reviewer", "status": "starting"},
  {"id": "5c5c5c5c", "name": "T9-reviewer", "status": "idle"},
- {"id": "1e1e1e1e", "name": "T9-planner", "status": "idle"}]
+ {"id": "1e1e1e1e", "name": "T9-planner", "status": "idle"},
+ {"id": "4c4c4c4c", "name": "T9-builder", "status": "busy"}]
 JSON
   stop_stub
 }
@@ -1929,7 +1933,10 @@ stops() {
   assert_contains "$stderr" "team-worker: stopped T9-planner 11111111: its work is handed on"
   assert_contains "$stderr" "team-worker: stopped T9-builder 22222222: its work is handed on"
   assert_contains "$stderr" "team-worker: stopped T9-reviewer 33333333: its work is handed on"
-  assert_contains "$stderr" "team-worker: left T9-builder 44444444: busy"
+  assert_contains "$stderr" "team-worker: waiting up to 1 s for T9-builder 44444444 to go idle: its work is handed on"
+  assert_contains "$stderr" "team-worker: left T9-builder 44444444: still busy 1 s after its work was handed on; the heartbeat's finished step stops it once it is idle"
+  assert_contains "$stderr" "team-worker: left T9-builder 4c4c4c4c: busy"
+  [[ $stderr != *"for T9-builder 4c4c4c4c to go idle"* ]]
   assert_contains "$stderr" "team-worker: left T9-reviewer 55555555: waiting for input"
   assert_contains "$stderr" "team-worker: left T9-reviewer 3a3a3a3a: no status"
   assert_contains "$stderr" "team-worker: left T9-reviewer 3b3b3b3b: status starting"
@@ -1937,8 +1944,8 @@ stops() {
   assert_contains "$stderr" "team-worker: left T9-planner 1e1e1e1e: idle with no event of its own since its launch"
   # An ops session, another task's, one T9 never launched and another worktree's builder go unnamed.
   [[ $stderr != *66666666* && $stderr != *77777777* && $stderr != *88888888* && $stderr != *99999999* ]]
-  # The stops come before the launch, which is logged.
-  assert_equal "$(claude_verbs)" "agents stop stop stop --bg "
+  # The stops and the wait's read come before the launch, which is logged.
+  assert_equal "$(claude_verbs)" "agents stop stop stop agents --bg "
   assert_equal "$(launches | jq -r 'select(.task == "T9" and .session == "9a8b7c6d") | .role')" builder
 }
 
@@ -2130,6 +2137,141 @@ LINES
   echo 6c6c6c6c >"$STUB_FIXTURES/stop-fails"
   run_bin -75 --separate-stderr team-worker T9 reviewer "$wt1" -- go
   assert_contains "$stderr" "team-worker: no room for session:reviewer at full (90%)"
+}
+
+# sequenced_agents <json>...: claude agents --json answers with each list in turn, the last from
+# then on; claude stop and a launch answer as stop_stub's do.
+sequenced_agents() {
+  local n=0 list
+  for list; do
+    n=$((n + 1))
+    printf '%s\n' "$list" >"$STUB_FIXTURES/agents.$n.json"
+  done
+  : >"$STUB_FIXTURES/stop-fails"
+  stub_script claude <<'SH'
+if [[ $1 == agents ]]; then
+  n=$(($(cat "$STUB_FIXTURES/agents.count" 2>/dev/null || echo 0) + 1))
+  echo "$n" >"$STUB_FIXTURES/agents.count"
+  while ((n > 1)) && [[ ! -f $STUB_FIXTURES/agents.$n.json ]]; do n=$((n - 1)); done
+  cat "$STUB_FIXTURES/agents.$n.json"
+  exit 0
+fi
+if [[ $1 == stop ]]; then
+  if grep -qx "$2" "$STUB_FIXTURES/stop-fails"; then echo "no such session $2" >&2; exit 1; fi
+  echo "Stopped $2"; exit 0
+fi
+echo "Started background session 9a8b7c6d (${*: -2:1}). Attach with: claude attach 9a8b7c6d"
+SH
+}
+
+# held_use <session> <role>: a budget of 0.8 GiB, of which the finished session <session> holds
+# 0.4 GiB in the stored reading, so a new session of 0.5 GiB fits only once that use is freed.
+held_use() {
+  : >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  capacity_room $((819 * 1048576))
+  jq -c --arg id "$1" --arg role "$2" '.tasks = [{task: "T9", memory: 429496730, cpu: null, cpu_nsec: null, stacks: [],
+                    sessions: [{id: $id, role: $role, memory: 429496730, cpu_seconds: 1}]}]' \
+    "$HOME/.local/state/agent-team/capacity/readings.jsonl" >"$BATS_TEST_TMPDIR/reading"
+  mv "$BATS_TEST_TMPDIR/reading" "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+}
+
+@test "a handed-on builder still busy is waited on until it goes idle, then stopped before the launch asks for room" {
+  thread T9
+  log_lines <<LINES
+launch T9 builder 4a4a4a4a $wt1
+T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
+LINES
+  sequenced_agents '[{"id": "4a4a4a4a", "name": "T9-builder", "status": "busy"}]' \
+    '[{"id": "4a4a4a4a", "name": "T9-builder", "status": "busy"}]' \
+    '[{"id": "4a4a4a4a", "name": "T9-builder", "status": "idle"}]'
+  held_use 4a4a4a4a builder
+  TEAM_WORKER_IDLE_SECONDS=20 run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$output" "9a8b7c6d"
+  assert_contains "$stderr" "team-worker: waiting up to 20 s for T9-builder 4a4a4a4a to go idle: its work is handed on"
+  assert_contains "$stderr" "team-worker: stopped T9-builder 4a4a4a4a: its work is handed on"
+  [[ $stderr != *"left T9-builder"* ]]
+  # The list is read until the builder is idle, and it is stopped before the launch.
+  assert_equal "$(claude_verbs)" "agents agents agents stop --bg "
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "stop") | .[1]')" 4a4a4a4a
+  # Its use is left out of the admission, which the budget holds only without it.
+  assert_equal "$(jq -c 'map([.kind, .task])' "$HOME/.local/state/agent-team/capacity/admitted.json")" '[["session:builder","T9"]]'
+}
+
+@test "a handed-on builder that goes idle while waited on and cannot be stopped is a warning, its use kept, and the launch goes on" {
+  thread T9
+  log_lines <<LINES
+launch T9 builder 4a4a4a4a $wt1
+T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
+LINES
+  sequenced_agents '[{"id": "4a4a4a4a", "name": "T9-builder", "status": "busy"}]' \
+    '[{"id": "4a4a4a4a", "name": "T9-builder", "status": "idle"}]'
+  echo 4a4a4a4a >"$STUB_FIXTURES/stop-fails"
+  TEAM_WORKER_IDLE_SECONDS=20 run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$output" "9a8b7c6d"
+  assert_contains "$stderr" "team-worker: waiting up to 20 s for T9-builder 4a4a4a4a to go idle: its work is handed on"
+  assert_contains "$stderr" "team-worker: warning: could not stop T9-builder 4a4a4a4a (no such session 4a4a4a4a); the launch goes on"
+  [[ $stderr != *"stopped T9-builder"* ]]
+  assert_equal "$(claude_verbs)" "agents agents stop --bg "
+  assert_equal "$(launches | jq -r 'select(.session == "9a8b7c6d") | .role')" builder
+  # Its use is not freed: with a budget that holds the new session only without it, no room.
+  rm "$STUB_FIXTURES/agents.count" "$HOME/.local/state/agent-team/capacity/admitted.json"
+  held_use 4a4a4a4a builder
+  TEAM_WORKER_IDLE_SECONDS=20 run_bin -75 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_contains "$stderr" "team-worker: warning: could not stop T9-builder 4a4a4a4a (no such session 4a4a4a4a); the launch goes on"
+  assert_contains "$stderr" "team-worker: no room for session:builder"
+}
+
+@test "a handed-on session still busy at the bound is left and the launch goes on; one that ends while waited on is freed" {
+  thread T9
+  log_lines <<LINES
+launch T9 builder 4b4b4b4b $wt1
+launch T9 planner 4d4d4d4d $wt1
+launch T9 reviewer 4e4e4e4e $wt1
+T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
+T9 {event: "done", role: "planner", session: "4d4d4d4d"}
+T9 {event: "done", role: "reviewer", session: "4e4e4e4e"}
+LINES
+  # At the next read the planner is gone and the reviewer waits for input; the builder stays busy.
+  sequenced_agents '[{"id": "4b4b4b4b", "name": "T9-builder", "status": "busy"},
+                     {"id": "4d4d4d4d", "name": "T9-planner", "status": "busy"},
+                     {"id": "4e4e4e4e", "name": "T9-reviewer", "status": "busy"}]' \
+    '[{"id": "4b4b4b4b", "name": "T9-builder", "status": "busy"},
+      {"id": "4e4e4e4e", "name": "T9-reviewer", "status": "idle", "state": "blocked"}]'
+  held_use 4d4d4d4d planner
+  TEAM_WORKER_IDLE_SECONDS=2 run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$output" "9a8b7c6d"
+  assert_contains "$stderr" "team-worker: waiting up to 2 s for T9-builder 4b4b4b4b to go idle: its work is handed on"
+  assert_contains "$stderr" "team-worker: waiting up to 2 s for T9-planner 4d4d4d4d to go idle: its work is handed on"
+  assert_contains "$stderr" "team-worker: waiting up to 2 s for T9-reviewer 4e4e4e4e to go idle: its work is handed on"
+  assert_contains "$stderr" "team-worker: T9-planner 4d4d4d4d ended while waited on: nothing to stop"
+  assert_contains "$stderr" "team-worker: left T9-reviewer 4e4e4e4e: waiting for input"
+  assert_contains "$stderr" "team-worker: left T9-builder 4b4b4b4b: still busy 2 s after its work was handed on; the heartbeat's finished step stops it once it is idle"
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "stop") | .[1]')" ""
+  # The ended planner's use is left out of the admission, which the budget holds only without it.
+  assert_equal "$(jq -c 'map([.kind, .task])' "$HOME/.local/state/agent-team/capacity/admitted.json")" '[["session:builder","T9"]]'
+  assert_equal "$(launches | jq -r 'select(.session == "9a8b7c6d") | .role')" builder
+}
+
+@test "a session list that cannot be read while waiting ends the wait with a warning, and the launch goes on" {
+  thread T9
+  log_lines <<LINES
+launch T9 builder 4f4f4f4f $wt1
+T9 {event: "pr", url: "https://github.com/owner/proj/pull/1", head: "abc1234"}
+LINES
+  sequenced_agents '[{"id": "4f4f4f4f", "name": "T9-builder", "status": "busy"}]' 'not json'
+  TEAM_WORKER_IDLE_SECONDS=20 run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$output" "9a8b7c6d"
+  assert_contains "$stderr" "team-worker: waiting up to 20 s for T9-builder 4f4f4f4f to go idle: its work is handed on"
+  assert_contains "$stderr" "team-worker: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "stop") | .[1]')" ""
+  assert_equal "$(launches | jq -r 'select(.session == "9a8b7c6d") | .role')" builder
+}
+
+@test "TEAM_WORKER_IDLE_SECONDS must be a whole number of seconds" {
+  thread T9
+  TEAM_WORKER_IDLE_SECONDS=soon run_bin -2 team-worker T9 builder "$wt1" -- go
+  assert_equal "$output" "team-worker: TEAM_WORKER_IDLE_SECONDS must be a whole number of seconds, not 'soon'"
+  assert_equal "$(stub_calls claude)" ""
 }
 
 @test "an admission that fails for another reason stops the launch with it" {

@@ -27,18 +27,24 @@
 #          says so. Idempotent. Exit 1 when the user manager does not answer the reload.
 # place    On Linux, adopts each live team session (claude agents --json: every session named
 #          T<n>-<role> whose process runs, never the coordinator, an unnamed one or a load
-#          check's T0; with ids, only those, each an 8-hex session id, and an id that is no live
-#          team session, or whose process is gone, is a failure) into the
+#          check's T0; with ids, only those, each an 8-hex session id) into the
 #          transient scope agent-team-T<n>-<id>.scope in the slice agent-team-T<n>.slice, which
 #          systemd nests under agent-team.slice by its name: the session's process, its parent
 #          when that is the claude daemon's bg-pty-host, and every descendant, but those already
-#          in a cgroup under agent-team.slice (a heavy run's scope). It asks the user manager
-#          through busctl --user call org.freedesktop.systemd1 ... StartTransientUnit with the
-#          PIDs, and once more with a fresh tree when that call fails (a process that ended
-#          meanwhile). A session already in its scope is left. Each placed and left session is
-#          one line on stdout (with --quiet, the heartbeat's, only each placed one), each one it
-#          cannot place one line on stderr, and the others are still placed; exit 1 when any
-#          failed.
+#          in a cgroup under agent-team.slice (a heavy run's scope). With ids, as team-worker
+#          runs it right after a launch, an id the list does not hold yet, holds with no pid or
+#          with a pid that has no process is read again from a fresh list once a second until
+#          TEAM_CAPACITY_PLACE_SECONDS (30) have passed since its wait began, then is a failure
+#          ("no live session has that id", "its process <pid> is gone"); an id listed as no team
+#          session is one at once. It asks the user manager through busctl --user call
+#          org.freedesktop.systemd1 ... StartTransientUnit with the PIDs, and when that call fails
+#          while the session's process runs, once more at once with its pid from a fresh list and
+#          a fresh tree (a process that ended meanwhile); with ids, while the call says a process
+#          is gone (No such process), again a second apart until the id's seconds have passed.
+#          With no ids, as the heartbeat and the doctor's fix run it, nothing waits. A session
+#          already in its scope is left. Each placed and left session is one line on stdout (with
+#          --quiet, the heartbeat's, only each placed one), each one it cannot place one line on
+#          stderr, and the others are still placed; exit 1 when any failed.
 # check    What the doctor's resources line says, as {os, verdict (PASS, WARN or FAIL), reason,
 #          fix, problems: [{verdict, reason, fix}]} with --json, else the line "<verdict>
 #          <reason>" and "; fix: <fix>" when there is one, exiting 1 unless it passes. Its reason
@@ -226,22 +232,27 @@
 #          until the rest fits; at none every one. Then the tasks stowed, waiting to resume
 #          (their latest stowed, for the level or a handoff, names roles to relaunch and no
 #          launch follows it), oldest stow first, each with the estimate of its roles to
-#          relaunch and whether that fits now (never at none); then the tasks whose launches were
-#          refused for room and not launched since (refused_launches in bin/lib/ledger.jq), oldest
-#          refusal first, each with its roles' estimate and whether it fits. Text:
-#          "Over budget at minor (30%): 14.5 GiB reserved of 9.6 GiB.", then "  stop T1-reviewer
-#          aaaa0012, its work handed on: frees 1.0 GiB", "  stop conventioner-3 of T3, no busy
-#          session in its worktree: frees 3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed,
-#          waiting to resume, oldest stow first:" and "  T6 (planner): needs 0.5 GiB, fits",
-#          then "Refused for room, waiting to launch, oldest refusal first:" and its lines alike.
-#          With --json {schema: "team-capacity-plan/1", mode, level, share, budget (bytes, null with no
-#          reading above none), reserved, over, confirmed, stop_sessions: [{task, role, session,
-#          frees}], stop_stacks: [{task, name, worktree, frees}], stow: [{task, opened, frees}],
-#          resume: [{task, stowed, roles, needs, fits}], launch: [{task, refused, roles, needs,
-#          fits}]}, bytes throughout; each step list is []
-#          unless confirmed. team-level tick takes the two stop steps; the stows are the
-#          coordinator's, on team-sweep's level-stow finding, and so are the launches, on its
-#          level-resume and level-launch findings.
+#          relaunch, whether that fits now (never at none) and what holds it, if anything (its
+#          latest held while it stands, or a waiting or blocked logged after its stow while it
+#          stands: stow_hold in bin/lib/ledger.jq), which keeps it from being relaunched until a
+#          resumed lifts it; then the tasks whose launches were refused for room and not
+#          launched since (refused_launches in bin/lib/ledger.jq), oldest refusal first, each
+#          with its roles' estimate, whether it fits and what holds it alike (a waiting or
+#          blocked logged after its latest refusal). Text: "Over budget at minor (30%): 14.5 GiB
+#          reserved of 9.6 GiB.", then "  stop T1-reviewer aaaa0012, its work handed on: frees
+#          1.0 GiB", "  stop conventioner-3 of T3, no busy session in its worktree: frees
+#          3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed, waiting to resume, oldest stow first:"
+#          and "  T6 (planner): needs 0.5 GiB, fits", a held one's line ending ", on hold, not
+#          relaunched: waiting on Daniel: <reason>", then "Refused for room, waiting to launch,
+#          oldest refusal first:" and its lines alike, a held one's ending ", on hold, not
+#          launched: <what holds it>". With --json {schema: "team-capacity-plan/1", mode, level,
+#          share, budget (bytes, null with no reading above none), reserved, over, confirmed,
+#          stop_sessions: [{task, role, session, frees}], stop_stacks: [{task, name, worktree,
+#          frees}], stow: [{task, opened, frees}], resume: [{task, stowed, roles, needs, fits,
+#          hold (the text, or null)}], launch: [{task, refused, roles, needs, fits, hold}]},
+#          bytes throughout; each step list is [] unless confirmed. team-level tick takes the
+#          two stop steps; the stows are the coordinator's, on team-sweep's level-stow finding,
+#          and so are the launches, on its level-resume and level-launch findings.
 # jobs     How many processes a test suite runs at once (tests/run, and team-checks' commands
 #          through TEAM_JOBS): the floor of the level's CPU budget, at least 1, as team-level
 #          status --stored reads it, from the stored readings only (it takes none) and the
@@ -310,6 +321,9 @@ case $command in
     fi
     for id; do [[ $id =~ ^[0-9a-f]{8}$ ]] || usage_error "a session id is 8 hex digits, got '$id'"; done
     ids=("$@")
+    PLACE_SECONDS=${TEAM_CAPACITY_PLACE_SECONDS:-30}
+    [[ $PLACE_SECONDS =~ ^[0-9]+$ ]] ||
+      usage_error "TEAM_CAPACITY_PLACE_SECONDS must be a whole number of seconds, not '$PLACE_SECONDS'"
     ;;
   check | status | costs | plan)
     while [[ $# -gt 0 ]]; do
@@ -515,9 +529,33 @@ start_scope() {
     PIDs au $# "$@" Slice s "$slice" Description s "agent-team session ${scope#agent-team-}" 0
 }
 
-# Place one live team session <id> <name> <pid>; returns 1 when it could not.
+# The microseconds since the epoch.
+now_us() {
+  local t=$EPOCHREALTIME
+  echo "${t/[.,]/}"
+}
+
+# Sleep a second, or what is left until <deadline> (microseconds) when that is less.
+sleep_toward() {
+  local left=$(($1 - $(now_us)))
+  if ((left >= 1000000)); then
+    sleep 1
+  elif ((left > 0)); then
+    sleep "0.$(printf '%06d' "$left")"
+  fi
+}
+
+# Read the live session list again into LIVE_SESSIONS, keeping the last one when it cannot be read.
+reread_sessions() {
+  local list
+  list=$(claude agents --json 2>/dev/null | jq -ce 'select(type == "array")' 2>/dev/null) && LIVE_SESSIONS=$list
+  return 0
+}
+
+# Place one live team session <id> <name> <pid>, its retries bounded by <deadline> (microseconds,
+# empty with no ids); returns 1 when it could not.
 place_one() {
-  local id=$1 name=$2 pid=$3 task scope slice pids out
+  local id=$1 name=$2 pid=$3 deadline=$4 task scope slice pids out tries=0 sid fresh
   task=${name%%-*}
   scope=agent-team-$task-$id.scope slice=agent-team-$task.slice
   if [[ ! $pid =~ ^[0-9]+$ || ! -d $ROOT/proc/$pid ]]; then
@@ -530,28 +568,60 @@ place_one() {
     ((quiet)) || echo "left $name $id: already in $scope"
     return 0
   fi
-  for _ in once again; do
+  while :; do
     mapfile -t pids < <(session_pids "$pid")
     if out=$(start_scope "$scope" "$slice" "${pids[@]}" 2>&1); then
       echo "placed $name $id in $scope (${#pids[@]} process$( ((${#pids[@]} == 1)) || echo es))"
       return 0
     fi
+    tries=$((tries + 1))
     [[ -d $ROOT/proc/$pid ]] || break
+    # The first retry is at once; with ids, a process that ended meanwhile is tried for again,
+    # a second apart, until the id's seconds have passed.
+    if ((tries > 1)); then
+      if [[ -z $deadline || $out != *"No such process"* ]] || (($(now_us) >= deadline)); then break; fi
+      sleep_toward "$deadline"
+    fi
+    reread_sessions
+    IFS=$'\t' read -r sid _ fresh < <(team_sessions "$id") || true
+    [[ $sid == "$id" && $fresh =~ ^[0-9]+$ && -d $ROOT/proc/$fresh ]] && pid=$fresh
   done
   echo "team-capacity: could not place $name $id (pid $pid) in $slice: $(grep -m1 . <<<"$out" || echo "busctl failed")" >&2
   return 1
 }
 
-# The live team sessions, one "<id><TAB><name><TAB><pid>" per line, or with ids "-<TAB><reason>"
-# for each id that is no live team session.
+# The live team sessions, one "<id><TAB><name><TAB><pid>" per line, or with ids only those, and
+# "?<TAB><reason>" for each id the list does not hold and "-<TAB><reason>" for each it holds as no
+# team session: team_sessions [<id>...]
 team_sessions() {
   jq -r --args '[.[] | {id: (.id // (.sessionId // "" | .[:8])), name: (.name // ""), pid: (.pid // "" | tostring)}] as $live
     | def team: .name | test("^T[1-9][0-9]*-[a-z]+$");
     if $ARGS.positional == [] then $live[] | select(team) | [.id, .name, .pid] | @tsv
     else $ARGS.positional[] as $id | ($live | map(select(.id == $id)) | first) as $s
-      | if $s == null then ["-", "\($id): no live session has that id"]
+      | if $s == null then ["?", "\($id): no live session has that id"]
         elif ($s | team | not) then ["-", "\($id): it is no team session (named \(if $s.name == "" then "nothing" else $s.name end), not T<n>-<role>)"]
-        else [$s.id, $s.name, $s.pid] end | @tsv end' "${ids[@]}" <<<"$LIVE_SESSIONS"
+        else [$s.id, $s.name, $s.pid] end | @tsv end' "$@" <<<"$LIVE_SESSIONS"
+}
+
+# Place the session <id> once it is listed with a running process, reading the list again once a
+# second until PLACE_SECONDS have passed; returns 1 when it could not.
+place_id() {
+  local id=$1 deadline sid name pid
+  deadline=$(($(now_us) + PLACE_SECONDS * 1000000))
+  while :; do
+    IFS=$'\t' read -r sid name pid < <(team_sessions "$id")
+    # A name does not change: one listed as no team session fails at once.
+    [[ $sid != - ]] || break
+    [[ $sid == '?' || ! $pid =~ ^[0-9]+$ || ! -d $ROOT/proc/$pid ]] || break
+    (($(now_us) < deadline)) || break
+    sleep_toward "$deadline"
+    reread_sessions
+  done
+  if [[ $sid == [-?] ]]; then
+    echo "team-capacity: could not place $name" >&2
+    return 1
+  fi
+  place_one "$sid" "$name" "$pid" "$deadline"
 }
 
 place() {
@@ -561,13 +631,12 @@ place() {
     return 0
   fi
   live_sessions
+  if ((${#ids[@]})); then
+    for id in "${ids[@]}"; do place_id "$id" || failed=1; done
+    return "$failed"
+  fi
   while IFS=$'\t' read -r id name pid; do
-    if [[ $id == - ]]; then
-      echo "team-capacity: could not place $name" >&2
-      failed=1
-    elif ! place_one "$id" "$name" "$pid"; then
-      failed=1
-    fi
+    place_one "$id" "$name" "$pid" '' || failed=1
   done < <(team_sessions)
   return "$failed"
 }
