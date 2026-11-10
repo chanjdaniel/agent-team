@@ -32,7 +32,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 | # | Stage | Who | Done when |
 | - | - | - | - |
 | 1 | git, gh, GitHub login, the code checkout and the team home cloned, the team home's setting written | agent, Daniel logs in | `SETUP.md` stage 1's checks pass |
-| 2 | Preflight and the machine's name | agent, Daniel names it | `machine: named this machine <name>` or `done`, `machine: done: ~/.config/agent-team/home names ~/agent-team-records`, and `machine: done: the team home fetches only dev and lease` |
+| 2 | Preflight and the machine's name | agent, Daniel names it | `machine: named this machine <name>` or `done`, `machine: done: ~/.config/agent-team/home names ~/agent-team-records`, `machine: done: the team home fetches only dev and lease`, and `machine: done: the team home shares history with origin's dev` |
 | 3 | OS packages | agent; Daniel's terminal on Arch | `packages: done` |
 | 4 | Tools at their pins | agent; Daniel's terminal for `sudo` | `tools: done` |
 | 5 | Projects | agent | `projects: done` |
