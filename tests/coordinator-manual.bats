@@ -552,7 +552,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 115 lines and 24590 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 115 lines and 24690 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message.
   found=$(grep -nE 'team-log T<n> (done|ticket-done|review|pr|paused|question|gate-run)\b' "${files[@]}" || true)
@@ -573,10 +573,10 @@ $WORKER_INSTRUCTIONS"
   # Shorter than before team-next, in lines (120) and in the bytes the starting context carries
   # (24220, 24280 once the ops bullet named vercel-read, 24460 once the ops lines named the
   # message of Daniel's each ops launch needs, 24590 once the ops line named the logging of its
-  # answer as its length, with the pointer to its relay, and 24640 once the load check's line
-  # named team-drill status).
+  # answer as its length, with the pointer to its relay, 24640 once the load check's line named
+  # team-drill status, and 24690 once it named the probe form).
   (($(wc -l <"$manual") <= 115))
-  (($(wc -c <"$manual") <= 24640))
+  (($(wc -c <"$manual") <= 24690))
 }
 
 @test "reviewers and planners add the memories the hook keeps them from writing to their task directory, and the coordinator files them at close" {

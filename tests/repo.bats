@@ -203,6 +203,151 @@ usage/home-pc/time/2026-10-26.jsonl"
   assert_equal "${missing[*]}" ""
 }
 
+# The refusal probe's data, bin/lib/probe.json, held to the worker roles' settings, so a deny rule
+# or a PreToolUse hook added to them is either probed live by `team-load-check --probe` or says why
+# it is not.
+PROBE_ROLES=(planner builder reviewer)
+
+# probe_rules <role>: the deny rules a <role> session holds, settings/worker.json's and its own, as
+# one JSON array
+probe_rules() {
+  jq -s '[.[].permissions.deny // [] | .[]]' "$REPO_ROOT/settings/worker.json" "$REPO_ROOT/settings/$1.json"
+}
+
+@test "every attempt of the refusal probe is well formed, and names a family the data file has" {
+  local out
+  out=$(jq -r '(.families | map(.family)) as $families | .attempts[]
+    | select((.id | test("^[a-z]+(-[a-z]+)*$") | not)
+      or (.roles | length) == 0 or any(.roles[]; IN("planner", "builder", "reviewer") | not)
+      or (.tool | IN("Bash", "Read", "Write") | not) or (.input | type) != "string"
+      or (.expect | IN("rule", "hook", "refused") | not)
+      or ((.expect == "hook") != (.marker | type == "string"))
+      or ((.expect == "rule") != (.family | type == "string"))
+      or (.family != null and (.family | IN($families[]) | not)))
+    | .id' "$REPO_ROOT/bin/lib/probe.json")
+  assert_equal "$out" ""
+  out=$(jq -r '[.attempts[].id] | group_by(.) | map(select(length > 1) | .[0]) | join(" ")' "$REPO_ROOT/bin/lib/probe.json")
+  assert_equal "$out" ""
+}
+
+@test "every deny rule of the worker roles' settings belongs to exactly one family of the refusal probe" {
+  local out
+  out=$(jq -rn --slurpfile probe "$REPO_ROOT/bin/lib/probe.json" '
+    [inputs | .permissions.deny // [] | .[]] | unique[] as $rule
+    | [$probe[0].families[] | select(.rules as $re | $rule | test($re)) | .family]
+    | select(length != 1) | "\($rule): \(if length == 0 then "no family" else join(", ") end)"' \
+    "$REPO_ROOT"/settings/{worker,planner,builder,reviewer}.json)
+  assert_equal "$out" ""
+}
+
+@test "every family of the refusal probe has an attempt for each role that holds one of its rules, or a reason it has none" {
+  local role rules out
+  for role in "${PROBE_ROLES[@]}"; do
+    rules=$(probe_rules "$role")
+    out=$(jq -r --arg role "$role" --argjson rules "$rules" '
+      .attempts as $attempts | .families[] | select(.unprobed == null)
+      | .rules as $re | select(any($rules[]; test($re)))
+      | .family as $family | select(any($attempts[]; .family == $family and any(.roles[]; . == $role)) | not)
+      | "\($role) holds a rule of \($family), which has no attempt of its and no unprobed reason"' \
+      "$REPO_ROOT/bin/lib/probe.json")
+    assert_equal "$out" ""
+  done
+  # A family that matches no rule of any role is stale.
+  out=$(jq -rn --slurpfile probe "$REPO_ROOT/bin/lib/probe.json" '
+    [inputs | .permissions.deny // [] | .[]] as $rules | $probe[0].families[]
+    | .rules as $re | select(any($rules[]; test($re)) | not) | "\(.family) matches no deny rule"' \
+    "$REPO_ROOT"/settings/{worker,planner,builder,reviewer}.json)
+  assert_equal "$out" ""
+}
+
+# Whether a deny rule of <rules> (one per line) matches the <tool> call's <input>, as the suite
+# models Claude Code's matcher: a Bash rule's content against each of the input's deny_forms, a
+# Read rule's path (// the root, ~/ the home, which an input spells @HOME@) against the input,
+# each by rule_text_matches: probe_denies <rules> <tool> <input>
+probe_denies() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced probe_denies "$@"; return; }
+  local rule pattern form forms
+  [[ $2 != Bash ]] || forms=$(deny_forms "$3")
+  while IFS= read -r rule; do
+    [[ $rule == "$2("*")" ]] || continue
+    pattern=${rule#"$2("} pattern=${pattern%)}
+    if [[ $2 == Bash ]]; then
+      while IFS= read -r form; do
+        rule_text_matches "$pattern" "$form" && return 0
+      done <<<"$forms"
+      continue
+    fi
+    case $pattern in
+      //*) pattern=${pattern#/} ;;
+      \~/*) pattern=@HOME@/${pattern#\~/} ;;
+      *) echo "the model has no reading of the $2 rule $rule" >&2; return 1 ;;
+    esac
+    rule_text_matches "$pattern" "$3" && return 0
+  done <<<"$1"
+  return 1
+}
+
+@test "every rule attempt of the refusal probe is denied by a rule of its family in each of its roles' settings" {
+  local role id tool input family rules list probe=$REPO_ROOT/bin/lib/probe.json missing=() n=0
+  for role in "${PROBE_ROLES[@]}"; do
+    list=$(jq -r --arg role "$role" '.attempts[] | select(.expect == "rule" and any(.roles[]; . == $role))
+      | [.id, .tool, .input, .family] | @tsv' "$probe")
+    while IFS=$'\t' read -r id tool input family; do
+      rules=$(jq -r --arg family "$family" --argjson rules "$(probe_rules "$role")" \
+        '(.families[] | select(.family == $family) | .rules) as $re | $rules[] | select(test($re))' "$probe")
+      probe_denies "$rules" "$tool" "$input" || missing+=("$role $id")
+      n=$((n + 1))
+    done <<<"$list"
+  done
+  assert_equal "${missing[*]}" ""
+  ((n > 3))
+}
+
+# A hook attempt stands for the hook under bin/hooks/ whose file holds its marker.
+@test "every PreToolUse hook of the worker roles' settings has an attempt for each role that loads it, or a reason it has none" {
+  local file role hook hooks roles markers marker found probe=$REPO_ROOT/bin/lib/probe.json missing=() listed=()
+  for file in worker "${PROBE_ROLES[@]}"; do
+    roles=("$file")
+    [[ $file != worker ]] || roles=("${PROBE_ROLES[@]}")
+    hooks=$(jq -r '.hooks.PreToolUse // [] | .[].hooks[].command | split(" ")[0]' "$REPO_ROOT/settings/$file.json")
+    while IFS= read -r hook; do
+      [[ -n $hook ]] || continue
+      [[ $hook == @TEAM_CODE@/bin/hooks/* ]] || { missing+=("$file: $hook is not a hook of bin/hooks/"); continue; }
+      hook=${hook#@TEAM_CODE@/bin/hooks/}
+      listed+=("$hook")
+      jq -e --arg hook "$hook" 'any(.hooks[]; .hook == $hook)' "$probe" >/dev/null ||
+        { missing+=("$hook is not in the data file's hooks"); continue; }
+      ! jq -e --arg hook "$hook" 'any(.hooks[]; .hook == $hook and .unprobed != null)' "$probe" >/dev/null || continue
+      for role in "${roles[@]}"; do
+        markers=$(jq -r --arg role "$role" '.attempts[] | select(.expect == "hook" and any(.roles[]; . == $role)) | .marker' "$probe")
+        found=''
+        while IFS= read -r marker; do
+          [[ -z $marker ]] || ! grep -qF -- "$marker" "$REPO_ROOT/bin/hooks/$hook" || found=1
+        done <<<"$markers"
+        [[ -n $found ]] || missing+=("$role loads $hook, which has no attempt of its")
+      done
+    done <<<"$hooks"
+  done
+  ((${#listed[@]} > 0))
+  hooks=$(jq -r '.hooks[].hook' "$probe")
+  while IFS= read -r hook; do
+    [[ " ${listed[*]} " == *" $hook "* ]] || missing+=("the data file's $hook is no PreToolUse hook of the settings")
+  done <<<"$hooks"
+  assert_equal "$(printf '%s\n' "${missing[@]}")" ""
+}
+
+# Only classifier refusals in a row are known to leave a background session on a prompt, so the
+# auto mode stand-ins are never next to each other in a session's list.
+@test "no two refused attempts of the refusal probe are adjacent in any role's list" {
+  local role out
+  for role in "${PROBE_ROLES[@]}"; do
+    out=$(jq -r --arg role "$role" '[.attempts[] | select(any(.roles[]; . == $role))]
+      | . as $list | range(1; length) | select($list[. - 1].expect == "refused" and $list[.].expect == "refused")
+      | "\($role): \($list[. - 1].id) and \($list[.].id)"' "$REPO_ROOT/bin/lib/probe.json")
+    assert_equal "$out" ""
+  done
+}
+
 # The kinds the contract marks push, Daniel's word and outside facts, are on origin the moment
 # they are logged: every script the contract names as a writer of one calls ledger_push, on a
 # line of its own, which commits and pushes the ledger before it ends.
