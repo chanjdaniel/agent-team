@@ -39,7 +39,8 @@
 #          a line of this run already is skipped, saying so, so a second import adds nothing.
 #          Every line is read before any is written. Exit 75, nothing written, while the run is
 #          not completed; refused, exit 1, nothing written: a run of another workflow, a gh call
-#          that fails, and a machine record refuses.
+#          that fails, and a machine record refuses; a run id that is not a number is a malformed
+#          command line (exit 2).
 # status   One row per registered drill, in the registry's order, under a header: the drill, its
 #          last run's date and age in days, machine, short commit, Claude Code version and
 #          verdict, then ok or "due: <its first reason>"; a drill with no record shows only "due:
