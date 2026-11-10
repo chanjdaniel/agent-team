@@ -439,13 +439,8 @@ if [[ $handoff == verdict ]]; then
         full) fix="send to $who: $stow" ;;
         gone) fix="$gone $stow" ;;
       esac
-      # The churn rule, over the ledger as it was before this run logged anything: this review's
-      # and the task's previous review's sent-back widening numbers (the previous one the latest
-      # review before the index that holds this one on a rerun, else the latest of all), each
-      # review's head's first 8 characters, and the areas of guardrails, permissions and secrets
-      # this review found; nothing unless both sent back a widening finding and every sent-back
-      # number outside this one's widening may be a plain note, which it is taken to be only
-      # when the review counts no blocking, correctness, security or real-data finding.
+      # The churn rule (see the header), over the ledger as it was before this run logged anything,
+      # the previous review on a rerun the latest before the index that holds this one.
       churn=$(jq -c --argjson review "$review" --argjson held "$held" '
         def sent_widening: (.sent_back // []) as $s | [(.widening // [])[] | select(IN($s[]))];
         ([$held.events[] | select(.event.event == "review") | .at] | first) as $at

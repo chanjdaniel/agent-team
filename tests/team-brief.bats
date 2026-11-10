@@ -1801,7 +1801,7 @@ after"
   assert_contains "$brief" "## GitHub checks
 
 Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, before you read anything, so the run and your reading overlap; every check must pass before you pass the PR, so a pass delivers only once the wait has ended.
-A review that sends any finding back delivers as soon as \`.work/task/review.md\` is written, without waiting for the end: its CI section names the checks still running, the builder fixes a failed check on its own wait, and the rereview of its next head waits for that head's checks; a wait that ends after you delivered needs nothing more from you.
+A review that sends any finding back delivers as soon as \`.work/task/review.md\` is written, its CI section naming the checks still running; a wait that ends after you delivered needs nothing more from you.
 ${act//abc1234/$head}
 ${moved//abc1234/$head}
 
