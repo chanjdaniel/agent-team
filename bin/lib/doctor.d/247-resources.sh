@@ -8,10 +8,13 @@
 #               slice, or the limits applied are not the recorded level's or the slice's CPU quota
 #               not theirs, each naming its fix (team-capacity install, Daniel's yes,
 #               team-capacity place, or team-level apply); else passes, naming the live team
-#               sessions in it. On macOS passes with "no hard limits on macOS: admission and stow
-#               only". On any OS, fails on a malformed capacity.json or level.jsonl line, naming it,
-#               or on a check that prints no JSON verdict,
-#               warns on what the task slots left (~/.config/agent-team/slots.json,
+#               sessions in it ("systemd backend: agent-team.slice holds the team, 2 live team
+#               sessions in it"). On macOS passes with "macOS backend, admission and stow only: no
+#               cgroups, so no hard CPU or memory limit holds the team's sessions, heavy runs or
+#               gate; the team's containers' CPU is held with docker update, and their memory
+#               within Docker Desktop's VM". On any OS, fails on a malformed capacity.json or
+#               level.jsonl line, naming it, or on a check that prints no JSON verdict, warns on
+#               what the task slots left (~/.config/agent-team/slots.json,
 #               ~/.local/state/agent-team/slots/ and ~/.local/state/agent-team/slots.lock), no
 #               longer read since levels replaced them, and warns while this machine holds the lease
 #               (on the lease line's answer) and has no reading of the machine's load of the last 15

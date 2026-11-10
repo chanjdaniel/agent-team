@@ -282,6 +282,53 @@ refs/remotes/origin/lease"
   assert_equal "$(line_of 'team home fetch')" ""
 }
 
+@test "the team home history line passes while the team home shares history with origin's dev, level, ahead or behind, reading it as last fetched" {
+  only_checks 086-team-home-history.sh
+  tools_at arch
+  local origin=$BATS_TEST_TMPDIR/origin/agent-team.git home=$TEAM_HOME
+  local pass="PASS team home history: shares history with origin's dev"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home history')" "$pass"
+  # Ahead, with a records commit of its own.
+  echo '{}' >>"$home/ledger.jsonl"
+  git -C "$home" add ledger.jsonl
+  git -C "$home" commit -q -m "chore: a record"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home history')" "$pass"
+  # Behind, once another machine's push is fetched.
+  push_to_dev "$origin" tasks/T1/plan.md >/dev/null
+  git -C "$home" fetch -q origin
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home history')" "$pass"
+  # Rewritten on origin: the line fetches nothing, so it passes until a fetch brings the new dev.
+  rewrite_origin_dev
+  local before
+  before=$(git -C "$home" rev-parse refs/remotes/origin/dev)
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home history')" "$pass"
+  assert_equal "$(git -C "$home" rev-parse refs/remotes/origin/dev)" "$before"
+  git -C "$home" fetch -q origin
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home history')" \
+    "FAIL team home history: $home shares no history with origin's dev, so its history was rewritten since it was cloned (the records rewrite of 2026-10-28, say), and nothing should read or pull it; fix: re-clone it, keeping this one aside, as sops/records-rewrite.md step 10 says: mv $home $home.pre-rewrite, a fresh clone of dev with lease added, its records guard, and the ignored files carried over; never git pull into this clone"
+  # Without origin's dev the line is left out: the fetch line and team-resume say why.
+  git -C "$home" update-ref -d refs/remotes/origin/dev
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home history')" ""
+  assert_equal "$(line_of 'team home')" "PASS team home: $home, named by TEAM_HOME: a checkout of its own on dev, with an origin"
+}
+
+@test "the team home history line is left out while the team home line fails" {
+  only_checks 086-team-home-history.sh
+  tools_at arch
+  rewrite_origin_dev
+  git -C "$TEAM_HOME" fetch -q origin
+  git -C "$TEAM_HOME" remote rename origin elsewhere
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home history')" ""
+  assert_contains "$(line_of 'team home')" "FAIL team home: "
+}
+
 @test "Claude Code signed out, or signed in without a claude.ai account, fails the claude login line" {
   only_checks 100-claude-login.sh
   tools_at arch
@@ -471,7 +518,7 @@ EOF
   local whole=$output check read reads own declared
   local -A alone=()
   # Each check alone prints lines of the whole run, in its order: its own (none for the Homebrew
-  # check on Arch, nor the salvage check with nothing to salvage) and those of the checks it reads
+  # and power checks on Arch, nor the salvage check with nothing to salvage) and those it reads
   # state from. A check that prints nothing without its state (the docker check with no os, say)
   # shows a lost reads line by printing no line of its own, so each other check must print one
   # beyond those its declared checks print alone.
@@ -485,7 +532,7 @@ EOF
       reads+=${alone[$read]}$'\n'
     done
     own=$(printf '%s' "$output" | grep -cvxFf <(printf '%s' "$reads") || true)
-    [[ ${check##*/} == @(020-homebrew|230-salvage).sh ]] || ((own > 0)) || {
+    [[ ${check##*/} == @(020-homebrew|230-salvage|248-power).sh ]] || ((own > 0)) || {
       echo "${check##*/} alone prints no line of its own: $output" >&2
       return 1
     }

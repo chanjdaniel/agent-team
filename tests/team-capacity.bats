@@ -328,6 +328,24 @@ agent-team-T9-b1b2c3d4.scope agent-team-T9.slice 200 199 201 203"
   assert_equal "$(stub_calls busctl)" ""
 }
 
+@test "on Linux check passes with the systemd backend's words, and its JSON names the backend on every verdict" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-capacity install
+  level_applied manual full 1080
+  run_bin -0 team-capacity check --json
+  assert_equal "$(jq -c '[.os, .backend, .verdict, .reason]' <<<"$output")" '["linux","systemd","PASS","manual, full (90%): no reading of the machine'"'"'s load yet, so no budget; systemd backend: agent-team.slice holds the team, 0 live team sessions in it"]'
+  run_bin -0 team-capacity check
+  assert_equal "$output" "PASS manual, full (90%): no reading of the machine's load yet, so no budget; systemd backend: agent-team.slice holds the team, 0 live team sessions in it"
+  # A warning and a failure keep their reasons, and name the backend too.
+  rm "$UNITS/agent-team.slice"
+  run_bin -0 team-capacity check --json
+  assert_equal "$(jq -c '[.backend, .verdict, .reason]' <<<"$output")" '["systemd","WARN","manual, full (90%): no reading of the machine'"'"'s load yet, so no budget; agent-team.slice is not installed"]'
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"full_share": 2}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -0 team-capacity check --json
+  assert_equal "$(jq -c '[.backend, .verdict]' <<<"$output")" '["systemd","FAIL"]'
+}
+
 @test "on macOS install and place are no-ops said once, and check passes with the macOS text" {
   as_macos
   session_tree 100
@@ -339,9 +357,17 @@ agent-team-T9-b1b2c3d4.scope agent-team-T9.slice 200 199 201 203"
   assert_equal "$output" ""
   assert_equal "$stderr" "team-capacity: no cgroups on macOS: no session is placed"
   run_bin -0 team-capacity check --json
-  assert_equal "$(jq -c . <<<"$output")" '{"os":"macos","verdict":"PASS","reason":"manual, full (90%): no reading of the machine'"'"'s load yet, so no budget; no hard limits on macOS: admission and stow only","fix":"","problems":[]}'
+  assert_equal "$(jq -c . <<<"$output")" '{"os":"macos","backend":"macos","verdict":"PASS","reason":"manual, full (90%): no reading of the machine'"'"'s load yet, so no budget; macOS backend, admission and stow only: no cgroups, so no hard CPU or memory limit holds the team'"'"'s sessions, heavy runs or gate; the team'"'"'s containers'"'"' CPU is held with docker update, and their memory within Docker Desktop'"'"'s VM","fix":"","problems":[]}'
   assert_equal "$(stub_calls systemctl)$(stub_calls busctl)$(stub_calls claude)" ""
   [[ ! -e $UNITS/agent-team.slice ]]
+  # A warning and a failure keep the any-OS reasons, and name the backend too.
+  mkdir -p "$HOME/.local/state/agent-team/slots"
+  run_bin -0 team-capacity check --json
+  assert_equal "$(jq -c '[.backend, .verdict, .reason]' <<<"$output")" '["macos","WARN","manual, full (90%): no reading of the machine'"'"'s load yet, so no budget; ~/.local/state/agent-team/slots is no longer read: levels replaced the task slots"]'
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"full_share": 2}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -0 team-capacity check --json
+  assert_equal "$(jq -c '[.backend, .verdict]' <<<"$output")" '["macos","FAIL"]'
 }
 
 
