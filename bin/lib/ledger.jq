@@ -1148,7 +1148,7 @@ def plan_tasks($sessions):
 # events by id, in task number order.
 def awaiting_resume: [to_entries[] | select((.value | is_open) and (.value | stowed_awaiting_resume)) | .key] | sort_by(.[1:] | tonumber);
 
-# The resources line the Waiting on you message and the snapshot end their items with, from
+# The resources line team-inbox --post and the snapshot end their items with, from
 # team-level status --json's object $level (its says) and the tasks stowed, waiting to resume
 # ($stowed, awaiting_resume's): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the
 # team; 6.1 GiB reserved; T171 and T174 stowed, waiting to resume"; null when $level is {error}.
@@ -1329,11 +1329,10 @@ def waiting_list($previous; $guild):
    posted: ($previous.posted // null)};
 
 # waiting.md from waiting_list's answer, with a final newline: its title; "Nothing waits on you."
-# or each section with items, its heading then its items' lines; one line per standing word,
+# or each section with items, its heading then its items' lines; and one line per standing word,
 # linked to Daniel's message in its channel in guild $guild (named by its id and channel when the
-# guild is unknown); then the line $resources (resources_line's; none when null) and the health
-# line $health (team-timers health's; none when null).
-def waiting_text($guild; $resources; $health):
+# guild is unknown).
+def waiting_text($guild):
   .items as $items
   | ["**Waiting on you**"]
   + if $items == [] then ["Nothing waits on you."]
@@ -1344,8 +1343,20 @@ def waiting_text($guild; $resources; $health):
   + [.standing[] | "-# Standing merge word on \(.projects | projects_text) since "
       + if $guild != null then "<https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)>"
         else "message \(.word.discord_message) in <#\(.word.discord_channel)>" end]
-  + [$resources, $health | select(. != null)]
   | join("\n") + "\n";
+
+# The messages of team-inbox --post from its lines, an array: packed greedily in order, each line
+# whole, into messages of at most $max characters joined by newlines.
+def post_messages($max):
+  reduce .[] as $line ([];
+    if length > 0 and (.[-1] | length) + 1 + ($line | length) <= $max then .[-1] += "\n" + $line
+    else . + [$line] end);
+
+# waiting.json with its post recorded: at $at, as the messages $ids, whose contents were $sent;
+# the items it showed are those whose lines are in them.
+def waiting_posted($at; $ids; $sent):
+  ([$sent[] | split("\n")[]]) as $lines
+  | .posted = {at: $at, messages: $ids, items: [.items[] | select(.line | IN($lines[]))]};
 
 # The following defs serve team-retro, over every ledger event as one array.
 

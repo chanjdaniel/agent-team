@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # team-inbox: what waits on Daniel, numbered, written from the ledger to the team home's waiting.md
-# and waiting.json, with a fake Discord (tests/helpers/inbox.bash) for the guild's read and the
-# old Waiting on you message's retire.
+# and waiting.json, and posted fresh in #coordinator with --post, with a fake Discord
+# (tests/helpers/inbox.bash) for the guild's read, the post and the old Waiting on you message's
+# retire.
 
 load helpers/common
 load helpers/inbox
@@ -77,10 +78,9 @@ posted_as() {
   assert_equal "$output" "wrote waiting.md: 0 items"
   assert_equal "$stderr" ""
   assert_equal "$(inbox_calls)" "GET channels/1562486564871995482"
-  # With no record and no reading, the team is at manual full with no budget yet.
+  # The resources and health lines are the post's alone.
   assert_equal "$(waiting_shown)" "**Waiting on you**
-Nothing waits on you.
-Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
+Nothing waits on you."
   # The file ends with its newline.
   [[ -z $(tail -c 1 "$TEAM_HOME/waiting.md") ]]
   assert_equal "$(jq -c . "$TEAM_HOME/waiting.json")" '{"schema":"team-waiting/1","items":[],"standing":[],"posted":null}'
@@ -350,6 +350,197 @@ wrote waiting.md: 0 items"
   assert_equal "$(jq -c 'has("message")' "$state")" false
 }
 
+# Check the post's foot, its last line: the answer line with something waiting (<waits> given),
+# else the posted line, its time this run's: post_foot <line> [waits]
+post_foot() {
+  local at
+  if [[ -n ${2:-} ]]; then
+    [[ $1 =~ ^'-# Answer by number, as "1 yes, 2 no"; posted <t:'([0-9]+)':R>'$ ]]
+  else
+    [[ $1 =~ ^'-# Posted <t:'([0-9]+)':R>'$ ]]
+  fi
+  at=${BASH_REMATCH[1]}
+  ((at <= $(date +%s) && at > $(date +%s) - 60))
+}
+
+@test "--post writes the list, then posts it as a new message with the resources line and the foot, pinging no one and previewing nothing" {
+  waiting_ledger
+  standing merge-standing all 1564100000000000001
+  run_bin -0 --separate-stderr team-inbox --post
+  assert_equal "$output" "wrote waiting.md: 5 items
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"
+  assert_equal "$(inbox_calls)" "GET channels/1562486564871995482
+POST channels/1562486564871995482/messages"
+  local body=$STUB_FIXTURES/inbox/1569000000000000001.json
+  assert_equal "$(jq -c 'del(.content)' "$body")" '{"allowed_mentions":{"parse":[]},"flags":4}'
+  # The post is waiting.md's lines, the resources line, then the foot.
+  assert_equal "$(jq -r .content "$body" | sed '$d')" "$(waiting_shown)
+Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
+  post_foot "$(jq -r .content "$body" | tail -n 1)" waits
+  # waiting.json records the post: its time, its message and the items it showed.
+  jq -e '.posted | (.at | test("^[0-9-]{10}T[0-9:]{8}Z$")) and .messages == ["1569000000000000001"]' "$TEAM_HOME/waiting.json"
+  assert_equal "$(jq -c '.posted.items == .items' "$TEAM_HOME/waiting.json")" true
+  assert_equal "$(posted_shown)" "$(jq -r .content "$body")"
+
+  # The next post is a new message, the old one left as it was; nothing is ever edited.
+  : >"$STUB_FIXTURES/inbox/calls"
+  run_bin -0 --separate-stderr team-inbox --post
+  assert_equal "$output" "wrote waiting.md: 5 items
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000002"
+  assert_equal "$(inbox_calls)" "POST channels/1562486564871995482/messages"
+  assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000002"]'
+  [[ -f $body ]]
+}
+
+@test "--post with nothing waiting posts the title, "Nothing waits on you.", the resources line and the posted foot, a standing word line or not" {
+  inbox_guild_kept
+  run_bin -0 --separate-stderr team-inbox --post
+  assert_equal "$stderr" ""
+  assert_equal "$(posted_shown | sed '$d')" "**Waiting on you**
+Nothing waits on you.
+Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
+  post_foot "$(posted_shown | tail -n 1)"
+  assert_equal "$(jq -c '.posted.items' "$TEAM_HOME/waiting.json")" '[]'
+
+  # A standing word's line is no item, so nothing waits still.
+  standing merge-standing all 1564100000000000001
+  run_bin -0 --separate-stderr team-inbox --post
+  assert_equal "$(posted_shown | sed -n 3p)" "-# Standing merge word on every project since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
+  post_foot "$(posted_shown | tail -n 1)"
+}
+
+@test "--post retires the old message too, before it writes and posts" {
+  inbox_kept
+  run_bin -0 team-inbox --post
+  assert_equal "$output" "retired https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000000
+wrote waiting.md: 0 items
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000
+POST channels/1562486564871995482/messages"
+}
+
+@test "a post over 2000 characters goes as several messages, each at most 2000, cut only between lines, in order" {
+  local n
+  inbox_guild_kept
+  opened T3 "Three" >>"$TEAM_HOME/ledger.jsonl"
+  log_events '{"task":"T3","event":"thread","discord_thread":"3333"}'
+  for n in $(seq 1 30); do
+    log_events "$(jq -nc --arg id "q$n" --arg text "$(printf "Question $n %.0s" {1..20})" \
+      '{task: "T3", event: "asked", id: $id, text: $text, discord_message: "1564000000000000001"}')"
+  done
+  run_bin -0 --separate-stderr team-inbox --post
+  assert_equal "$stderr" ""
+  assert_equal "$output" "wrote waiting.md: 30 items
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000002
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000003
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000004"
+  assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" \
+    '["1569000000000000001","1569000000000000002","1569000000000000003","1569000000000000004"]'
+  # Each message is at most 2000 characters, packed: the next message's first line would not fit.
+  local id next
+  for id in 1 2 3 4; do
+    (($(jq -r '.content | length' "$STUB_FIXTURES/inbox/156900000000000000$id.json") <= 2000))
+    if ((id < 4)); then
+      next=$(jq -r '.content | split("\n")[0] | length' "$STUB_FIXTURES/inbox/156900000000000000$((id + 1)).json")
+      (($(jq -r '.content | length' "$STUB_FIXTURES/inbox/156900000000000000$id.json") + 1 + next > 2000))
+    fi
+  done
+  # Joined, they are the whole post: every line whole, the list's, the resources line, the foot.
+  assert_equal "$(posted_shown | sed '$d')" "$(waiting_shown)
+Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
+  assert_equal "$(posted_shown | grep -c '^- \*\*[0-9]*\*\* T3 q')" 30
+  post_foot "$(posted_shown | tail -n 1)" waits
+}
+
+@test "a post whose later message fails records the messages that went and the items they showed, and exits as Discord's refusal says" {
+  local n
+  inbox_guild_kept
+  opened T3 "Three" >>"$TEAM_HOME/ledger.jsonl"
+  for n in $(seq 1 30); do
+    log_events "$(jq -nc --arg id "q$n" --arg text "$(printf "Question $n %.0s" {1..20})" '{task: "T3", event: "asked", id: $id, text: $text}')"
+  done
+  # The second message is rate-limited: the first is recorded, with the items its lines showed.
+  echo "2 429 3" >"$STUB_FIXTURES/inbox/fail-post"
+  run_bin -75 --separate-stderr team-inbox --post
+  assert_equal "$output" "wrote waiting.md: 30 items
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"
+  assert_equal "$stderr" "team-inbox: Discord is rate-limiting the bot (429) on the post of the list's message 2 of 3: try again in 3 s"
+  assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000001"]'
+  local shown
+  shown=$(jq -r '.posted.items[].n' "$TEAM_HOME/waiting.json" | paste -sd ' ')
+  assert_equal "$shown" "$(jq -r .content "$STUB_FIXTURES/inbox/1569000000000000001.json" | sed -nE 's/^- \*\*([0-9]+)\*\* .*/\1/p' | paste -sd ' ')"
+  [[ -n $shown && $shown != *30 ]]
+
+  # A refusal of another kind is exit 1, naming Discord's reason.
+  echo "2 500" >"$STUB_FIXTURES/inbox/fail-post"
+  rm "$STUB_FIXTURES/inbox/posts"
+  run_bin -1 --separate-stderr team-inbox --post
+  assert_equal "$stderr" "team-inbox: Discord refused the post of the list's message 2 of 3: curl: (22) The requested URL returned error: 500"
+  assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000002"]'
+}
+
+@test "a post whose first message fails records nothing and exits as Discord's refusal says, the files written" {
+  inbox_guild_kept
+  waiting_ledger
+  echo "1 429" >"$STUB_FIXTURES/inbox/fail-post"
+  run_bin -75 --separate-stderr team-inbox --post
+  assert_equal "$output" "wrote waiting.md: 5 items"
+  assert_equal "$stderr" "team-inbox: Discord is rate-limiting the bot (429) on the post of the list: try again later"
+  assert_equal "$(jq -c .posted "$TEAM_HOME/waiting.json")" null
+  assert_equal "$(waiting_items_shown | sed -n 2p)" "- **1** T3 plan: Approve the plan? <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000003>"
+
+  echo "1 403" >"$STUB_FIXTURES/inbox/fail-post"
+  run_bin -1 --separate-stderr team-inbox --post
+  assert_equal "$stderr" "team-inbox: Discord refused the post of the list: curl: (22) The requested URL returned error: 403"
+  assert_equal "$(jq -c .posted "$TEAM_HOME/waiting.json")" null
+}
+
+@test "a run after a post skips the numbers it showed for new items, and the next post frees the numbers of the items settled before it" {
+  inbox_guild_kept
+  opened T3 "Three" >>"$TEAM_HOME/ledger.jsonl"
+  log_events '{"task":"T3","event":"asked","id":"a","text":"A?"}' \
+    '{"task":"T3","event":"asked","id":"b","text":"B?"}'
+  run_bin -0 team-inbox --post
+  # a settles and c is asked: c skips the 1 the post showed.
+  log_events '{"task":"T3","event":"answered","id":"a","answer":"no"}' \
+    '{"task":"T3","event":"asked","id":"c","text":"C?"}'
+  run_bin -0 team-inbox
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **2** T3 b: B?
+- **3** T3 c: C?"
+  # The next post shows 2 and 3, which frees 1 for d.
+  run_bin -0 team-inbox --post
+  assert_equal "$(jq -c '[.posted.items[].n]' "$TEAM_HOME/waiting.json")" '[2,3]'
+  log_events '{"task":"T3","event":"asked","id":"d","text":"D?"}'
+  run_bin -0 team-inbox
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T3 d: D?
+- **2** T3 b: B?
+- **3** T3 c: C?"
+}
+
+@test "--post without the token refuses before writing anything, and a failed guild read refuses as Discord's refusal says" {
+  waiting_ledger
+  mv "$HOME/.claude/channels/discord/.env" "$BATS_TEST_TMPDIR/env"
+  run_bin -1 --separate-stderr team-inbox --post
+  assert_equal "$stderr" "team-inbox: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+  assert_equal "$output" ""
+  assert_equal "$(inbox_calls)" ""
+  [[ ! -e $TEAM_HOME/waiting.md && ! -e $TEAM_HOME/waiting.json ]]
+
+  mv "$BATS_TEST_TMPDIR/env" "$HOME/.claude/channels/discord/.env"
+  echo "429 7" >"$STUB_FIXTURES/inbox/fail"
+  run_bin -75 --separate-stderr team-inbox --post
+  assert_equal "$stderr" "team-inbox: Discord is rate-limiting the bot (429) on the read of #coordinator's channel: try again in 7 s"
+  [[ ! -e $TEAM_HOME/waiting.md ]]
+  echo "403" >"$STUB_FIXTURES/inbox/fail"
+  run_bin -1 --separate-stderr team-inbox --post
+  assert_equal "$stderr" "team-inbox: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 403"
+  [[ ! -e $TEAM_HOME/waiting.md ]]
+  assert_equal "$(inbox_calls | sort -u)" "GET channels/1562486564871995482"
+}
+
 @test "a list it cannot write is exit 1 naming the file" {
   mkdir "$TEAM_HOME/waiting.md"
   run_bin -1 --separate-stderr team-inbox
@@ -466,8 +657,7 @@ standing() {
   assert_equal "$(waiting_shown)" "**Waiting on you**
 **PRs ready to merge**
 - **1** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
--# Standing merge word on proj, conv since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>
-Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
+-# Standing merge word on proj, conv since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
   assert_equal "$(jq -c '.standing | map([.projects, .word.discord_message])' "$TEAM_HOME/waiting.json")" \
     '[[["proj","conv"],"1564100000000000001"]]'
 
@@ -567,7 +757,7 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
   assert_equal "$stderr" "team-inbox: lists every PR ready to merge, Daniel's plan-time and standing words aside, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
 }
 
-@test "the resources line follows the items, naming the open tasks stowed, waiting to resume" {
+@test "the post's resources line follows the items, naming the open tasks stowed, waiting to resume" {
   waiting_ledger
   # Manual minor on a 32 GiB machine with 12 GiB left to the team: 9.6 GiB and 3.6 cores.
   capacity_room $((12 * 1073741824)) minor
@@ -581,19 +771,23 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
       '{task: $task, event: "stowed", machine: "home-pc", worktrees: [], roles: ["builder"], cause: $cause}')"
   done
   log_events '{"task":"T9","event":"launch","role":"builder","session":"99999999","worktree":"/w/T9","toolkits":[]}'
-  run_bin -0 --separate-stderr team-inbox
+  run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$stderr" ""
-  assert_equal "$(waiting_shown | tail -n 2)" "- **5** T9 Nine: <#9999>
+  assert_equal "$(posted_shown | tail -n 3 | head -n 2)" "- **5** T9 Nine: <#9999>
 Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.0 GiB reserved; T5, T6 and T12 stowed, waiting to resume"
+  # waiting.md holds no resources line.
+  assert_equal "$(waiting_shown | tail -n 1)" "- **5** T9 Nine: <#9999>"
   assert_equal "$(inbox_resources_shown)" "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.0 GiB reserved; T5, T6 and T12 stowed, waiting to resume"
 }
 
-@test "when team-level fails the resources line is left out, and stderr says why" {
+@test "when team-level fails the post's resources line is left out, and stderr says why; a plain run asks it nothing" {
   echo 'not json' >"$TEAM_HOME/level.jsonl"
   run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  run_bin -0 --separate-stderr team-inbox --post
   assert_contains "$stderr" "team-inbox: leaves out the resources line, since team-level status failed: team-level: "
   assert_contains "$stderr" "level.jsonl has lines that are not level records"
-  assert_equal "$(waiting_shown)" "**Waiting on you**
+  assert_equal "$(posted_shown | sed '$d')" "**Waiting on you**
 Nothing waits on you."
 }
 
@@ -607,31 +801,33 @@ fake_timers() {
   chmod +x "$CODE_CHECKOUT/bin/team-timers"
 }
 
-@test "on the lease holder the health line follows the resources line, and before any record it is an unknown health" {
+@test "on the lease holder the post's health line follows the resources line, and before any record it is an unknown health" {
   hold_lease home-pc >/dev/null
-  run_bin -0 --separate-stderr team-inbox
+  run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$stderr" ""
-  assert_equal "$(waiting_shown)" "**Waiting on you**
+  # With no record and no reading, the team is at manual full with no budget yet.
+  assert_equal "$(posted_shown | sed '$d')" "**Waiting on you**
 Nothing waits on you.
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 **Health**: unknown - no health record yet; the heartbeat writes one each run"
   assert_equal "$(inbox_health_shown)" "**Health**: unknown - no health record yet; the heartbeat writes one each run"
-  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
+  assert_equal "$(waiting_shown)" "**Waiting on you**
+Nothing waits on you."
 }
 
-@test "on a machine that is named but does not hold the lease the view has no line, so the list is as it was" {
-  run_bin -0 team-inbox
+@test "on a machine that is named but does not hold the lease the view has no line, so the post is as it was" {
+  run_bin -0 team-inbox --post
   local before
-  before=$(waiting_shown)
+  before=$(posted_shown | sed '$d')
   mkdir -p "$HOME/.config/agent-team"
   echo home-pc >"$HOME/.config/agent-team/machine"
-  run_bin -0 --separate-stderr team-inbox
+  run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$stderr" ""
-  assert_equal "$(waiting_shown)" "$before"
+  assert_equal "$(posted_shown | sed '$d')" "$before"
   assert_equal "$(inbox_health_shown)" ""
 }
 
-@test "with the health view unreadable, the health line is an unknown health with its reason, stderr says why, and it exits 0" {
+@test "with the health view unreadable, the post's health line is an unknown health with its reason, stderr says why, and it exits 0" {
   hold_lease home-pc >/dev/null
   fake_timers <<'EOF'
 echo "not a view"
@@ -639,9 +835,9 @@ echo "team-timers: something first" >&2
 echo "team-timers: cannot read the health record $HOME/.local/state/agent-team/health.json" >&2
 exit 1
 EOF
-  run_bin -0 --separate-stderr team-inbox
+  run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$stderr" "team-inbox: shows the health as unknown, since team-timers health printed no view: team-timers: cannot read the health record ~/.local/state/agent-team/health.json"
-  assert_equal "$(waiting_shown | tail -n 1)" \
+  assert_equal "$(inbox_health_shown)" \
     "**Health**: unknown - team-timers: cannot read the health record ~/.local/state/agent-team/health.json"
 
   # A view printed with exit 1, a view with problems, is shown as it is.
@@ -649,13 +845,13 @@ EOF
 echo '{"schema": "team-health/1", "machine": "home-pc", "holding": true, "ok": false, "line": "**Health**: the heartbeat last ran <t:1:R>", "problems": []}'
 exit 1
 EOF
-  run_bin -0 --separate-stderr team-inbox
+  run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$stderr" ""
   assert_equal "$(inbox_health_shown)" "**Health**: the heartbeat last ran <t:1:R>"
 
   # A team-timers that prints nothing and says nothing.
   fake_timers <<<'exit 3'
-  run_bin -0 --separate-stderr team-inbox
+  run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$stderr" "team-inbox: shows the health as unknown, since team-timers health printed no view: team-timers health exited 3 with no view"
   assert_equal "$(inbox_health_shown)" "**Health**: unknown - team-timers health exited 3 with no view"
 }
@@ -709,9 +905,13 @@ EOF
   [[ ! -e $TEAM_HOME/waiting.md ]]
 }
 
-@test "--help prints the header, and any argument is a usage error" {
+@test "--help prints the header, and any argument but --post is a usage error" {
   run_bin -0 team-inbox --help
-  assert_contains "$output" "Usage: team-inbox"
-  run_bin -2 team-inbox --now
-  assert_contains "$output" "usage: team-inbox"
+  assert_contains "$output" "Usage: team-inbox [--post]"
+  local args
+  for args in --now "--post --post" "--post x"; do
+    # shellcheck disable=SC2086 # each word an argument
+    run_bin -2 team-inbox $args
+    assert_contains "$output" "usage: team-inbox [--post]"
+  done
 }

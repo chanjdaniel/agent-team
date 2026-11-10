@@ -377,16 +377,12 @@ EOF
 waiting.json
 waiting.md"
   assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
-  # waiting.json, which did not change, is not committed again; waiting.md is, for its resources
-  # and health lines alone, which read the machine and the last checkpoint.
+  # The waiting list, which did not change, is not committed again.
   echo "steps" >"$TEAM_HOME/manual-steps.md"
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md
-waiting.md"
-  assert_equal "$(git -C "$origin" diff dev^ dev -- waiting.md | grep -vE '^(\+\+\+|---) ' | grep -E '^[-+]' | cut -c 2- |
-    grep -vE '^(Resources: |-# Health: |\*\*Health\*\*: )')" ""
+  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md"
 
   # A machine that does not hold the lease never checkpoints, however old the last one.
   run -0 "$REPO_ROOT/bin/team-lease" release

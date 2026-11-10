@@ -11,14 +11,16 @@
 #   POST  channels/<c>/messages, flags 4       keeps the body as $STUB_FIXTURES/inbox/<id>.json,
 #                                              the ids 1569000000000000001 and on; answers {id}
 #   POST  channels/<c>/messages, an alert      with alerts given: the same, its id also a line of
-#         (allowed_mentions in its body)       $STUB_FIXTURES/inbox/alerts (without, other
+#         (allowed_mentions, no flags 4)       $STUB_FIXTURES/inbox/alerts (without, other
 #                                              scripts' posts that name allowed_mentions too
 #                                              reach the test's own stub)
 #   PATCH channels/<c>/messages/<m>            replaces <m>'s body, or fails 404 when it is gone
 # A body is read from --data-binary @<file> (team-inbox's) or -d <json> (the heartbeat's).
 # Each call is a line "<method> <path under /api/v10/>" in $STUB_FIXTURES/inbox/calls. With
 # $STUB_FIXTURES/inbox/fail holding "<status> [<retry-after>]", every one of them fails so, its
-# status in the header dump after -D as curl writes it.
+# status in the header dump after -D as curl writes it; with $STUB_FIXTURES/inbox/fail-post holding
+# "<k> <status> [<retry-after>]", the k-th post (a POST, counted from 1) and every later one fail
+# so, and every other call goes through.
 # shellcheck shell=bash
 
 INBOX_GUILD=1560000000000000000
@@ -48,6 +50,9 @@ if [[ ${*: -1} =~ ^https://discord\.com/api/v10/(channels/([0-9]+)(/messages(/([
   inbox_status=''
   if [[ -s $inbox_dir/fail ]]; then
     read -r inbox_status inbox_retry <"$inbox_dir/fail"
+  elif [[ $inbox_method == POST && -s $inbox_dir/fail-post ]] && read -r inbox_from inbox_fail <"$inbox_dir/fail-post" &&
+    (($(cat "$inbox_dir/posts" 2>/dev/null || echo 0) + 1 >= inbox_from)); then
+    read -r inbox_status inbox_retry <<<"$inbox_fail"
   elif [[ $inbox_method == PATCH && ! -f $inbox_dir/$inbox_message.json ]]; then
     inbox_status=404 inbox_retry=''
   fi
@@ -61,11 +66,12 @@ if [[ ${*: -1} =~ ^https://discord\.com/api/v10/(channels/([0-9]+)(/messages(/([
     GET) jq -n --arg c "$inbox_channel" '{id: $c, guild_id: "1560000000000000000", type: 0}' ;;
     PATCH) cp "$inbox_body" "$inbox_dir/$inbox_message.json" && jq -n --arg m "$inbox_message" '{id: $m}' ;;
     POST)
+      echo $(($(cat "$inbox_dir/posts" 2>/dev/null || echo 0) + 1)) >"$inbox_dir/posts"
       inbox_n=$(($(cat "$inbox_dir/count" 2>/dev/null || echo 0) + 1))
       echo "$inbox_n" >"$inbox_dir/count"
       inbox_message=$((1569000000000000000 + inbox_n))
       cp "$inbox_body" "$inbox_dir/$inbox_message.json"
-      ! jq -e 'has("allowed_mentions")' "$inbox_body" >/dev/null || echo "$inbox_message" >>"$inbox_dir/alerts"
+      ! jq -e 'has("allowed_mentions") and .flags != 4' "$inbox_body" >/dev/null || echo "$inbox_message" >>"$inbox_dir/alerts"
       jq -n --arg m "$inbox_message" '{id: $m}'
       ;;
   esac
@@ -85,20 +91,28 @@ waiting_shown() {
   cat "$TEAM_HOME/waiting.md"
 }
 
-# The list's lines but its title, the items and section headings and the standing word lines,
-# without the resources line and the health line.
+# The list's lines but its title: the items and section headings and the standing word lines.
 waiting_items_shown() {
-  waiting_shown | sed '1d' | sed -E '/^Resources: /d;/^(-# Health|\*\*Health\*\*): /d'
+  waiting_shown | sed '1d'
 }
 
-# The list's resources line, none when it has none.
+# The latest post of team-inbox --post, its messages' contents joined by newlines, as the fake
+# Discord holds the messages waiting.json's posted names.
+posted_shown() {
+  local id
+  jq -r '.posted.messages[]?' "$TEAM_HOME/waiting.json" | while read -r id; do
+    jq -r .content "$STUB_FIXTURES/inbox/$id.json"
+  done
+}
+
+# The latest post's resources line, none when it has none.
 inbox_resources_shown() {
-  waiting_shown | sed -n '/^Resources: /p'
+  posted_shown | sed -n '/^Resources: /p'
 }
 
-# The list's health line, none when it has none.
+# The latest post's health line, none when it has none.
 inbox_health_shown() {
-  waiting_shown | sed -nE '/^(-# Health|\*\*Health\*\*): /p'
+  posted_shown | sed -nE '/^(-# Health|\*\*Health\*\*): /p'
 }
 
 # team-inbox's calls to the fake Discord, one "<method> <path>" per line.
