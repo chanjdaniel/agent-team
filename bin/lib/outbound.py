@@ -11,8 +11,9 @@ cannot decide refuses.
 It reads each simple command of the command (command_text.simple_commands: those in a group, a
 substitution, a pipeline or a list too), past its assignments and the wrappers env, command, exec,
 nohup, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock
-with their options, numbers and flock's file, parallel's inputs after its ::: or :::: left out,
-and the command's name by its basename decides:
+with their options, numbers and flock's file, parallel's inputs after its ::: or :::: left out but
+for those with a scheme (https://host/u), read as URLs, and the command's name by its basename
+decides:
   - curl uploads with a request body or a file: -d, --data, --data-ascii, --data-binary,
     --data-urlencode, --data-raw, -F, --form, --form-string, --json, -T or --upload-file, each
     also as --expand-<flag>, a short one alone or in a cluster (-sSd@f), a long one as --flag
@@ -149,7 +150,7 @@ def _command(words):
     """The assignments before the command's own name, env's among them, and the words from that
     name on, past its wrappers, as the header says: a word after a wrapper's option is its value
     unless it names a command read here; under parallel, the words from its first ::: on are its
-    inputs and left out."""
+    inputs, left out but for those with a scheme, which its command takes as URLs."""
     i, n, inputs = 0, len(words), False
     while i < n and ASSIGNMENT.match(words[i]):
         i += 1
@@ -178,7 +179,7 @@ def _command(words):
     words = words[i:]
     if inputs:
         cut = next((k for k, word in enumerate(words) if word in PARALLEL_INPUTS), len(words))
-        words = words[:cut]
+        words = words[:cut] + [word for word in words[cut:] if SCHEME.match(word)]
     return assignments, words
 
 

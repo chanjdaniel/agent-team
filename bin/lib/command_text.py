@@ -526,9 +526,11 @@ def _command_word(text, i, end):
     """The word at i, before end, as a command's argument, and where it ends: its quotes removed,
     as _word reads them, but for a quote's text holding $ or a backtick and a substitution, $(...),
     `...`, ${...}, $((...)) or $[...], which are kept as written, so a word built by one still holds
-    its $ or backtick; a quote that does not close before end ends the word, and the segment with it
-    (end is where it returns): code_text adds a -c string's line with its closing quote left on, and
-    what follows that quote is the outer command's, never the string's."""
+    its $ or backtick (in a double quote holding one, an escaped double quote or backslash is
+    undone all the same, an escaped $ or backtick kept); a quote that does not close before end
+    ends the word, and the segment with it (end is where it returns): code_text adds a -c string's
+    line with its closing quote left on, and what follows that quote is the outer command's, never
+    the string's."""
     out = []
     while i < end:
         c = text[i]
@@ -557,8 +559,10 @@ def _command_word(text, i, end):
             if not _closed(text, i + ansi, j, end):
                 return "".join(out), end
             inner = text[i + 1 + ansi : j - 1]
-            if c == '"' and not ("$" in inner or "`" in inner):
-                inner = re.sub(r"\\([\\\"$`])", r"\1", inner).replace("\\\n", "")
+            if c == '"':
+                # One holding $ or a backtick keeps its escaped ones, so it still holds one.
+                escaped = r"\\([\\\"])" if "$" in inner or "`" in inner else r"\\([\\\"$`])"
+                inner = re.sub(escaped, r"\1", inner).replace("\\\n", "")
             out.append(inner)
             i = j
             continue
@@ -625,8 +629,8 @@ def simple_commands(command):
     substitutions too, as the list of its words with their quotes removed (_command_word): its
     redirections, their targets, its comments, its heredocs' bodies and the reserved words it
     starts with left out. A word holding a substitution keeps its text, $ or backtick and all; a
-    quote that never closes ends its word and the rest of its segment. A segment holding a compound command yields
-    its words too, split at its separators, beside the group's own commands."""
+    quote that never closes ends its word and the rest of its segment. A segment holding a compound
+    command yields its words too, split at its separators, beside the group's own commands."""
     reading = read_command(command)
     bodies = {h.body[0]: h.end for h in reading.heredocs}
     found = [words for _, segments in reading.pipelines for start, end in segments for words in _segment_commands(command, start, end, bodies)]
