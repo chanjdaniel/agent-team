@@ -30,8 +30,8 @@
 # (brief-rereview-3); a brief of another task's directory, or none, logs no brief.
 # Then, after those refusals and the stop of the task's finished sessions below, the session must
 # fit the level's memory budget beside what the team's work reserves: `team-capacity admit --kind
-# session:<role> --task <task>`, with --freed for each session it stopped, whose use the stored
-# reading still holds (sops/resources.md). With no room, at level none above all, it exits 75 with
+# session:<role> --task <task>`, with --freed for each session it stopped or saw end while it
+# waited on it, whose use the stored reading still holds (sops/resources.md). With no room, at level none above all, it exits 75 with
 # the reason, launching nothing else; a failure of the admission itself stops the launch with its
 # reason (exit 1). T0 and ops are never asked.
 # Once the session runs, `team-capacity place <id>` adopts it into its task's slice (on Linux;
@@ -44,9 +44,16 @@
 # reason=stowed and then a launch of its role and worktree (this one or a later logged one: the
 # fresh worker that resumes the work); so a reviewer is handed on by the done the coordinator logs
 # beside its review, a stow never hands on another role's or worktree's worker, and a paused for
-# any other reason hands nothing on. It leaves a busy one, one waiting for input, one whose status
-# is not idle, one with no such event and an ops session; team-close still removes
-# every session at the close. Each stop and each session left is said on stderr; a stop that
+# any other reason hands nothing on. A busy one whose work is so handed on (a builder still ending
+# the turn that reported its DONE) is waited on, so one worktree has one builder: it says
+# "waiting up to <n> s for T<n>-<role> <id> to go idle: its work is handed on", reads the session
+# list again every 2 seconds for all of them together until TEAM_WORKER_IDLE_SECONDS (180, a
+# whole number) have passed, stops each that goes idle, says "T<n>-<role> <id> ended while waited
+# on: nothing to stop" of one that leaves the list, and leaves one that turns to any other state,
+# or one "still busy <n> s after its work was handed on; the heartbeat's finished step stops it
+# once it is idle"; a list that cannot be read then ends the wait. It leaves at once a busy one
+# whose work is not handed on, one waiting for input, one whose status is not idle, one with no
+# such event and an ops session; team-close still removes every session at the close. Each stop and each session left is said on stderr; a stop that
 # fails, or a session list that cannot be read, is a warning, and the launch goes on. T0 stops
 # nothing.
 # When the worktree's project names a model for the role in the registry (team-project's models),
@@ -139,6 +146,9 @@ prompt="$*"
 [[ -n $prompt ]] || usage_error "missing first prompt"
 [[ -z $request || $role == ops ]] || usage_error "--request is for the ops role only"
 [[ -z $model || $role != ops ]] || usage_error "--model is not for the ops role, which runs on the default model"
+# How long a handed-on session still busy is waited on (the header's hand-off paragraph).
+IDLE_SECONDS=${TEAM_WORKER_IDLE_SECONDS:-180}
+[[ $IDLE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_WORKER_IDLE_SECONDS must be a whole number of seconds, not '$IDLE_SECONDS'"
 # Daniel's message, by its link: its channel and its id.
 request_channel='' request_message=''
 if [[ -n $request ]]; then
@@ -311,35 +321,102 @@ fi
 # plan shares; this launch counts as the fresh worker a stow hands on to, and only builders of
 # this worktree are this builder's to stop (a builder of another worktree, a second project's PR,
 # still holds its own work).
-# A session that is busy, waiting for input, not idle by its status, or idle with no such event is
-# left and named, and so is an ops session.
+# A busy one whose work is handed on (a builder still ending the turn that reported its DONE) is
+# waited on, all of them under one deadline of IDLE_SECONDS, the list read again every 2 seconds:
+# one that goes idle is stopped, one that leaves the list ended on its own, and one that turns to
+# any other state, or is still busy at the deadline, is left and named.
+# A session that is busy with its work not handed on, waiting for input, not idle by its status, or
+# idle with no such event is left and named at once, and so is an ops session.
 # The session list is read only when such a launch exists, and a list that cannot be read or a
 # stop that fails never stops the launch. They are stopped before the launch asks for room,
-# whatever becomes of it, so their use is not counted against it.
+# whatever becomes of it, so their use is not counted against it; so is one that ended while
+# waited on, whose use the stored reading still holds.
 freed=()
+
+# stop_finished <session> <role>: stop a finished session, freeing its use, or warn.
+stop_finished() {
+  local stop_out
+  if stop_out=$(bounded 30 claude stop "$1" 2>&1 </dev/null); then
+    echo "team-worker: stopped $task-$2 $1: its work is handed on" >&2
+    freed+=(--freed "$1")
+  else
+    echo "team-worker: warning: could not stop $task-$2 $1 ($(grep -m1 . <<<"$stop_out" || echo "claude stop failed")); the launch goes on" >&2
+  fi
+}
+
+# The microseconds since the epoch.
+now_us() {
+  local t=$EPOCHREALTIME
+  echo "${t/[.,]/}"
+}
+
+unreadable_list="team-worker: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
 if [[ $task != T0 ]]; then
   finished=$(ledger_jq 'handed_on_launches($role; $home)' -c --arg role "$role" <<<"$events")
   if [[ $finished != '[]' ]]; then
     if listed=$(live_sessions 2>/dev/null && printf '%s' "$LIVE_SESSIONS"); then
       LIVE_SESSIONS=$listed
-      while IFS=$'\t' read -r session worker state wt; do
+      waiting=()
+      declare -A waiting_role=()
+      while IFS=$'\t' read -r session worker state wt handed_on; do
         if [[ $worker == builder ]] && ! same_path "$wt" "$worktree"; then continue; fi
         # A stow hands the work on to the fresh worker of its role and worktree, this one included.
         if [[ $state == stowed ]]; then
           if [[ $worker == "$role" ]] && same_path "$wt" "$worktree"; then state=handed-on; else state="idle with no event of its own since its launch"; fi
         fi
-        if [[ $state != handed-on ]]; then
+        if [[ $state == busy && $handed_on == true ]]; then
+          echo "team-worker: waiting up to $IDLE_SECONDS s for $task-$worker $session to go idle: its work is handed on" >&2
+          waiting+=("$session")
+          waiting_role[$session]=$worker
+        elif [[ $state != handed-on ]]; then
           echo "team-worker: left $task-$worker $session: $state" >&2
-        elif stop_out=$(bounded 30 claude stop "$session" 2>&1 </dev/null); then
-          echo "team-worker: stopped $task-$worker $session: its work is handed on" >&2
-          freed+=(--freed "$session")
         else
-          echo "team-worker: warning: could not stop $task-$worker $session ($(grep -m1 . <<<"$stop_out" || echo "claude stop failed")); the launch goes on" >&2
+          stop_finished "$session" "$worker"
         fi
-      done < <(ledger_jq 'launch_states($sessions)[] | [.session, .role, .state, .worktree] | @tsv' -r \
+      done < <(ledger_jq 'launch_states($sessions)[] | [.session, .role, .state, .worktree, .handed_on] | @tsv' -r \
         --argjson sessions "$LIVE_SESSIONS" <<<"$finished")
+      deadline=$(($(now_us) + IDLE_SECONDS * 1000000))
+      while ((${#waiting[@]})); do
+        left_us=$((deadline - $(now_us)))
+        if ((left_us <= 0)); then
+          for session in "${waiting[@]}"; do
+            echo "team-worker: left $task-${waiting_role[$session]} $session: still busy $IDLE_SECONDS s after its work was handed on; the heartbeat's finished step stops it once it is idle" >&2
+          done
+          break
+        fi
+        # Two seconds, or what is left of the wait, rounded up.
+        pause=$(((left_us + 999999) / 1000000))
+        sleep $((pause < 2 ? pause : 2))
+        if ! listed=$(LIVE_SESSIONS='' && live_sessions 2>/dev/null && printf '%s' "$LIVE_SESSIONS"); then
+          echo "$unreadable_list" >&2
+          break
+        fi
+        LIVE_SESSIONS=$listed
+        declare -A now_state=()
+        while IFS=$'\t' read -r session state; do
+          now_state[$session]=$state
+        done < <(ledger_jq 'launch_states($sessions)[] | [.session, .state] | @tsv' -r \
+          --argjson sessions "$LIVE_SESSIONS" <<<"$finished")
+        still=()
+        for session in "${waiting[@]}"; do
+          worker=${waiting_role[$session]}
+          state=${now_state[$session]-}
+          if [[ -z $state ]]; then
+            echo "team-worker: $task-$worker $session ended while waited on: nothing to stop" >&2
+            freed+=(--freed "$session")
+          elif [[ $state == busy ]]; then
+            still+=("$session")
+          elif [[ $state == handed-on ]]; then
+            stop_finished "$session" "$worker"
+          else
+            echo "team-worker: left $task-$worker $session: $state" >&2
+          fi
+        done
+        unset now_state
+        waiting=(${still[@]+"${still[@]}"})
+      done
     else
-      echo "team-worker: warning: cannot read the live session list (claude agents --json), so no finished session was stopped" >&2
+      echo "$unreadable_list" >&2
     fi
   fi
 fi

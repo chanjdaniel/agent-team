@@ -555,13 +555,14 @@ def handed_on_launches($role; $home):
             and (.worktree | local_path($home)) == $wt))}];
 
 # The live sessions of handed_on_launches' launches, given the session list <sessions>, each
-# {session, role, worktree, state}: state "busy", "waiting for input", "no status", "status <its
-# status>" for one that is not idle, "handed-on" for an idle one whose work is handed on (the one
-# to stop), "stowed" for an idle one a stow followed, else "idle with no event of its own since
-# its launch".
+# {session, role, worktree, state, handed_on}: state "busy", "waiting for input", "no status",
+# "status <its status>" for one that is not idle, "handed-on" for an idle one whose work is handed
+# on (the one to stop), "stowed" for an idle one a stow followed, else "idle with no event of its
+# own since its launch"; handed_on is the launch's, whatever its state, so team-worker can wait
+# for a busy one whose work is handed on.
 def launch_states($sessions):
   [.[] | live_session(.session; $sessions) as $live | select($live != null)
-   | {session, role, worktree,
+   | {session, role, worktree, handed_on,
       state: (if $live.status == "busy" then "busy"
               elif $live.state == "blocked" then "waiting for input"
               elif $live.status == null then "no status"
