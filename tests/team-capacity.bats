@@ -264,8 +264,8 @@ team-capacity: could not place T11-builder d1b2c3d4: its process 500 is gone"
 @test "place with ids waits for a launched session the list does not hold yet, or holds with no process yet, and places it" {
   session_tree 100
   session_tree 200
-  # T9's planner is in no list but the third, and T7's builder has no pid until the fourth: each
-  # id is read again once a second, from a fresh list, until it runs.
+  # T9's planner is in neither of the first two lists, and T7's builder has no pid until the
+  # fourth: each id is read again once a second, from a fresh list, until it runs.
   sessions "a1b2c3d4 T7-builder -"
   list_in_turn 1
   sessions "a1b2c3d4 T7-builder -"
