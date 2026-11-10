@@ -773,7 +773,7 @@ A change to one touches the `settings` guarded area, so name `settings` among th
 
 ## Check
 
-1. First start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 def5678`, run with Bash `run_in_background`, so the run and your reading overlap, and run the project's local checks (none) on `def5678` with `@CODE@/bin/team-checks home def5678`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `.work/task/rereview.md` says which local checks passed (they set no GitHub status).
+1. First start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 def5678`, run with Bash `run_in_background`, so the run and your reading overlap (a pass delivers only once it has ended; a verify that sends any finding back delivers as soon as `.work/task/rereview.md` is written, naming in its CI section the checks still running, and a wait that ends after it delivered needs nothing more), and run the project's local checks (none) on `def5678` with `@CODE@/bin/team-checks home def5678`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `.work/task/rereview.md` says which local checks passed (they set no GitHub status).
    Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding, while a stuck check or a head other than `def5678` goes to `coordinator` as `T14 BLOCKED <its message>`; exit 75, run it again, or report as its message says.
 2. Review what changed since the last review, `git diff abc1234 def5678`, and the commit messages of `origin/main..def5678`.
    Read nothing else: not the rest of the PR, the spec's or the story's acceptance list, or the knowledge graph; run the UI check only when that diff touches a UI file and your session lists `ui-check`, on the states it touched and their siblings.
@@ -1739,7 +1739,7 @@ after"
   assert_contains "$brief" "Run them on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head, and say in \`.work/task/review.md\` whether it passed"
   run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head="$head"
-  assert_contains "$(<"$output")" "so the run and your reading overlap, and run the project's local checks (\`tests/run\`, \`make lint\`) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does"
+  assert_contains "$(<"$output")" "so the run and your reading overlap (a pass delivers only once it has ended; a rereview that sends any finding back delivers as soon as \`.work/task/rereview.md\` is written, naming in its CI section the checks still running, and a wait that ends after it delivered needs nothing more), and run the project's local checks (\`tests/run\`, \`make lint\`) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does"
   # A project without local checks says so.
   branch_head T12 dev
   run_bin -0 team-brief T12 reviewer --name review --set head="$head" --set "checks=the checks"
@@ -1795,7 +1795,8 @@ after"
   brief=$(<"$output")
   assert_contains "$brief" "## GitHub checks
 
-Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, before you read anything, so the run and your reading overlap; every check must pass, and you deliver only once the wait has ended.
+Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, before you read anything, so the run and your reading overlap; every check must pass before you pass the PR, so a pass delivers only once the wait has ended.
+A review that sends any finding back delivers as soon as \`.work/task/review.md\` is written, without waiting for the end: its CI section names the checks still running, the builder fixes a failed check on its own wait, and the rereview of its next head waits for that head's checks; a wait that ends after you delivered needs nothing more from you.
 ${act//abc1234/$head}
 ${moved//abc1234/$head}
 
@@ -1807,13 +1808,15 @@ ${moved//abc1234/$head}
   brief=$(<"$output")
   assert_contains "$brief" "## Check
 
-1. First start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, so the run and your reading overlap, and run the project's local checks (none) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; every one must pass, and \`.work/task/review.md\` says which local checks passed (they set no GitHub status).
+1. First start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, so the run and your reading overlap (a pass delivers only once it has ended; a rereview that sends any finding back delivers as soon as \`.work/task/rereview.md\` is written, naming in its CI section the checks still running, and a wait that ends after it delivered needs nothing more), and run the project's local checks (none) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; every one must pass, and \`.work/task/review.md\` says which local checks passed (they set no GitHub status).
    ${act//abc1234/$head}
    ${moved//abc1234/$head}
 2. Review what changed since the last review"
   assert_contains "$brief" "and refuses when the PR has moved past it: then set nothing, and when a failed check of \`$head\` explains the move, as step 1 says, send your \`DONE findings\` below as usual; otherwise tell the coordinator."
   assert_contains "$brief" "3. Every finding in \`.work/task/review.md\` that went back to the builder"
   refute_grep -- '--watch' "${files[@]}"
+  # No review waits for CI's end to deliver its findings.
+  refute_grep -F 'you deliver only once the wait has ended' "${files[@]}"
 }
 
 @test "the merge-base brief merges the base, resolves, runs the local checks and names the conflicted files" {
