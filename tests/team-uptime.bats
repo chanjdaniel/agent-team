@@ -227,6 +227,197 @@ conventioner/slow: failed: no answer in 1 s'
   assert_equal "$(stub_calls curl)" ""
 }
 
+@test "with every check up the known-good site is not fetched" {
+  api_check 200 '{"status":"ok"}'
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_requests | jq -r .path)" /api
+  [[ $(stub_calls curl) != *known-good* ]]
+}
+
+@test "a failure is counted when the known-good site answers, whatever its status" {
+  api_check 503 ''
+  uptime_answer known-good 500 'down for everyone but answering'
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_requests | jq -r .path)" "/api
+/known-good"
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.ok, .failures, .reason] | @json')" '[false,1,"HTTP 503"]'
+}
+
+@test "with the known-good site unreachable a failure is not counted, nothing is posted, and the run fails" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  local since
+  since=$(uptime_state '.checks["conventioner/api"].since')
+  export TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/
+  edit_state '.written = $at' 2026-11-10T00:00:00Z
+  local pattern='[^;)]+'
+  for _ in 1 2; do
+    run_bin --separate-stderr -1 team-uptime run
+    [[ $output =~ ^cannot\ reach\ the\ internet:\ http://127\.0\.0\.1:9/:\ ${pattern}\;\ 1\ failing\ check\(s\)\ not\ counted$ ]] ||
+      { echo "output: $output" >&2; return 1; }
+    [[ $stderr =~ ^team-uptime:\ this\ machine\ cannot\ reach\ the\ internet\ \(http://127\.0\.0\.1:9/:\ ${pattern}\),\ so\ 1\ failing\ check\(s\)\ were\ not\ counted$ ]] ||
+      { echo "stderr: $stderr" >&2; return 1; }
+  done
+  assert_equal "$(uptime_posts)" ""
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.failures, .since, .alert] | @json')" \
+    "$(jq -nc --arg since "$since" '[1, $since, null]')"
+  uptime_state '.written | fromdateiso8601 > now - 60' | grep -qx true
+}
+
+@test "the default known-good site is GitHub's, named in the header" {
+  run_bin -0 team-uptime --help
+  assert_contains "$output" "https://github.com/"
+  grep -qF 'KNOWN_GOOD=${TEAM_UPTIME_KNOWN_GOOD:-https://github.com/}' "$REPO_ROOT/bin/team-uptime"
+}
+
+@test "a check down 4 hours after its post is reminded once, and TEAM_UPTIME_REMIND_MINUTES replaces the 4 hours" {
+  api_check 503 'Service Unavailable'
+  run_bin -0 team-uptime run
+  run_bin -0 team-uptime run
+  local old
+  old=$(ago 240)
+  edit_state '.checks["conventioner/api"] |= (.since = $at | .alert.since = $at | .alert.posted = $at)' "$old"
+  run_bin -0 team-uptime run
+  assert_equal "$(sed -n 2p <<<"$output")" "posted to #coordinator (message 1569000000000000002): still down: conventioner/api"
+  assert_equal "$(uptime_posts | sed -n 2p)" "Production still down: conventioner api (<$base/api>) since $(clock "$old"), 4 hours: HTTP 503."
+  uptime_state '.checks["conventioner/api"].alert.reminded | fromdateiso8601 > now - 60' | grep -qx true
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 2
+  # Reminded 45 minutes ago: due at 30 minutes, not at the default 240.
+  old=$(ago 45)
+  edit_state '.checks["conventioner/api"].alert.reminded = $at' "$old"
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 2
+  TEAM_UPTIME_REMIND_MINUTES=30 run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 3
+  uptime_posts | sed -n 3p | grep -q '^Production still down: conventioner api .*, 4 hours: HTTP 503\.$'
+}
+
+@test "a down post Discord refused keeps the alert unposted, fails the run, and is made at the next run" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  echo 503 >"$STUB_FIXTURES/inbox/fail"
+  run_bin --separate-stderr -1 team-uptime run
+  assert_equal "$stderr" "team-uptime: the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run"
+  assert_equal "$(uptime_posts)" ""
+  assert_equal "$(uptime_state '.checks["conventioner/api"].alert | [.since != null, .posted, .message] | @json')" '[true,null,null]'
+  rm "$STUB_FIXTURES/inbox/fail"
+  run_bin -0 team-uptime run
+  assert_equal "$(sed -n 2p <<<"$output")" "posted to #coordinator (message 1569000000000000001): down: conventioner/api"
+  uptime_posts | grep -q '^Production down: conventioner api .* 3 checks in a row from home-pc: HTTP 503\.$'
+  assert_equal "$(uptime_state '.checks["conventioner/api"].alert.message')" 1569000000000000001
+}
+
+@test "a back post Discord refused is made at the next run" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  run_bin -0 team-uptime run
+  uptime_answer api 200 '{"status":"ok"}'
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin --separate-stderr -1 team-uptime run
+  local back
+  back=$(uptime_state '.checks["conventioner/api"].alert.back')
+  [[ $back != null ]]
+  rm "$STUB_FIXTURES/inbox/fail"
+  run_bin -0 team-uptime run
+  assert_equal "$output" "posted to #coordinator (message 1569000000000000002): back: conventioner/api"
+  uptime_posts | sed -n 2p | grep -qF "answers again at $(clock "$back"),"
+  assert_equal "$(uptime_state '.checks["conventioner/api"].alert')" null
+}
+
+@test "a check that fails again before its back post went through stays the same outage and posts no new down" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  run_bin -0 team-uptime run
+  local alert
+  alert=$(uptime_state '.checks["conventioner/api"].alert | {since, posted, message} | @json')
+  uptime_answer api 200 '{"status":"ok"}'
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -1 team-uptime run
+  rm "$STUB_FIXTURES/inbox/fail"
+  uptime_answer api 503 ''
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 1
+  assert_equal "$(uptime_state '.checks["conventioner/api"].alert | {since, posted, message} | @json')" "$alert"
+  assert_equal "$(uptime_state '.checks["conventioner/api"].alert.back')" null
+  uptime_answer api 200 '{"status":"ok"}'
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 2
+  uptime_posts | sed -n 2p | grep -q '^Production back: conventioner api '
+}
+
+@test "a check that answers again before its down post ever went through is closed with no post" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  echo 503 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -1 team-uptime run
+  rm "$STUB_FIXTURES/inbox/fail"
+  uptime_answer api 200 '{"status":"ok"}'
+  run_bin -0 team-uptime run
+  assert_equal "$output" "conventioner/api: answered again before its outage post went through; closed"
+  assert_equal "$(uptime_posts)" ""
+  assert_equal "$(uptime_state '.checks["conventioner/api"].alert')" null
+}
+
+@test "a check removed from the registry, or given a new URL, is dropped and its outage closed without a post" {
+  api_check 503 ''
+  uptime_check conventioner front-end "$base/front-end" '<div id="app">'
+  uptime_answer front-end 502 ''
+  run_bin -0 team-uptime run
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 1
+  # The API check moves to a new URL that answers, and the front end is no longer checked.
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  uptime_check conventioner api "$base/api-v2" '"status":"ok"'
+  uptime_answer api-v2 200 '{"status":"ok"}'
+  run_bin -0 team-uptime run
+  assert_equal "$output" "conventioner/api: no longer checked as it was; its open outage is closed without a post
+conventioner/front-end: no longer checked as it was; its open outage is closed without a post"
+  assert_equal "$(uptime_post_ids | wc -l)" 1
+  assert_equal "$(uptime_state '.checks | keys | @json')" '["conventioner/api"]'
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.url, .ok, .failures, .alert] | @json')" \
+    "$(jq -nc --arg url "$base/api-v2" '[$url, true, 0, null]')"
+}
+
+@test "a check whose expect changed starts fresh" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  uptime_check conventioner api "$base/api" '"ok":true'
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.expect, .failures] | @json')" '["\"ok\":true",1]'
+  assert_equal "$(uptime_posts)" ""
+}
+
+@test "a state file that is not JSON is set aside, and the run starts from an empty state and fails" {
+  api_check 503 ''
+  mkdir -p "$(dirname "$state")"
+  echo 'not json {' >"$state"
+  run_bin --separate-stderr -1 team-uptime run
+  assert_equal "$stderr" "team-uptime: $state is not a team-uptime/1 state; it is set aside as $state.bad, and this run starts from an empty state"
+  assert_equal "$(cat "$state.bad")" 'not json {'
+  assert_equal "$(uptime_state '.checks["conventioner/api"].failures')" 1
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 1
+}
+
+@test "a post is cut to Discord's 2000 characters, and each reason to 200" {
+  local long n
+  long=$(printf 'x%.0s' $(seq 1 200))
+  for n in 1 2 3 4 5 6 7 8; do
+    uptime_check conventioner "check-$n" "$base/check-$n" "$long"
+    uptime_answer "check-$n" 200 'nothing it expects'
+  done
+  run_bin -0 team-uptime run
+  run_bin -0 team-uptime run
+  local content
+  content=$(jq -r .content "$STUB_FIXTURES/inbox/1569000000000000001.json")
+  assert_equal "${#content}" 2000
+  [[ $content == *... ]]
+  assert_equal "$(uptime_state '[.checks[].reason | length] | unique | @json')" '[200]'
+  uptime_state '.checks["conventioner/check-1"].reason' | grep -q '^HTTP 200, but its answer lacks `x*\.\.\.$'
+}
+
 @test "team-uptime takes run, and refuses anything else" {
   run_bin -0 team-uptime --help
   assert_contains "$output" "team-uptime run"

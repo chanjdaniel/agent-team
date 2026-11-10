@@ -23,32 +23,57 @@
 # answer lacks `<expect>`", "no answer in <t> s" (curl's exit 28), "answer over 1 MiB" (63), or
 # curl's last stderr line without its "curl: (<n>) " prefix, or "curl exited <n>".
 #
+# The known-good probe: when a check failed, and only then, the same fetch of https://github.com/,
+# a site the heartbeat already depends on, which counts as reachable when it gave any HTTP status,
+# whatever its status and body. When it gave none, this machine cannot reach the internet: no
+# result of the run is counted, nothing is posted, the state's written time alone changes, and it
+# prints "cannot reach the internet: <known-good URL>: <reason>; <n> failing check(s) not
+# counted", says "team-uptime: this machine cannot reach the internet (<known-good URL>:
+# <reason>), so <n> failing check(s) were not counted" on stderr, and exits 1, so the heartbeat's
+# uptime step fails and its own alert names it after an hour.
+#
 # Counting, as bin/lib/uptime.jq says: a failure adds one to the check's failures in a row, unless
 # its last counted result is more than 15 minutes old, when it counts as the first again; a good
 # result ends the streak. A check failing 2 runs in a row opens an outage and is due its down post;
 # one that answers again after its down post went through is due its back post, which closes it,
-# and one that answers before its down post ever went through is closed with no post. The posts of
-# one run are at most one message for the down posts and one for the back posts, a line per check
-# in registry order, mentioning no one and with Discord's link previews off (flags 4), so Discord's
+# and one that answers before its down post ever went through is closed with no post. A check still
+# down 240 minutes after its down post, or its last reminder, is due a reminder. One that fails
+# again before its back post went through stays the same outage, with no new down post. The posts
+# of one run are at most one message for the down posts, one for the reminders and one for the
+# back posts, in that order, a line per check in registry order, each cut to Discord's 2000
+# characters, mentioning no one and with Discord's link previews off (flags 4), so Discord's
 # crawler never fetches production:
 #   Production down: <project> <name> (<<url>>) since <HH:MM>, <n> checks in a row from <machine>: <reason>.
+#   Production still down: <project> <name> (<<url>>) since <HH:MM>, <duration>: <reason>.
 #   Production back: <project> <name> (<<url>>) answers again at <HH:MM>, down since <HH:MM> (<duration>).
 # times as this machine's local hours and minutes, durations as "<n> minutes", "<h> hours" or
 # "<h> hours <n> minutes". A post that went through is recorded, so neither a later run nor a
-# restart posts it again; one Discord refused is not, and fails the run.
+# restart posts it again; one Discord refused is not, so it is due again at the next run, and it
+# fails this one ("team-uptime: the post to #coordinator failed (<reason>); it is tried again next
+# run" on stderr). A check the registry no longer names, or names with another url or expect, is
+# dropped from the state, so a changed one starts fresh; one dropped after its down post went
+# through gets the line "<project>/<name>: no longer checked as it was; its open outage is closed
+# without a post".
 #
 # It prints, a line each, every failing check ("<project>/<name>: failed: <reason> (<n> in a row,
 # since <UTC time>)"), every outage closed with no post, and every post ("posted to #coordinator
-# (message <id>): <down|back>: <project>/<name>[, ...]", the id none when Discord gave none); a
-# run whose checks are all good and change nothing prints nothing. It exits 0 when every check
-# was counted and every due post went through, production down or not; 1 when a post failed or
-# the state could not be written, the rest of the run done first; and 1 at once, checking
-# nothing, when the registry or the state file cannot be read.
+# (message <id>): <down|still down|back>: <project>/<name>[, ...]", the id none when Discord gave
+# none); a run whose checks are all good and change nothing prints nothing. It exits 0 when every
+# check was counted and every due post went through, production down or not; 1 when the
+# known-good site was unreachable, a post failed, the state file was set aside or the state could
+# not be written, the rest of the run done first; and 1 at once, checking nothing, when the
+# registry cannot be read.
 #
 # The state is ~/.local/state/agent-team/uptime.json, team-uptime/1, written whole and moved into
-# place; bin/lib/uptime.jq's header describes it.
+# place; bin/lib/uptime.jq's header describes it. A state file that is not JSON, or not
+# team-uptime/1, is set aside as uptime.json.bad (one file, overwritten), said on stderr
+# ("team-uptime: <file> is not a team-uptime/1 state; it is set aside as <file>.bad, and this run
+# starts from an empty state"), and the run starts from an empty state, so production down then
+# takes two more runs to post.
 #
-# Seams for the tests: TEAM_UPTIME_SECONDS replaces each fetch's 10 seconds.
+# Seams for the tests: TEAM_UPTIME_SECONDS replaces each fetch's 10 seconds,
+# TEAM_UPTIME_KNOWN_GOOD the known-good site, and TEAM_UPTIME_REMIND_MINUTES the 240 minutes
+# between reminders (a whole number).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -56,6 +81,8 @@ USAGE="usage: team-uptime run"
 STATE_DIR=$HOME/.local/state/agent-team
 STATE_FILE=$STATE_DIR/uptime.json
 FETCH_SECONDS=${TEAM_UPTIME_SECONDS:-10}
+KNOWN_GOOD=${TEAM_UPTIME_KNOWN_GOOD:-https://github.com/}
+REMIND_MINUTES=${TEAM_UPTIME_REMIND_MINUTES:-}
 CONNECT_SECONDS=$((FETCH_SECONDS < 5 ? FETCH_SECONDS : 5))
 POST_TIMEOUT=20
 
@@ -82,28 +109,49 @@ registry_checks() {
   done | jq -sc 'add // []'
 }
 
-# Fetch <url> and judge its answer by <expect>: prints {ok, reason}.
-fetch() {
-  local code rc=0 reason='' last
+# GET <url> once, the same plain fetch every check and the known-good probe make, its body in
+# $body: sets the caller's code (curl's %{http_code}, 000 for no answer) and reason (why curl
+# failed, empty when it exited 0).
+get() {
+  local rc=0 last
   : >"$body"
   code=$(curl -q --silent --show-error --proto =http,https --connect-timeout "$CONNECT_SECONDS" \
     --max-time "$FETCH_SECONDS" --max-filesize 1048576 --user-agent agent-team-uptime/1 \
     --output "$body" --write-out '%{http_code}' "$1" 2>"$err") || rc=$?
-  if ((rc == 0)); then
+  reason=''
+  if ((rc == 28)); then
+    reason="no answer in $FETCH_SECONDS s"
+  elif ((rc == 63)); then
+    reason="answer over 1 MiB"
+  elif ((rc != 0)); then
+    last=$(grep . "$err" | tail -n 1 | sed -E 's/^curl: \([0-9]+\) //') || last=''
+    reason=${last:-curl exited $rc}
+  fi
+}
+
+# Fetch <url> and judge its answer by <expect>: prints {ok, reason}.
+fetch() {
+  local code reason
+  get "$1"
+  if [[ -z $reason ]]; then
     if [[ ! $code =~ ^2[0-9][0-9]$ ]]; then
       reason="HTTP $code"
     elif ! grep -qF -- "$2" "$body"; then
       reason="HTTP $code, but its answer lacks \`$2\`"
     fi
-  elif ((rc == 28)); then
-    reason="no answer in $FETCH_SECONDS s"
-  elif ((rc == 63)); then
-    reason="answer over 1 MiB"
-  else
-    last=$(grep . "$err" | tail -n 1 | sed -E 's/^curl: \([0-9]+\) //') || last=''
-    reason=${last:-curl exited $rc}
   fi
   jq -cn --arg reason "$reason" '{ok: ($reason == ""), reason: (if $reason == "" then null else $reason end)}'
+}
+
+# Whether this machine reaches the internet: the known-good site answers any HTTP status, whatever
+# its body. Fails printing why it does not.
+reachable() {
+  local code reason
+  get "$KNOWN_GOOD"
+  [[ ${code:-000} != 000 ]] || {
+    echo "${reason:-no HTTP status}"
+    return 1
+  }
 }
 
 # Write <state> whole to the state file, moved into place; a failure fails the run.
@@ -128,7 +176,13 @@ post() {
 
 run_round() {
   local checks check key url expect results=() now previous plan state count i what keys content id
+  local failing why limits
   machine=$(machine_name) || exit 1
+  limits=$(uptime_jq uptime_limits -nc)
+  if [[ -n $REMIND_MINUTES ]]; then
+    [[ $REMIND_MINUTES =~ ^[1-9][0-9]*$ ]] || die "TEAM_UPTIME_REMIND_MINUTES must be a whole number of minutes, not '$REMIND_MINUTES'"
+    limits=$(jq -c --argjson m "$REMIND_MINUTES" '.remind_minutes = $m' <<<"$limits")
+  fi
   holder_only
   mkdir -p "$STATE_DIR"
   exec {lock_fd}>>"$STATE_DIR/uptime.lock"
@@ -139,12 +193,17 @@ run_round() {
   checks=$(registry_checks) || exit 1
   [[ $checks != '[]' ]] || exit 0
 
+  previous=''
   if [[ -e $STATE_FILE ]]; then
-    previous=$(jq -c 'select(.schema == "team-uptime/1")' "$STATE_FILE" 2>/dev/null) && [[ -n $previous ]] ||
-      die "cannot read $STATE_FILE as a team-uptime/1 state"
-  else
-    previous=$(uptime_jq uptime_empty -nc)
+    previous=$(jq -cs 'select(length == 1 and (.[0] | type == "object" and .schema == "team-uptime/1"
+      and (.checks | type) == "object")) | .[0]' "$STATE_FILE" 2>/dev/null) || previous=''
+    if [[ -z $previous ]]; then
+      mv -f "$STATE_FILE" "$STATE_FILE.bad"
+      echo "team-uptime: $STATE_FILE is not a team-uptime/1 state; it is set aside as $STATE_FILE.bad, and this run starts from an empty state" >&2
+      rc=1
+    fi
   fi
+  [[ -n $previous ]] || previous=$(uptime_jq uptime_empty -nc)
 
   body=$(mktemp) err=$(mktemp)
   trap 'rm -f "$body" "$err"' EXIT
@@ -154,9 +213,19 @@ run_round() {
     results+=("$(fetch "$url" "$expect" | jq -c --arg key "$key" '{key: $key, value: .}')")
   done < <(jq -c '.[]' <<<"$checks")
 
+  # A failure counts only once the known-good site shows this machine reaches the internet.
+  failing=$(printf '%s\n' "${results[@]}" | jq -s 'map(select(.value.ok | not)) | length')
+  if ((failing > 0)) && ! why=$(reachable); then
+    echo "cannot reach the internet: $KNOWN_GOOD: $why; $failing failing check(s) not counted"
+    echo "team-uptime: this machine cannot reach the internet ($KNOWN_GOOD: $why), so $failing failing check(s) were not counted" >&2
+    write_state "$(uptime_jq 'uptime_uncounted($now)' -c --arg now "$now" <<<"$previous")"
+    exit 1
+  fi
+
   plan=$(printf '%s\n' "${results[@]}" | jq -sc 'from_entries' |
-    uptime_jq '. as $results | $previous | uptime_round($checks; $results; $now; $machine; uptime_limits)' \
-      --argjson previous "$previous" --argjson checks "$checks" --arg now "$now" --arg machine "$machine")
+    uptime_jq '. as $results | $previous | uptime_round($checks; $results; $now; $machine; $limits)' \
+      --argjson previous "$previous" --argjson checks "$checks" --arg now "$now" --arg machine "$machine" \
+      --argjson limits "$limits")
   jq -r '.lines[]' <<<"$plan"
   state=$(jq -c .state <<<"$plan")
   write_state "$state"
