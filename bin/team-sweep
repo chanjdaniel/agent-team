@@ -78,12 +78,15 @@
 #                  T171" (the coordinator sends their workers STOW, then runs team-stow)
 #   level-resume   after it, with task and session null: the first task stowed, waiting to
 #                  resume (for the level or a handoff), oldest stow first, whose roles' estimates
-#                  fit the budget again: "level: T171 fits again: relaunch its builder"
+#                  fit the budget again and that nothing holds (a held standing, or a waiting or
+#                  blocked logged after its stow standing, until a resumed): "level: T171 fits
+#                  again: relaunch its builder"
 #   level-launch   after it, with task and session null: the first task whose launches were
 #                  refused for room (a paused, after its latest launch, whose reason is
 #                  team-worker's "no room for session:<role>" line), oldest refusal first, whose
-#                  roles fit again: "level: T5 has room again: launch its reviewer, refused for
-#                  room at <time>"
+#                  roles fit again and that nothing holds (a held standing, or a waiting or
+#                  blocked logged after its latest refusal standing, until a resumed): "level: T5
+#                  has room again: launch its reviewer, refused for room at <time>"
 #   level          in their place, with task and session null: team-capacity plan failed:
 #                  "level: <its last line on stderr>: fix what team-capacity names"
 #   retro-due      after the level findings, with task and session null: a retro is due, as

@@ -122,8 +122,12 @@ The coordinator and Daniel's own sessions are never in the slice.
 
 A worker session is the claude daemon's child (the daemon, then the session's `bg-pty-host`, then the session), never `team-worker`'s, so it cannot be started inside the slice.
 Instead `team-capacity place` adopts each live session named `T<n>-<role>` after it starts, but a load check's `T0-<role>`, which is no task's work: the session's process, its `bg-pty-host` parent and every descendant move into the transient scope `agent-team-T<n>-<id>.scope` in its task's slice, through the user manager's `StartTransientUnit` (`busctl --user call org.freedesktop.systemd1 ...`).
-A descendant the team's slice already holds stays where it is, a session already in its scope is left, and a call that fails is tried once more with a fresh tree, since a process may end between the read and the call.
-`team-worker` runs `place` for its new session right after the launch; a session it cannot place is a warning, and the launch stands.
+A descendant the team's slice already holds stays where it is, a session already in its scope is left, and a call that fails while the session runs is tried once more at once, with the session's pid from a fresh session list and a fresh tree, since a process may end between the read and the call.
+`team-worker` runs `place <id>` for its new session right after the launch, which the claude daemon may not list yet, or list with no running process: with ids, `place` reads the list again once a second until the session is placeable or `TEAM_CAPACITY_PLACE_SECONDS` (30) have passed since that id's wait began.
+With ids, a call that fails saying a process is gone (`No such process`, a short-lived process of the tree that ended before the call) is tried again 1 second apart, within the same seconds; any other failure gets the one retry.
+An id listed under a name that is no team session fails at once, since a name does not change.
+A session it still cannot place is a warning, and the launch stands.
+`place` with no ids, the heartbeat's and the doctor's fix, waits for nothing and retries a failed call once, so the heartbeat's `capacity` step stays within its time limit.
 Once all of a scope's processes end, systemd removes the scope.
 
 The assumptions, checked on home-pc on 2026-11-01 (T175 build note `01-cgroups.md`): the user manager's cgroup delegates `cpu`, `memory` and `pids`; systemd is 262; Docker's cgroup driver is `systemd` on cgroup v2; the claude daemon was started from a Konsole tab, and every session it starts sits in that tab's scope under `user@1000.service`; and Daniel's own run of the probe moved such a process into `agent-team-probe.scope`.
@@ -264,9 +268,12 @@ Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks
 `team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
 
 A task is stowed, waiting to resume, while its latest `stowed` names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
-The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate) and whether that fits beside what is reserved now; at none nothing fits.
-`team-sweep`'s `level-resume` finding names the first that fits ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
-A launch refused with 75 for a task that is not stowed waits the same way: while the task's latest launch is followed by a `paused` whose reason is `team-worker`'s "no room for session:<role>" line, the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until the task's next launch.
+The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate), whether that fits beside what is reserved now, and what holds it, if anything; at none nothing fits.
+A stowed task is on hold while its latest `held` stands, or while a `waiting` or `blocked` logged after its latest `stowed` stands (`stow_hold` in `bin/lib/ledger.jq`), and the plan's line for it ends ", on hold, not relaunched: <what holds it>".
+A wait or block logged before the stow does not hold it, since it was the stowed worker's own state (a planner interviewing Daniel), which its relaunch resumes, and neither does a `paused`, which every stow logs; a `resumed` lifts the hold.
+`team-sweep`'s `level-resume` finding names the first that fits and is not on hold ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
+A launch refused with 75 for a task that is not stowed waits the same way: while the task's latest launch is followed by a `paused` whose reason is `team-worker`'s "no room for session:<role>" line, the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit and that is not on hold ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until the task's next launch.
+Such a task is on hold by the same rule, its latest refusal in the stow's place (`hold_since` in `bin/lib/ledger.jq`), and the plan's line for it ends ", on hold, not launched: <what holds it>".
 A `team-capacity plan` that fails is one `level` finding naming its reason, in their place.
 
 ## What the doctor says

@@ -354,7 +354,7 @@ agents=$HOME/Library/LaunchAgents
 domain=gui/$(id -u)
 err=$(mktemp)
 # The run's results for the health record, one JSON object a line (step_ok, step_fail, run_fact),
-# written by the run and read by bounded_run too; and the watchdog's mark that the run timed out.
+# written by the run and read by bounded_run too; and bounded_run's mark that the run timed out.
 results=$(mktemp)
 fired=$err.fired
 trap 'rm -f "$err" "$results"' EXIT
@@ -1462,14 +1462,12 @@ process_tree() {
 }
 
 # Stop the process <pid> with every process it started: SIGTERM to each, then SIGKILL to each still
-# running KILL_SECONDS later (the system's own sleep, as bounded_run's), unless <kill> is 0:
-# stop_tree <pid> [<kill>]
+# running KILL_SECONDS later (the system's own sleep, as bounded_run's timer): stop_tree <pid>
 stop_tree() {
   local tree pid start now
   tree=$(process_tree "$1")
   [[ -n $tree ]] || return 0
   while read -r pid _; do kill -TERM "$pid" 2>/dev/null || true; done <<<"$tree"
-  [[ ${2:-1} != 0 ]] || return 0
   command -p sleep "$KILL_SECONDS"
   while read -r pid start; do
     # Only the very process seen above: the same id with the same start.
@@ -1479,25 +1477,32 @@ stop_tree() {
   done <<<"$tree"
 }
 
-# The run's own time limit, on Linux and macOS alike: run_heartbeat in a subshell of its own, which
-# takes the lock, and once RUN_TIMEOUT has passed, stop it with everything it started (each step's
-# timeout runs its command in a process group of its own, which no signal to one group reaches),
-# log it and exit 1; its lock goes with it. Otherwise exit with the run's own code.
+# The run's own time limit, on Linux and macOS alike. The timer, the system's own sleep (never one
+# a PATH puts first, a test's stub of the probe's wait), is bounded_run's own child; the run is a
+# background group that runs run_heartbeat in a subshell of its own, which takes the lock, then
+# kills the timer by its id and exits with the run's code. bounded_run waits on the timer, its
+# unreaped child until that wait returns, so the run's kill never reaches a process that took its
+# id, and no process list is read to stop it. A timer that ran out means RUN_TIMEOUT has passed:
+# stop the run with everything it started (each step's timeout runs its command in a process
+# group of its own, which no signal to one group reaches), log it and exit 1; its lock goes with
+# it. Otherwise exit with the run's own code.
 bounded_run() {
-  local run watchdog rc=0
+  local run timer rc=0
   mkdir -p "$state"
-  run_heartbeat &
-  run=$!
-  # The system's own sleep, never one a PATH puts first (a test's stub of the probe's wait).
+  command -p sleep "$RUN_TIMEOUT" </dev/null >/dev/null 2>&1 &
+  timer=$!
   {
-    command -p sleep "$RUN_TIMEOUT"
+    # The run's wait, not the run, is in the || list, so errexit still holds inside the run.
+    (run_heartbeat) &
+    wait "$!" || rc=$?
+    kill -TERM "$timer" 2>/dev/null || true
+    exit "$rc"
+  } &
+  run=$!
+  if wait "$timer"; then
     : >"$fired"
     stop_tree "$run"
-  } </dev/null >/dev/null 2>&1 &
-  watchdog=$!
-  wait "$run" || rc=$?
-  if [[ -e $fired ]]; then
-    wait "$watchdog" || true
+    wait "$run" 2>/dev/null || true
     rm -f "$fired"
     problem run "failed: timed out after $RUN_TIMEOUT s"
     # The record of a run the limit stopped, from the results it left.
@@ -1514,8 +1519,7 @@ bounded_run() {
     fi
     exit 1
   fi
-  stop_tree "$watchdog" 0
-  wait "$watchdog" 2>/dev/null || true
+  wait "$run" || rc=$?
   rm -f "$fired"
   exit "$rc"
 }
