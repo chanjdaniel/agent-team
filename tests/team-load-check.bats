@@ -19,8 +19,11 @@ setup() {
   sandbox
   code=$(make_repo code)
   printf '%s\n' .scratch/ .claude/worktrees/ >"$code/.gitignore"
-  git -C "$code" add .gitignore
+  # The project's instructions, which team-worker gives each session from origin/main.
+  echo "# code" >"$code/CLAUDE.md"
+  git -C "$code" add .gitignore CLAUDE.md
   git -C "$code" commit -q -m "chore: ignore scratch and worktrees"
+  git -C "$code" push -q origin main
   code=$(realpath "$code") wt=$code/.claude/worktrees/load-check
   export TEAM_LOAD_CHECK_CHECKOUT=$code
   # A doctor that answers --json with $BATS_TEST_TMPDIR/doctor.json, and fails when it holds a
@@ -37,7 +40,7 @@ case $1 in
   --bg)
     { pwd -P; git rev-parse HEAD; git symbolic-ref -q HEAD || echo detached
       git check-ignore -q .scratch/inventory.txt && echo '.scratch ignored'
-      ls -A | grep -vx -e .git -e .gitignore -e README.md -e .scratch || true; } >"$BATS_TEST_TMPDIR/launch"
+      ls -A | grep -vx -e .git -e .gitignore -e README.md -e CLAUDE.md -e .scratch || true; } >"$BATS_TEST_TMPDIR/launch"
     [[ ! -e $STUB_FIXTURES/write-outside ]] || echo planner >outside.txt
     cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt
     echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
@@ -57,11 +60,15 @@ esac
 SH
 }
 
-# registry [<proj's pool block>]: projects.toml with a git pool project, site, and, when given,
-# proj, with that pool, listing prod-read, prod-write and vercel-read (T0 takes no production
-# toolkit its project does not list)
+# registry [<proj's pool block>]: projects.toml with the code checkout's own project, code, and a
+# git pool project, site, and, when given, proj, with that pool, listing prod-read, prod-write and
+# vercel-read (T0 takes no production toolkit its project does not list); code is registered, as
+# the real code checkout is, since team-worker gives a toolkit, the project's instructions and its
+# memory directory only in a registered project's worktree
 registry() {
   {
+    project code
+    printf '%s\n' '[code.pool]' 'provider = "git"' 'slots = []'
     project site
     printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'
     if [[ -n ${1:-} ]]; then project proj '["prod-read", "prod-write", "vercel-read"]' && echo "$1"; fi
@@ -164,10 +171,8 @@ team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM
 
 # toolkit_checkout: a code checkout of the test's own for run_bin, holding this one's bin/, roles/
 # and settings/ and two fixture toolkits: served, whose .mcp.json declares the MCP servers served
-# and spare, and plain, with no .mcp.json; the code checkout's project is registered, since
-# team-worker gives a toolkit only in a registered project's worktree.
+# and spare, and plain, with no .mcp.json; the code checkout's project is registered (registry).
 toolkit_checkout() {
-  { project code && printf '%s\n' '[code.pool]' 'provider = "git"' 'slots = []'; } >>"$TEAM_HOME/projects.toml"
   export CODE_CHECKOUT=$BATS_TEST_TMPDIR/toolkit-code
   mkdir -p "$CODE_CHECKOUT/toolkits/served" "$CODE_CHECKOUT/toolkits/plain"
   copy_bin "$CODE_CHECKOUT/bin"
@@ -1095,9 +1100,11 @@ reviewer    45003       2               2            0"
   assert_equal "$stderr" "load check: team-doctor reports a FAIL above; fix it, then run the load check again"
   [[ ! -e $wt ]]
   assert_equal "$(git -C "$code" worktree list --porcelain | grep -c '^worktree ')" 1
-  # claude was asked only the doctor's questions, its login, its plugins and its trust probe of
-  # the team home (which the stub's reply never starts): no session of the load check's.
+  # claude was asked only the doctor's questions, its login, its plugins and its trust probes of
+  # the team home and of code, the one project with a checkout here (which the stub's reply never
+  # starts): no session of the load check's.
   assert_equal "$(stub_calls claude | jq -r 'join(" ")' | LC_ALL=C sort -u)" "--bg --name team-doctor-home-trust
+--bg --name team-doctor-trust-code
 agents --json
 auth status --json
 plugin list --json"
@@ -1128,7 +1135,6 @@ planner     42006       3               3            0"
 
 @test "a FAIL of the code checkout's own project stops the load check before any worktree, as does every FAIL but another project's and the gate's" {
   # The code checkout's own project is the one at its main checkout, run from a linked worktree.
-  { project code && printf '%s\n' '[code.pool]' 'provider = "git"' 'slots = []'; } >>"$TEAM_HOME/projects.toml"
   git -C "$code" worktree add -q --detach "$HOME/code-wt"
   export TEAM_LOAD_CHECK_CHECKOUT=$HOME/code-wt
   local check

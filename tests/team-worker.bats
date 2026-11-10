@@ -10,6 +10,8 @@ setup() {
   # This machine, home-pc, holds the lease; make_machine laptop builds the other one.
   hold_lease home-pc >/dev/null
   primary=$(make_repo proj)
+  # The base branch has the project's instructions, so a launch has nothing to say of them.
+  base_files "$primary" CLAUDE.md "# proj"
   wt1=$HOME/slots/proj/1 wt2=$HOME/slots/proj/2
   git -C "$primary" worktree add -q -b feat/T7-one "$wt1"
   git -C "$primary" worktree add -q -b feat/T8-two "$wt2"
@@ -211,12 +213,167 @@ run_fake() {
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$wt1"
 
   local t=$TEAM_HOME/tasks/T7
-  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
+  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg prompts "$HOME/.local/state/agent-team/prompts/T7" '["--bg",
+    "--setting-sources", "user",
     "--strict-mcp-config", "--mcp-config", "\($t)/mcp.builder.json",
     "--settings", "\($t)/settings.builder.json",
-    "--append-system-prompt-file", "\($roles)/builder.md",
+    "--append-system-prompt-file", "\($prompts)/builder.proj.md",
     "--permission-mode", "auto", "--name", "T7-builder", "Read your brief at \($t)/brief.md"]')"
   assert_equal "$(jq -c . "$t/mcp.builder.json")" '{"mcpServers":{}}'
+}
+
+
+# base_files <repo> <file> <text> [<file> <text>]...: commit each file with its text on the base
+# branch main and push it, so origin/main has them; the worktrees keep their own branch's.
+base_files() {
+  local repo=$1
+  shift
+  while (($#)); do
+    printf '%s\n' "$2" >"$repo/$1"
+    git -C "$repo" add -- "$1"
+    shift 2
+  done
+  git -C "$repo" commit -q -m "docs: instructions"
+  git -C "$repo" push -q origin main
+}
+
+# A launch's stderr <stderr> but the lines for the earlier sessions it leaves running: notes <stderr>
+notes() {
+  grep -v '^team-worker: left T7-' <<<"$1" || true
+}
+
+# The system prompt file a launch passed, by its last claude --bg call.
+prompt_file() {
+  bg_calls | tail -n 1 | jq -r 'index("--append-system-prompt-file") as $i | .[$i + 1]'
+}
+
+@test "a planner, builder and reviewer load user settings only, with the project's memory directory and the in-place key; ops keeps its command line" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ops_stub
+  local role settings
+  for role in planner builder reviewer; do
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(bg_calls | jq -c '[index("--setting-sources") as $i | .[$i], .[$i + 1]]')" '["--setting-sources","user"]'
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    assert_equal "$(jq -c .worktree "$settings")" '{"bgIsolation":"none"}'
+    # By team-config's one definition: the team home's memory/<project>, as ~/... under HOME.
+    assert_equal "$(jq -r .autoMemoryDirectory "$settings")" "$TEAM_HOME/memory/proj"
+  done
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(bg_calls | jq -c 'index("--setting-sources")')" null
+  assert_equal "$(bg_calls | jq -r 'index("--append-system-prompt-file") as $i | .[$i + 1]')" "$REPO_ROOT/roles/ops.md"
+  settings=$TEAM_HOME/tasks/T7/settings.ops.json
+  assert_equal "$(jq -c .worktree "$settings")" '{"bgIsolation":"none"}'
+  assert_equal "$(jq -c 'has("autoMemoryDirectory")' "$settings")" false
+
+  # A team home under HOME is named as ~/..., as team-config writes it.
+  local moved=$HOME/records
+  mv "$TEAM_HOME" "$moved"
+  TEAM_HOME=$moved run_bin -0 team-worker T7 builder "$wt1" -- go
+  # shellcheck disable=SC2088 # the setting holds the ~ itself, for Claude Code to expand
+  assert_equal "$(jq -r .autoMemoryDirectory "$moved/tasks/T7/settings.builder.json")" "~/records/memory/proj"
+}
+
+@test "the system prompt is generated in the machine's state directory: the role, then the base branch's CLAUDE.md and AGENTS.md under the project, the ref and its commit" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  base_files "$primary" CLAUDE.md "BASE-CLAUDE-MARKER" AGENTS.md "BASE-AGENTS-MARKER"
+  local sha
+  sha=$(git -C "$primary" rev-parse origin/main)
+  # The worktree's branch has its own CLAUDE.md, the change a PR would bring.
+  echo "WORKTREE-CLAUDE-MARKER" >"$wt1/CLAUDE.md"
+  git -C "$wt1" add CLAUDE.md
+  git -C "$wt1" commit -q -m "docs: change the instructions"
+  local role file
+  for role in planner builder reviewer; do
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 --separate-stderr team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(notes "$stderr")" ""
+    file=$(prompt_file)
+    assert_equal "$file" "$HOME/.local/state/agent-team/prompts/T7/$role.proj.md"
+    [[ $file != "$TEAM_HOME"/* ]]
+    # The role's prompt comes first, whole.
+    assert_equal "$(head -n "$(wc -l <"$REPO_ROOT/roles/$role.md")" "$file")" "$(cat "$REPO_ROOT/roles/$role.md")"
+    grep -qxF "# Project instructions: proj, from origin/main at $sha" "$file"
+    grep -qxF "BASE-CLAUDE-MARKER" "$file"
+    grep -qxF "BASE-AGENTS-MARKER" "$file"
+    run -1 grep -F "WORKTREE-CLAUDE-MARKER" "$file"
+    # CLAUDE.md before AGENTS.md, both after the heading.
+    assert_equal "$(grep -nE '^(# Project instructions|BASE-)' "$file" | cut -d: -f2 | cut -c1-12 | tr '\n' ' ')" \
+      "# Project in BASE-CLAUDE- BASE-AGENTS- "
+  done
+  run_bin -0 team-worker --help
+  assert_contains "$output" "--setting-sources user"
+  assert_contains "$output" "origin/<base>"
+}
+
+@test "an identical second file is left out, an @AGENTS.md line stays as text, any other import is named on stderr, and a project with neither file gets no section" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  # Neither file: the role alone, said on stderr.
+  git -C "$primary" rm -q CLAUDE.md
+  git -C "$primary" commit -q -m "docs: drop the instructions"
+  git -C "$primary" push -q origin main
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$output" "4f2a9c1e"
+  assert_equal "$stderr" "team-worker: proj has no CLAUDE.md or AGENTS.md at origin/main ($(git -C "$primary" rev-parse origin/main)), so T7-builder gets no project instructions"
+  assert_equal "$(cat "$(prompt_file)")" "$(cat "$REPO_ROOT/roles/builder.md")"
+
+  # Two copies: the second is left out, and a line says so.
+  base_files "$primary" CLAUDE.md "SAME-MARKER" AGENTS.md "SAME-MARKER"
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$(notes "$stderr")" ""
+  assert_equal "$(grep -cxF SAME-MARKER "$(prompt_file)")" 1
+  grep -qF '`AGENTS.md` at `origin/main` is the same file as `CLAUDE.md`, so it is given once.' "$(prompt_file)"
+
+  # An @AGENTS.md line is the file that follows; any other import line is not inlined, outside a
+  # code fence.
+  base_files "$primary" CLAUDE.md $'# Proj\n@AGENTS.md\n  @docs/rules.md\n```\n@not/an/import.md\n```\nmail me @ home' \
+    AGENTS.md $'AGENTS-MARKER\n@./CLAUDE.md\n@~/.claude/mine.md\n@./'
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main imports @docs/rules.md (line 3), which is not inlined: T7-builder reads that line as text
+team-worker: proj's AGENTS.md at origin/main imports @~/.claude/mine.md (line 3), which is not inlined: T7-builder reads that line as text
+team-worker: proj's AGENTS.md at origin/main imports @./ (line 4), which is not inlined: T7-builder reads that line as text"
+  grep -qxF "@AGENTS.md" "$(prompt_file)"
+  grep -qxF "AGENTS-MARKER" "$(prompt_file)"
+
+  # An @AGENTS.md with no AGENTS.md to follow is named too.
+  git -C "$primary" rm -q AGENTS.md
+  git -C "$primary" commit -q -m "docs: drop AGENTS.md"
+  git -C "$primary" push -q origin main
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_contains "$(notes "$stderr")" "team-worker: proj's CLAUDE.md at origin/main imports @AGENTS.md (line 2), which is not inlined"
+}
+
+@test "an origin/<base> the worktree's repository cannot read refuses the launch, nothing started, stopped or logged" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  git -C "$primary" update-ref -d refs/remotes/origin/main
+  run_bin -1 team-worker T7 reviewer "$wt1" -- go
+  assert_equal "$output" "team-worker: $wt1's repository has no origin/main, where proj's instructions for T7-reviewer come from: fetch it (git -C $wt1 fetch origin main) and launch again"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.json ]]
+  [[ ! -e $HOME/.local/state/agent-team/prompts/T7 ]]
+}
+
+@test "a launch with no project gets no memory directory and no project instructions, said on stderr" {
+  local loose
+  loose=$(make_repo loose)
+  git -C "$loose" worktree add -q -b feat/T0-x "$HOME/slots/loose/1"
+  base_files "$loose" CLAUDE.md "LOOSE-MARKER"
+  run_bin -0 --separate-stderr team-worker T0 planner "$HOME/slots/loose/1" -- go
+  assert_equal "$stderr" "team-worker: $HOME/slots/loose/1 is a worktree of $loose, which is no registered project's primary checkout in projects.toml, so T0-planner gets no project instructions and no memory directory"
+  assert_equal "$(jq -c 'has("autoMemoryDirectory")' "$TEAM_HOME/tasks/T0/settings.planner.json")" false
+  assert_equal "$(jq -c .worktree "$TEAM_HOME/tasks/T0/settings.planner.json")" '{"bgIsolation":"none"}'
+  assert_equal "$(prompt_file)" "$HOME/.local/state/agent-team/prompts/T0/planner.md"
+  assert_equal "$(cat "$(prompt_file)")" "$(cat "$REPO_ROOT/roles/planner.md")"
 }
 
 @test "a prompt naming a brief that is missing or unreadable, or saying 'your brief' with none, is refused: nothing started or logged" {
@@ -315,7 +472,8 @@ run_fake() {
   thread T7
   run_fake T7 planner "$wt1" -- go
   assert_equal "$status" "0"
-  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" '{
+  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" --arg memory "$TEAM_HOME/memory/proj" '{
+    autoMemoryDirectory: $memory, worktree: {bgIsolation: "none"},
     disableClaudeAiConnectors: true, env: {A: "worker", B: "planner"},
     permissions: {deny: ["Bash(git clean*)", "Bash(gh pr merge*)", "Bash(git push*)"], allow: ["Read", "Edit"]},
     hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: "\($code)/bin/hooks/w"}]},
@@ -558,10 +716,11 @@ command-guard block 10"
   opened T7 proj feat/T7-one "$wt1"
   run_bin -0 team-worker T7 reviewer "$wt1" -- Review it
   local t=$TEAM_HOME/tasks/T7
-  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
+  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg prompts "$HOME/.local/state/agent-team/prompts/T7" '["--bg",
+    "--setting-sources", "user",
     "--strict-mcp-config", "--mcp-config", "\($t)/mcp.reviewer.json",
     "--settings", "\($t)/settings.reviewer.json",
-    "--append-system-prompt-file", "\($roles)/reviewer.md",
+    "--append-system-prompt-file", "\($prompts)/reviewer.proj.md",
     "--permission-mode", "auto", "--model", "sonnet", "--name", "T7-reviewer", "Review it"]')"
   assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "reviewer",
     session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one", machine: "home-pc",
@@ -853,6 +1012,9 @@ fixture_projects() {
   for repo in "$conv" "$at"; do
     git init -q -b main "$repo"
     git -C "$repo" commit -q --allow-empty -m "chore: start"
+    # The base branches a launch reads the project's instructions from, holding none.
+    git -C "$repo" update-ref refs/remotes/origin/dev HEAD
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
   done
   git -C "$conv" worktree add -q -b feat/T8-conv "$conv_wt"
   git -C "$conv" worktree add -q -b feat/T9-conv "$conv_wt2"
