@@ -92,6 +92,14 @@ launches() {
   jq -c 'select(.event == "launch") | del(.ts)' "$TEAM_HOME/ledger.jsonl"
 }
 
+# generated <settings|mcp> <role>: the file team-worker generated for a T7 launch of <role> on a
+# worktree of proj, keyed by the project for every role but ops.
+generated() {
+  local stem=$2
+  [[ $2 == ops ]] || stem+=.proj
+  echo "$TEAM_HOME/tasks/T7/$1.$stem.json"
+}
+
 # ops_refused <message> <argument>...: the launcher run with those arguments exits 1 with
 # <message> and nothing else on stderr, starts no session, reads no session list and logs nothing.
 ops_refused() {
@@ -215,11 +223,11 @@ run_fake() {
   local t=$TEAM_HOME/tasks/T7
   assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg prompts "$HOME/.local/state/agent-team/prompts/T7" '["--bg",
     "--setting-sources", "user",
-    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.builder.json",
-    "--settings", "\($t)/settings.builder.json",
+    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.builder.proj.json",
+    "--settings", "\($t)/settings.builder.proj.json",
     "--append-system-prompt-file", "\($prompts)/builder.proj.md",
     "--permission-mode", "auto", "--name", "T7-builder", "Read your brief at \($t)/brief.md"]')"
-  assert_equal "$(jq -c . "$t/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$t/mcp.builder.proj.json")" '{"mcpServers":{}}'
 }
 
 
@@ -256,7 +264,7 @@ prompt_file() {
     : >"$STUB_CALLS/claude.log"
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
     assert_equal "$(bg_calls | jq -c '[index("--setting-sources") as $i | .[$i], .[$i + 1]]')" '["--setting-sources","user"]'
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
     assert_equal "$(jq -c .worktree "$settings")" '{"bgIsolation":"none"}'
     # By team-config's one definition: the team home's memory/<project>, as ~/... under HOME.
     assert_equal "$(jq -r .autoMemoryDirectory "$settings")" "$TEAM_HOME/memory/proj"
@@ -274,7 +282,7 @@ prompt_file() {
   mv "$TEAM_HOME" "$moved"
   TEAM_HOME=$moved run_bin -0 team-worker T7 builder "$wt1" -- go
   # shellcheck disable=SC2088 # the setting holds the ~ itself, for Claude Code to expand
-  assert_equal "$(jq -r .autoMemoryDirectory "$moved/tasks/T7/settings.builder.json")" "~/records/memory/proj"
+  assert_equal "$(jq -r .autoMemoryDirectory "$moved/tasks/T7/settings.builder.proj.json")" "~/records/memory/proj"
 }
 
 @test "the system prompt is generated in the machine's state directory: the role, then the base branch's CLAUDE.md and AGENTS.md under the project, the ref and its commit" {
@@ -359,7 +367,7 @@ team-worker: proj's AGENTS.md at origin/main imports @./ (line 4), which is not 
   assert_equal "$output" "team-worker: $wt1's repository has no origin/main, where proj's instructions for T7-reviewer come from: fetch it (git -C $wt1 fetch origin main) and launch again"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
-  [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.json ]]
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.proj.json ]]
   [[ ! -e $HOME/.local/state/agent-team/prompts/T7 ]]
 }
 
@@ -403,7 +411,7 @@ team-worker: proj's AGENTS.md at origin/main imports @./ (line 4), which is not 
   chmod 644 "$TEAM_HOME/tasks/T7/brief.md"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
-  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.json ]]
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.proj.json ]]
 }
 
 @test "a launch logs the brief its prompt names under the task's directory, and none for a prompt naming none" {
@@ -472,7 +480,7 @@ team-worker: proj's AGENTS.md at origin/main imports @./ (line 4), which is not 
   thread T7
   run_fake T7 planner "$wt1" -- go
   assert_equal "$status" "0"
-  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" --arg memory "$TEAM_HOME/memory/proj" '{
+  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" "$(jq -cnS --arg code "$code" --arg memory "$TEAM_HOME/memory/proj" '{
     autoMemoryDirectory: $memory, worktree: {bgIsolation: "none"},
     disableClaudeAiConnectors: true, env: {A: "worker", B: "planner"},
     permissions: {deny: ["Bash(git clean*)", "Bash(gh pr merge*)", "Bash(git push*)"], allow: ["Read", "Edit"]},
@@ -491,14 +499,14 @@ team-worker: proj's AGENTS.md at origin/main imports @./ (line 4), which is not 
   thread T7
   run_fake T7 planner "$wt1" -- go
   assert_equal "$status" 0
-  assert_equal "$(jq -cS .autoMode "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" '{
+  assert_equal "$(jq -cS .autoMode "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" "$(jq -cnS --arg code "$code" '{
     environment: ["$defaults", "shared fact", "planner fact at \($code)"],
     soft_deny: ["$defaults"], allow: ["$defaults", "planner allow"]}')"
 
   # With no autoMode in either file, the settings have none.
   fake_checkout
   run_fake T7 planner "$wt1" -- go
-  assert_equal "$(jq -c 'has("autoMode")' "$TEAM_HOME/tasks/T7/settings.planner.json")" false
+  assert_equal "$(jq -c 'has("autoMode")' "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" false
 }
 
 @test "every role's generated settings hold the worker settings' autoMode lines, \"\$defaults\" once per list" {
@@ -511,7 +519,7 @@ team-worker: proj's AGENTS.md at origin/main imports @./ (line 4), which is not 
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$(generated settings "$role")
     # Each line as the worker settings have it, a line with a registry fact rendered.
     assert_equal "$(jq -c --slurpfile w "$REPO_ROOT/settings/worker.json" '
       [.autoMode.environment, $w[0].autoMode.environment] | transpose
@@ -540,7 +548,7 @@ pool = { provider = "git", slots = ["slots/third/1"] }
 TOML
   thread T7
   run_bin -0 team-worker T7 builder "$wt1" -- go
-  local settings=$TEAM_HOME/tasks/T7/settings.builder.json
+  local settings=$TEAM_HOME/tasks/T7/settings.builder.proj.json
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Source control**"))' "$settings")" \
     "**Source control**: the team's repositories are on GitHub: its team home, chanjdaniel/agent-team-records (~/agent-team-records: the ledger, plans, briefs and memory), and the projects it works on, owner/proj (primary checkout ~/projects/proj), owner/other (primary checkout ~/projects/other) and someone/Third (primary checkout ~/elsewhere/third). agent-team is the team's own code, and no-mistakes is Daniel's fork of the gate, whose pull requests from the team go to the fork itself, never upstream."
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Repository visibility**"))' "$settings")" \
@@ -567,7 +575,7 @@ TOML
   local role settings
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
     assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$settings")" \
       "$REPO_ROOT/bin/hooks/lease-fence
 $REPO_ROOT/bin/hooks/command-guard"
@@ -593,7 +601,7 @@ $REPO_ROOT/bin/hooks/command-guard"
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$(generated settings "$role")
     expected="lease-fence block 60
 command-guard block 10"
     case $role in
@@ -617,7 +625,7 @@ command-guard block 10"
   thread T7
   run_fake T7 planner "$wt1" --toolkit kit-a --toolkit kit-b --toolkit kit-c -- go
   assert_equal "$status" "0"
-  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
+  assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" \
     '{"mcpServers":{"alpha":{"command":"a"},"beta":{"command":"b"},"gamma":{"command":"c"}}}'
   assert_equal "$(bg_calls | jq -c '[index("--plugin-dir") as $i | .[$i:$i + 6]]')" \
     "$(jq -cn --arg k "$code/toolkits" '[["--plugin-dir", "\($k)/kit-a", "--plugin-dir", "\($k)/kit-b", "--plugin-dir", "\($k)/kit-c"]]')"
@@ -710,6 +718,33 @@ command-guard block 10"
     "$(jq -cn --arg wt "$HOME/slots/other/1" '["other", "chore/T7-two", $wt]')"
 }
 
+@test "a builder of a second project's worktree leaves the first project's builder its own settings, MCP config and prompt" {
+  local other
+  other=$(make_repo other)
+  git -C "$other" worktree add -q -b chore/T7-two "$HOME/slots/other/1"
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ledger_line --arg wt "$HOME/slots/other/1" '{ts: (now | todate), task: "T7", event: "worktree-added",
+    project: "other", branch: "chore/T7-two", base: "main", base_sha: "0123456", worktree: $wt}'
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  local first files
+  first=$(bg_calls | tail -n 1)
+  files() { jq -r --arg flag "$1" '.[index($flag) + 1]' <<<"$2"; }
+  run_bin -0 team-worker T7 builder "$HOME/slots/other/1" -- go
+  local second t=$TEAM_HOME/tasks/T7
+  second=$(bg_calls | tail -n 1)
+  # The first session's settings still name its own project's memory folder.
+  assert_equal "$(jq -r .autoMemoryDirectory "$(files --settings "$first")")" "$TEAM_HOME/memory/proj"
+  assert_equal "$(jq -r .autoMemoryDirectory "$(files --settings "$second")")" "$TEAM_HOME/memory/other"
+  # Each launch has files of its own, keyed by role and project, as the prompt file is.
+  assert_equal "$(files --settings "$first")" "$t/settings.builder.proj.json"
+  assert_equal "$(files --settings "$second")" "$t/settings.builder.other.json"
+  assert_equal "$(files --mcp-config "$first")" "$t/mcp.builder.proj.json"
+  assert_equal "$(files --mcp-config "$second")" "$t/mcp.builder.other.json"
+  assert_equal "$(files --append-system-prompt-file "$first")" "$HOME/.local/state/agent-team/prompts/T7/builder.proj.md"
+  assert_equal "$(files --append-system-prompt-file "$second")" "$HOME/.local/state/agent-team/prompts/T7/builder.other.md"
+}
+
 @test "a project's model for the role is passed to claude and logged on the launch" {
   registry --first 'models = { reviewer = "sonnet", builder = "claude-sonnet-5-5" }' proj other
   thread T7
@@ -718,8 +753,8 @@ command-guard block 10"
   local t=$TEAM_HOME/tasks/T7
   assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg prompts "$HOME/.local/state/agent-team/prompts/T7" '["--bg",
     "--setting-sources", "user",
-    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.reviewer.json",
-    "--settings", "\($t)/settings.reviewer.json",
+    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.reviewer.proj.json",
+    "--settings", "\($t)/settings.reviewer.proj.json",
     "--append-system-prompt-file", "\($prompts)/reviewer.proj.md",
     "--permission-mode", "auto", "--model", "sonnet", "--name", "T7-reviewer", "Review it"]')"
   assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "reviewer",
@@ -865,7 +900,7 @@ command-guard block 10"
   assert_contains "$stderr" "team-worker: laptop holds the lease: run team-resume --wait here, then hand off there once it says this machine is ready"
   assert_equal "$(stub_calls claude)" ""
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
-  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.json ]]
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.proj.json ]]
 }
 
 @test "with GitHub unreachable it refuses: a worker never starts offline" {
@@ -920,7 +955,7 @@ role_texts() {
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$(generated settings "$role")
     jq -e . "$settings" >/dev/null
     # The worker settings' rules come first, and its skill overrides hold unless the role's own
     # file overrides the same skill.
@@ -946,7 +981,7 @@ role_texts() {
     else
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$(generated settings "$role")
     assert_equal "$(jq -r .env.AGENT_TEAM_ROLE "$settings")" "$role"
     assert_equal "$(jq -c '[.hooks.SessionStart[].hooks[] | [.command, .timeout]]' "$settings")" \
       "$(jq -cn --arg code "$REPO_ROOT" '[["\"\($code)/bin/hooks/axi-banner\" gh-axi", 10]]')"
@@ -961,7 +996,7 @@ role_texts() {
   local role
   for role in builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" --toolkit browser -- go
-    assert_equal "$(jq -r .env.CHROME_DEVTOOLS_AXI_SESSION "$TEAM_HOME/tasks/T7/settings.$role.json")" "T7-$role"
+    assert_equal "$(jq -r .env.CHROME_DEVTOOLS_AXI_SESSION "$TEAM_HOME/tasks/T7/settings.$role.proj.json")" "T7-$role"
   done
 }
 
@@ -970,7 +1005,7 @@ role_texts() {
   run_bin -0 team-worker T7 builder "$wt1" --toolkit browser -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/browser"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["browser"]'
 }
 
@@ -979,7 +1014,7 @@ role_texts() {
   run_bin -0 team-worker T7 builder "$wt1" --toolkit effect -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/effect"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["effect"]'
 }
 
@@ -988,7 +1023,7 @@ role_texts() {
   run_bin -0 team-worker T7 builder "$wt1" --toolkit codegraph -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/codegraph"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["codegraph"]'
 }
 
@@ -997,7 +1032,7 @@ role_texts() {
   run_bin -0 team-worker T7 builder "$wt1" --toolkit spec-review -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/spec-review"]')"
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.proj.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["spec-review"]'
 }
 
@@ -1123,7 +1158,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
   thread T7
   run_bin -0 team-worker T7 reviewer "$wt1" -- go
-  local settings=$TEAM_HOME/tasks/T7/settings.reviewer.json tool
+  local settings=$TEAM_HOME/tasks/T7/settings.reviewer.proj.json tool
   for tool in Artifact DesignSync ScheduleWakeup CronCreate RemoteTrigger SendFeedback AskUserQuestion EnterWorktree; do
     jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null ||
       { echo "no deny rule for $tool" >&2; return 1; }
@@ -1151,7 +1186,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
   local role
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    assert_equal "$(jq .isolatePeerMachines "$TEAM_HOME/tasks/T7/settings.$role.json")" true
+    assert_equal "$(jq .isolatePeerMachines "$TEAM_HOME/tasks/T7/settings.$role.proj.json")" true
   done
 }
 
@@ -1164,7 +1199,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
   local role settings command bin=$REPO_ROOT/bin
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
     assert_equal "$(jq -c .permissions.deny "$settings")" "$(jq -cs --arg code "$REPO_ROOT" --arg dir "$TEAM_HOME/tasks/T7" \
       --arg role "$role" '.[0].permissions.deny + (.[1].permissions.deny // [])
         | map(gsub("@TEAM_CODE@"; $code) | gsub("@TASK_DIR@"; $dir) | gsub("@TASK@"; "T7") | gsub("@ROLE@"; $role))' \
@@ -1197,9 +1232,9 @@ allowed_in() {
   local role settings command bin=$REPO_ROOT/bin
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    assert_equal "$(jq -r .env.AGENT_TEAM_TASK "$TEAM_HOME/tasks/T7/settings.$role.json")" T7
+    assert_equal "$(jq -r .env.AGENT_TEAM_TASK "$TEAM_HOME/tasks/T7/settings.$role.proj.json")" T7
   done
-  settings=$TEAM_HOME/tasks/T7/settings.planner.json
+  settings=$TEAM_HOME/tasks/T7/settings.planner.proj.json
   # --attach after --file needs no rule of its own; team-post holds what it may send.
   for command in "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md" \
     "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md --attach $HOME/w/.scratch/task/shots/1.png --attach $HOME/w/.scratch/task/shots/2.png" \
@@ -1221,7 +1256,7 @@ allowed_in() {
   thread T7
   local role settings command
   run_bin -0 team-worker T7 builder "$wt1" -- go
-  settings=$TEAM_HOME/tasks/T7/settings.builder.json
+  settings=$TEAM_HOME/tasks/T7/settings.builder.proj.json
   for command in "gh pr ready https://github.com/me/shop/pull/5" "gh pr ready 5 --repo me/shop" \
     "gh-axi pr ready 5"; do
     allowed_in "$settings" "$command" || { echo "builder may not: $command" >&2; return 1; }
@@ -1232,7 +1267,7 @@ allowed_in() {
   done
   for role in planner reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
     for command in "gh pr ready https://github.com/me/shop/pull/5" "gh-axi pr ready 5"; do
       if allowed_in "$settings" "$command"; then echo "$role may: $command" >&2; return 1; fi
     done
@@ -1695,7 +1730,7 @@ matcher_matches() {
   local role
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.$role.json" "$TEAM_HOME/tasks/T7/mcp.$role.json"
+    run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.$role.proj.json" "$TEAM_HOME/tasks/T7/mcp.$role.proj.json"
   done
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
@@ -1713,10 +1748,10 @@ matcher_matches() {
   run_fake T7 planner "$wt1" --toolkit kit-a -- go
   assert_equal "$status" 0
   # The role's hook comes after the shared settings' own.
-  assert_equal "$(jq -c '.hooks.PreToolUse[-1].hooks[0] | [.command, .args[0]]' "$TEAM_HOME/tasks/T7/settings.planner.json")" \
+  assert_equal "$(jq -c '.hooks.PreToolUse[-1].hooks[0] | [.command, .args[0]]' "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" \
     "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '["\($code)/bin/hooks/x T7", $t]')"
-  assert_equal "$(jq -r .env.WHO "$TEAM_HOME/tasks/T7/settings.planner.json")" planner
-  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
+  assert_equal "$(jq -r .env.WHO "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" planner
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" \
     "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t, "planner"]}}}')"
 }
 
@@ -1972,7 +2007,7 @@ LINES
   assert_equal "$stderr" "team-worker: no room for session:reviewer at full (90%): 0.0 GiB of 0.3 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises"
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
-  [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.json ]]
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.proj.json ]]
 
   # At none, nothing starts but the load check and an ops session.
   capacity_room $((16 * 1073741824)) none

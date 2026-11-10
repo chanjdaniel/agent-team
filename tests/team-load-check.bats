@@ -142,13 +142,18 @@ inventory() {
   assert_contains "$output" "PASS"
   assert_equal "$(cat "$TEAM_HOME/tasks/T0/inventory.txt")" "$(printf '%s\n' --- tdd implement)"
   assert_equal "$(stub_calls claude | jq -c 'select(.[0] != "--bg")')" \
-    "$(printf '%s\n' "[\"--settings\",\"$TEAM_HOME/tasks/T0/settings.planner.json\",\"auto-mode\",\"config\"]" \
+    "$(printf '%s\n' "[\"--settings\",\"$TEAM_HOME/tasks/T0/settings.planner.code.json\",\"auto-mode\",\"config\"]" \
       '["agents","--json"]' '["stop","4f2a9c1e"]' '["rm","4f2a9c1e"]')"
 }
 
 # The team's autoMode lines in the settings team-worker generated for <role> (default planner),
-# the registry's projects filled in.
-team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM_HOME/tasks/T0/settings.${1:-planner}.json"; }
+# the registry's projects filled in: settings.<role>.code.json, keyed by the code checkout's
+# project, for every role but ops.
+team_lines() {
+  local stem=${1:-planner}
+  [[ $stem == ops ]] || stem+=.code
+  jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM_HOME/tasks/T0/settings.$stem.json"
+}
 
 @test "the planner's effective autoMode, read under its settings in its worktree, holds the team's lines and is kept" {
   inventory --- tdd

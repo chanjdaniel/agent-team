@@ -53,10 +53,13 @@
 # or --model names one, the session launches on it (claude --model) and the launch logs it as
 # model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
 # T0 and tasks from before team-open none from the registry.
-# The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_CODE@
-# in either names this checkout, @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, and
-# @ROLE@ the role (the settings' AGENT_TEAM_ROLE, the signal a hook sees in a team session, and
-# with AGENT_TEAM_TASK, the task, what worker_refusal in bin/lib/team.sh reads). The registry's
+# The merged settings and MCP config are generated into tasks/<task>/ (gitignored), as
+# settings.<role>.<project>.json and mcp.<role>.<project>.json for a planner, builder or reviewer
+# with a project (so a task's sessions on two projects' worktrees never share one), and
+# settings.<role>.json and mcp.<role>.json otherwise; @TEAM_CODE@ in either names this checkout,
+# @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, and @ROLE@ the role (the settings'
+# AGENT_TEAM_ROLE, the signal a hook sees in a team session, and with AGENT_TEAM_TASK, the task,
+# what worker_refusal in bin/lib/team.sh reads). The registry's
 # projects, in its order, fill four more, for the autoMode lines: @PROJECT_REPOS@ each one's
 # repo and primary checkout ("owner/a (primary checkout ~/a) and owner/b (...)"),
 # @PROJECT_ORIGINS@ each one's origin, its own owner's ("github.com/owner/a or github.com/c/d"),
@@ -327,6 +330,12 @@ if [[ $role != ops ]]; then
   fi
 fi
 
+# The stem of the launch's generated files: its role, and for a planner, builder or reviewer its
+# project too, so a task's sessions on worktrees of two projects never share a settings file, an
+# MCP config or a prompt file, each naming its own project's memory and instructions.
+stem=$role
+[[ $role == ops || -z $launch_project ]] || stem=$role.$launch_project
+
 # The project's model for the role, from the registry, unless --model named one; ops stays on the
 # default model.
 if [[ -z $model && -n $project && $role != ops ]]; then
@@ -432,7 +441,7 @@ substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TA
 # and each autoMode list are concatenated, the shared ones first, so a role's hooks add to the
 # shared hooks and its autoMode lines to the team's; an autoMode list keeps "$defaults" (the
 # built-in rules) once, where it first stands.
-settings=$taskdir/settings.$role.json
+settings=$taskdir/settings.$stem.json
 jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" --argjson facts "$facts" \
   --arg memory "$memory" '.[0] as $base | .[1] as $own
   | ($base * $own)
@@ -455,7 +464,7 @@ jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role 
   "$code/settings/worker.json" "$code/settings/$role.json" >"$settings"
 
 # MCP servers come only from the chosen toolkits.
-mcp=$taskdir/mcp.$role.json
+mcp=$taskdir/mcp.$stem.json
 plugin_args=()
 mcp_files=()
 for kit in "${toolkits[@]}"; do
@@ -526,7 +535,7 @@ else
   sources=(--setting-sources user)
   prompts=$HOME/.local/state/agent-team/prompts/$task
   mkdir -p "$prompts"
-  system_prompt=$prompts/$role${launch_project:+.$launch_project}.md
+  system_prompt=$prompts/$stem.md
   tmp=$(mktemp "$system_prompt.XXXXXX")
   write_system_prompt >"$tmp" || { rm -f -- "$tmp"; die "could not write $task-$role's system prompt $system_prompt"; }
   mv -f -- "$tmp" "$system_prompt"

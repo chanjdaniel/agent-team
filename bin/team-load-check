@@ -406,11 +406,18 @@ declared_servers() {
 
 # automode_check <role> <worktree>: the role's effective autoMode, as auto mode's classifier reads
 # it for the session just launched: claude auto-mode config with the settings team-worker generated
-# for it (tasks/T0/settings.<role>.json), run in its worktree, since a session's own shell gets no
-# --settings. The config is kept in tasks/T0/automode-<role>.json, and every line of those
-# settings' autoMode lists but "$defaults" must be in the same list of it.
+# for it (tasks/T0/settings.<role>.<project>.json for a planner, builder or reviewer of a registered
+# project's worktree, else tasks/T0/settings.<role>.json, as team-worker names them), run in its
+# worktree, since a session's own shell gets no --settings. The config is kept in
+# tasks/T0/automode-<role>.json, and every line of those settings' autoMode lists but "$defaults"
+# must be in the same list of it.
 automode_check() {
-  local r=$1 settings=$TEAM_HOME/tasks/T0/settings.$1.json kept=$TEAM_HOME/tasks/T0/automode-$1.json missing count line
+  local r=$1 stem=$1 settings kept=$TEAM_HOME/tasks/T0/automode-$1.json missing count line project=''
+  if [[ $r != ops ]]; then
+    project=$(team_project --find path "$(main_checkout "$2")" 2>/dev/null | head -n 1) || project=''
+  fi
+  stem+=${project:+.$project}
+  settings=$TEAM_HOME/tasks/T0/settings.$stem.json
   if ! (cd "$2" && claude --settings "$settings" auto-mode config) >"$kept" 2>/dev/null ||
     ! jq -e 'type == "object"' "$kept" >/dev/null 2>&1; then
     echo "FAIL $r: claude auto-mode config under its settings printed no config"
