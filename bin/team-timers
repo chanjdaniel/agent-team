@@ -250,8 +250,10 @@
 #            run unloads its job and does nothing else" on stderr, boots its job out and exits 0,
 #            before the lock or any step, with no log line or record; a run whose plist went while
 #            it ran (its own fence, or a handoff's disable) boots its job out as its very last act,
-#            after its log line, record and alerts and once its lock is let go, on the normal and
-#            the timed-out end alike. Outside the job, or with the plist there, a run is as above.
+#            after its log line, record and alerts, on the normal and the timed-out end alike (the
+#            timed-out end takes the lock back the moment the stopped run lets it go, and holds it
+#            to the end, so no disable from outside reads the run as over meanwhile). Outside the
+#            job, or with the plist there, a run is as above.
 #   watch    A stream for anyone watching the hold: checks the offline flag every 60 s until
 #            killed, and prints one line when it appears (at once if it is there) and one when it
 #            goes:
@@ -284,14 +286,15 @@
 # TEAM_TIMERS_CHECKPOINT_SECONDS, TEAM_TIMERS_FINISHED_SECONDS, TEAM_TIMERS_FINISHED_CALL_SECONDS,
 # TEAM_TIMERS_COORDINATOR_SWEEP_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS,
 # TEAM_TIMERS_SWEEP_SECONDS, TEAM_TIMERS_JANITOR_SECONDS, TEAM_TIMERS_RUN_SECONDS,
-# TEAM_TIMERS_LOCK_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the checkpoint step's 300 s, the finished step's 90 s after which
-# no stop starts, its 30 s for each call (the back step's and the coordinator step's session lists'
-# too), the coordinator step's 60 s for its sweep, the capacity step's 60 s for each of its
-# commands, the level step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s,
-# enable's 60 s wait for the run's lock and the 10 s after a time limit at which a command still running is killed, TEAM_TIMERS_FAILURES_DAYS
-# the failures log's 30 days, and TEAM_TIMERS_HEALTH_RUNS, TEAM_TIMERS_HEALTH_STALE_MINUTES,
-# TEAM_TIMERS_HEALTH_STEP_RUNS and TEAM_TIMERS_HEALTH_UNATTENDED_MINUTES the health view's and the
-# alerts' 2 runs, 15 minutes, 12 runs and 60 minutes (the tests' seams).
+# TEAM_TIMERS_LOCK_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the checkpoint step's 300 s, the
+# finished step's 90 s after which no stop starts, its 30 s for each call (the back step's and the
+# coordinator step's session lists' too), the coordinator step's 60 s for its sweep, the capacity
+# step's 60 s for each of its commands, the level step's 300 s, the sweep's 300 s, the janitor's
+# 1200 s, the run's 4200 s, enable's 60 s wait for the run's lock and the 10 s after a time limit at
+# which a command still running is killed, TEAM_TIMERS_FAILURES_DAYS the failures log's 30 days, and
+# TEAM_TIMERS_HEALTH_RUNS, TEAM_TIMERS_HEALTH_STALE_MINUTES, TEAM_TIMERS_HEALTH_STEP_RUNS and
+# TEAM_TIMERS_HEALTH_UNATTENDED_MINUTES the health view's and the alerts' 2 runs, 15 minutes, 12
+# runs and 60 minutes (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -620,7 +623,8 @@ disable_launchd() {
       mkdir -p "$state"
       exec {lock_fd}>>"$state/heartbeat.lock"
       if flock -n "$lock_fd"; then
-        launchctl bootout "$domain/$HEARTBEAT_LABEL"
+        # A run that ended meanwhile may have unloaded its job itself.
+        ! loaded "$HEARTBEAT_LABEL" || launchctl bootout "$domain/$HEARTBEAT_LABEL"
       else
         left=1
       fi
@@ -1566,10 +1570,10 @@ stop_tree() {
 # unreaped child until that wait returns, so the run's kill never reaches a process that took its
 # id, and no process list is read to stop it. A timer that ran out means RUN_TIMEOUT has passed:
 # stop the run with everything it started (each step's timeout runs its command in a process
-# group of its own, which no signal to one group reaches), log it and exit 1; its lock goes with
-# it. Otherwise exit with the run's own code.
+# group of its own, which no signal to one group reaches), take its lock back as it lets it go,
+# log it under that lock and exit 1. Otherwise exit with the run's own code.
 bounded_run() {
-  local run timer rc=0
+  local run timer holder locked=0 rc=0
   if disabled_job; then
     echo "team-timers: the heartbeat was disabled, so this run unloads its job and does nothing else" >&2
     unload_self
@@ -1588,8 +1592,15 @@ bounded_run() {
   run=$!
   if wait "$timer"; then
     : >"$fired"
+    # The lock taken back the moment the stopped run lets it go, by a waiter on this process's own
+    # open file, which keeps it once the waiter ends: held through the log line, the record, the
+    # alerts and unload_self, so no disable reads the run as over and boots its job out meanwhile.
+    exec {run_fd}>>"$state/heartbeat.lock"
+    flock -w "$((KILL_SECONDS + 10))" "$run_fd" &
+    holder=$!
     stop_tree "$run"
     wait "$run" 2>/dev/null || true
+    wait "$holder" && locked=1
     rm -f "$fired"
     problem run "failed: timed out after $RUN_TIMEOUT s"
     # The record of a run the limit stopped, from the results it left.
@@ -1598,12 +1609,10 @@ bounded_run() {
       machine=$(machine_name 2>/dev/null) || machine=''
       step_fail run "timed out after $RUN_TIMEOUT s"
       write_record timed-out
-      # Its alerts judged as at any run's end, under the lock, which the stopped run has let go.
-      exec {run_fd}>>"$state/heartbeat.lock"
-      if jq -se 'any(.[]; .holding == true)' "$results" >/dev/null 2>&1 && flock -n "$run_fd"; then
+      # Its alerts judged as at any run's end, under the lock taken back above.
+      if ((locked)) && jq -se 'any(.[]; .holding == true)' "$results" >/dev/null 2>&1; then
         alerts_step || true
       fi
-      exec {run_fd}>&-
     fi
     ! disabled_job || unload_self
     exit 1

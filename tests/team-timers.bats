@@ -350,9 +350,66 @@ SH
   assert_equal "$(still_running "$hung")" ""
   jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
   assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
-  assert_equal "$(heartbeat_calls)" "bootout lock free plist absent"
+  assert_equal "$(heartbeat_calls)" "bootout lock held plist absent"
 }
 
+@test "on macOS, a disable from outside while a run its time limit stopped writes its record leaves the job to unload itself" {
+  as_macos
+  local uid hung=$BATS_TEST_TMPDIR/hung pid rc
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  stub_script claude <<SH
+[[ \$1 == agents ]] || exit 0
+trap '' TERM
+echo "\$\$" >>'$hung'
+command -p sleep 300
+SH
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=2 TEAM_TIMERS_KILL_SECONDS=4 \
+    "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/run.out" 2>&1 &
+  pid=$!
+  until [[ -s $hung ]]; do command -p sleep 0.1; done
+  # The time limit has stopped the run, whose lock went with it, and bounded_run is still in its
+  # wait before the timed-out log line and record.
+  command -p sleep 3
+  run_bin -0 --separate-stderr team-timers disable
+  assert_equal "$output" "the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends"
+  rc=0
+  wait "$pid" || rc=$?
+  assert_equal "$rc" 1
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 2 s"$ ]]
+  assert_equal "$(still_running "$hung")" ""
+  jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
+  assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
+  assert_equal "$(heartbeat_calls)" "bootout lock held plist absent"
+  [[ ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+}
+
+@test "on macOS, disable passes when the heartbeat job unloads itself between disable's look and its bootout" {
+  as_macos
+  local uid
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  # The fake's first look at the heartbeat finds it loaded, and the job's run unloads it as it
+  # answers.
+  { cat <<'SH'
+if [[ ${1:-} == print && ${2:-} == */agent-team.heartbeat && ! -e $HOME/.fake-launchd/answered ]]; then
+  touch "$HOME/.fake-launchd/answered"
+  rm -f "$HOME/.fake-launchd/agent-team.heartbeat"
+  echo "$2 = {"
+  echo "}"
+  exit 0
+fi
+SH
+    cat "$STUB_FIXTURES/launchctl.sh"; } >"$BATS_TEST_TMPDIR/launchctl.sh"
+  mv "$BATS_TEST_TMPDIR/launchctl.sh" "$STUB_FIXTURES/launchctl.sh"
+  forget_launchctl
+  run_bin -0 --separate-stderr team-timers disable
+  assert_equal "$output" "the heartbeat is disabled: agent-team.heartbeat, agent-team.caffeinate stopped and removed"
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]"
+  [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+}
 @test "on macOS, a run with its LaunchAgent there, or outside the job, never unloads the heartbeat" {
   as_macos
   run_bin -0 team-timers enable
