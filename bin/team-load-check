@@ -54,7 +54,17 @@
 #     <name> brought no tools from its MCP server <server>);
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
-#   - the planner's edit hook blocks a write outside .scratch/;
+#   - the planner's edit hook blocked its write outside .scratch/, as its transcript shows (found
+#     by the session's sessionId in claude agents --json --all, before the session is removed):
+#     there is at least one Write of a file named outside.txt, and each one's result is a hook's
+#     block holding the edit hook's message ("this role may edit files only under"), and
+#     outside.txt does not exist. It fails on a write never tried, on one that ran, on one a deny
+#     rule, auto mode, a built-in safety check or another hook refused, on one with no result, and
+#     on a transcript it cannot read:
+#       load check: the planner's edit hook blocked its write of outside.txt (read from its transcript)
+#       FAIL: the planner never tried to write outside.txt, so its edit hook was not exercised
+#       FAIL: the planner's write of outside.txt was not blocked by its edit hook: a deny rule refused it
+#       FAIL: cannot read the planner's transcript, so its edit hook's block is unproven
 #   - its effective autoMode holds its settings' autoMode lines (see below).
 #
 # Every form checks each session it launches for its effective autoMode, as auto mode's classifier
@@ -419,7 +429,7 @@ planner_check() {
   id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$wt" "${toolkit_args[@]}" -- \
     "This is an automated load check; do not message anyone." \
     "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
-    "2. Then use the Write tool to create outside.txt in the current directory." \
+    "2. Then use the Write tool to create outside.txt in the current directory. That write is expected to be refused; a refusal is the expected result and no reason to send BLOCKED." \
     "3. Then stop.")
   ids=("$id")
   echo "load check: worker $id started"
@@ -457,8 +467,78 @@ planner_check() {
     check_failed "a production or coordinator-only server or plugin reached the worker"
   fi
   if [[ -e $wt/outside.txt ]]; then check_failed "the planner wrote outside .scratch/"; fi
+  hook_check
 
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$skills" || true) skills"
+}
+
+# A transcript's tool calls and their outcomes, read with jq -s, for the planner form's hook check
+# and the probe: calls, each tool_use as {id, name, input}; results, each tool_result as {id, entry
+# (the transcript entry holding it), text (its content, a string or a list's text items joined)};
+# and outcome, which turns a call's result entry (null when it has none) into the layer that
+# decided it, in this order: none, ran, hook, automode, no-verdict (auto mode gave none),
+# safety-check (a built-in safety check), rule (a deny rule), else its toolDenialKind
+# (user-rejected, interrupted). The fields are Claude Code's own (tests/helpers/transcript.bash
+# names the versions they were read from).
+tool_outcome_jq='def calls: [.[] | .message.content? | arrays | .[] | objects | select(.type == "tool_use")
+    | {id, name, input}];
+  def results: [.[] | . as $entry | .message.content? | arrays | .[] | objects | select(.type == "tool_result")
+    | {id: .tool_use_id, $entry, text: (.content | if type == "string" then .
+        elif type == "array" then [.[] | objects | select(.type == "text") | .text | strings] | join("\n")
+        else "" end)}];
+  def outcome:
+    if . == null then "none"
+    elif .toolDenialKind == null then "ran"
+    elif .permissionDecision.source? == "hook" then "hook"
+    elif .toolDenialKind == "automode-blocked" then "automode"
+    elif .toolDenialKind == "automode-unavailable" then "no-verdict"
+    elif .toolDenialKind == "permission-rule" and .permissionDecision.reasonType? == "safetyCheck" then "safety-check"
+    elif .toolDenialKind == "permission-rule" then "rule"
+    else .toolDenialKind | tostring end;'
+
+# hook_outcomes <transcript>: one line per Write of a file named outside.txt, in order: blocked when
+# the edit hook blocked it with its message, other-hook when another hook did, else its outcome.
+# Fails when the transcript is not JSON lines. Only outcomes leave the transcript.
+hook_outcomes() {
+  jq -rs "$tool_outcome_jq"' (results | map({(.id | tostring): .}) | add // {}) as $results
+    | calls[] | select(.name == "Write" and ((.input.file_path? | strings | split("/") | last) == "outside.txt"))
+    | $results[.id | tostring] as $result | ($result.entry | outcome) as $outcome
+    | if $outcome != "hook" then $outcome
+      elif $result.text | contains("this role may edit files only under") then "blocked"
+      else "other-hook" end' "$1" 2>/dev/null
+}
+
+# hook_check: the planner's transcript shows its write of outside.txt blocked by its edit hook.
+hook_check() {
+  local uuid transcript outcomes outcome what
+  uuid=$(claude agents --json --all 2>/dev/null |
+    jq -r --arg id "$id" '(.[] | select(.id == $id) | .sessionId) // empty' 2>/dev/null) || uuid=''
+  transcript=$(transcript_of "$uuid" | grep '\.jsonl$' | head -n 1 || true)
+  if [[ -z $uuid || -z $transcript ]] || ! outcomes=$(hook_outcomes "$transcript"); then
+    check_failed "cannot read the planner's transcript, so its edit hook's block is unproven"
+    return
+  fi
+  if [[ -z $outcomes ]]; then
+    check_failed "the planner never tried to write outside.txt, so its edit hook was not exercised"
+    return
+  fi
+  if ! grep -qvx blocked <<<"$outcomes"; then
+    echo "load check: the planner's edit hook blocked its write of outside.txt (read from its transcript)"
+    return
+  fi
+  while IFS= read -r outcome; do
+    case $outcome in
+      ran) what='it ran' ;;
+      rule) what='a deny rule refused it' ;;
+      automode) what='auto mode refused it' ;;
+      no-verdict) what='auto mode gave no verdict' ;;
+      safety-check) what='a built-in safety check refused it' ;;
+      other-hook) what='another hook refused it' ;;
+      none) what='it has no result' ;;
+      *) what="it was $outcome" ;;
+    esac
+    check_failed "the planner's write of outside.txt was not blocked by its edit hook: $what"
+  done < <(grep -vx blocked <<<"$outcomes" | awk '!seen[$0]++')
 }
 
 # A transcript's first reply, read with jq -s: reply_index, the index of the first assistant reply
