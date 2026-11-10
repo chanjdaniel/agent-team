@@ -56,7 +56,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
    The bootstrap writes it once: a setting that names another checkout is left as it is, and a path with no checkout yet is refused until the clone is there.
    Until it is written, nothing names the team home: every script but the bootstrap refuses, naming the setting, the doctor's `team home` line fails, and the machine stage stops on Daniel's step to clone `~/agent-team-records` (when it is missing) and name it.
 4. The machine stage then fetches the team home and asks the doctor for its `team home history` line alone.
-   A team home that shares no history with origin's `dev` is a clone from before a rewrite of the records' history (the laptop's, from before the records rewrite of 2026-10-28), and the stage stops on it as Daniel's re-clone (section 3), so no later stage reads the old records.
+   A team home that shares no history with origin's `dev` is a clone from before a rewrite of the records' history, such as the records rewrite of 2026-10-28, and the stage stops on it as Daniel's re-clone (section 3), so no later stage reads the old records.
    A fetch that fails is said on one line, and the line is read as the team home was last fetched.
 5. The machine's resource levels need no question: the defaults in `bin/team-capacity`'s header hold, and only a machine that differs gets a `~/.config/agent-team/capacity.json` (`sops/resources.md`, "The settings").
    Like the name, that file is this machine's own and never moved; the bootstrap does not write it.
@@ -141,7 +141,7 @@ Done when `check` lists no `Daniel <n>:` line.
 
 ### A host that held the team before
 
-A machine that held the team before and whose checkouts and tools have fallen behind (the laptop, whose last hold ended on 2026-10-25) is brought up to date by the same stages, from "set up as host", and each stage skips what already passes.
+A machine that held the team before and whose checkouts and tools have fallen behind, such as the laptop, is brought up to date by the same stages, from "set up as host", and each stage skips what already passes.
 
 1. Stage 1: `SETUP.md` stage 1's history checks come first.
    A code checkout only behind origin's branch is fast-forwarded by the agent; one with local commits or no common commit is Daniel's call.

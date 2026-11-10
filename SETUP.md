@@ -49,7 +49,7 @@ Skip each step whose check already passes.
    Otherwise run `git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records`, then `git -C ~/agent-team-records remote set-branches --add origin lease` and `git -C ~/agent-team-records fetch origin` (it needs step 4's login, since the repository is private).
    The team home fetches only `dev` and `lease`: its origin's `wip/*` and `salvage/*` branches are whole project histories, which the scripts reach by URL; the doctor's `team home fetch` line checks it, and the bootstrap's machine stage narrows an older clone.
    Its records guard (`core.hooksPath`) is Daniel's to turn on, at `sops/machine-setup.md`'s stage 7, Daniel's steps, since every team session is denied setting it.
-   When the check passes, look at its history: `git -C ~/agent-team-records fetch origin`, then `git -C ~/agent-team-records merge-base HEAD origin/dev`.
+   When the check passes, look at its history: `git -C ~/agent-team-records fetch origin dev` (`dev` alone, since an older clone still fetches every branch), then `git -C ~/agent-team-records merge-base HEAD origin/dev`.
    No common commit means the team home's history was rewritten since this clone, and the re-clone is Daniel's, in their own terminal, by `sops/records-rewrite.md` step 10: stop until it is done, and never pull into the old clone.
    The doctor's `team home history` line checks the same, and the bootstrap's machine stage stops on it.
 7. **The team home's setting.** Check: the first line of `~/.config/agent-team/home` is `agent-team-records`.
