@@ -129,7 +129,7 @@ lock_has_its_shape() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'team home pack' 'git hooks' 'guard hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'team home history' 'team home pack' 'git hooks' 'guard hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo 'discord access'
     echo 'interview channel'
@@ -160,7 +160,7 @@ lock_has_its_shape() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'team home pack' 'git hooks' 'guard hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'team home history' 'team home pack' 'git hooks' 'guard hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo 'discord access'
     echo 'interview channel'
@@ -171,7 +171,7 @@ lock_has_its_shape() {
     echo captures
     echo 'heavy runs'
     project_checks
-    printf '%s\n' 'stack memory' clock lease heartbeat health resources offline)
+    printf '%s\n' 'stack memory' clock lease heartbeat health resources power offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }

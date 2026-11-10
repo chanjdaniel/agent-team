@@ -186,3 +186,54 @@ nothing to add: what differs is Daniel's call (the check stage lists it)"
   assert_equal "$(stage_lines heartbeat)" "done: disabled until this machine takes the lease (team-resume enables it)"
   assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/agent-team.git" rev-parse lease)" "$lease"
 }
+
+# The team home history line's reason and fix for the sandbox's team home, as the doctor says them.
+history_reason() {
+  echo "$TEAM_HOME shares no history with origin's dev, so its history was rewritten since it was cloned (the records rewrite of 2026-10-28, say), and nothing should read or pull it"
+}
+history_fix() {
+  echo "re-clone it, keeping this one aside, as sops/records-rewrite.md step 10 says: mv $TEAM_HOME $TEAM_HOME.pre-rewrite, a fresh clone of dev with lease added, its records guard, and the ignored files carried over; never git pull into this clone"
+}
+
+@test "machine: the team home is fetched and the doctor asked for its history line alone; no common history stops the run as Daniel's re-clone, before any later stage" {
+  tools_at arch
+  local home=$TEAM_HOME before logins
+  rewrite_origin_dev
+  before=$(git -C "$home" rev-parse refs/remotes/origin/dev)
+  # A dry run fetches nothing, so the line reads origin's dev as last fetched.
+  run_bin -0 team-bootstrap --stage machine --dry-run
+  assert_equal "$(stage_lines machine | tail -n2)" "would run: git -C $home fetch origin
+done: the team home shares history with origin's dev"
+  assert_equal "$(git -C "$home" rev-parse refs/remotes/origin/dev)" "$before"
+  # A run fetches the rewritten dev and stops there, so no later stage (config's apply above all)
+  # reads the old records.
+  logins=$(grep -c '"auth","status","--json"' "$STUB_CALLS/claude.log")
+  run_bin -1 team-bootstrap
+  assert_equal "$(stage_lines machine | tail -n2)" "running: git -C $home fetch origin
+Daniel: $(history_fix) ($(history_reason)); then team-bootstrap again"
+  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: $(history_fix) ($(history_reason)); then team-bootstrap again"
+  [[ $output != *"packages: "* && $output != *"config: "* ]]
+  assert_equal "$(git -C "$home" rev-parse refs/remotes/origin/dev)" "$(git -C "$BATS_TEST_TMPDIR/origin/agent-team.git" rev-parse dev)"
+  # The whole doctor ran once, before the stages; the history line's doctor asked no login.
+  assert_equal "$(grep -c '"auth","status","--json"' "$STUB_CALLS/claude.log")" "$((logins + 1))"
+  assert_equal "$(install_calls)" ""
+}
+
+@test "machine: a fetch of the team home that fails is said on one line, and its history read as last fetched" {
+  tools_at arch
+  local home=$TEAM_HOME gone=$BATS_TEST_TMPDIR/gone.git
+  git -C "$home" remote set-url origin "$gone"
+  run_bin -0 team-bootstrap --stage machine
+  assert_equal "$(stage_lines machine | tail -n3)" "running: git -C $home fetch origin
+could not fetch the team home (fatal: '$gone' does not appear to be a git repository), so its history is read as it was last fetched
+done: the team home shares history with origin's dev"
+  # A rewrite fetched before the fetch failed still stops the stage.
+  git -C "$home" remote set-url origin "$BATS_TEST_TMPDIR/origin/agent-team.git"
+  rewrite_origin_dev
+  git -C "$home" fetch -q origin
+  git -C "$home" remote set-url origin "$gone"
+  run_bin -1 team-bootstrap --stage machine
+  assert_equal "$(stage_lines machine | tail -n3)" "running: git -C $home fetch origin
+could not fetch the team home (fatal: '$gone' does not appear to be a git repository), so its history is read as it was last fetched
+Daniel: $(history_fix) ($(history_reason)); then team-bootstrap again"
+}
