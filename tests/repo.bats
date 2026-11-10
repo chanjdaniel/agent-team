@@ -176,6 +176,21 @@ usage/home-pc/time/2026-10-26.jsonl"
   done
 }
 
+# The kinds the contract marks push, Daniel's word and outside facts, are on origin the moment
+# they are logged: every script the contract names as a writer of one calls ledger_push, on a
+# line of its own, which commits and pushes the ledger before it ends.
+@test "every writer of a push kind calls ledger_push" {
+  local contract=$REPO_ROOT/bin/lib/ledger-contract.json writer missing=()
+  assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.push == true) | .key] | sort | join(" ")' "$contract")" \
+    "answered closed merge-approved merge-preapproval-withdrawn merge-preapproved merge-standing merge-standing-withdrawn merged plan-approved ran retro-schedule"
+  for writer in $(jq -r '[.kinds[] | select(.push == true) | .writer] | flatten | unique[]' "$contract"); do
+    grep -qE '^[[:space:]]*ledger_push$' "$REPO_ROOT/bin/$writer" || missing+=("$writer")
+  done
+  assert_equal "${missing[*]}" ""
+  # No other kind is marked with anything but true.
+  assert_equal "$(jq -r '[.kinds[] | select(has("push") and .push != true)] | length' "$contract")" 0
+}
+
 # The machine docs: Daniel's sentence, the setup entry point and the SOPs.
 MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
 

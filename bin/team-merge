@@ -79,7 +79,9 @@
 # by (naming the Discord message and its author), project, branch, discord_message,
 # discord_channel, url (the PR's), approval (head for the per-head word, plan for the plan-time
 # one, standing for the standing one), and local_checks (the commands that passed on head) when
-# there were any. Prints {task, pr, merge, head, by}.
+# there were any. Prints {task, pr, merge, head, by}, then commits the ledger and pushes it to the
+# team home's origin at once, before any later step (ledger_push in bin/lib/team.sh, which says
+# on stderr when it is not on origin yet, the exit staying 0).
 # Then, when the task's opened event names a story (team-open --story) and the PR is of the project
 # it opened in, that story's backlog file in the team home (story_file in bin/lib/team.sh) is
 # marked: its front matter's status becomes done and the PR's number joins its pr: list (in the
@@ -540,6 +542,8 @@ ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$
 trap 'rm -rf "$scratch"' EXIT
 jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \
   '{task: $task, pr: $url, merge: $merge, head: $head, by: $by}'
+# Pushed now, before the steps that follow, so none of them failing can keep it off origin.
+ledger_push
 
 # Mark the backlog file <file> done with PR <number> in its front matter, in place: status: done,
 # and the number added to pr: unless there; prints changed or unchanged, or fails saying why on

@@ -487,8 +487,9 @@ describe("list-deployments", () => {
   });
 });
 
-// A deployment of the fixtures as every deployment tool answers it.
-function deploymentAnswer(project, n, { state = "READY", readySubstate = n === 0 ? "PROMOTED" : "STAGED", commit } = {}) {
+// A deployment of the fixtures as every deployment tool answers it; `looked up` when the tool read
+// it from Vercel's lookup by id or host, which has no isRollbackCandidate.
+function deploymentAnswer(project, n, { state = "READY", readySubstate = n === 0 ? "PROMOTED" : "STAGED", commit, lookedUp = false } = {}) {
   return {
     id: `dpl_${project.replace("-", "")}${n}`,
     url: `makers-market-management-${project}-${n}.vercel.app`,
@@ -496,7 +497,7 @@ function deploymentAnswer(project, n, { state = "READY", readySubstate = n === 0
     state,
     readySubstate,
     target: "production",
-    isRollbackCandidate: state === "READY",
+    ...(lookedUp ? {} : { isRollbackCandidate: state === "READY" }),
     commit: commit === undefined ? { sha: `${n}`.padStart(40, "a"), ref: "main", message: `release ${n}: tidy the stalls page` } : commit,
     aliasError: null,
   };
@@ -524,7 +525,7 @@ describe("domain-deployment", () => {
       assert.deepEqual(untrusted(result.text).records, ["front-end", "back-end"].map((label) => ({
         domain: domainOf[label],
         project: label,
-        serving: deploymentAnswer(label, 0),
+        serving: deploymentAnswer(label, 0, { lookedUp: true }),
         newestProduction: deploymentAnswer(label, 0),
         servesNewest: true,
         domainVerified: true,
@@ -559,12 +560,23 @@ describe("domain-deployment", () => {
       assert.deepEqual(untrusted(result.text).records, [{
         domain: "api.conventioner.io",
         project: "back-end",
-        serving: deploymentAnswer("back-end", 2),
+        serving: deploymentAnswer("back-end", 2, { lookedUp: true }),
         newestProduction: deploymentAnswer("back-end", 0),
         servesNewest: false,
         domainVerified: true,
       }]);
       assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("answers isRollbackCandidate from Vercel's list, never from its lookup, which has none", async () => {
+    // As the live run of 2026-11-09 showed: the lookup by domain answers no isRollbackCandidate.
+    await withServer(async (server) => {
+      const result = await server.callTool("domain-deployment", { domain: "conventioner.io" });
+      const [{ serving, newestProduction }] = untrusted(result.text).records;
+      assert.equal(serving.id, newestProduction.id);
+      assert.ok(!("isRollbackCandidate" in serving), JSON.stringify(serving));
+      assert.equal(newestProduction.isRollbackCandidate, true);
     });
   });
 
@@ -634,7 +646,7 @@ describe("domain-deployment", () => {
 
 describe("get-deployment", () => {
   const failed = {
-    ...deploymentAnswer("back-end", 7, { state: "ERROR" }),
+    ...deploymentAnswer("back-end", 7, { state: "ERROR", lookedUp: true }),
     aliases: ["makers-market-management-back-end-git-main.vercel.app"],
     aliasAssigned: "2026-11-08T11:03:12Z",
     errorCode: "BUILD_FAILED",

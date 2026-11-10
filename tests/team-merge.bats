@@ -132,6 +132,31 @@ pr: []"
   assert_equal "$(inbox_items_shown)" "Nothing waits on you."
 }
 
+@test "the merged event is on origin when the merge ends, and when the steps after it fail" {
+  printf 'ledger.jsonl.lock\n' >"$TEAM_HOME/.gitignore"
+  local team_origin tip
+  team_origin=$(hold_lease home-pc)
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-merge T14
+  [[ $stderr != *"not on origin"* ]]
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T14 merged"
+  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
+
+  # The story cannot be marked and Discord refuses the Waiting on you message, both after the merge.
+  merge_again
+  story_of E40/F01/S02
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "its story E40/F01/S02 is not marked done"
+  assert_contains "$stderr" "the Waiting on you message is not updated"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T14 merged"
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
+}
+
 @test "Discord refusing the Waiting on you message is a line on stderr, and the merge stands" {
   echo 500 >"$STUB_FIXTURES/inbox/fail"
   run_bin -0 --separate-stderr team-merge T14

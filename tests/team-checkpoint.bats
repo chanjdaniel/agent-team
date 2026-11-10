@@ -945,6 +945,48 @@ docs: a readme"
   assert_equal "$(cat "$TEAM_HOME/README.md")" "from laptop"
 }
 
+@test "a replay whose branch moved between its build and its lock is refused, moving nothing, and the next push replays it" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  make_machine laptop
+  on_machine laptop bash -c 'echo "from laptop" >"$TEAM_HOME/manual-steps.md" &&
+    git -C "$TEAM_HOME" add manual-steps.md && git -C "$TEAM_HOME" commit -q -m "docs: a manual step" &&
+    git -C "$TEAM_HOME" push -q origin dev'
+  # Another script commits on the branch once the replay has built its commits, before its lock.
+  local real_git theirs
+  real_git=$(command -v git)
+  cat >"$BATS_TEST_TMPDIR/stubs/git" <<STUB
+#!/usr/bin/env bash
+"$real_git" "\$@"
+rc=\$?
+if [[ " \$* " == *" commit-tree "* && ! -e "$BATS_TEST_TMPDIR/moved" ]]; then
+  touch "$BATS_TEST_TMPDIR/moved"
+  echo "meanwhile" >"$TEAM_HOME/tasks/current.md"
+  "$real_git" -C "$TEAM_HOME" add tasks/current.md
+  "$real_git" -C "$TEAM_HOME" commit -q -m "chore: current" -- tasks/current.md
+fi
+exit \$rc
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/stubs/git"
+  theirs=$(team_tip)
+
+  run_bin -0 --separate-stderr team-log T1 plan-approved by=Daniel
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (origin's dev has moved and the commits not on it cannot be replayed onto it (the branch moved meanwhile; the next push replays it); they stay unpushed); the next checkpoint pushes it"
+  [[ -e $BATS_TEST_TMPDIR/moved ]]
+  # The branch is the other script's commit on the ledger's, and the working tree has none of origin's.
+  assert_equal "$(git -C "$TEAM_HOME" log -2 --format=%s)" "chore: current
+chore: ledger T1 plan-approved"
+  [[ ! -e $TEAM_HOME/manual-steps.md ]]
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain --untracked-files=no)" ""
+  assert_equal "$(team_tip)" "$theirs"
+
+  run_bin -0 team-checkpoint --force
+  assert_contains "$output" "origin's dev had moved; replayed onto it and pushed dev"
+  assert_equal "$(git -C "$team_origin" log --format=%s "$theirs..dev" | tail -n 2)" "chore: current
+chore: ledger T1 plan-approved"
+  assert_equal "$(cat "$TEAM_HOME/manual-steps.md")" "from laptop"
+  assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
+}
+
 @test "a commit that conflicts with origin's is left unpushed with a message" {
   run_bin -0 team-open home feature feat work "Do the work"
   make_machine laptop

@@ -239,7 +239,8 @@ def field_text($want):
   elif $want == "id" then "\(.) (id)"
   else "\(.) (\($want | noun | sub("^an? "; "")))" end;
 
-# The contract as a table, one row per kind: event, writer, fields, and what the kind is about.
+# The contract as a table, one row per kind: event, writer, fields, "pushed at once" for a push
+# kind, and what the kind is about.
 def contract_table:
   .kinds | to_entries
   | (map(.key | length) | max) as $event_width
@@ -251,7 +252,8 @@ def contract_table:
          | [($kind.one_of // [])[] | "one of \(join(" or "))"] as $one_of
          | if $fields == [] then "-" else $fields | join(", ") end
            + if $optional == [] then "" else "; optional \($optional | join(", "))" end
-           + if $one_of == [] then "" else "; \($one_of | join("; "))" end) as $text
+           + if $one_of == [] then "" else "; \($one_of | join("; "))" end
+           + if $kind.push == true then "; pushed at once" else "" end) as $text
       | "  \(.key | pad($event_width))  \(writers($kind) | join(", ") | pad($writer_width))  \($text)"
         + if $kind.about then "  (\($kind.about))" else "" end);
 
