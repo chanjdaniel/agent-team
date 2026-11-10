@@ -186,9 +186,9 @@ sandbox() {
   # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in, nor the
   # heavy run tests/run holds (team-heavy), nor the role and task of the session running the suite
   # (worker_refusal), nor the parallelism team-checks gives the suite (TEAM_JOBS), nor a bound on
-  # Docker's answers (TEAM_DOCKER_SECONDS).
+  # Docker's answers (TEAM_DOCKER_SECONDS), nor the heartbeat job's mark (TEAM_HEARTBEAT_JOB).
   unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
-  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS
+  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS TEAM_HEARTBEAT_JOB
   # The state and cache directories and Claude Code's config directory are HOME's, as the
   # sandbox's HOME is.
   unset XDG_STATE_HOME XDG_CACHE_HOME CLAUDE_CONFIG_DIR
@@ -356,7 +356,9 @@ stub_calls() {
 # CPUQuotaPerSecUSec, in systemd's form: 360% is 3.600000s); every call fails as a
 # user manager that does not answer once ~/.fake-systemd/down exists; launchctl
 # bootstrap gui/<uid> <plist>, bootout gui/<uid>/<label> and print gui/<uid>/<label>, refusing as
-# launchctl does a bootstrap of a loaded job or a bootout of one not loaded.
+# launchctl does a bootstrap of a loaded job or a bootout of one not loaded, and keeping in
+# ~/.fake-launchd/heartbeat-calls, for each bootstrap and bootout of agent-team.heartbeat, whether
+# the run's lock was held then and the heartbeat's plist there.
 fake_service_managers() {
   stub_script systemctl <<'EOF'
 units=$HOME/.config/systemd/user state=$HOME/.fake-systemd
@@ -436,6 +438,14 @@ EOF
   stub_script launchctl <<'EOF'
 state=$HOME/.fake-launchd domain=gui/$(id -u)
 mkdir -p "$state"
+# Each bootstrap and bootout of the heartbeat, as whether the run's lock was held and its plist
+# was there: "<verb> lock <held|free> plist <present|absent>".
+if [[ ${1:-} == bootstrap || ${1:-} == bootout ]] && [[ ${2:-}${3:-} == *agent-team.heartbeat* ]]; then
+  lock=$HOME/.local/state/agent-team/heartbeat.lock held=free there=absent
+  [[ ! -e $lock ]] || flock -n "$lock" true || held=held
+  [[ ! -e $HOME/Library/LaunchAgents/agent-team.heartbeat.plist ]] || there=present
+  echo "$1 lock $held plist $there" >>"$state/heartbeat-calls"
+fi
 case ${1:-} in
   bootstrap)
     [[ $2 == "$domain" && -f $3 ]] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }

@@ -8,14 +8,31 @@
 #          happens on wake or boot.
 #   macOS  LaunchAgents in ~/Library/LaunchAgents: agent-team.heartbeat, at minutes 0, 5, ..., 55
 #          of every hour (StartCalendarInterval, which launchd runs on wake when missed in sleep),
-#          and agent-team.caffeinate, `caffeinate -i` kept alive, so this Mac does not idle-sleep
-#          while the heartbeat is enabled.
+#          with TEAM_HEARTBEAT_JOB=agent-team.heartbeat beside TEAM_HOME and PATH, which marks a
+#          process as running inside the job, and agent-team.caffeinate, `caffeinate -i` kept
+#          alive, so this Mac does not idle-sleep while the heartbeat is enabled. A launchctl
+#          bootout of a job stops its running process (systemd's disable --now of the timer leaves
+#          a running service alone), so nothing boots the heartbeat job out while a run is in
+#          progress: disable, enable and run below say how.
 #
 # Usage: team-timers enable | disable | status [--json] | health [--json] | run | watch [--once]
 #   enable   Installs the job and starts it (and caffeinate on macOS). A job already installed
 #            as defined and running is left alone; one that differs is rewritten and reloaded.
-#            Only on the machine that holds the lease, and only with Daniel's yes.
-#   disable  Stops and removes the job (and caffeinate). Nothing installed is fine.
+#            On macOS a loaded heartbeat job that must be reloaded (its plist changed, or missing
+#            while it is loaded) waits first for the run's lock (heartbeat.lock) for up to 60 s,
+#            then is booted out and bootstrapped while the lock is held; past the wait it is
+#            reloaded anyway, saying "team-timers: a heartbeat run still held its lock after 60 s,
+#            so the job was reloaded under it" on stderr. Only on the machine that holds the
+#            lease, and only with Daniel's yes.
+#   disable  Stops and removes the job (and caffeinate). Nothing installed is fine. On macOS, in
+#            this order: both plists are removed, so nothing loads them at the next login;
+#            caffeinate is booted out; and the heartbeat job, when loaded, is booted out at once
+#            while disable holds the run's lock, taken without waiting, or left loaded when a run
+#            holds the lock or disable runs inside the job (the fence of a heartbeat run), that
+#            run unloading it as its last act. It says "the heartbeat is disabled:
+#            agent-team.heartbeat, agent-team.caffeinate stopped and removed", or, with the job
+#            left loaded, "the heartbeat is disabled: agent-team.caffeinate stopped and both
+#            removed; agent-team.heartbeat unloads itself when its run in progress ends".
 #   status   installed, enabled (every job of this OS loaded and running), current (whether the
 #            installed job is what enable would write from this checkout, the PATH it was enabled
 #            with aside; null when nothing is installed), the last run, the time of the heartbeat
@@ -227,7 +244,14 @@
 #            captured (the sweep and the capacity step claude too), and the reading counts the
 #            team's stacks as other programs without it: run enable again once it is there. A run
 #            that finds another still going skips. Posts go through discord_api; times in them are
-#            this machine's local time.
+#            this machine's local time. On macOS, inside the job (TEAM_HEARTBEAT_JOB is
+#            agent-team.heartbeat) with the heartbeat's plist gone, the job was disabled while
+#            loaded: a run that starts so says "team-timers: the heartbeat was disabled, so this
+#            run unloads its job and does nothing else" on stderr, boots its job out and exits 0,
+#            before the lock or any step, with no log line or record; a run whose plist went while
+#            it ran (its own fence, or a handoff's disable) boots its job out as its very last act,
+#            after its log line, record and alerts and once its lock is let go, on the normal and
+#            the timed-out end alike. Outside the job, or with the plist there, a run is as above.
 #   watch    A stream for anyone watching the hold: checks the offline flag every 60 s until
 #            killed, and prints one line when it appears (at once if it is there) and one when it
 #            goes:
@@ -259,12 +283,12 @@
 # keeps it in the journal).
 # TEAM_TIMERS_CHECKPOINT_SECONDS, TEAM_TIMERS_FINISHED_SECONDS, TEAM_TIMERS_FINISHED_CALL_SECONDS,
 # TEAM_TIMERS_COORDINATOR_SWEEP_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS,
-# TEAM_TIMERS_SWEEP_SECONDS, TEAM_TIMERS_JANITOR_SECONDS, TEAM_TIMERS_RUN_SECONDS and
-# TEAM_TIMERS_KILL_SECONDS replace the checkpoint step's 300 s, the finished step's 90 s after which
+# TEAM_TIMERS_SWEEP_SECONDS, TEAM_TIMERS_JANITOR_SECONDS, TEAM_TIMERS_RUN_SECONDS,
+# TEAM_TIMERS_LOCK_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the checkpoint step's 300 s, the finished step's 90 s after which
 # no stop starts, its 30 s for each call (the back step's and the coordinator step's session lists'
 # too), the coordinator step's 60 s for its sweep, the capacity step's 60 s for each of its
-# commands, the level step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s and
-# the 10 s after a time limit at which a command still running is killed, TEAM_TIMERS_FAILURES_DAYS
+# commands, the level step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s,
+# enable's 60 s wait for the run's lock and the 10 s after a time limit at which a command still running is killed, TEAM_TIMERS_FAILURES_DAYS
 # the failures log's 30 days, and TEAM_TIMERS_HEALTH_RUNS, TEAM_TIMERS_HEALTH_STALE_MINUTES,
 # TEAM_TIMERS_HEALTH_STEP_RUNS and TEAM_TIMERS_HEALTH_UNATTENDED_MINUTES the health view's and the
 # alerts' 2 runs, 15 minutes, 12 runs and 60 minutes (the tests' seams).
@@ -314,6 +338,9 @@ JANITOR_TIMEOUT=${TEAM_TIMERS_JANITOR_SECONDS:-1200}
 # Seconds: how long after its time limit's SIGTERM a command still running is killed.
 KILL_SECONDS=${TEAM_TIMERS_KILL_SECONDS:-10}
 RUN_TIMEOUT=${TEAM_TIMERS_RUN_SECONDS:-4200}
+# Seconds: the most enable waits for a run in progress before it reloads the launchd job under it,
+# kept under the Bash tool's 120 s, since team-resume may run enable in a session.
+LOCK_SECONDS=${TEAM_TIMERS_LOCK_SECONDS:-60}
 START_TIMEOUT=4500
 PACK_TIMEOUT=300
 # The most of a checkpoint's problem lines (its stderr) one run logs; a count stands for the rest.
@@ -438,6 +465,8 @@ heartbeat_plist() {
     <string>$TEAM_HOME</string>
     <key>PATH</key>
     <string>$job_path</string>
+    <key>TEAM_HEARTBEAT_JOB</key>
+    <string>$HEARTBEAT_LABEL</string>
   </dict>
   <key>StandardErrorPath</key>
   <string>$state/heartbeat.err</string>
@@ -492,6 +521,25 @@ loaded() {
   launchctl print "$domain/$1" >/dev/null 2>&1
 }
 
+# Whether this process runs inside the launchd heartbeat job, whose plist sets TEAM_HEARTBEAT_JOB.
+inside_job() {
+  [[ ${TEAM_HEARTBEAT_JOB:-} == "$HEARTBEAT_LABEL" ]]
+}
+
+# Whether this is a run of the launchd heartbeat job that a disable left loaded with no plist,
+# which must unload its own job: a bootout stops the job's running process, so no other process
+# may boot it out while a run is in progress.
+disabled_job() {
+  inside_job && [[ $(uname -s) == Darwin && ! -e $agents/$HEARTBEAT_LABEL.plist ]]
+}
+
+# Boot the heartbeat job out from inside it, its last act: launchd stops this process with it.
+unload_self() {
+  rm -f "$err" "$results"
+  launchctl bootout "$domain/$HEARTBEAT_LABEL" ||
+    die "launchctl bootout $domain/$HEARTBEAT_LABEL failed"
+}
+
 enable_systemd() {
   local changed=0 running=0
   write_if_changed "$(systemd_service)" "$units/$SERVICE.service" && changed=1
@@ -509,12 +557,24 @@ enable_systemd() {
 }
 
 enable_launchd() {
-  local label plist changed done=()
+  local label plist changed lock_fd done=()
   for label in "$HEARTBEAT_LABEL" "$CAFFEINATE_LABEL"; do
     plist=$agents/$label.plist changed=0
     write_if_changed "$(plist_of "$label")" "$plist" && changed=1
     if loaded "$label"; then
       ((changed)) || continue
+      if [[ $label == "$HEARTBEAT_LABEL" ]]; then
+        # A bootout stops a run in progress, so the reload waits for the run's lock a while.
+        exec {lock_fd}>>"$state/heartbeat.lock"
+        flock -w "$LOCK_SECONDS" "$lock_fd" ||
+          echo "team-timers: a heartbeat run still held its lock after $LOCK_SECONDS s, so the job was reloaded under it" >&2
+        # A run that ended meanwhile may have unloaded its job itself.
+        ! loaded "$label" || launchctl bootout "$domain/$label"
+        launchctl bootstrap "$domain" "$plist"
+        exec {lock_fd}>&-
+        done+=("$label")
+        continue
+      fi
       launchctl bootout "$domain/$label"
     fi
     launchctl bootstrap "$domain" "$plist"
@@ -539,16 +599,38 @@ disable_systemd() {
   echo "the heartbeat is disabled: $SERVICE.timer stopped and removed"
 }
 
+# The plists go first, so nothing loads them at the next login whatever happens next, then
+# caffeinate, then the heartbeat job, which is booted out only when no run is in progress, since a
+# bootout stops the job's running process: inside the job, or while a run holds its lock, the job
+# stays loaded and its run unloads it as its last act (bounded_run).
 disable_launchd() {
-  local label found=0
+  local label found=0 left=0 lock_fd
   for label in "$HEARTBEAT_LABEL" "$CAFFEINATE_LABEL"; do
-    if loaded "$label"; then
-      launchctl bootout "$domain/$label"
-      found=1
-    fi
     [[ ! -f $agents/$label.plist ]] || { rm -f "$agents/$label.plist"; found=1; }
   done
-  if ((found)); then
+  if loaded "$CAFFEINATE_LABEL"; then
+    launchctl bootout "$domain/$CAFFEINATE_LABEL"
+    found=1
+  fi
+  if loaded "$HEARTBEAT_LABEL"; then
+    found=1
+    if inside_job; then
+      left=1
+    else
+      mkdir -p "$state"
+      exec {lock_fd}>>"$state/heartbeat.lock"
+      if flock -n "$lock_fd"; then
+        launchctl bootout "$domain/$HEARTBEAT_LABEL"
+      else
+        left=1
+      fi
+      exec {lock_fd}>&-
+    fi
+  fi
+  if ((left)); then
+    echo "the heartbeat is disabled: $CAFFEINATE_LABEL stopped and both removed;" \
+      "$HEARTBEAT_LABEL unloads itself when its run in progress ends"
+  elif ((found)); then
     echo "the heartbeat is disabled: $HEARTBEAT_LABEL, $CAFFEINATE_LABEL stopped and removed"
   else
     echo "the heartbeat is not installed; nothing to disable"
@@ -1488,6 +1570,11 @@ stop_tree() {
 # it. Otherwise exit with the run's own code.
 bounded_run() {
   local run timer rc=0
+  if disabled_job; then
+    echo "team-timers: the heartbeat was disabled, so this run unloads its job and does nothing else" >&2
+    unload_self
+    exit 0
+  fi
   mkdir -p "$state"
   command -p sleep "$RUN_TIMEOUT" </dev/null >/dev/null 2>&1 &
   timer=$!
@@ -1516,11 +1603,14 @@ bounded_run() {
       if jq -se 'any(.[]; .holding == true)' "$results" >/dev/null 2>&1 && flock -n "$run_fd"; then
         alerts_step || true
       fi
+      exec {run_fd}>&-
     fi
+    ! disabled_job || unload_self
     exit 1
   fi
   wait "$run" || rc=$?
   rm -f "$fired"
+  ! disabled_job || unload_self
   exit "$rc"
 }
 

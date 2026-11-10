@@ -101,6 +101,8 @@ expected_heartbeat_plist() {
     <string>$TEAM_HOME</string>
     <key>PATH</key>
     <string>$1</string>
+    <key>TEAM_HEARTBEAT_JOB</key>
+    <string>agent-team.heartbeat</string>
   </dict>
   <key>StandardErrorPath</key>
   <string>$HOME/.local/state/agent-team/heartbeat.err</string>
@@ -228,7 +230,7 @@ EOF
   run_bin -0 team-timers disable
   assert_equal "$output" "the heartbeat is disabled: agent-team.heartbeat, agent-team.caffeinate stopped and removed"
   assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$(printf '%s\n' \
-    "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]" "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]")"
+    "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]")"
   [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $agents/agent-team.caffeinate.plist ]]
   [[ ! -e $HOME/.fake-launchd/agent-team.caffeinate ]]
 
@@ -236,6 +238,199 @@ EOF
   run_bin -0 team-timers disable
   assert_equal "$output" "the heartbeat is not installed; nothing to disable"
   assert_equal "$(stub_calls launchctl | grep -v '"print"')" ""
+}
+
+# The calls the fake launchctl made to agent-team.heartbeat, each with the lock's and the plist's
+# state then, one a line.
+heartbeat_calls() {
+  cat "$HOME/.fake-launchd/heartbeat-calls" 2>/dev/null || true
+}
+
+# Forget the launchctl calls made so far.
+forget_launchctl() {
+  : >"$STUB_CALLS/launchctl.log"
+  rm -f "$HOME/.fake-launchd/heartbeat-calls"
+}
+
+@test "on macOS, disable with no run in progress removes both LaunchAgents, then stops caffeinate and the heartbeat, the heartbeat under the run's lock" {
+  as_macos
+  local uid
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  forget_launchctl
+  run_bin -0 --separate-stderr team-timers disable
+  assert_equal "$output" "the heartbeat is disabled: agent-team.heartbeat, agent-team.caffeinate stopped and removed"
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$(printf '%s\n' \
+    "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]")"
+  assert_equal "$(heartbeat_calls)" "bootout lock held plist absent"
+  [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $agents/agent-team.caffeinate.plist ]]
+  [[ ! -e $HOME/.fake-launchd/agent-team.heartbeat && ! -e $HOME/.fake-launchd/agent-team.caffeinate ]]
+  # The lock is let go.
+  flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
+}
+
+@test "on macOS, disable while a run holds the lock, and disable inside the heartbeat job, leave the heartbeat to unload itself" {
+  as_macos
+  local uid lock=$HOME/.local/state/agent-team/heartbeat.lock case
+  uid=$(id -u)
+  mkdir -p "${lock%/*}"
+  for case in held-outside free-inside held-inside; do
+    rm -f "$HOME/.fake-launchd/agent-team.heartbeat"
+    run_bin -0 team-timers enable
+    forget_launchctl
+    case $case in
+      held-outside) run -0 --separate-stderr flock "$lock" "$REPO_ROOT/bin/team-timers" disable ;;
+      free-inside) TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 --separate-stderr team-timers disable ;;
+      held-inside) TEAM_HEARTBEAT_JOB=agent-team.heartbeat run -0 --separate-stderr flock "$lock" "$REPO_ROOT/bin/team-timers" disable ;;
+    esac
+    assert_equal "$output" "the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends"
+    assert_equal "$stderr" ""
+    assert_equal "$(stub_calls launchctl | grep -v '"print"')" "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]"
+    assert_equal "$(heartbeat_calls)" ""
+    [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $agents/agent-team.caffeinate.plist ]]
+    [[ -e $HOME/.fake-launchd/agent-team.heartbeat && ! -e $HOME/.fake-launchd/agent-team.caffeinate ]]
+  done
+}
+
+@test "on macOS, a run inside the heartbeat job whose LaunchAgent is gone unloads its job and does nothing else" {
+  as_macos
+  local uid stub
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  rm "$agents/agent-team.heartbeat.plist"
+  for stub in "$STUB_CALLS"/*.log; do : >"$stub"; done
+  rm -f "$HOME/.fake-launchd/heartbeat-calls"
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 --separate-stderr team-timers run
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-timers: the heartbeat was disabled, so this run unloads its job and does nothing else"
+  assert_equal "$(stub_calls launchctl)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
+  [[ ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+  [[ ! -e $log && ! -e $failures && ! -e $HOME/.local/state/agent-team/health.json ]]
+  for stub in "$STUB_CALLS"/*.log; do
+    [[ $stub == */launchctl.log || $stub == */uname.log ]] || assert_equal "$(basename "$stub"): $(cat "$stub")" "$(basename "$stub"): "
+  done
+}
+
+@test "on macOS, a run inside the job whose LaunchAgent goes during it unloads its job last, after its log line, record and alerts" {
+  as_macos
+  local uid
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  # The coordinator step's session list, read mid-run, is when a handoff's disable removes the
+  # plist.
+  stub_script claude <<SH
+[[ \$1 == agents ]] && rm -f '$agents/agent-team.heartbeat.plist'
+echo '$COORDINATOR'
+SH
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 team-timers run
+  assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
+  assert_equal "$(heartbeat_calls)" "bootout lock free plist absent"
+  [[ ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+  assert_equal "$output" "$(cat "$log")"
+  jq -e '.last_run.ended == "ok" and .last_run.holding == true' "$HOME/.local/state/agent-team/health.json"
+}
+
+@test "on macOS, a run inside the job that its time limit stops unloads its job last when its LaunchAgent went" {
+  as_macos
+  local uid hung=$BATS_TEST_TMPDIR/hung
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  stub_script claude <<SH
+[[ \$1 == agents ]] || exit 0
+rm -f '$agents/agent-team.heartbeat.plist'
+trap '' TERM
+echo "\$\$" >>'$hung'
+command -p sleep 300
+SH
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  assert_equal "$(still_running "$hung")" ""
+  jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
+  assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
+  assert_equal "$(heartbeat_calls)" "bootout lock free plist absent"
+}
+
+@test "on macOS, a run with its LaunchAgent there, or outside the job, never unloads the heartbeat" {
+  as_macos
+  run_bin -0 team-timers enable
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 team-timers run
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" ""
+
+  rm "$agents/agent-team.heartbeat.plist"
+  age_lease 20
+  run_bin -0 --separate-stderr team-timers run
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" ""
+  assert_contains "$output" " lease: home-pc renewed the lease, epoch 1"
+  [[ -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+}
+
+@test "on macOS, A holds, B steals: A's next run inside its job fences A, writes its log line and record, and unloads its job last" {
+  as_macos
+  local uid
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  stub_reply curl "curl must not be called" 99
+  stub_script claude <<'EOF'
+case $1 in
+  agents) echo '[{"id": "3169fcbd", "name": "coordinator", "status": "busy"}, {"id": "81f08540", "name": "T5-builder", "status": "busy"}]' ;;
+  stop) echo "Stopped $2" ;;
+  *) exit 127 ;;
+esac
+EOF
+  make_machine laptop
+  steal_lease laptop home-pc
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 team-timers run
+  [[ $output =~ ^[0-9T:Z-]+" lease: home-pc no longer holds the lease: laptop holds it (epoch 2); fenced home-pc: stopped coordinator (3169fcbd), T5-builder (81f08540); the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends; team-lease take clears the fence"$ ]]
+  assert_equal "$output" "$(tail -n 1 "$log")"
+  [[ -e $HOME/.local/state/agent-team/fenced ]]
+  assert_equal "$(stub_calls claude)" "$(printf '%s\n' '["agents","--json"]' '["stop","3169fcbd"]' '["stop","81f08540"]')"
+  [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $agents/agent-team.caffeinate.plist ]]
+  [[ ! -e $HOME/.fake-launchd/agent-team.caffeinate && ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+  jq -e '.last_run.ended == "fenced"' "$HOME/.local/state/agent-team/health.json"
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$(printf '%s\n' \
+    "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]")"
+  assert_equal "$(heartbeat_calls)" "bootout lock free plist absent"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "on macOS, enable reloads a loaded heartbeat whose LaunchAgent is gone or changed under the run's lock, and past TEAM_TIMERS_LOCK_SECONDS reloads it anyway" {
+  as_macos
+  local uid lock=$HOME/.local/state/agent-team/heartbeat.lock
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  local reload
+  reload=$(printf '%s\n' "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]" \
+    "[\"bootstrap\",\"gui/$uid\",\"$agents/agent-team.heartbeat.plist\"]")
+
+  rm "$agents/agent-team.heartbeat.plist"
+  forget_launchctl
+  run_bin -0 --separate-stderr team-timers enable
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$reload"
+  assert_equal "$(heartbeat_calls)" "$(printf '%s\n' "bootout lock held plist present" "bootstrap lock held plist present")"
+  flock -n "$lock" true
+
+  echo "<!-- stale -->" >>"$agents/agent-team.heartbeat.plist"
+  forget_launchctl
+  run_bin -0 --separate-stderr team-timers enable
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$reload"
+  assert_equal "$(heartbeat_calls)" "$(printf '%s\n' "bootout lock held plist present" "bootstrap lock held plist present")"
+
+  rm "$agents/agent-team.heartbeat.plist"
+  forget_launchctl
+  local start=$SECONDS
+  TEAM_TIMERS_LOCK_SECONDS=1 run -0 --separate-stderr flock "$lock" "$REPO_ROOT/bin/team-timers" enable
+  ((SECONDS - start < 10))
+  assert_equal "$stderr" "team-timers: a heartbeat run still held its lock after 1 s, so the job was reloaded under it"
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$reload"
+  assert_equal "$(cat "$HOME/.fake-launchd/agent-team.heartbeat")" "$(cat "$agents/agent-team.heartbeat.plist")"
 }
 
 @test "status says installed, enabled, the last run from the heartbeat log, the last good run and health; --json says the same" {
