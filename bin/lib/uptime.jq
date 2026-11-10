@@ -102,12 +102,12 @@ def uptime_round($checks; $results; $now; $machine; $limits):
        .checks[$c.key] |= uptime_count($c.check; $results[$c.key]; $now; $limits))) as $counted
   | ($counted + {schema: "team-uptime/1", written: $now}) as $new
   | [$order[] | . as $c | {key, prev: $state.checks[.key], now: $new.checks[.key]}] as $rows
-  | [$rows[] | select(.now.ok | not)
-      | "\(.key): failed: \(.now.reason) (\(.now.failures) in a row, since \(.now.since))"]
-    + [$rows[] | select(.prev.alert != null and .prev.alert.posted == null and .now.alert == null)
-      | "\(.key): answered again before its outage post went through; closed"]
-    + [$dropped[] | select(.value.alert.posted != null)
-      | "\(.key): no longer checked as it was; its open outage is closed without a post"] as $lines
+  | ([$rows[] | select(.now.ok | not)
+       | "\(.key): failed: \(.now.reason) (\(.now.failures) in a row, since \(.now.since))"]
+     + [$rows[] | select(.prev.alert != null and .prev.alert.posted == null and .now.alert == null)
+       | "\(.key): answered again before its outage post went through; closed"]
+     + [$dropped[] | select(.value.alert.posted != null)
+       | "\(.key): no longer checked as it was; its open outage is closed without a post"]) as $lines
   | def due($kind; $keys; $texts):
       if $keys == [] then empty
       else {kind: $kind, keys: $keys, content: ($texts | join("\n") | uptime_cut($limits.post_cut))} end;
