@@ -6,7 +6,7 @@
 #
 # Usage: tests/bootstrap-drill <machine name>
 # Exit 0 when the bootstrap ends at a step of Daniel's in the projects stage or a later one, or set
-# up; 1 when it failed on its own, or stopped at a step of Daniel's in an earlier stage, which the
+# up; 1 when it failed on its own (its summary naming failures besides Daniel's steps), or stopped at a step of Daniel's in an earlier stage, which the
 # runner should have got past: the drill plays every earlier step (the name, by --name, and each
 # sudo stage, in a pseudo-terminal), so an earlier stop leaves most of the bootstrap unproven.
 # Its last line, on every way it ends, is the run's record for team-drill import, which reads it
@@ -68,7 +68,11 @@ tail -n 200 "$HOME/.local/state/agent-team/bootstrap.log" 2>/dev/null || true
 echo "== it ended with: $last"
 [[ $last =~ ^([a-z]+):\ (Daniel|summary): ]] || exit 1
 case ${BASH_REMATCH[1]} in
-  projects | config | heartbeat | check) ;;
+  check)
+    # The summary of a run whose own steps failed besides Daniel's.
+    [[ $last != *": summary: not set up yet: besides "* ]] || exit 1
+    ;;
+  projects | config | heartbeat) ;;
   *)
     echo "== it stopped at the ${BASH_REMATCH[1]} stage, before the projects stage, which the drill reaches by playing Daniel's earlier steps"
     exit 1

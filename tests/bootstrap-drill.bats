@@ -81,6 +81,14 @@ drill-record: machine=ci-arch verdict=fail commit=$(drill_head) claude=2.1.321"
   assert_equal "$status" 1
   assert_equal "$(tail -n 1 <<<"$output")" "drill-record: machine=ci-arch verdict=fail commit=$(drill_head) claude=2.1.321"
   assert_contains "$output" "== it ended with: tools: the Claude Code install failed (exit 1)"
+  # So does one whose summary names failures besides Daniel's steps.
+  bootstrap_ends "check: summary: not set up yet: besides Daniel's steps above, these failed: servers; fix them as their doctor lines say, then team-bootstrap again"
+  drill ci-arch
+  assert_equal "$status" 1
+  assert_equal "$(tail -n 1 <<<"$output")" "drill-record: machine=ci-arch verdict=fail commit=$(drill_head) claude=2.1.321"
+  bootstrap_ends "check: summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
+  drill ci-arch
+  assert_equal "$status" 0
 }
 
 @test "Claude Code is looked for on PATH, then in ~/.local/bin, where the bootstrap installs it, and is none when neither has it or it does not answer" {
