@@ -396,17 +396,23 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   echo "b" >"$wt/b.txt"
   run_bin -0 team-timers run
   assert_contains "$output" "checkpoint: T1 home: pushed wip/home/T1 "
-  # It works on (a commit and an edit no checkpoint saw), then dies: no handoff, no heartbeat.
+  # It works on (a commit and an edit no checkpoint saw, Daniel's approval, which is pushed at
+  # once, and a park, which waits for the next checkpoint), then dies: no handoff, no heartbeat.
   echo "c" >"$wt/c.txt"
   git -C "$wt" add c.txt
   git -C "$wt" commit -q -m "feat: c"
   echo "later" >"$wt/a.txt"
+  run_bin -0 team-log T1 plan-approved by=daniel
+  run_bin -0 team-log T1 paused reason="waiting on Daniel"
   age_lease 75
 
   resume_by_stealing
   assert_equal "$stderr" ""
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .stolen_from]')" '["laptop",2,"home-pc"]'
   assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; resuming from the checkpoint of "
+  # The approval reached origin before home-pc died, so laptop's ledger has it; the park did not.
+  assert_equal "$(jq -sc '[.[] | select(.task == "T1" and (.event == "plan-approved" or .event == "paused")) | .event]' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" \
+    '["plan-approved"]'
   # laptop's worktree is the pushed branch with the checkpoint's changes uncommitted, none later.
   assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
   assert_equal "$(git -C "$lt" status --porcelain)" "$(printf '%s\n' " M a.txt" "?? b.txt")"
@@ -416,24 +422,35 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   assert_equal "$(laptop_launches | wc -l)" 1
 
   # home-pc comes back: its heartbeat fences it, and its doctor fails, listing what only home-pc
-  # holds (the later commit and edit) with the commands that push it to a salvage branch.
+  # holds (the park in its ledger, the later commit and edit) with the commands that push it to a
+  # salvage branch.
   run -0 "$REPO_ROOT/bin/team-timers" run
   [[ -e $state/fenced ]]
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
   assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict, .reason, .fix]' <<<"$output")" \
-    "$(jq -cn --arg url "$team_origin" '["salvage T1 home", "FAIL",
+    "$(jq -cn --arg url "$team_origin" --arg home "$TEAM_HOME" '["salvage records", "FAIL",
+      "\($home) has uncommitted records (ledger.jsonl: 1 new line)",
+      "git -C \($home) add -A -- ledger.jsonl && git -C \($home) commit -m \"wip: salvage records from home-pc\", then git -C \($home) push \($url) HEAD:refs/heads/salvage/records/home-pc-1"],
+      ["salvage T1 home", "FAIL",
       "~/slots/home/1 has 1 commit on no origin branch and uncommitted changes (changes to tracked files: a.txt; untracked files: b.txt)",
       "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push \($url) HEAD:refs/heads/salvage/home/T1-home-pc"]')"
-  # Daniel runs it: the work is on the team home's origin only, and the line passes.
-  local fix
-  fix=$(jq -r '.[] | select(.check == "salvage T1 home") | .fix' <<<"$output")
-  eval "${fix%%, then *}" >/dev/null 2>&1
-  eval "${fix#*, then }" >/dev/null 2>&1
+  # Daniel runs them: the work is on the team home's origin only, the park on a salvage branch
+  # beside its dev, and the lines pass.
+  local fix check
+  for check in "salvage records" "salvage T1 home"; do
+    fix=$(jq -r --arg check "$check" '.[] | select(.check == $check) | .fix' <<<"$output")
+    eval "${fix%%, then *}" >/dev/null 2>&1
+    eval "${fix#*, then }" >/dev/null 2>&1
+  done
+  assert_equal "$(git -C "$team_origin" show refs/heads/salvage/records/home-pc-1:ledger.jsonl | jq -sc '[.[] | select(.task == "T1" and .event == "paused") | .reason]')" \
+    '["waiting on Daniel"]'
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -sc '[.[] | select(.event == "paused")]')" '[]'
   assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/home/T1-home-pc)" "$(git -C "$wt" rev-parse HEAD)"
   assert_equal "$(git -C "$team_origin" show refs/heads/salvage/home/T1-home-pc:a.txt)" "later"
   assert_equal "$(git -C "$home_origin" for-each-ref refs/heads/salvage/)" ""
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
-  assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict]' <<<"$output")" '["salvage","PASS"]'
+  assert_equal "$(jq -c '[.[] | select(.check | startswith("salvage")) | [.check, .verdict]]' <<<"$output")" \
+    '[["salvage records","PASS"],["salvage","PASS"]]'
 }
 
 @test "outage: home-pc's heartbeat holds the team offline, posting once and changing nothing on origin; when GitHub is back it renews, clears the hold and posts the window" {

@@ -247,24 +247,24 @@ TABLE
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree; optional story  \(story is the backlog story .*team-merge marks done\)$' <<<"$output"
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\), memory  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*memory: the file in the task directory of the memories.*\)$' <<<"$output"
-  grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
-  grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
-  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\|standing\)  \(approval: .*\)$' <<<"$output"
+  grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\); pushed at once  \(Daniel.s plan-time word .*\)$' <<<"$output"
+  grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\); pushed at once  \(.*withdr.*\)$' <<<"$output"
+  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
+  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
+  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\|standing\); pushed at once  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
-  grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
+  grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\); pushed at once  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  walk +team-ui +state \(on\|off\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"
-  grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
+  grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head; pushed at once  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, discord_message \(id\), brief  \(request is the link to Daniel.s Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on \(team-worker refuses one that did\), which only an ops launch carries; model is the --model the session launched on, .*\)$' <<<"$output"
-  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\)  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
+  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\); pushed at once  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
   grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
-  grep -Eq '^  ran +team-run-approved +id, exit \(number\)  \(.*\)$' <<<"$output"
+  grep -Eq '^  ran +team-run-approved +id, exit \(number\); pushed at once  \(.*\)$' <<<"$output"
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
   grep -Eq '^  resumed +team-log, team-answer +-; optional brief +\(clears held, blocked, paused and waiting; brief: ' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
   grep -Eq '^  denied +team-log, denial-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked; denial-log, every worker.s PermissionDenied hook, .*never the tool.s input\)$' <<<"$output"
-  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
+  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\); pushed at once  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  retro-change +team-log +retro, proposals  \(the task it is logged on builds those proposals of retro T<m>, or, logged on T<m> itself, records were changed in place for them; .*team-retro digest.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-stow +machine, worktrees \(list\), roles \(list\); optional sessions \(list\), cause \(level\|handoff\)  \(one per task team-stow stows, every open task at a handoff .*unfinished_roles.*\)$' <<<"$output"
@@ -1860,4 +1860,157 @@ assert_no_answer_logged() {
   run_bin -1 team-log T7 waiting on=Daniel "reason=mail "$'\x01'"daniel@$provider"
   assert_contains "$output" "team-log: refusing a ledger event: reason holds 1 email address at a public provider"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$(($(wc -l <<<"$before") + 2))"
+}
+
+# The ledger's immediate push: the team home a clone of a bare origin, home-pc holding the lease,
+# and the ledger's lock file ignored, as the team home's .gitignore has it.
+push_home() {
+  printf 'ledger.jsonl.lock\n' >"$TEAM_HOME/.gitignore"
+  team_origin=$(hold_lease home-pc)
+}
+
+# The subject of the commit at the tip of the team home's dev on its origin.
+origin_subject() {
+  git -C "$team_origin" log -1 --format=%s dev
+}
+
+@test "every push kind team-log writes is committed alone and on origin at once, with no checkpoint; no other kind commits" {
+  push_home
+  plan_registry
+  opened T14 proj
+  a_retro T150 answered
+  local kind args tip pushed=()
+  while IFS= read -r kind; do
+    mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" --arg coordinator "$COORDINATOR" '(.kinds[$k].required | to_entries[]
+      | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
+          elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
+          elif .key == "retro" then "T150"
+          elif .key == "discord_channel" then $coordinator
+          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
+      (select($k == "merge-approved") | "head=a1b2c3d4"),
+      (.kinds[$k].one_of // [] | .[] | "\(.[0])=x y")' "$CONTRACT")
+    tip=$(git -C "$team_origin" rev-parse dev)
+    run_bin -0 --separate-stderr team-log T14 "$kind" "${args[@]}"
+    assert_equal "$output" ""
+    assert_equal "$stderr" ""
+    if jq -e --arg k "$kind" '.kinds[$k].push == true' "$CONTRACT" >/dev/null; then
+      pushed+=("$kind")
+      assert_equal "$(origin_subject)" "chore: ledger T14 $kind"
+      assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+      assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+      assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl)" "$(cat "$TEAM_HOME/ledger.jsonl")"
+      assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$(git -C "$team_origin" rev-parse dev)"
+    else
+      assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+    fi
+  done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
+  # The answered among them is one given at the terminal, with no discord_message.
+  assert_equal "${pushed[*]}" "answered plan-approved merge-approved merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn retro-schedule"
+  [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
+}
+
+@test "a worker's message --from-message logs, of no push kind, makes no commit and no push" {
+  push_home
+  open_t7
+  launched T7 builder b0000001
+  local tip head
+  tip=$(git -C "$team_origin" rev-parse dev) head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-log T7 --from-message 'T7 DONE 01 a1b2c3d done'
+  assert_equal "$stderr" ""
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .event)" "done"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+}
+
+@test "a push that fails leaves the exit and stdout as they were, says why in one line, and the next checkpoint pushes the commit" {
+  push_home
+  git -C "$TEAM_HOME" remote set-url origin "$BATS_TEST_TMPDIR/gone.git"
+  local tip
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (cannot push dev: '$BATS_TEST_TMPDIR/gone.git' does not appear to be a git repository); the next checkpoint pushes it"
+  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: ledger T14 plan-approved"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+
+  git -C "$TEAM_HOME" remote set-url origin "$team_origin"
+  run_bin -0 team-checkpoint --force
+  assert_equal "$(git -C "$team_origin" log --format=%s "$tip..dev" | grep -c '^chore: ledger T14 plan-approved$')" 1
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -r .event)" "plan-approved"
+}
+
+@test "a ledger the records hook refuses is the same one line with the hook's reason, and the exit stands" {
+  push_home
+  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  # A line written before the ledger's check, holding an address at a public provider.
+  local provider=gmail.com head tip
+  jq -cn --arg a "someone@$provider" '{ts: "2026-10-22T02:00:00Z", task: "T14", event: "paused", reason: "mail \($a)"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  assert_equal "$output" ""
+  assert_equal "$(wc -l <<<"$stderr")" 1
+  # The hook's first line, which names the ledger, without the list of refusals it ends with.
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (cannot commit the records: data-check: refused: ledger.jsonl adds an email address at a public provider or an image, which the records never take: other people's addresses and screenshots stay out of git; take each out, then commit again); the next checkpoint pushes it"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .event)" "plan-approved"
+}
+
+@test "a fenced machine, and one that lost the lease, commits and pushes no ledger, saying why" {
+  push_home
+  local head tip
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine commits and pushes no ledger)"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+
+  rm "$HOME/.local/state/agent-team/fenced"
+  make_machine laptop
+  steal_lease laptop home-pc
+  rm -f "$HOME/.local/state/agent-team/probe.json"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  assert_equal "$output" ""
+  [[ $stderr == "team-log: the ledger is not on origin yet (home-pc no longer holds the lease: origin names laptop ("*"): a machine that lost the lease commits and pushes no ledger)" ]]
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "plan-approved
+plan-approved"
+}
+
+@test "while the team holds offline, the push is skipped at once with no network call, saying the next checkpoint pushes it" {
+  push_home
+  local head tip
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  echo '{"since": "2026-10-22T14:00:00Z"}' >"$HOME/.local/state/agent-team/offline"
+  rm -f "$HOME/.local/state/agent-team/probe.json"
+  # An origin that would hang every call: the skip makes none.
+  git -C "$TEAM_HOME" remote set-url origin "http://127.0.0.1:9/agent-team.git"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (GitHub is unreachable since $(date -d 2026-10-22T14:00:00Z +%H:%M), and the team is holding); the next checkpoint pushes it"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  [[ ! -e $HOME/.local/state/agent-team/probe.json ]]
+
+  # A fenced machine says it is fenced, offline or not.
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  [[ $stderr == "team-log: the ledger is not on origin yet (home-pc is fenced since "* ]]
+}
+
+@test "a team home with no origin, or that is no git checkout, prints nothing and fails nothing" {
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=Daniel
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  git -C "$TEAM_HOME" init -q -b dev
+  run_bin -0 --separate-stderr team-log T14 retro-schedule every_hours=48 discord_message="$(soon)"
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  assert_equal "$(git -C "$TEAM_HOME" rev-list --all | wc -l)" 0
+  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "plan-approved
+retro-schedule"
 }

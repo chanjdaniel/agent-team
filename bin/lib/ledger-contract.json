@@ -4,6 +4,7 @@
     "Each field's type is string, number, array (a list), numbers (a list of whole numbers, 0 or more), object or id (a Discord id: a string of digits, which --check also takes as a whole number, the form team-log wrote before), or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
     "A kind's field_writers names the one script that may append a line holding each field it lists, among the kind's writers; the others append the kind without it.",
+    "A kind with push true records Daniel's word or an outside fact, so the script that appends it commits the ledger and pushes it to the team home's origin at once (ledger_push), not at the next checkpoint.",
     "A kind's field_when names, for each field it lists, the values another field must hold for a line to carry it, as {\"discord_message\": {\"role\": [\"ops\"]}}: a line holding the field with any other value there is refused.",
     "A kind's one_of lists sets of fields of which a line carries exactly one, as [[\"text\", \"chars\"]]: a line holding none of a set (an empty string counting as none), or more than one, is refused.",
     "Lines from strict_from on must meet their kind's fields; earlier lines are legacy and only need ts, task and event.",
@@ -46,11 +47,13 @@
     },
     "closed": {
       "writer": "team-close",
+      "push": true,
       "about": "a legacy task's lists are empty; the hand-written legacy closes before strict_from have none",
       "required": {"archive": "array", "returned": "array", "kept": "array"}
     },
     "merged": {
       "writer": "team-merge",
+      "push": true,
       "about": "approval: the word it merged on, head (a merge-approved of the PR at its head), plan (a merge-preapproved of its project not withdrawn) or standing (Daniel's merge-standing on its project or on all); by, discord_message and discord_channel name Daniel's Discord message whichever it is",
       "required": {"pr": "number", "merge": "string", "head": "string", "by": "string"},
       "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "plan", "standing"]}
@@ -100,17 +103,20 @@
     },
     "answered": {
       "writer": ["team-log", "team-answer"],
+      "push": true,
       "about": "Daniel's answer to the asked of its id; discord_message: the message team-answer read it from, never logged twice for one ask",
       "required": {"id": "string", "answer": "string"},
       "optional": {"discord_message": "id"}
     },
     "ran": {
       "writer": "team-run-approved",
+      "push": true,
       "about": "an approved script run once its ask was answered: id the asked naming it, exit its exit code; its output is in the machine's ${XDG_STATE_HOME:-~/.local/state}/agent-team/runs/T<n>/<id>.log, never in the records",
       "required": {"id": "string", "exit": "number"}
     },
     "plan-approved": {
       "writer": "team-log",
+      "push": true,
       "required": {"by": "string"}
     },
     "paused": {
@@ -167,27 +173,32 @@
     },
     "merge-approved": {
       "writer": "team-log",
+      "push": true,
       "about": "Daniel's word on the PR at url, one of the task's pr events, at head, the full sha the ask named, which a pr event of url, or a review of the task since url's first pr event, logged, its discord_message sent no earlier than the first of those that logged it; team-log requires head of every new line, and earlier lines without it hold for any head; legacy lines name only the number",
       "required": {"url": "string", "discord_message": "id"},
       "optional": {"head": "string"}
     },
     "merge-preapproved": {
       "writer": "team-log",
+      "push": true,
       "about": "Daniel's plan-time word on the task's PR in project, its discord_message an answer to the task's latest asked of id ask, sent no earlier than it, which it settles; scope the repository paths the plan may change, each a file or a directory ending in /; it stands until a later merge-preapproval-withdrawn of project, and the latest of a project is the one read",
       "required": {"project": "string", "ask": "string", "discord_message": "id", "scope": "array"}
     },
     "merge-preapproval-withdrawn": {
       "writer": "team-log",
+      "push": true,
       "about": "Daniel withdrew the task's latest merge-preapproved of project, in discord_message",
       "required": {"project": "string", "discord_message": "id"}
     },
     "merge-standing": {
       "writer": "team-log",
+      "push": true,
       "about": "Daniel's standing word that the team may merge a ready PR of project, never the team's own (own_project), which team-log refuses, or of every other project when project is all, with no ask, said in discord_message in discord_channel, #coordinator's channel or the task's thread; read across the whole ledger, the task only naming the thread: for a project, the latest merge-standing or merge-standing-withdrawn whose project is that project or all decides, and the word stands when that is a merge-standing",
       "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
     },
     "merge-standing-withdrawn": {
       "writer": "team-log",
+      "push": true,
       "about": "Daniel withdrew the standing word on project, or on every project but the team's own when project is all, in discord_message in discord_channel; read with merge-standing across the whole ledger, so a withdrawal of one project leaves a word on all standing for the others, and a later merge-standing stands again",
       "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
     },
@@ -202,6 +213,7 @@
     },
     "retro-schedule": {
       "writer": "team-log",
+      "push": true,
       "about": "Daniel's word on how often a retro runs, read by team-retro from the latest across the ledger; every_hours 0 stops the retros",
       "required": {"every_hours": "number", "discord_message": "id"}
     },

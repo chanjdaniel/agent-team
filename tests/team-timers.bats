@@ -8,12 +8,16 @@ load helpers/common
 load helpers/docker
 load helpers/inbox
 
+# The live session list with only the coordinator in it, which the coordinator step looks for.
+COORDINATOR='[{"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
+
 setup() {
   sandbox
   # A registry, committed with the team home, for the capacity step's readings, and a
-  # claude daemon with no live session, which the capacity step reads.
+  # claude daemon whose one live session is the coordinator, which the coordinator and capacity
+  # steps read.
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   origin=$(hold_lease home-pc)
   fake_service_managers
   stub_command uname
@@ -611,7 +615,7 @@ SH
   flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
 
   rm "$STUB_FIXTURES/claude.sh"
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
 }
@@ -746,7 +750,8 @@ LINES
  {"id": "66666666", "name": "T9-ops", "status": "idle"},
  {"id": "77777777", "name": "T8-planner", "status": "idle"},
  {"id": "99999999", "name": "T6-planner", "status": "idle"},
- {"id": "88888888", "name": "T7-reviewer", "status": "idle"}]
+ {"id": "88888888", "name": "T7-reviewer", "status": "idle"},
+ {"id": "c0ffee00", "name": "coordinator", "status": "idle"}]
 JSON
   finished_stub
 }
@@ -800,14 +805,15 @@ finished: warning: could not stop T9-reviewer 33333333 (no such session 33333333
 finished: stopped T9-builder 44444444: its work is handed on"
   assert_equal "$(steps "$output")" "lease checkpoint finished"
 
-  # The capacity and level steps read the same list, and their failures are what fail this run.
+  # The coordinator, capacity and level steps read the same list; the coordinator step's failure
+  # fails no run, and the capacity and level steps' are what fail this one.
   touch "$STUB_FIXTURES/agents-fail"
   : >"$STUB_CALLS/claude.log"
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease checkpoint finished capacity level"
+  assert_equal "$(steps "$output")" "lease checkpoint coordinator finished capacity level"
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
     "finished: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
-  assert_equal "$(grep -c ': failed: ' <<<"$output")" 2
+  assert_equal "$(grep -c ': failed: ' <<<"$output")" 3
   [[ $(grep ' capacity: \| level: ' <<<"$output") == *"failed: "*"failed: "* ]]
   assert_equal "$(stops)" ""
 }
@@ -1010,7 +1016,7 @@ EOF
 @test "an outage post that failed goes out with the back message" {
   stub_sleep </dev/null
   discord_answers 503
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   cut_origin
   run_bin -75 team-timers run
   assert_contains "$output" "the team is holding; the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it goes with the back message"
@@ -1030,7 +1036,7 @@ GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker 
 @test "with a session list that never answers, the back post is still made, saying the list could not be read" {
   stub_sleep </dev/null
   discord_answers
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   cut_origin
   run_bin -75 team-timers run
   local since
@@ -1042,7 +1048,7 @@ if [[ ! -e '$BATS_TEST_TMPDIR/hung' ]]; then
   touch '$BATS_TEST_TMPDIR/hung'
   command -p sleep 300
 fi
-echo '[]'
+echo '$COORDINATOR'
 SH
   git -C "$TEAM_HOME" remote set-url origin "$origin"
   local start=$SECONDS
@@ -1251,7 +1257,7 @@ docker_machine() {
   stack_project shop
   docker_stub "$STACK_WORKTREE"
   reap_machine
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   discord_answers
 }
 
@@ -1284,8 +1290,9 @@ day_report() {
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
   # inbox: the Waiting on you message deleted by hand, so a new one is posted.
   rm -f "$STUB_FIXTURES/inbox/1569000000000000000.json"
-  # finished: T7's idle reviewer, handed on by its done, stopped; capacity: the same session,
-  # still listed by the stub and outside its slice, placed.
+  # coordinator: no session named coordinator is listed; finished: T7's idle reviewer, handed on
+  # by its done, stopped; capacity: the same session, still listed by the stub and outside its
+  # slice, placed.
   log_events <<LINES
 launch T7 reviewer a1b2c3d4 $HOME/slots/proj/1
 T7 {event: "done", role: "reviewer", session: "a1b2c3d4"}
@@ -1307,7 +1314,7 @@ LINES
   add_loose 200
   run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease checkpoint inbox finished capacity level stacks pack janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint coordinator inbox finished capacity level stacks pack janitor"
 }
 
 @test "the stacks and janitor steps are off without stack.json, without their keys and while they are false: no line, no call" {
@@ -1370,7 +1377,10 @@ exit 1
 EOF
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease checkpoint finished capacity level stacks janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint coordinator finished capacity level stacks janitor"
+  # The coordinator step cannot look for a coordinator, which fails the step, never the run.
+  assert_equal "$(grep -E '^[^ ]+ coordinator: ' <<<"$output" | cut -d ' ' -f 2-)" \
+    "coordinator: failed: cannot read the live session list (claude agents --json): claude: the session list is down"
   # The finished step warns and stops nothing, never failing the run.
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
     "finished: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
@@ -1388,7 +1398,7 @@ EOF
   # Docker not answering: the sweep has nothing to sweep, which it logs nothing for, and the
   # janitor fails, its report then the day's, so it is not run again that day.
   rm "$STUB_FIXTURES/claude.sh"
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   rm "$(day_report)"
   docker_down
   run_bin -1 team-timers run
@@ -1510,7 +1520,7 @@ EOF
   # A live team session outside its slice is placed, and that is logged.
   fake_placement
   fake_process 100 99 - claude
-  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}]'
+  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}, {"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint capacity"
   assert_equal "$(grep ' capacity: ' <<<"$output" | cut -d ' ' -f 2-)" "capacity: placed T7-builder a1b2c3d4 in agent-team-T7-a1b2c3d4.scope (1 process)"
@@ -1530,8 +1540,8 @@ EOF
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ ! -e $HOME/.local/state/agent-team/capacity/readings.jsonl ]]
-  # The finished step's session list and the place's.
-  assert_equal "$(stub_calls claude)" $'["agents","--json"]\n["agents","--json"]'
+  # The coordinator step's session list and its sweep's, the finished step's and the place's.
+  assert_equal "$(stub_calls claude)" $'["agents","--json"]\n["agents","--json"]\n["agents","--json"]\n["agents","--json"]'
 }
 
 @test "neither step runs off the lease, while another run holds the lock, offline or on a fenced machine; both run after the back step" {
@@ -1698,7 +1708,7 @@ EOF2
   discord_answers
   fake_placement
   fake_process 100 99 - claude
-  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}]'
+  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}, {"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
   # Automatic mode at none for an hour, and a stored reading of the last hour each 5 minutes,
   # the other programs using 8 GiB of 32: the readings span rise_minutes, so it rises to full.
   local file=$HOME/.local/state/agent-team/capacity/readings.jsonl minutes

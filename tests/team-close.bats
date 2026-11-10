@@ -163,6 +163,20 @@ rm 4f2a9c1e archive:2 worktrees:2"
   assert_contains "$output" "closed"
 }
 
+@test "the closed and worktree-returned lines are on origin when the close ends" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]} tip
+  work_and_push "$slot" feature.txt
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-close T1
+  [[ $stderr != *"not on origin"* ]]
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T1 worktree-returned closed"
+  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -r .event | tail -n 2)" "worktree-returned
+closed"
+}
+
 @test "a close takes the task out of the Waiting on you message, and Discord refusing that is a line on stderr" {
   run_bin -0 team-open home feature feat work "Do the work"
   ledger_line '{ts: "2026-10-22T02:11:00Z", task: "T1", event: "asked", id: "go", text: "Go on?"}'

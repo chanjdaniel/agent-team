@@ -226,7 +226,7 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
   The next run picks it up: there is nothing to restart.
 - To turn it off, they set the key to `false` or remove it; a missing file is every key off.
 - Both run only where the checkpoint runs: on the lease holder, after the lease step (or the back step, after an outage), never on a fenced machine, while GitHub is unreachable, on a machine that does not hold the lease, or while another run holds the heartbeat's lock.
-  The checkpoint is the first step after the lease step, so no slower step widens the window of records not yet on origin; the ledger, alert, inbox, finished, capacity, level, stacks, pack and janitor steps follow it in that order.
+  The checkpoint is the first step after the lease step, so no slower step widens the window of records not yet on origin; the ledger, coordinator, alert, inbox, finished, capacity, level, stacks, pack and janitor steps follow it in that order.
 - Each logs one line in `~/.local/state/agent-team/heartbeat.log` per line its command prints, and nothing while it is off.
   A step that fails, or whose `stack.json` is malformed, is logged as `<step>: failed: <reason>`; the steps after it still run, and the run exits 1.
   That line, like every heartbeat line that reports a problem, goes to `heartbeat-failures.log` beside it too, which keeps 30 days, while the heartbeat log keeps its last 1000 to 2000 lines.
