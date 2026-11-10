@@ -790,7 +790,7 @@ command-guard block 10"
   ledger_line --arg wt "$HOME/slots/other/1" '{ts: (now | todate), task: "T7", event: "worktree-added",
     project: "other", branch: "chore/T7-two", base: "main", base_sha: "0123456", worktree: $wt}'
   run_bin -0 team-worker T7 builder "$wt1" -- go
-  local first files
+  local first
   first=$(bg_calls | tail -n 1)
   files() { jq -r --arg flag "$1" '.[index($flag) + 1]' <<<"$2"; }
   run_bin -0 team-worker T7 builder "$HOME/slots/other/1" -- go
