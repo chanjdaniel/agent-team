@@ -1099,10 +1099,10 @@ posted to #coordinator (message 1569000000000000001): down: conventioner/api"
     uptime_check conventioner "check-$i" "$base/check-$i" '"status":"ok"'
     uptime_hang "check-$i"
   done
-  export TEAM_TIMERS_UPTIME_SECONDS=$((step / fetch)) TEAM_TIMERS_KILL_SECONDS=1
-  run_bin -0 team-timers run
+  local limit=$((step / fetch))
+  TEAM_TIMERS_UPTIME_SECONDS=$limit TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
   assert_equal "$(production_posts)" ""
-  run_bin -0 team-timers run
+  TEAM_TIMERS_UPTIME_SECONDS=$limit TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
   assert_equal "$(uptime_lines "$output" | grep -c "^failed: timed out" || true)" 0
   assert_equal "$(grep -c " uptime: posted to #coordinator (message [0-9]*): down: " <<<"$output")" 1
   assert_equal "$(uptime_posts | grep -c '^Production down: conventioner .*: no answer in 1 s\.$')" 10
