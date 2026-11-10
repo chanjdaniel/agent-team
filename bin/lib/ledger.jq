@@ -1399,8 +1399,8 @@ def waiting_item($n):
           elif $item.kind == "pr" then "pr \($item.task) \($item.url)"
           else "\($item.kind) \($item.task) \($item.thread)" end)}
       elif $shown != null then {refusal: "item \($n) no longer waits: the list posted \(.posted.at) showed it as \($shown.line)"}
-      else {refusal: "no item \($n) waits; "
-        + ([.items[]?.n | numbers] | sort | map(tostring) | if . == [] then "nothing waits" else "the list holds \(and_text)" end)}
+      else {refusal: ("no item \($n) waits; "
+        + ([.items[]?.n | numbers] | sort | map(tostring) | if . == [] then "nothing waits" else "the list holds \(and_text)" end))}
       end
   end;
 
