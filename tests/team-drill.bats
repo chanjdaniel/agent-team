@@ -347,8 +347,8 @@ team-drill: recorded bootstrap-macos pass on ci-macos at ${head:0:7}"
   gh_runs
   run_json 4244 completed Bootstrap bootstrap-arch=failure bootstrap-macos=success
   job_log 904244 bootstrap-arch "tools: the Claude Code install failed (exit 1)"
-  # The drill writes commit=unknown and claude=none, which are no commit and no version.
-  job_log 914244 bootstrap-macos "$(drill_record ci-macos pass unknown none)"
+  # The drill writes commit=unknown when it cannot read its checkout's HEAD, which is no commit.
+  job_log 914244 bootstrap-macos "$(drill_record ci-macos pass unknown)"
   run_bin -0 team-drill import 4244
   assert_equal "$output" "team-drill: recorded bootstrap-arch fail on ci-arch at ${RUN_SHA:0:7}
 team-drill: recorded bootstrap-macos fail on ci-macos at ${RUN_SHA:0:7}"
@@ -372,6 +372,18 @@ team-drill: recorded bootstrap-macos fail on ci-macos at ${RUN_SHA:0:7}"
       "{\"commit\":\"$RUN_SHA\",\"verdict\":\"fail\",\"detail\":\"the job ended success with no record line\"}"
     i=$((i + 1))
   done
+}
+
+@test "import records a record line's claude=none, which the drill writes when it finds no Claude Code, as null" {
+  gh_runs
+  run_json 4249 completed Bootstrap bootstrap-arch=failure bootstrap-macos=success
+  job_log 904249 bootstrap-arch "$(drill_record ci-arch fail "$(head_commit)" none)"
+  job_log 914249 bootstrap-macos "$(drill_record ci-macos pass "$(head_commit)" none)"
+  run_bin -0 team-drill import 4249
+  assert_equal "$(lines_of bootstrap-arch | jq -c '{commit, claude, verdict, detail}')" \
+    "{\"commit\":\"$(head_commit)\",\"claude\":null,\"verdict\":\"fail\",\"detail\":\"the job ended failure; its record line says verdict=fail\"}"
+  assert_equal "$(lines_of bootstrap-macos | jq -c '{claude, verdict}')" '{"claude":null,"verdict":"pass"}'
+  assert_equal "$(row_of bootstrap-macos | sed 's/.* ci-macos [0-9a-f]* //')" "none pass ok"
 }
 
 @test "import records a fail for a drill whose job the run lacks, at the run's last update" {

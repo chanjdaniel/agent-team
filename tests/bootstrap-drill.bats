@@ -59,6 +59,22 @@ no_claude_path() {
   assert_equal "$(tail -n 1 <<<"$output")" "drill-record: machine=ci-macos verdict=pass commit=$(drill_head) claude=2.1.321"
 }
 
+@test "a bootstrap that stops at a step of Daniel's before the projects stage fails, since the runner plays every earlier one" {
+  bootstrap_ends "machine: Daniel: clone the team home, then name it for this machine: git clone https://github.com/owner/records.git ~/agent-team-records"
+  drill ci-arch
+  assert_equal "$status" 1
+  assert_equal "$(tail -n 2 <<<"$output")" "== it stopped at the machine stage, before the projects stage, which the drill reaches by playing Daniel's earlier steps
+drill-record: machine=ci-arch verdict=fail commit=$(drill_head) claude=2.1.321"
+  bootstrap_ends "tools: Daniel: install the 1Password CLI"
+  drill ci-macos
+  assert_equal "$status" 1
+  assert_contains "$output" "== it stopped at the tools stage, before the projects stage"
+  # A later stage's step of Daniel's passes.
+  bootstrap_ends "config: Daniel: apply or capture the changed user settings"
+  drill ci-macos
+  assert_equal "$status" 0
+}
+
 @test "a bootstrap that fails on its own fails, and the last line says so" {
   bootstrap_ends "tools: the Claude Code install failed (exit 1)"
   drill ci-arch

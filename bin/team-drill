@@ -29,7 +29,7 @@
 #          registry's order: at (the job's completedAt), machine, commit and claude from the last
 #          line of the job's log holding "drill-record: ", which tests/bootstrap-drill ends with
 #          (machine=<lower-case kebab case> verdict=<pass|fail> commit=<40 hexadecimal
-#          characters> claude=<digits and dots>), dirty false, verdict pass only when the job's
+#          characters> claude=<digits and dots, or none, recorded as null>), dirty false, verdict pass only when the job's
 #          conclusion is success and that line says verdict=pass, detail "" on a pass and "the job
 #          ended <conclusion>; its record line says verdict=<v>" on a fail, and run (the run's
 #          URL). A job with no such line, or one whose words are not those four, is a fail with
@@ -141,9 +141,10 @@ record_words() {
     words[$key]=$value
   done
   [[ ${words[machine]-} =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${words[verdict]-} =~ ^(pass|fail)$ &&
-    ${words[commit]-} =~ ^[0-9a-f]{40}$ && ${words[claude]-} =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 0
+    ${words[commit]-} =~ ^[0-9a-f]{40}$ && ${words[claude]-} =~ ^([0-9]+(\.[0-9]+)*|none)$ ]] || return 0
   jq -cn --arg machine "${words[machine]}" --arg verdict "${words[verdict]}" --arg commit "${words[commit]}" \
-    --arg claude "${words[claude]}" '{machine: $machine, verdict: $verdict, commit: $commit, claude: $claude}'
+    --arg claude "${words[claude]}" \
+    '{machine: $machine, verdict: $verdict, commit: $commit, claude: (if $claude == "none" then null else $claude end)}'
 }
 
 import_run() {
