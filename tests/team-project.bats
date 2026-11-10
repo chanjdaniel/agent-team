@@ -395,10 +395,10 @@ TOML
   assert_contains "$stderr" "beta.local_checks: each command must be one line, not empty"
 }
 
-# The problem lines of the last --check, each without its "team-project: <registry>: " prefix and
-# with the count line left out, so a test compares them whole.
+# The problem lines of a --check's stderr on stdin, each without its "team-project: <registry>: "
+# prefix and with the count line left out, so a test compares them whole: problems <<<"$stderr"
 problems() {
-  sed -n "s|^team-project: $TEAM_HOME/projects.toml: ||p" <<<"$stderr" | grep -Ev '^[0-9]+ problems?$'
+  sed -n "s|^team-project: $TEAM_HOME/projects.toml: ||p" | grep -Ev '^[0-9]+ problems?$'
 }
 
 @test "uptime is optional, defaults to none, and reads back as the project's production checks" {
@@ -503,7 +503,7 @@ url = "https://example.com/"
 expect = ""
 TOML
   run_bin -1 --separate-stderr team-project --check
-  assert_equal "$(problems)" "alpha.uptime[0]: unknown key 'method'
+  assert_equal "$(problems <<<"$stderr")" "alpha.uptime[0]: unknown key 'method'
 alpha.uptime[1]: missing required key 'expect'
 alpha.uptime[2].name: must be a string
 alpha.uptime[3].name: 'Api_1' is lowercase letters, digits and dashes
@@ -553,7 +553,7 @@ TOML
   sed -i '/^\[\[alpha.uptime\]\]$/,$d' "$TEAM_HOME/projects.toml"
   cat "$TEAM_HOME/extra.toml" >>"$TEAM_HOME/projects.toml"
   run_bin -1 --separate-stderr team-project --check
-  assert_equal "$(problems)" "beta.uptime[0].expect: must be one line, 1 to 200 characters
+  assert_equal "$(problems <<<"$stderr")" "beta.uptime[0].expect: must be one line, 1 to 200 characters
 beta.uptime[1].expect: must be one line, 1 to 200 characters
 beta.uptime[2].url: must carry no user name or password
 beta.uptime[3].url: 'https:///healthz' must be https://, or http:// to this machine's loopback
@@ -566,7 +566,7 @@ beta.uptime[5].expect: must be a string"
   sed -i 's|^toolkits = \[\]$|toolkits = []\nuptime = "https://example.com/"|' "$TEAM_HOME/projects.toml"
   sed -i '0,/^uptime = .*$/s||uptime = [1, { name = "api", url = "https://example.com/", expect = "ok" }]|' "$TEAM_HOME/projects.toml"
   run_bin -1 --separate-stderr team-project --check
-  assert_equal "$(problems)" "alpha.uptime: must be a list of tables
+  assert_equal "$(problems <<<"$stderr")" "alpha.uptime: must be a list of tables
 beta.uptime: must be a list of tables"
 }
 
@@ -584,7 +584,7 @@ expect = "ok"
 TOML
   done
   run_bin -1 --separate-stderr team-project --check
-  assert_equal "$(problems)" "uptime: 11 checks in all; at most 10 fit the heartbeat's uptime step"
+  assert_equal "$(problems <<<"$stderr")" "uptime: 11 checks in all; at most 10 fit the heartbeat's uptime step"
   # Ten fit: the last check's five lines go.
   head -n -5 "$TEAM_HOME/projects.toml" >"$TEAM_HOME/ten.toml"
   mv "$TEAM_HOME/ten.toml" "$TEAM_HOME/projects.toml"

@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+# Check each project's production, as projects.toml's uptime key names it, and post in
+# #coordinator when a check is down and again when it is back. The heartbeat's uptime step runs
+# it on the lease holder at every run (team-timers).
+#
+# Usage: team-uptime run
+#
+# run: one round of checks, on the lease holder only: a machine that is fenced, or whose lease
+# record (~/.local/state/agent-team/lease.json, as team-lease leaves it) does not say it holds the
+# lease, checks nothing and exits 1 saying so ("team-uptime: <machine> does not hold the lease, so
+# it checks nothing"). One run at a time: while another holds ~/.local/state/agent-team/uptime.lock
+# it prints "another team-uptime run is checking; skipped" and exits 0. With no check in the
+# registry it makes no request, prints nothing, posts nothing and writes no state.
+#
+# Each check is one fetch, in turn, the same plain GET every time, with no curlrc (-q), no header,
+# cookie or credential of its own and no redirect followed:
+#   curl -q --silent --show-error --proto =http,https --connect-timeout <min(5, t)> --max-time <t>
+#        --max-filesize 1048576 --user-agent agent-team-uptime/1 --output <temporary file>
+#        --write-out '%{http_code}' <url>
+# with <t> 10 seconds. A check is good when curl exits 0, the status is 200 to 299 and the body
+# holds the check's expect as a fixed string; a redirect is a failure, so the registry names the
+# final URL. A failure's reason, cut to 200 characters: "HTTP <code>", "HTTP <code>, but its
+# answer lacks `<expect>`", "no answer in <t> s" (curl's exit 28), "answer over 1 MiB" (63), or
+# curl's last stderr line without its "curl: (<n>) " prefix, or "curl exited <n>".
+#
+# Counting, as bin/lib/uptime.jq says: a failure adds one to the check's failures in a row, unless
+# its last counted result is more than 15 minutes old, when it counts as the first again; a good
+# result ends the streak. A check failing 2 runs in a row opens an outage and is due its down post;
+# one that answers again after its down post went through is due its back post, which closes it,
+# and one that answers before its down post ever went through is closed with no post. The posts of
+# one run are at most one message for the down posts and one for the back posts, a line per check
+# in registry order, mentioning no one and with Discord's link previews off (flags 4), so Discord's
+# crawler never fetches production:
+#   Production down: <project> <name> (<<url>>) since <HH:MM>, <n> checks in a row from <machine>: <reason>.
+#   Production back: <project> <name> (<<url>>) answers again at <HH:MM>, down since <HH:MM> (<duration>).
+# times as this machine's local hours and minutes, durations as "<n> minutes", "<h> hours" or
+# "<h> hours <n> minutes". A post that went through is recorded, so neither a later run nor a
+# restart posts it again; one Discord refused is not, and fails the run.
+#
+# It prints, a line each, every failing check ("<project>/<name>: failed: <reason> (<n> in a row,
+# since <UTC time>)"), every outage closed with no post, and every post ("posted to #coordinator
+# (message <id>): <down|back>: <project>/<name>[, ...]", the id none when Discord gave none); a
+# run whose checks are all good and change nothing prints nothing. It exits 0 when every check
+# was counted and every due post went through, production down or not; 1 when a post failed or
+# the state could not be written, the rest of the run done first; and 1 at once, checking
+# nothing, when the registry or the state file cannot be read.
+#
+# The state is ~/.local/state/agent-team/uptime.json, team-uptime/1, written whole and moved into
+# place; bin/lib/uptime.jq's header describes it.
+#
+# Seams for the tests: TEAM_UPTIME_SECONDS replaces each fetch's 10 seconds.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-uptime run"
+STATE_DIR=$HOME/.local/state/agent-team
+STATE_FILE=$STATE_DIR/uptime.json
+FETCH_SECONDS=${TEAM_UPTIME_SECONDS:-10}
+CONNECT_SECONDS=$((FETCH_SECONDS < 5 ? FETCH_SECONDS : 5))
+POST_TIMEOUT=20
+
+# jq with the uptime module: uptime_jq <filter> [jq options and files...]
+uptime_jq() {
+  jq -L "$TEAM_LIB" "include \"uptime\"; $1" "${@:2}"
+}
+
+# Fail unless this machine holds the lease, by its own record: not fenced, and lease.json naming
+# it the holder of a held lease, with no network.
+holder_only() {
+  if fence_reason >/dev/null ||
+    ! jq -e --arg machine "$machine" '.holder == $machine and .state == "held"' "$STATE_DIR/lease.json" >/dev/null 2>&1; then
+    die "$machine does not hold the lease, so it checks nothing"
+  fi
+}
+
+# Every project's checks, [{project, name, url, expect}] in registry order and each project's.
+registry_checks() {
+  local projects project
+  projects=$(team_project --list) || return 1
+  for project in $projects; do
+    team_project "$project" uptime | jq -c --arg project "$project" 'map({project: $project} + .)' || return 1
+  done | jq -sc 'add // []'
+}
+
+# Fetch <url> and judge its answer by <expect>: prints {ok, reason}.
+fetch() {
+  local code rc=0 reason='' last
+  : >"$body"
+  code=$(curl -q --silent --show-error --proto =http,https --connect-timeout "$CONNECT_SECONDS" \
+    --max-time "$FETCH_SECONDS" --max-filesize 1048576 --user-agent agent-team-uptime/1 \
+    --output "$body" --write-out '%{http_code}' "$1" 2>"$err") || rc=$?
+  if ((rc == 0)); then
+    if [[ ! $code =~ ^2[0-9][0-9]$ ]]; then
+      reason="HTTP $code"
+    elif ! grep -qF -- "$2" "$body"; then
+      reason="HTTP $code, but its answer lacks \`$2\`"
+    fi
+  elif ((rc == 28)); then
+    reason="no answer in $FETCH_SECONDS s"
+  elif ((rc == 63)); then
+    reason="answer over 1 MiB"
+  else
+    last=$(grep . "$err" | tail -n 1 | sed -E 's/^curl: \([0-9]+\) //') || last=''
+    reason=${last:-curl exited $rc}
+  fi
+  jq -cn --arg reason "$reason" '{ok: ($reason == ""), reason: (if $reason == "" then null else $reason end)}'
+}
+
+# Write <state> whole to the state file, moved into place; a failure fails the run.
+write_state() {
+  local why
+  if ! why=$({ printf '%s\n' "$1" >"$STATE_FILE.$$" && mv -f "$STATE_FILE.$$" "$STATE_FILE"; } 2>&1); then
+    rm -f "$STATE_FILE.$$"
+    echo "team-uptime: cannot write $STATE_FILE: $(grep -m1 . <<<"$why" || echo "no reason given")" >&2
+    rc=1
+  fi
+}
+
+# Post <content> to #coordinator, mentioning no one and with no link preview; prints the new
+# message's id (empty when Discord gave none), or fails with discord_api's reason in $err.
+post() {
+  local payload reply
+  payload=$(jq -cn --arg content "$1" '{content: $content, allowed_mentions: {parse: []}, flags: 4}')
+  reply=$(discord_api "channels/$COORDINATOR_CHANNEL/messages" -X POST -H "Content-Type: application/json" \
+    --max-time "$POST_TIMEOUT" -d "$payload" 2>"$err") || return 1
+  jq -r '.id // empty | strings' <<<"$reply" 2>/dev/null || true
+}
+
+run_round() {
+  local checks check key url expect results=() now previous plan state count i what keys content id
+  machine=$(machine_name) || exit 1
+  holder_only
+  mkdir -p "$STATE_DIR"
+  exec {lock_fd}>>"$STATE_DIR/uptime.lock"
+  if ! flock -n "$lock_fd"; then
+    echo "another team-uptime run is checking; skipped"
+    exit 0
+  fi
+  checks=$(registry_checks) || exit 1
+  [[ $checks != '[]' ]] || exit 0
+
+  if [[ -e $STATE_FILE ]]; then
+    previous=$(jq -c 'select(.schema == "team-uptime/1")' "$STATE_FILE" 2>/dev/null) && [[ -n $previous ]] ||
+      die "cannot read $STATE_FILE as a team-uptime/1 state"
+  else
+    previous=$(uptime_jq uptime_empty -nc)
+  fi
+
+  body=$(mktemp) err=$(mktemp)
+  trap 'rm -f "$body" "$err"' EXIT
+  now=$(date -u +%FT%TZ)
+  while IFS= read -r check; do
+    json_vars key='"\(.project)/\(.name)"' url=.url expect=.expect <<<"$check"
+    results+=("$(fetch "$url" "$expect" | jq -c --arg key "$key" '{key: $key, value: .}')")
+  done < <(jq -c '.[]' <<<"$checks")
+
+  plan=$(printf '%s\n' "${results[@]}" | jq -sc 'from_entries' |
+    uptime_jq '. as $results | $previous | uptime_round($checks; $results; $now; $machine; uptime_limits)' \
+      --argjson previous "$previous" --argjson checks "$checks" --arg now "$now" --arg machine "$machine")
+  jq -r '.lines[]' <<<"$plan"
+  state=$(jq -c .state <<<"$plan")
+  write_state "$state"
+
+  count=$(jq '.posts | length' <<<"$plan")
+  for ((i = 0; i < count; i++)); do
+    json_vars what=".posts[$i].kind" keys=".posts[$i].keys | join(\", \")" content=".posts[$i].content" <<<"$plan"
+    if id=$(post "$content"); then
+      echo "posted to #coordinator (message ${id:-none}): $what: $keys"
+      state=$(uptime_jq 'uptime_posted($post; (if $id == "" then null else $id end); $at)' -c \
+        --argjson post "$(jq -c ".posts[$i]" <<<"$plan")" --arg id "$id" --arg at "$(date -u +%FT%TZ)" <<<"$state")
+      write_state "$state"
+    else
+      echo "team-uptime: the post to #coordinator failed ($(grep -m1 . "$err" || echo "no reason given")); it is tried again next run" >&2
+      rc=1
+    fi
+  done
+  exit "$rc"
+}
+
+rc=0 machine='' body='' err=''
+case ${1:-} in
+  run)
+    (($# == 1)) || usage_error "$USAGE"
+    run_round
+    ;;
+  *) usage_error "$USAGE" ;;
+esac
