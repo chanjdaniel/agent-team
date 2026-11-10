@@ -58,7 +58,11 @@
 # posted, waiting.json's posted is {at, messages, items}: the post's time, its message ids and
 # the items it showed, whose numbers no new item takes until the next post. When a later message
 # fails after an earlier one went, posted records the ones that went and the items their lines
-# showed; when the first fails, nothing is recorded. --post refuses before writing anything
+# showed; when the first fails, nothing is recorded. The record is committed and pushed to the
+# team home's origin at once (waiting.json and waiting.md alone), since a holder that steals the
+# lease after a crash numbers from origin's copy; when it cannot be (the team holding offline,
+# origin unreachable or refusing), a line on stderr says so, the run still exits 0, and the next
+# checkpoint pushes it. --post refuses before writing anything
 # without a token, and as Discord's refusal says (75 on a 429, else 1) when the guild cannot be
 # read or a message cannot be posted.
 # --item <n>, n from 1 to 999, for routing Daniel's numbered reply ("3 yes, 5 no"; team-answer
@@ -71,7 +75,9 @@
 # Files: the team home's waiting.md, the list as Daniel reads it, with its final newline, and
 # waiting.json beside it ({schema: "team-waiting/1", items: [{n, key, kind, task, title, ...,
 # line}], standing, posted}), which the scripts read; both are records, which the checkpoint
-# commits, and neither holds the time of a run, so a run that changes nothing makes no commit.
+# commits, and neither holds the time of a run, so a run that changes nothing makes no commit. A
+# steal after a crash loses only what no push took: the numbers plain runs gave new items since the
+# last checkpoint, and a post's reservation whose push failed.
 # Each is written to a temporary file in the team home, then moved into place.
 # Discord: an ask's link needs the guild, which ~/.local/state/agent-team/inbox.json keeps
 # ({channel, guild}), read once from #coordinator's channel; with the guild kept, a run calls
@@ -87,7 +93,7 @@
 # five minutes on the lease holder. It refuses in a worker session (worker_refusal in
 # bin/lib/team.sh), and, but on --item, on a machine that is fenced or lost the lease
 # (lease_refusal); one run at a time holds ~/.local/state/agent-team/inbox.lock, waiting for it at
-# most a minute (TEAM_INBOX_LOCK_SECONDS replaces the 60 s, the tests' seam).
+# most a minute (TEAM_INBOX_LOCK_SECONDS replaces the 60 s, the tests' seam; 0 does not wait).
 # Prints "retired <the old message's link>" when it retired it, then "wrote waiting.md: <n> items"
 # ("1 item", "0 items"), then on --post "posted <link>" for each message posted, in order.
 # Exit codes: 0 written (and on --post, posted; on --item, named); 1 refused, a file cannot be
@@ -140,7 +146,9 @@ state_dir=$HOME/.local/state/agent-team
 state=$state_dir/inbox.json
 mkdir -p "$state_dir"
 exec {lock}>>"$state_dir/inbox.lock"
-flock -w "$LOCK_SECONDS" "$lock" || {
+# Zero takes the lock only when it is free (-n), since macOS's flock refuses a wait of 0.
+if (( LOCK_SECONDS == 0 )); then wait_flag=(-n); else wait_flag=(-w "$LOCK_SECONDS"); fi
+flock "${wait_flag[@]}" "$lock" || {
   echo "team-inbox: another run has held $state_dir/inbox.lock for ${LOCK_SECONDS}s; try again later" >&2
   exit 75
 }
@@ -355,11 +363,32 @@ jq -c --arg list "$(cat "$TEAM_HOME/waiting.md")" --argjson waits "$(jq '.items 
   | post_messages($max)' <<<"$(sed -n 3p "$scratch/list")" >"$scratch/messages"
 count=$(jq length "$scratch/messages")
 ids='[]' sent='[]'
-# Record the messages that went, so the numbers they showed are not given to a new item.
+# Record the messages that went, so the numbers they showed are not given to a new item, and push
+# the record at once: a holder that steals the lease after a crash numbers from origin's
+# waiting.json, so a reservation only this machine holds would let it give a shown number away.
 record() {
   [[ $ids != '[]' ]] || return 0
   jq --arg at "$at" --argjson ids "$ids" --argjson sent "$sent" -L "$TEAM_LIB" 'include "ledger"; waiting_posted($at; $ids; $sent)' \
     "$waiting" | put waiting.json
+  push_post
+}
+# Commit and push waiting.json and waiting.md as the post left them, saying on stderr when they
+# are not on origin yet (the next checkpoint pushes them), never failing the run, as ledger_push
+# does for the ledger. The push runs with inbox.lock closed for it, so a git helper it leaves
+# running never holds the lock.
+push_post() {
+  local why since
+  [[ -e $TEAM_HOME/.git ]] && git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 0
+  if ! fence_reason >/dev/null && since=$(offline_since); then
+    echo "team-inbox: the post's numbers are not on origin yet (GitHub is unreachable since $(date -d "$since" +%H:%M), and the team is holding); the next checkpoint pushes them" >&2
+    return 0
+  fi
+  if ! (exec {lock}>&-; NET_ERR=$scratch/net NET_TIMEOUT=20 commit_records "chore: waiting list posted" waiting.json waiting.md \
+    >/dev/null 2>"$scratch/push"); then
+    why=$({ grep -m1 . "$scratch/push" || true; } | sed -E "s/^team-inbox: team home: //; s/^committed [0-9a-f]+ [^;]*; //; s/:$//")
+    echo "team-inbox: the post's numbers are not on origin yet (${why:-commit_records failed with no reason}); the next checkpoint pushes them" >&2
+  fi
+  return 0
 }
 for ((i = 0; i < count; i++)); do
   what="the post of the list"

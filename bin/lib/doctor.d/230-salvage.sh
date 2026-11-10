@@ -7,8 +7,11 @@
 #               as salvage/records/<machine>-<epoch>, the epoch of the lease this machine last held,
 #               for Daniel to run before the team home is brought level with origin. Passes when
 #               there is neither, or that branch holds the head and nothing is uncommitted.
-#               Uncommitted changes to waiting.md and waiting.json count for nothing, since
-#               team-inbox writes them from the ledger on the new holder.
+#               Uncommitted changes to waiting.md and waiting.json count for nothing: the new
+#               holder's team-inbox writes the items again from the ledger, and a post pushed
+#               the numbers it showed at once; what is lost is the numbers plain runs gave new
+#               items since the last checkpoint (and a post's whose push failed), which the new
+#               holder gives afresh.
 # salvage       On a fenced machine only: fails for each open task's worktree here with
 #               commits on no origin branch (a checkpoint's wip/<project>/T<n> aside) or
 #               uncommitted changes, the fix being the commands that push them to the team
@@ -39,8 +42,8 @@ if [[ -n $fenced ]]; then
     mapfile -t record_specs < <(records_pathspecs)
     mapfile -d '' -t changed < <(git -C "$TEAM_HOME" status --porcelain -z --no-renames -- "${record_specs[@]}")
     changed=("${changed[@]#???}")
-    # The waiting list is left out: team-inbox writes it from the ledger, so the new holder's
-    # first run writes it again.
+    # The waiting list is left out: the new holder's team-inbox writes its items again from the
+    # ledger, and numbers afresh the items no pushed waiting.json numbered (see the header).
     for record_i in "${!changed[@]}"; do
       [[ ${changed[record_i]} != waiting.md && ${changed[record_i]} != waiting.json ]] || unset 'changed[record_i]'
     done

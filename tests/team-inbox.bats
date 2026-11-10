@@ -409,7 +409,7 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
   post_foot "$(posted_shown | tail -n 1)"
 }
 
-@test "--post retires the old message too, before it writes and posts" {
+@test "--post retires the old message too, after it writes the list and before it posts" {
   inbox_kept
   run_bin -0 team-inbox --post
   assert_equal "$output" "retired https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000000
@@ -518,6 +518,42 @@ posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/15690000000
 - **1** T3 d: D?
 - **2** T3 b: B?
 - **3** T3 c: C?"
+}
+
+@test "a post pushes waiting.json and waiting.md to the team home's origin at once, and one it cannot push exits 0 and says so" {
+  local origin
+  origin=$(hold_lease)
+  inbox_guild_kept
+  opened T3 "Three" >>"$TEAM_HOME/ledger.jsonl"
+  log_events '{"task":"T3","event":"asked","id":"a","text":"A?"}'
+  run_bin -0 --separate-stderr team-inbox --post
+  assert_equal "$stderr" ""
+  # A holder that steals the lease after a crash reads origin's waiting.json, so the post's
+  # reservation is there at once, its commit holding the two files alone.
+  assert_equal "$(git -C "$origin" log -1 --format=%s dev)" "chore: waiting list posted"
+  assert_equal "$(git -C "$origin" show --format= --name-only dev | sort)" "$(printf '%s\n' waiting.json waiting.md)"
+  assert_equal "$(git -C "$origin" show dev:waiting.json | jq -c '[.posted.items[].n]')" '[1]'
+  assert_equal "$(git -C "$origin" show dev:waiting.md)" "$(cat "$TEAM_HOME/waiting.md")"
+
+  # A plain run pushes nothing: the checkpoint commits what it wrote.
+  log_events '{"task":"T3","event":"asked","id":"b","text":"B?"}'
+  run_bin -0 team-inbox
+  assert_equal "$(git -C "$origin" show dev:waiting.json | jq -c '[.items[].n]')" '[1]'
+
+  # Held offline, it does not try; with origin unreachable, the push fails; either way the post
+  # stands, recorded here, and the next checkpoint pushes it.
+  echo '{"since": "2026-11-10T10:00:00Z"}' >"$HOME/.local/state/agent-team/offline"
+  run_bin -0 --separate-stderr team-inbox --post
+  assert_contains "$stderr" "team-inbox: the post's numbers are not on origin yet (GitHub is unreachable since "
+  assert_contains "$stderr" ", and the team is holding); the next checkpoint pushes them"
+  assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000002"]'
+  rm "$HOME/.local/state/agent-team/offline"
+  git -C "$TEAM_HOME" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
+  run_bin -0 --separate-stderr team-inbox --post
+  assert_contains "$stderr" "team-inbox: the post's numbers are not on origin yet ("
+  assert_contains "$stderr" "); the next checkpoint pushes them"
+  assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000003"]'
+  assert_equal "$(git -C "$origin" show dev:waiting.json | jq -c .posted.messages)" '["1569000000000000001"]'
 }
 
 @test "--post without the token refuses before writing anything, and a failed guild read refuses as Discord's refusal says" {
