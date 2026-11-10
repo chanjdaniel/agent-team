@@ -354,7 +354,7 @@ agents=$HOME/Library/LaunchAgents
 domain=gui/$(id -u)
 err=$(mktemp)
 # The run's results for the health record, one JSON object a line (step_ok, step_fail, run_fact),
-# written by the run and read by bounded_run too; and the watchdog's mark that the run timed out.
+# written by the run and read by bounded_run too; and bounded_run's mark that the run timed out.
 results=$(mktemp)
 fired=$err.fired
 trap 'rm -f "$err" "$results"' EXIT
@@ -1462,14 +1462,12 @@ process_tree() {
 }
 
 # Stop the process <pid> with every process it started: SIGTERM to each, then SIGKILL to each still
-# running KILL_SECONDS later (the system's own sleep, as bounded_run's timer), unless <kill> is 0:
-# stop_tree <pid> [<kill>]
+# running KILL_SECONDS later (the system's own sleep, as bounded_run's timer): stop_tree <pid>
 stop_tree() {
   local tree pid start now
   tree=$(process_tree "$1")
   [[ -n $tree ]] || return 0
   while read -r pid _; do kill -TERM "$pid" 2>/dev/null || true; done <<<"$tree"
-  [[ ${2:-1} != 0 ]] || return 0
   command -p sleep "$KILL_SECONDS"
   while read -r pid start; do
     # Only the very process seen above: the same id with the same start.
