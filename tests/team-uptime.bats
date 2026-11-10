@@ -187,6 +187,23 @@ conventioner/slow: failed: no answer in 1 s'
   assert_equal "$(uptime_posts)" ""
 }
 
+@test "a posted outage stays down in status after a gap resets its streak, down since the outage began" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  run_bin -0 team-uptime run
+  local old down
+  old=$(ago 20)
+  edit_state '.checks["conventioner/api"] |= (.checked = $at | .since = $at | .alert.since = $at)' "$old"
+  run_bin -0 team-uptime run
+  assert_equal "$(jq -c --arg old "$old" '.checks["conventioner/api"] | [.failures, .alert.since == $old]' "$state")" '[1,true]'
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -r '.checks[0].state' <<<"$output")" down
+  down=$(clock "$old")
+  [[ $(jq -r .line <<<"$output") == "Production: conventioner api down since $down: HTTP 503, last checked "* ]]
+  run_bin -0 team-uptime status
+  [[ $output == "conventioner/api down since $down: HTTP 503, checked "* ]]
+}
+
 @test "a check is a plain GET, curl reading no curlrc, with only Host, its user agent and Accept" {
   api_check 200 '{"status":"ok"}'
   # A curlrc that would add a header, a cookie and a credential, which -q keeps out.

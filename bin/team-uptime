@@ -47,13 +47,13 @@
 #   Production still down: <project> <name> (<<url>>) since <HH:MM>, <duration>: <reason>.
 #   Production back: <project> <name> (<<url>>) answers again at <HH:MM>, down since <HH:MM> (<duration>).
 # times as this machine's local hours and minutes, durations as "<n> minutes", "<h> hours" or
-# "<h> hours <n> minutes", singular for 1. A post that went through is recorded, so neither a later run nor a
-# restart posts it again; one Discord refused is not, so it is due again at the next run, and it
-# fails this one ("team-uptime: the post to #coordinator failed (<reason>); it is tried again next
-# run" on stderr). A check the registry no longer names, or names with another url or expect, is
-# dropped from the state, so a changed one starts fresh; one dropped after its down post went
-# through gets the line "<project>/<name>: no longer checked as it was; its open outage is closed
-# without a post".
+# "<h> hours <n> minutes", singular for 1. A post that went through is recorded, so neither a
+# later run nor a restart posts it again; one Discord refused is not, so it is due again at the next run,
+# and it fails this one ("team-uptime: the post to #coordinator failed (<reason>); it is tried
+# again next run" on stderr). A check the registry no longer names, or names with another url or
+# expect, is dropped from the state, so a changed one starts fresh; one dropped after its down
+# post went through gets the line "<project>/<name>: no longer checked as it was; its open outage
+# is closed without a post".
 #
 # It prints, a line each, every failing check ("<project>/<name>: failed: <reason> (<n> in a row,
 # since <UTC time>)"), every outage closed with no post, and every post ("posted to #coordinator
@@ -74,9 +74,9 @@
 # status: each check's last result, from the registry and the state file alone, with no request
 # and no post, on any machine, holder or not; a line per check in registry order,
 #   <project>/<name> <state>[ since <HH:MM>][: <reason>], checked <HH:MM> (<url>)
-# its state up, failing (one failure counted) or down (2 or more, since the outage began), or
-# "<project>/<name> not checked yet (<url>)" for one with no state, or a state for another url or
-# expect; nothing with no check in the registry. With --json, the object team-snapshot carries as
+# its state up, down (2 failures or more in a row, or any while its outage is open, since the
+# outage began) or failing (any other failure), or "<project>/<name> not checked yet (<url>)" for
+# one with no state, or a state for another url or expect; nothing with no check in the registry. With --json, the object team-snapshot carries as
 # production: {schema: team-uptime/1, written (when a run last wrote the state, null for none),
 # line, checks: [{project, name, url, expect, state (up, failing, down or unchecked), checked,
 # since, failures, reason, alert}]}, the state's fields of each check (null, and failures 0, for an

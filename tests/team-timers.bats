@@ -1076,7 +1076,7 @@ posted to #coordinator (message 1569000000000000001): down: conventioner/api"
   assert_equal "$(uptime_requests | wc -l)" 2
 }
 
-@test "TEAM_TIMERS_UPTIME_SECONDS replaces the uptime step's 120 s, after which it is stopped and fails the run" {
+@test "TEAM_TIMERS_UPTIME_SECONDS replaces the uptime step's 180 s, after which it is stopped and fails the run" {
   production 503 'Service Unavailable'
   uptime_hang api
   export TEAM_TIMERS_UPTIME_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 TEAM_UPTIME_SECONDS=30
@@ -1085,7 +1085,28 @@ posted to #coordinator (message 1569000000000000001): down: conventioner/api"
   ((SECONDS - start < 20))
   assert_equal "$(uptime_lines "$output")" "failed: timed out after 1 s"
   assert_contains "$(problems)" "uptime: failed: timed out after 1 s"
-  grep -q '^UPTIME_TIMEOUT=${TEAM_TIMERS_UPTIME_SECONDS:-120}$' "$REPO_ROOT/bin/team-timers"
+  grep -q '^UPTIME_TIMEOUT=${TEAM_TIMERS_UPTIME_SECONDS:-180}$' "$REPO_ROOT/bin/team-timers"
+}
+
+@test "at the registry's 10 checks, every one hanging, the uptime step's limit fits the fetches, the probe and the down post" {
+  # The defaults' ratio, read from the scripts: the step's seconds over a fetch's, with a fetch of 1 s.
+  local step fetch i
+  step=$(sed -n 's/^UPTIME_TIMEOUT=${TEAM_TIMERS_UPTIME_SECONDS:-\([0-9]*\)}$/\1/p' "$REPO_ROOT/bin/team-timers")
+  fetch=$(sed -n 's/^FETCH_SECONDS=${TEAM_UPTIME_SECONDS:-\([0-9]*\)}$/\1/p' "$REPO_ROOT/bin/team-uptime")
+  production 200 ''
+  uptime_hang api
+  for i in 1 2 3 4 5 6 7 8 9; do
+    uptime_check conventioner "check-$i" "$base/check-$i" '"status":"ok"'
+    uptime_hang "check-$i"
+  done
+  export TEAM_TIMERS_UPTIME_SECONDS=$((step / fetch)) TEAM_TIMERS_KILL_SECONDS=1
+  run_bin -0 team-timers run
+  assert_equal "$(production_posts)" ""
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output" | grep -c "^failed: timed out" || true)" 0
+  assert_equal "$(grep -c " uptime: posted to #coordinator (message [0-9]*): down: " <<<"$output")" 1
+  assert_equal "$(uptime_posts | grep -c '^Production down: conventioner .*: no answer in 1 s\.$')" 10
+  assert_equal "$(production_posts | wc -l)" 10
 }
 
 # One ledger line per line on stdin, in order: "launch <task> <role> <session> <worktree>" or

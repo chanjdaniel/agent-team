@@ -98,8 +98,8 @@ def uptime_round($checks; $results; $now; $machine; $limits):
   | def as_wanted: $wanted[.key] as $w | $w != null and $w.url == .value.url and $w.expect == .value.expect;
     [$previous.checks | to_entries[] | select(as_wanted | not)] as $dropped
   | ($previous | .checks |= with_entries(select(as_wanted))) as $state
-  | reduce $order[] as $c ($state;
-      .checks[$c.key] |= uptime_count($c.check; $results[$c.key]; $now; $limits)) as $counted
+  | (reduce $order[] as $c ($state;
+       .checks[$c.key] |= uptime_count($c.check; $results[$c.key]; $now; $limits))) as $counted
   | ($counted + {schema: "team-uptime/1", written: $now}) as $new
   | [$order[] | . as $c | {key, prev: $state.checks[.key], now: $new.checks[.key]}] as $rows
   | [$rows[] | select(.now.ok | not)
@@ -164,9 +164,10 @@ def uptime_status_line($written; $limits):
 # (uptime_empty when there is no state file), $checks the registry's [{project, name, url,
 # expect}] in registry order. Gives {schema, written, line, checks}: a check per registry entry,
 # {project, name, url, expect, state, checked, since, failures, reason, alert}, its state "up",
-# "failing" (fewer than down_runs failures in a row), "down" or "unchecked" (no state for it, or a
-# state for another url or expect, which the next run drops), and the rest the state's (null, and
-# failures 0, for an unchecked one); line uptime_status_line's.
+# "down" (down_runs failures in a row, or a failure with its outage still open, as after a gap),
+# "failing" (any other failure) or "unchecked" (no state for it, or a state for another url or
+# expect, which the next run drops), and the rest the state's (null, and failures 0, for an
+# unchecked one); line uptime_status_line's.
 def uptime_status($checks; $limits):
   . as $state
   | [$checks[] | uptime_key as $key | $state.checks[$key] as $s
@@ -174,7 +175,7 @@ def uptime_status($checks; $limits):
      | if $s == null or $s.url != .url or $s.expect != .expect then
          $id + {state: "unchecked", checked: null, since: null, failures: 0, reason: null, alert: null}
        else
-         $id + {state: (if $s.ok then "up" elif $s.failures >= $limits.down_runs then "down" else "failing" end)}
+         $id + {state: (if $s.ok then "up" elif $s.alert != null or $s.failures >= $limits.down_runs then "down" else "failing" end)}
          + ($s | {checked, since, failures, reason, alert})
        end] as $rows
   | {schema: "team-uptime/1", written: $state.written,
