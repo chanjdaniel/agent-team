@@ -55,7 +55,7 @@ async function startDevServer(dir, name) {
   const root = realpathSync(dir);
   for (let i = 0; i < 300; i++) {
     const url = log.match(/Local:\s+(http:\/\/\S+)/)?.[1];
-    if (url && records().some((record) => record.root === root)) return { url, close, log: () => log };
+    if (url && records().some((record) => record.root === root)) return { root, url, close, log: () => log };
     if (child.exitCode !== null) break;
     await sleep(100);
   }
@@ -92,12 +92,12 @@ function bareServer(worktree) {
   });
 }
 
-// foldkit_list_runtimes' project roots, asked until it lists `count` runtimes or 60 s pass: a
+// foldkit_list_runtimes' project roots, asked until it lists `count` runtimes or `waitMs` pass: a
 // page's bridge connects once Vite has bundled the app's dependencies for it, a second or two
 // after it loads on an idle machine and far longer on a busy one. A refusal is returned at once,
 // as { error }.
-async function runtimeRoots(server, count = 1) {
-  const deadline = Date.now() + 60_000;
+async function runtimeRoots(server, count = 1, waitMs = 60_000) {
+  const deadline = Date.now() + waitMs;
   for (;;) {
     const result = await server.callTool("foldkit_list_runtimes", {});
     if (result.isError) return { error: result.text };
@@ -105,6 +105,51 @@ async function runtimeRoots(server, count = 1) {
     if (roots.length >= count || Date.now() > deadline) return { roots };
     await sleep(200);
   }
+}
+
+// Until `server` lists a runtime for each of `apps` ({ root, url, log }), every one open in a tab:
+// a page whose app has not connected within 30 s is reloaded, twice at most, as startChrome
+// reopens a tab that never loads; then a failure names what each tab shows and each app's log.
+async function untilConnected(server, browserUrl, apps) {
+  const want = apps.map((app) => app.root).sort();
+  for (let round = 1; ; round++) {
+    const { roots = [] } = await runtimeRoots(server, want.length, 30_000);
+    const missing = apps.filter((app) => !roots.includes(app.root));
+    if (!missing.length) return;
+    if (round === 3) {
+      const tabs = (await tabStates(browserUrl)).join("\n");
+      assert.deepEqual(roots, want, `the apps' pages did not connect:\n${tabs}\n${apps.map((app) => app.log()).join("\n")}`);
+    }
+    const tabs = (await fetch(`${browserUrl}/json/list`).then((r) => r.json())).filter((t) => t.type === "page");
+    for (const tab of tabs.filter((t) => missing.some((app) => app.url === t.url))) {
+      const socket = new WebSocket(tab.webSocketDebuggerUrl);
+      await new Promise((resolve, reject) => ((socket.onopen = resolve), (socket.onerror = reject)));
+      socket.send(JSON.stringify({ id: 1, method: "Page.reload", params: { ignoreCache: true } }));
+      socket.close();
+    }
+  }
+}
+
+// What each tab shows, for a failure's message: its URL, visibility, title, and how many resources
+// it has loaded.
+async function tabStates(browserUrl) {
+  const tabs = (await fetch(`${browserUrl}/json/list`).then((r) => r.json())).filter((t) => t.type === "page");
+  return Promise.all(tabs.map(async (tab) => {
+    const socket = new WebSocket(tab.webSocketDebuggerUrl);
+    try {
+      await new Promise((resolve, reject) => ((socket.onopen = resolve), (socket.onerror = reject)));
+      const answer = new Promise((resolve) => (socket.onmessage = ({ data }) => resolve(JSON.parse(data))));
+      socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: {
+        expression: "`${document.visibilityState} ${JSON.stringify(document.title)} ${performance.getEntriesByType('resource').length} resources`",
+      } }));
+      const reply = await Promise.race([answer, sleep(5000).then(() => ({ result: { result: { value: "no answer in 5 s" } } }))]);
+      return `${tab.url}: ${reply.result?.result?.value ?? JSON.stringify(reply)}`;
+    } catch (error) {
+      return `${tab.url}: ${error.message ?? error}`;
+    } finally {
+      socket.close();
+    }
+  }));
 }
 
 const NOT_CONNECTED = /^Error: Not connected to a Foldkit dev server\./;
@@ -119,9 +164,7 @@ describe("the effect toolkit's Foldkit DevTools MCP server", () => {
     const server = bareServer(checkout);
     try {
       await server.initialize();
-      const { roots } = await runtimeRoots(server, 2);
-      assert.deepEqual(roots, [realpathSync(checkout), realpathSync(slot)].sort(),
-        `the apps' pages did not connect:\n${checkoutApp.log()}\n${slotApp.log()}`);
+      await untilConnected(server, chrome.browserUrl, [checkoutApp, slotApp]);
     } finally {
       await server.close();
     }
@@ -228,6 +271,7 @@ describe("the effect toolkit's Foldkit DevTools MCP server", () => {
       } finally {
         browser.close();
       }
+      await untilConnected(server, chrome.browserUrl, [app]);
       assert.deepEqual(await runtimeRoots(server), { roots: [realpathSync(emptySlot)] });
       await app.close();
       assert.match((await runtimeRoots(server)).error, NOT_CONNECTED);
