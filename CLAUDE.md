@@ -43,14 +43,19 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
 - `plugins/coordinator-skills/`: skills loaded only into the coordinator by `bin/claude-coordinator`.
 - `README.md`, `SETUP.md`: what a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host".
 - `roles/`: the role prompts each session's system prompt is appended with, one per role, the coordinator's included; `team-worker` follows a planner's, builder's or reviewer's with its project's root `CLAUDE.md` and `AGENTS.md` as `origin/<base>` has them.
-- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, the `chrome-devtools-axi` client the browser toolkit's test runs, and the `effect`, `@effect/tsgo` and `typescript` the effect toolkit's test checks its skill and its hook against.
+- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, the `chrome-devtools-axi` client the browser toolkit's test runs, and the packages the effect toolkit's tests check its skill, hook and Foldkit DevTools server against.
   - `install`: puts them in the gitignored `servers/node_modules/`, as `team-bootstrap` does while `team-doctor`'s `servers` line fails.
   - `package.json` and `package-lock.json`: the packages and their pins, among them:
+    - `@effect/platform-browser`: the Effect browser platform `foldkit` takes as a peer, for the effect toolkit's fixture Foldkit app.
     - `@effect/tsgo`: Effect's language service on TypeScript 7, whose `effect-tsgo` the effect toolkit's test runs its post-edit hook and the `effect-v4` skill's check against.
+    - `@foldkit/devtools-mcp`: Foldkit's DevTools MCP server, the version released with the `foldkit` that the Foldkit app the team builds pins, which the effect toolkit's wrapper starts confined to the session's worktree.
+    - `@foldkit/vite-plugin`: the Vite plugin whose relay `@foldkit/devtools-mcp` reaches, for the fixture app's dev servers.
     - `chrome-devtools-axi`: the client the browser toolkit's test runs, since CI's runner has no global install; sessions run the one `tools.lock` pins, at the same version.
     - `chrome-devtools-mcp`: the sessions' MCP server, which their settings name by `CHROME_DEVTOOLS_AXI_MCP_PATH`.
     - `effect`: the Effect version whose exports the effect toolkit's test holds the `effect-v4` skill's trap table to.
+    - `foldkit`: the Foldkit version that app pins, the framework of the effect toolkit's fixture app.
     - `typescript`: TypeScript 7, which `effect-tsgo diagnostics` needs installed beside it, though `@effect/tsgo` declares no peer.
+    - `vite`: the Vite version that app pins, which runs the fixture app's dev servers.
 - `settings/`: worker settings: `worker.json` shared, one file per role layered on it; with the user settings, all a planner, builder or reviewer loads (`--setting-sources user`), none of its worktree's `.claude/`.
 - `sops/`: standing procedures.
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.
@@ -75,11 +80,11 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `tests/timings.tsv`: each bats file's seconds in one CI run, on Linux and macOS, which `tests/shards` weighs it by.
   - `tests/toolkits/`: the toolkits' Node tests.
   - `tests/vendor/`: bats-core, vendored.
-- `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
+- `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`) and the roles a server starts for when not every one (`mcp-roles.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
   - `codegraph/`: for a setup trial's builders and reviewers, a session-start hook that, in a worktree with a `.codegraph/` directory, builds or syncs that worktree's CodeGraph index and prints a banner to locate code with `codegraph explore` first; no MCP server.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
-  - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill, which sends the session to the installed `effect`'s sources, names the v3 and beta traps beside their GA names and gives the check, and a hook giving Effect's findings on each TypeScript file edited.
+  - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill (the installed `effect`'s sources, the v3 and beta traps, the check), a hook giving Effect's findings on each TypeScript file edited, and, but for a planner, Foldkit's DevTools server, held to the worktree.
   - `spec-review/`: the `spec-review` skill, which has two fresh, read-only reader agents read a task's spec and tickets in parallel, as a stranger and as its builder, and writes their findings to `spec-review.md` for the spec's author to sort.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
@@ -141,6 +146,8 @@ It holds:
   Where a real `codegraph` is on PATH (never on CI), it also runs the hook against it on a project it writes at run time, so the repository holds no `.codegraph/`, and checks the banner names only subcommands that CLI has.
   `effect.test.mjs` checks the effect toolkit's layout, its README and evals, and its `effect-v4` skill's limits and order, and holds the skill's trap table to the pinned `effect`'s exports: every GA name exists and every v3 or beta name is gone.
   It runs the toolkit's post-edit hook as Claude Code runs a plugin's, against the pinned `effect-tsgo` on a copy of `tests/toolkits/fixtures/effect-project/` whose `node_modules` links to `servers/node_modules`, and again inside `unshare -rn`, with no network, on a Linux machine that lets an unprivileged user make that namespace, which CI's Ubuntu runner does not.
+  `effect-devtools.test.mjs` starts the effect toolkit's Foldkit DevTools server as its `.mcp.json` declares, against Vite dev servers of `tests/toolkits/fixtures/foldkit-app/` in a checkout and in a slot inside it, open in a headless Chrome, on a relay registry of its own, never the machine's.
+  It shows the server alone, started for a slot with no dev server, reads the checkout's app, and that through the wrapper a slot's server reads and dispatches to the slot's app alone and an empty slot's to none.
   `spec-review.test.mjs` checks the spec-review toolkit's layout, its two reader agents' read-only tools, `omitClaudeMd` and model, the skill's limits and the order of its steps, its README's sections and attribution line, and each eval case's graders.
   `servers-hono.test.mjs` checks that @modelcontextprotocol/sdk and @modelcontextprotocol/node (under mongodb-mcp-server) resolve @hono/node-server 2.1.3 or later, and that each one's Streamable HTTP server transport, served on the loopback inside the test, still answers an MCP `initialize` POST on it with a 200 and the server's result, within a deadline that fails a stream which never sends its event; `tests/repo.bats` holds the lock to 2.1.3 or later.
   No test reaches 1Password or production: the test `PATH` refuses to start if a real `op` is on it.
@@ -167,7 +174,7 @@ It holds:
 - The header (the comment block under the shebang) is the script's usage and its `--help`, which the library prints; exact commands live there and nowhere else.
 - The team home is found as "The team home" says; `TEAM_HOME` is not exported, so pass it to a sibling script explicitly.
 - The code checkout is the directory above `bin/` (`~/agent-team`): code (roles, settings, templates, plugins, hooks, toolkits) comes from the script's own checkout, never from the team home.
-  In settings files and a toolkit's `.mcp.json`, `@TEAM_CODE@` names the code checkout and `@TASK_DIR@` the team home's `tasks/T<n>/`; `team-worker` and `claude-coordinator` fill them in.
+  In settings files and a toolkit's `.mcp.json`, `@TEAM_CODE@` names the code checkout, `@TASK_DIR@` the team home's `tasks/T<n>/` and `@WORKTREE@` the session's worktree by its real path; `team-worker` fills them in, and `claude-coordinator` fills `@TEAM_CODE@`.
 - Exit codes: 0 done, 1 refused or a check failed (`die`), 2 a malformed command line (`usage_error`), 75 try again later.
 - The ledger changes only through the library's `ledger_append`, which checks each event against `bin/lib/ledger-contract.json` and that the script is its kind's writer, or one of them; a new kind or field goes in the contract first.
   A kind the contract marks `"push": true` (Daniel's word or an outside fact) is committed and pushed the moment it is logged by the library's `ledger_push`, which each of its writers calls once after its last event, as `tests/repo.bats` holds.

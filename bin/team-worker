@@ -53,13 +53,16 @@
 # or --model names one, the session launches on it (claude --model) and the launch logs it as
 # model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
 # T0 and tasks from before team-open none from the registry.
+# The MCP config merges the chosen toolkits' .mcp.json servers, each but those a toolkit's
+# mcp-roles.json names for other roles only.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored), as
 # settings.<role>.<project>.json and mcp.<role>.<project>.json for a planner, builder or reviewer
 # with a project (so a task's sessions on two projects' worktrees never share one), and
 # settings.<role>.json and mcp.<role>.json otherwise; @TEAM_CODE@ in either names this checkout,
-# @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, and @ROLE@ the role (the settings'
-# AGENT_TEAM_ROLE, the signal a hook sees in a team session, and with AGENT_TEAM_TASK, the task,
-# what worker_refusal in bin/lib/team.sh reads). The registry's
+# @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, @WORKTREE@ the worktree by its real
+# path (the effect toolkit's Foldkit DevTools server's project root), and @ROLE@ the role (the
+# settings' AGENT_TEAM_ROLE, the signal a hook sees in a team session, and with AGENT_TEAM_TASK,
+# the task, what worker_refusal in bin/lib/team.sh reads). The registry's
 # projects, in its order, fill four more, for the autoMode lines: @PROJECT_REPOS@ each one's
 # repo and primary checkout ("owner/a (primary checkout ~/a) and owner/b (...)"),
 # @PROJECT_ORIGINS@ each one's origin, its own owner's ("github.com/owner/a or github.com/c/d"),
@@ -433,10 +436,10 @@ facts=$(while IFS= read -r name; do team_project "$name" || exit 1; done <<<"$re
          | if length <= 1 then .[0] // "" else (.[:-1] | join(", ")) + ", and " + .[-1] end)}') || exit 1
 
 # @TEAM_CODE@ names this checkout, where the hooks and toolkits live; @TASK@ names the task, and
-# @TASK_DIR@ its directory in the team home, where its records live (the ops log); @ROLE@ the role;
-# the @PROJECT_*@ four the registry's projects.
+# @TASK_DIR@ its directory in the team home, where its records live (the ops log); @WORKTREE@ the
+# worktree; @ROLE@ the role; the @PROJECT_*@ four the registry's projects.
 substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TASK@"; $task)
-  | gsub("@TASK_DIR@"; $taskdir) | gsub("@ROLE@"; $role) | gsub("@PROJECT_REPOS@"; $facts.repos)
+  | gsub("@TASK_DIR@"; $taskdir) | gsub("@WORKTREE@"; $worktree) | gsub("@ROLE@"; $role) | gsub("@PROJECT_REPOS@"; $facts.repos)
   | gsub("@PROJECT_VISIBILITY@"; $facts.visibility) | gsub("@PROJECT_BASES@"; $facts.bases)
   | gsub("@PROJECT_ORIGINS@"; $facts.origins) else . end)'
 
@@ -445,7 +448,7 @@ substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TA
 # shared hooks and its autoMode lines to the team's; an autoMode list keeps "$defaults" (the
 # built-in rules) once, where it first stands.
 settings=$taskdir/settings.$stem.json
-jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" --argjson facts "$facts" \
+jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg worktree "$worktree" --arg role "$role" --argjson facts "$facts" \
   --arg memory "$memory" '.[0] as $base | .[1] as $own
   | ($base * $own)
   | .permissions.deny = (($base.permissions.deny // []) + ($own.permissions.deny // []))
@@ -466,17 +469,24 @@ jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role 
   | '"$substitute" \
   "$code/settings/worker.json" "$code/settings/$role.json" >"$settings"
 
-# MCP servers come only from the chosen toolkits.
+# MCP servers come only from the chosen toolkits; a toolkit's mcp-roles.json names the roles a
+# server of its starts for ({"<server>": ["builder", ...]}), and a server it does not name starts
+# for every role.
 mcp=$taskdir/mcp.$stem.json
 plugin_args=()
 mcp_files=()
+roles_files=()
 for kit in "${toolkits[@]}"; do
   dir=$code/toolkits/$kit
   plugin_args+=(--plugin-dir "$dir")
   if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
+  if [[ -f $dir/mcp-roles.json ]]; then roles_files+=("$dir/mcp-roles.json"); fi
 done
 if [[ ${#mcp_files[@]} -gt 0 ]]; then
-  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" --argjson facts "$facts" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
+  server_roles=$(jq -s 'add // {}' "${roles_files[@]}" </dev/null) || exit 1
+  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg worktree "$worktree" --arg role "$role" --argjson facts "$facts" \
+    --argjson roles "$server_roles" '{mcpServers: (map(.mcpServers // {}) | add
+      | with_entries(select($roles[.key] == null or any($roles[.key][]; . == $role))))} | '"$substitute" \
     "${mcp_files[@]}" >"$mcp"
 else
   echo '{"mcpServers": {}}' >"$mcp"
