@@ -951,6 +951,14 @@ SH
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint inbox"
   [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"$ ]]
+
+  # A run that numbers afresh and then fails names the failure's own cause, and logs the
+  # numbering too, since waiting.json was written before waiting.md failed.
+  echo '{"schema": "team-waiting/0"}' >"$TEAM_HOME/waiting.json"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  assert_equal "$(grep ' inbox: ' <<<"$output" | sed -E 's/^[0-9T:Z-]+ //')" "inbox: numbers the list afresh, since waiting.json cannot be read: its schema is not team-waiting/1
+inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"
 }
 
 @test "the inbox step never runs off the lease, offline or on a fenced machine, and runs after the back step" {
