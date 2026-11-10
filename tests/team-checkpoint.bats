@@ -722,6 +722,28 @@ tasks/T1/scratch/owner.md"
 ./t13/aac.m4a"
 }
 
+@test "the archive leaves out a text file the records hook reads as an image by its first bytes, as the hook does" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  local dir=$HOME/slots/home/1/.scratch/task
+  # Text with no NUL byte whose first bytes are an image's signature to image_magic.
+  echo "BM25 ranking notes" >"$dir/bm25.md"
+  echo "GIF89a is the format's later version" >"$dir/gif.md"
+  printf 'RIFF1234WEBP notes\n' >"$dir/riff.md"
+  printf 'abcdftyp notes\n' >"$dir/ftyp.md"
+  # The same words anywhere but the first bytes are text.
+  printf 'notes\nBM25 ranking and an ftyp box\n' >"$dir/kept.md"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: bm25.md (image)
+T1 home: left out of tasks/T1/scratch: ftyp.md (image)
+T1 home: left out of tasks/T1/scratch: gif.md (image)
+T1 home: left out of tasks/T1/scratch: riff.md (image)
+T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/kept.md"
+}
+
 @test "the team-home commits hold every records path, the ledger files in their own, never another path staged or ignored" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"

@@ -458,15 +458,22 @@ archive_left_out() {
       skip_path "$dir"
     done < <(find . -mindepth 1 -maxdepth 1 -type d ! \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -printf '%P\0' | sort -z)
     walk . -type l -printf 'link\t%P\0' | sort -z
-    # An image by its extension, or by its first bytes, which are read only for the files grep
-    # takes for binary, as every image image_magic knows is: a directory of text starts no process
-    # per file. A file grep cannot read is left to the mirror, which names it (grep -s).
-    local -A image=() secret=()
-    local path owner small=()
+    # An image by its extension, or by its first bytes, which image_magic reads only in the files
+    # that could start with an image's signature: those grep takes for binary (a NUL byte, as tiff's
+    # and ico's signatures hold) or empty, and the text files a line of which starts with png's,
+    # jpeg's, gif's, webp's or bmp's signature, or that hold heif's ftyp, so a directory of other
+    # text starts no process per file. A file grep cannot read is left to the mirror, which names
+    # it (grep -s).
+    local -A image=() candidate=() secret=()
+    local path owner small=() signature=$'^(\x89PNG|\xff\xd8\xff|GIF8[0-9]|RIFF|BM)|ftyp'
     while IFS= read -r -d '' path; do image[$path]=1; done < <(walk . -type f "${is_image[@]}" -printf '%P\0')
-    while IFS= read -r -d '' path; do
+    while IFS= read -r -d '' path; do candidate[$path]=1; done < <(
+      walk . -type f ! \( "${is_image[@]}" \) -printf '%P\0' |
+        xargs -0r sh -c 'grep -sILZ -e "" -- "$@"; grep -slZE -e "$0" -- "$@"' "$signature" || true
+    )
+    for path in "${!candidate[@]}"; do
       [[ -z $(image_magic <"$path") ]] || image[$path]=1
-    done < <(walk . -type f ! \( "${is_image[@]}" \) -printf '%P\0' | xargs -0r grep -sILZ -e '' -- || true)
+    done
     ((${#image[@]} == 0)) || printf 'image\t%s\0' "${!image[@]}" | sort -z
     while IFS= read -r -d '' path; do
       [[ -n ${image[$path]:-} ]] || printf 'over 1 MiB\t%s\0' "$path"
