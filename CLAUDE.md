@@ -174,7 +174,7 @@ It holds:
 - The header (the comment block under the shebang) is the script's usage and its `--help`, which the library prints; exact commands live there and nowhere else.
 - The team home is found as "The team home" says; `TEAM_HOME` is not exported, so pass it to a sibling script explicitly.
 - The code checkout is the directory above `bin/` (`~/agent-team`): code (roles, settings, templates, plugins, hooks, toolkits) comes from the script's own checkout, never from the team home.
-  In settings files and a toolkit's `.mcp.json`, `@TEAM_CODE@` names the code checkout and `@TASK_DIR@` the team home's `tasks/T<n>/`; `team-worker` and `claude-coordinator` fill them in.
+  In settings files and a toolkit's `.mcp.json`, `@TEAM_CODE@` names the code checkout, `@TASK_DIR@` the team home's `tasks/T<n>/` and `@WORKTREE@` the session's worktree by its real path; `team-worker` fills them in, and `claude-coordinator` fills `@TEAM_CODE@`.
 - Exit codes: 0 done, 1 refused or a check failed (`die`), 2 a malformed command line (`usage_error`), 75 try again later.
 - The ledger changes only through the library's `ledger_append`, which checks each event against `bin/lib/ledger-contract.json` and that the script is its kind's writer, or one of them; a new kind or field goes in the contract first.
   A kind the contract marks `"push": true` (Daniel's word or an outside fact) is committed and pushed the moment it is logged by the library's `ledger_push`, which each of its writers calls once after its last event, as `tests/repo.bats` holds.
