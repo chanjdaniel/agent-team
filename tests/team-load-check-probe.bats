@@ -74,8 +74,9 @@ attempts() {
 }
 
 # probe_transcript <role> [<id>=<outcome>[,<outcome>]...]...: <role>'s transcript in
-# $STUB_FIXTURES/<role>.jsonl: one call per attempt, in order, refused as it expects (hook: the real
-# hook whose message holds the attempt's marker, on the call in the worktree; rule: a deny rule,
+# $STUB_FIXTURES/<role>.jsonl: one call per attempt, in order, refused as it expects (hook: the
+# block of the data file's first hook whose message holds the attempt's marker, on the call in the
+# worktree, or a hook's block naming no marker for an attempt that has none; rule: a deny rule,
 # file-rule's shape for a file tool; refused: auto mode), or for an attempt named, one call per
 # outcome given: hook, other-hook (a block by another hook's message), none (a call with no
 # result), skip (no call at all), or any outcome tool_result takes (ran, rule, file-rule, automode,
@@ -83,7 +84,7 @@ attempts() {
 # Write's or Read's relative input is made by its absolute path in the worktree, as Claude Code
 # records it.
 probe_transcript() {
-  local role=$1 attempt id tool input expect marker outcomes outcome n=0 call hook
+  local role=$1 attempt id tool input expect marker outcomes outcome n=0 call hook result
   local -A given=()
   shift
   while [[ $# -gt 0 ]]; do given[${1%%=*}]=${1#*=}; shift; done
@@ -104,8 +105,17 @@ probe_transcript() {
       tool_call "toolu_$role$n" "$tool" "$call"
       case $outcome in
         hook)
-          hook=$(grep -lF -d skip -- "$marker" "$REPO_ROOT"/bin/hooks/* | head -n 1)
-          hook_result "toolu_$role$n" "${hook##*/}" "$tool" "$call" "$wt" ;;
+          if [[ -z $marker ]]; then
+            tool_result "toolu_$role$n" hook $'PreToolUse:Bash hook error: [command hook 1]: Blocked: a hook\n'
+            continue
+          fi
+          result=''
+          for hook in $(jq -r '.hooks[].hook' "$(data)"); do
+            result=$(hook_result "toolu_$role$n" "$hook" "$tool" "$call" "$wt" 2>/dev/null) || continue
+            [[ $result != *"$marker"* ]] || break
+          done
+          [[ $result == *"$marker"* ]] || { echo "probe_transcript: no hook blocked $id with its marker" >&2; return 1; }
+          echo "$result" ;;
         other-hook) tool_result "toolu_$role$n" hook $'PreToolUse:Bash hook error: [command hook 1]: Blocked: something else\n' ;;
         none) ;;
         *) tool_result "toolu_$role$n" "$outcome" ;;
@@ -147,7 +157,7 @@ launched() { stub_calls claude | jq -r 'select(.[0] == "--bg") | .[index("--name
   assert_contains "$output" "PASS reviewer redirect-outside: hook refused it"
   assert_contains "$output" "PASS builder ops-launch: hook refused it"
   assert_contains "$output" "PASS builder sessions: rule refused it"
-  assert_contains "$output" "PASS builder upload: refused by automode"
+  assert_contains "$output" "PASS builder upload: hook refused it"
   # Only the planner and the reviewer write outside .scratch/ by their hook.
   [[ $output != *"builder write-outside"* && $output != *"builder redirect-outside"* ]]
   local role
@@ -225,30 +235,39 @@ PASS builder proc: rule refused it"
   left_nothing
 }
 
-@test "an attempt refused by another layer than it expects fails, and a refused attempt passes on any refusing layer" {
+@test "an attempt refused by another layer than it expects fails" {
   probe_transcript planner sessions=automode upload=no-verdict ops-launch=other-hook
   probe_transcript builder sessions=hook upload=rule ops-launch=rule
-  probe_transcript reviewer write-outside=safety-check upload=safety-check redirect-outside=user-rejected sessions=none
+  probe_transcript reviewer write-outside=safety-check upload=automode redirect-outside=user-rejected sessions=none
   run_bin -1 team-load-check --probe
   assert_contains "$output" "FAIL planner sessions: expected rule, got automode"
-  assert_contains "$output" "FAIL planner upload: expected refused, got no-verdict"
+  assert_contains "$output" "FAIL planner upload: expected hook, got no-verdict"
   assert_contains "$output" "FAIL planner ops-launch: expected hook, got other-hook"
   assert_contains "$output" "FAIL builder sessions: expected rule, got hook"
-  assert_contains "$output" "PASS builder upload: refused by rule"
+  assert_contains "$output" "FAIL builder upload: expected hook, got rule"
   assert_contains "$output" "FAIL builder ops-launch: expected hook, got rule"
   assert_contains "$output" "FAIL reviewer write-outside: expected hook, got safety-check"
-  assert_contains "$output" "PASS reviewer upload: refused by safety-check"
+  assert_contains "$output" "FAIL reviewer upload: expected hook, got automode"
   assert_contains "$output" "FAIL reviewer redirect-outside: expected hook, got user-rejected"
   assert_contains "$output" "FAIL reviewer sessions: expected rule, got none"
   assert_equal "${lines[-1]}" "load check FAILED"
 
-  # A hook's block passes the stand-in for auto mode too.
+  # The upload is refused by command-guard's block, with its marker.
   probe_transcript planner upload=hook
   probe_transcript builder
   probe_transcript reviewer
   rm "$STUB_FIXTURES"/launched-* "$STUB_FIXTURES"/removed-*
   run_bin -0 team-load-check --probe
-  assert_contains "$output" "PASS planner upload: refused by hook"
+  assert_contains "$output" "PASS planner upload: hook refused it"
+}
+
+@test "a refused attempt, auto mode's stand-in, passes on any refusing layer and fails on any other outcome" {
+  probe_checkout '[{"id": "stand-in", "roles": ["builder"], "tool": "Bash", "input": "echo stand-in", "expect": "refused"},
+    {"id": "unrefused", "roles": ["builder"], "tool": "Bash", "input": "echo unrefused", "expect": "refused"}]'
+  probe_transcript builder stand-in=automode,rule,other-hook,safety-check unrefused=automode,no-verdict
+  run_bin -1 team-load-check --probe --role builder
+  assert_equal "$(verdicts)" "PASS builder stand-in: refused by automode, hook, rule, safety-check
+FAIL builder unrefused: expected refused, got no-verdict"
 }
 
 @test "a rejection with no toolDenialKind is read by its decision: a deny rule passes, another reason fails as rejected" {
@@ -274,7 +293,7 @@ PASS builder proc: rule refused it"
 }
 
 @test "every call matching an attempt must pass, and a call with other input matches none" {
-  probe_transcript builder sessions=rule,ran upload=automode,rule
+  probe_transcript builder sessions=rule,ran upload=hook,hook
   # A call that differs from the attempt in its input, its tool or a path's base is not it.
   {
     tool_call toolu_x1 Bash '{"command": "claude agents --json --all"}'
@@ -297,7 +316,7 @@ PASS builder proc: rule refused it"
   } >>"$STUB_FIXTURES/planner.jsonl"
   run_bin -1 team-load-check --probe
   assert_contains "$output" "FAIL builder sessions: expected rule, got ran"
-  assert_contains "$output" "PASS builder upload: refused by automode, rule"
+  assert_contains "$output" "PASS builder upload: hook refused it"
   assert_contains "$output" "FAIL reviewer write-outside: never attempted"
   assert_contains "$output" "PASS planner write-outside: hook refused it"
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 2
