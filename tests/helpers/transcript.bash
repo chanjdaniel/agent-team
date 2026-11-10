@@ -22,7 +22,10 @@
 #                                          hook outcome, its text Claude Code's wrapper around
 #                                          what the real bin/hooks/<hook> prints on stderr when
 #                                          it runs on that call in <cwd> (which is also its
-#                                          CLAUDE_PROJECT_DIR), so a reworded hook shows here
+#                                          CLAUDE_PROJECT_DIR), so a reworded hook shows here;
+#                                          it runs with a TMPDIR of its own and no
+#                                          CLAUDE_JOB_DIR, since the scratch hook lets a shell
+#                                          write under either, and the sandbox is under TMPDIR
 #   as_text_list                           a filter turning a result's string content into the
 #                                          list form
 
@@ -61,7 +64,8 @@ hook_result() {
   local id=$1 hook=$2 tool=$3 input=$4 cwd=$5 message
   message=$(jq -cn --arg tool "$tool" --argjson input "$input" --arg cwd "$cwd" \
     '{hook_event_name: "PreToolUse", cwd: $cwd, tool_name: $tool, tool_input: $input}' |
-    CLAUDE_PROJECT_DIR=$cwd "$REPO_ROOT/bin/hooks/$hook" 2>&1 >/dev/null) && {
+    TMPDIR=$BATS_TEST_TMPDIR/hook-tmp CLAUDE_JOB_DIR='' CLAUDE_PROJECT_DIR=$cwd \
+      "$REPO_ROOT/bin/hooks/$hook" 2>&1 >/dev/null) && {
     echo "hook_result: bin/hooks/$hook let the $tool call through" >&2
     return 1
   }
