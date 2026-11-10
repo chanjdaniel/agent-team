@@ -409,10 +409,14 @@ local_path() {
 #   over 200 files     any other directory holding more than 200 files through its
 #                      subdirectories, the outermost one only
 #   link               a symbolic link
-#   image              a file whose extension IMAGE_TYPE names, in any case (a screenshot is
-#                      never kept in git; the records hook refuses one)
+#   image              a file whose extension IMAGE_TYPE names, in any case, or whose first
+#                      bytes image_magic reads as an image's (a screenshot is never kept in git;
+#                      the records hook refuses one)
 #   over 1 MiB         a file over 1 MiB
 #   may hold a secret  a path secret_paths names
+#   email at a public  a file whose bytes hold an address refused_emails records counts, the
+#   provider           owner being the team home's git user.email: the records hook refuses it,
+#                      and one such file would stop every checkpoint's commit of its task
 # Nothing is looked for inside a path named by an earlier reason. This is the one place the list
 # is written; the scripts that archive, and their docs, point here.
 # A missing directory has none: archive_left_out <dir>
@@ -454,10 +458,33 @@ archive_left_out() {
       skip_path "$dir"
     done < <(find . -mindepth 1 -maxdepth 1 -type d ! \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -printf '%P\0' | sort -z)
     walk . -type l -printf 'link\t%P\0' | sort -z
-    walk . -type f "${is_image[@]}" -printf 'image\t%P\0' | sort -z
-    walk . -type f ! \( "${is_image[@]}" \) -size +1048576c -printf 'over 1 MiB\t%P\0' | sort -z
-    walk . -type f ! \( "${is_image[@]}" \) -size -1048577c -printf '%P\0' |
-      secret_paths | sort | tr '\n' '\0' | sed -z 's/^/may hold a secret\t/'
+    # An image by its extension, or by its first bytes, which are read only for the files grep
+    # takes for binary, as every image image_magic knows is: a directory of text starts no process
+    # per file.
+    local -A image=() secret=()
+    local path owner small=()
+    while IFS= read -r -d '' path; do image[$path]=1; done < <(walk . -type f "${is_image[@]}" -printf '%P\0')
+    while IFS= read -r -d '' path; do
+      [[ -z $(image_magic <"$path") ]] || image[$path]=1
+    done < <(walk . -type f ! \( "${is_image[@]}" \) -printf '%P\0' | xargs -0r grep -ILZ -e '' -- || true)
+    ((${#image[@]} == 0)) || printf 'image\t%s\0' "${!image[@]}" | sort -z
+    while IFS= read -r -d '' path; do
+      [[ -n ${image[$path]:-} ]] || printf 'over 1 MiB\t%s\0' "$path"
+    done < <(walk . -type f ! \( "${is_image[@]}" \) -size +1048576c -printf '%P\0' | sort -z)
+    while IFS= read -r -d '' path; do
+      [[ -n ${image[$path]:-} ]] || small+=("$path")
+    done < <(walk . -type f ! \( "${is_image[@]}" \) -size -1048577c -printf '%P\0' | sort -z)
+    ((${#small[@]} == 0)) || while IFS= read -r path; do
+      secret[$path]=1
+      printf 'may hold a secret\t%s\0' "$path"
+    done < <(printf '%s\0' "${small[@]}" | secret_paths | sort)
+    # An address the records hook refuses, read with refused_emails only in the files one grep
+    # finds an address in, the owner being the team home's git user.email, as the hook's is.
+    owner=$(git -C "$TEAM_HOME" config user.email 2>/dev/null) || owner=''
+    ((${#small[@]} == 0)) || while IFS= read -r -d '' path; do
+      [[ -n ${secret[$path]:-} || -z $(refused_emails records "${owner,,}" <"$path") ]] ||
+        printf 'email at a public provider\t%s\0' "$path"
+    done < <(printf '%s\0' "${small[@]}" | xargs -0r grep -laEZ -e "$DATA_EMAIL" -- | sort -z || true)
   )
 }
 
