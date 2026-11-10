@@ -232,6 +232,38 @@ FAIL salvage T2 site"
   assert_equal "$(line_of "salvage records")" "PASS salvage records: the team home holds no records that neither origin's dev nor a salvage branch keeps"
 }
 
+@test "on a fenced machine, a waiting list written since the last commit needs no salvage, since the new holder writes it from the ledger" {
+  only_checks 230-salvage.sh
+  tools_at arch
+  local team_origin
+  team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
+  git -C "$TEAM_HOME" add -A
+  git -C "$TEAM_HOME" commit -q -m "chore: the machine"
+  git -C "$TEAM_HOME" push -q origin dev
+  make_machine laptop
+  steal_lease laptop home-pc
+  "$REPO_ROOT/bin/team-timers" disable >/dev/null
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  # waiting.md and waiting.json, new and then changed since a commit, are all it holds: it passes.
+  echo "**Waiting on you**" >"$TEAM_HOME/waiting.md"
+  echo '{"schema": "team-waiting/1", "items": [], "standing": [], "posted": null}' >"$TEAM_HOME/waiting.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "salvage records")" "PASS salvage records: the team home holds no records that neither origin's dev nor a salvage branch keeps"
+  git -C "$TEAM_HOME" add waiting.md waiting.json
+  git -C "$TEAM_HOME" commit -q -m "chore: waiting"
+  git -C "$TEAM_HOME" push -q origin dev
+  echo "Nothing waits on you." >>"$TEAM_HOME/waiting.md"
+  echo '{}' >"$TEAM_HOME/waiting.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "salvage records")" "PASS salvage records: the team home holds no records that neither origin's dev nor a salvage branch keeps"
+
+  # Beside a ledger line, the fix commits the ledger alone.
+  echo '{"ts":"2026-10-23T09:00:00Z","task":"T1","event":"paused","reason":"x"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "salvage records")" \
+    "FAIL salvage records: $TEAM_HOME has uncommitted records (ledger.jsonl: 1 new line); fix: git -C $TEAM_HOME add -A -- ledger.jsonl && git -C $TEAM_HOME commit -m \"wip: salvage records from home-pc\", then git -C $TEAM_HOME push $team_origin HEAD:refs/heads/salvage/records/home-pc-1"
+}
+
 @test "the offline line warns with the outage's start and age while the heartbeat holds the team" {
   only_checks 250-offline.sh
   tools_at arch
