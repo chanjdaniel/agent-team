@@ -1,8 +1,9 @@
 // The throwaway MongoDB (helpers/mongo.mjs): its own wait, where a start that never comes ready
 // fails with how long it waited and what the container last logged, so a slow Docker reads apart
-// from a broken one, and a container that exits or is gone fails it at once; its data on tmpfs,
-// so no container of the image makes a volume;
-// and its tcmalloc, on per-thread caches so MongoDB 8.0 starts on Linux 6.19 to 7.0.13.
+// from a broken one, and a container that exits or is gone fails it at once, one that exits with
+// its exit code; its data on tmpfs, so no container of the image makes a volume;
+// and its tcmalloc, on per-thread caches so MongoDB 8.0 starts on Linux 6.19 to 7.0.13, whose
+// rseq change breaks its per-CPU caches (SERVER-121912).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";

@@ -53,9 +53,12 @@
 # secrets and guardrails; its before, the numbers of its plain notes on code the PR did not
 # change, distinct whole numbers above 0, is required when findings counts a note-before, as many
 # as it counts, and a sent_back naming one of them is refused, since such a note is queued, never
-# sent back. A park (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>,
-# when it began: no later than now and no earlier than the task's latest event, or it is refused
-# naming both times; no other kind takes since. A retro-change is refused when its retro names a
+# sent back; its widening, the numbers of a rereview's new findings in what the last fix added,
+# distinct whole numbers above 0 too, is refused naming any before lists, since a before note is
+# on code the PR did not change, and may name a finding sent_back does not. A park (waiting,
+# blocked, paused, held) logged after the fact takes since=<UTC time>, when it began: no later
+# than now and no earlier than the task's latest event, or it is refused naming both times; no
+# other kind takes since. A retro-change is refused when its retro names a
 # task with no opened event of path retro, or a retro with no answered of id retro.
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
 # merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
@@ -73,9 +76,10 @@
 # the shas of 7 to 40 hex digits, note the line) and the builder's done; DONE review-ready <sha> and
 # DONE merged <base> <sha> conflicts: <files or none> the builder's done, report the rest;
 # DONE pass <PR url or head> and DONE findings <path>, each followed by findings=, before=,
-# guarded= and, when the reviewer added a memory, memory= as team-log takes them, a review and the
-# reviewer's done, either taking --sent-back's list as sent_back (a pass's being the notes that go
-# back before the merge, which make it a findings review, as above; no other message takes it);
+# guarded=, on a rereview widening=, and, when the reviewer added a memory, memory= as team-log
+# takes them, a review and the reviewer's done, either taking --sent-back's list as sent_back (a
+# pass's being the notes that go back before the merge, which make it a findings review, as above;
+# no other message takes it);
 # DONE gate <key=value>... a gate-run;
 # any other DONE the sender's done, report the rest. An ops session's DONE, whatever its first word
 # when --from names that session, and its QUESTION, whose text may hold production data, log its
@@ -384,7 +388,7 @@ if [[ $event == branch-renamed && -n ${seen[project]:-} && -n ${seen[branch]:-} 
     die "$branch is not a branch name git takes (git check-ref-format --branch)"
 fi
 
-# A review's finding counts and guarded areas, as the reviewer's DONE gives them.
+# A review's finding counts, before and widening notes and guarded areas, as the reviewer's DONE gives them.
 if [[ $event == review ]]; then
   problem=$(ledger_jq '
     def listed: (.[:-1] | join(", ")) + " and " + last;
@@ -395,6 +399,7 @@ if [[ $event == review ]]; then
     | $line.before as $b
     | $line.sent_back as $s
     | $line.guarded as $g
+    | $line.widening as $w
     | (if ($f | type) == "object" then [$f | findings_problems] == [] else false end) as $f_ok
     | (if ($b | type) == "array" then [$b | before_problems] == [] else false end) as $b_ok
     | ($f | objects | [findings_problems] | select(. != [])
@@ -409,6 +414,10 @@ if [[ $event == review ]]; then
         | "sent_back names note\(if length == 1 then "" else "s" end) \(numbered), which before lists as "
           + (if length == 1 then "a plain note" else "plain notes" end)
           + " on code the PR did not change: such a note is queued as a follow-up, never sent back"),
+      ($w | arrays | [before_problems] | select(. != [])
+        | "widening lists the numbers of the findings in what the last fix added, each a whole number above 0, once:" + lines),
+      (select($b_ok and ($w | type) == "array") | [$w[] | select(IN($b[]))] | unique | select(. != [])
+        | "widening names note\(if length == 1 then "" else "s" end) \(numbered), which before lists as on code the PR did not change"),
       ($g | arrays | [guarded_problems] | select(. != [])
         | "guarded lists the guarded areas the change touches, each one of \(guarded_areas | listed):" + lines)' \
     -nr --argjson line "$typed")

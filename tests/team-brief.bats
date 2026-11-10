@@ -235,7 +235,7 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 2. Find what your branch made false: for each file, command, flag, setting and path it adds, renames or removes (`git diff --stat origin/dev...HEAD`), `git grep` its name in the repository's Markdown, `CLAUDE.md`, `AGENTS.md` and script headers, and fix every line that no longer holds, in the same PR.
 3. Push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send `T12 DONE review-ready <the full sha of HEAD>` to `coordinator`, then wait: the team reviews that head before the gate runs, so the gate runs once.
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
-4. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes." (under a Disclosure section, put in its terms, since the gate drafts the PR's title and body from it)
+4. Run `/no-mistakes` with an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is "rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes.": on a phase, this phase's part of it alone), under a Disclosure section put in its terms, since the gate drafts the PR's title and body from it.
    When the review step parks with no finding, only on "review coverage is incomplete", answer it yourself with `no-mistakes axi respond --action approve`, with no QUESTION: the team review reads this head, before the gate or after it. A finding, at any step, still goes to `coordinator` as a QUESTION.
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
 6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks, noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
@@ -320,9 +320,14 @@ EOF
     done < <(templates)
   done
   # The delivery partial follows the project's delivery.
-  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-builder-fix.md")" 'Run `/no-mistakes` with this intent: "T12: value of goal"'
+  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-builder-fix.md")" 'Run `/no-mistakes` with an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, this phase'"'"'s part of it alone), under a Disclosure section put in its terms'
   assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-builder-deliver.md")" \
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
+  # The PR body and the gate's intent open with what the PR changes, never the task's id and goal.
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-builder-deliver.md")" \
+    'its body opening with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, say this phase'"'"'s part of it alone and name the others as their own PRs), then'
+  refute_grep -F '"T12: value of goal"' "$TEAM_HOME/tasks/T12/brief-builder-fix.md"
+  refute_grep -F '"T14: value of goal"' "$TEAM_HOME/tasks/T14/brief-builder-deliver.md"
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
   # So do the review partials: a gated project's first review comes before its PR.
@@ -515,13 +520,18 @@ EOF
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   # Each task's branch, reviewed once, so the first review's head is a commit its worktree holds.
-  local -A heads=()
+  local -A heads=() revs=()
   reviewed_branch T12 dev
-  heads[T12]=$head
+  heads[T12]=$head revs[T12]=$reviewed
   reviewed_branch T14 main
-  heads[T14]=$head
+  heads[T14]=$head revs[T14]=$reviewed
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
   local counts="findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>"
+  local widening="widening=<the widening findings' numbers, comma-separated, or none>"
+  # The widening sentence of a rereview of the fix since <reviewed>.
+  marks() {
+    echo "Mark a new finding \`widening\` when it sits in code or text the fix since \`$1\` added for an earlier finding, so reverting that fix would end it, and give their numbers in \`rereview.md\`'s counts as \`widening=<numbers, comma-separated, or none>\`."
+  }
   local areas="the guarded areas the change touches, of \`ci\`, \`dependencies\`, \`migrations\`, \`settings\`, \`permissions\`, \`secrets\` and \`guardrails\`, by the paths \`$REPO_ROOT/bin/lib/guarded\` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none"
   run_bin -0 team-brief T12 reviewer --name review --set head="${heads[T12]}" --set "checks=the checks"
   brief=$(<"$output")
@@ -538,8 +548,24 @@ EOF
     brief=$(<"$output")
     assert_contains "$brief" "$areas"
     assert_contains "$brief" "the findings that stand at \`$at\`, its new ones and any earlier one sent back and not fixed, the plain notes as \`note-change\` and \`note-before\` (0 for none), the numbers of its new \`before\` notes"
-    assert_contains "$brief" "- Send \`$task DONE pass $pr $counts\` or \`$task DONE findings $dir/review.md $counts\` to \`coordinator\`, the counts, numbers and areas as \`$dir/rereview.md\` gives them."
+    assert_contains "$brief" "- Send \`$task DONE pass $pr $counts $widening\` or \`$task DONE findings $dir/review.md $counts $widening\` to \`coordinator\`, the counts, numbers and areas as \`$dir/rereview.md\` gives them."
+    assert_contains "$brief" "then write the same result alone to \`$dir/rereview.md\`.
+  $(marks "${revs[$task]}")
+  Give in it the count of each kind"
   done
+  # Before its PR, a rereview marks widening findings the same way.
+  run_bin -0 team-brief T12 rereview --name rereview-before-pr --set head="${heads[T12]}" --set "since=the fix"
+  brief=$(<"$output")
+  assert_contains "$brief" "No PR yet: reviewed at \`${revs[T12]}\`"
+  assert_contains "$brief" "- Send \`T12 DONE pass ${heads[T12]} $counts $widening\` or \`T12 DONE findings .scratch/task/review.md $counts $widening\` to \`coordinator\`, the counts, numbers and areas as \`.scratch/task/rereview.md\` gives them."
+  assert_contains "$brief" "then write the same result alone to \`.scratch/task/rereview.md\`.
+  $(marks "${revs[T12]}")
+  Give in it the count of each kind"
+  # The first review and the verify mark none: neither reads a fix that may widen.
+  refute_grep -F 'widening' "$TEAM_HOME/tasks/T12/brief-review.md"
+  refute_grep -F 'widening' "$TEAM_HOME/tasks/T14/brief-review.md"
+  run_bin -0 team-brief T14 verify --name verify --set pr=$pr --set head="${heads[T14]}" --set findings=3
+  refute_grep -F 'widening' "$output"
 }
 
 @test "each planner brief delivers scope.txt beside the spec, one repository path per line, and checks its tickets" {
@@ -752,7 +778,7 @@ A change to one touches the `settings` guarded area, so name `settings` among th
 
 ## Check
 
-1. First start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 def5678`, run with Bash `run_in_background`, so the run and your reading overlap, and run the project's local checks (none) on `def5678` with `@CODE@/bin/team-checks home def5678`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `.work/task/rereview.md` says which local checks passed (they set no GitHub status).
+1. First start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 def5678`, run with Bash `run_in_background`, so the run and your reading overlap (a pass delivers only once it has ended; a verify that sends any finding back delivers as soon as `.work/task/rereview.md` is written, naming in its CI section the checks still running, and a wait that ends after it delivered needs nothing more), and run the project's local checks (none) on `def5678` with `@CODE@/bin/team-checks home def5678`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `.work/task/rereview.md` says which local checks passed (they set no GitHub status).
    Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding, while a stuck check or a head other than `def5678` goes to `coordinator` as `T14 BLOCKED <its message>`; exit 75, run it again, or report as its message says.
 2. Review what changed since the last review, `git diff abc1234 def5678`, and the commit messages of `origin/main..def5678`.
    Read nothing else: not the rest of the PR, the spec's or the story's acceptance list, or the knowledge graph; run the UI check only when that diff touches a UI file and your session lists `ui-check`, on the states it touched and their siblings.
@@ -1585,7 +1611,7 @@ after"
   run_bin -0 team-brief T5 builder-deliver --project conv --set goal=g --name conv
   brief=$(<"$TEAM_HOME/tasks/T5/brief-conv.md")
   assert_contains "$brief" 'Worktree: `~/.treehouse/Conventioner-d4c77a/3/Conventioner`, branch `chore/T5-move-planning-out`.'
-  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T5: g"'
+  assert_contains "$brief" '(the task'"'"'s goal is "g": on a phase, this phase'"'"'s part of it alone)'
 
   run_bin -1 team-brief T5 builder-deliver --project other --set goal=g --name other
   assert_contains "$output" "T5 has no open worktree in other; its open worktrees: conv (~/.treehouse/Conventioner-d4c77a/3/Conventioner), home (~/agent-team/.claude/worktrees/1)"
@@ -1718,7 +1744,7 @@ after"
   assert_contains "$brief" "Run them on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head, and say in \`.work/task/review.md\` whether it passed"
   run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head="$head"
-  assert_contains "$(<"$output")" "so the run and your reading overlap, and run the project's local checks (\`tests/run\`, \`make lint\`) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does"
+  assert_contains "$(<"$output")" "so the run and your reading overlap (a pass delivers only once it has ended; a rereview that sends any finding back delivers as soon as \`.work/task/rereview.md\` is written, naming in its CI section the checks still running, and a wait that ends after it delivered needs nothing more), and run the project's local checks (\`tests/run\`, \`make lint\`) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does"
   # A project without local checks says so.
   branch_head T12 dev
   run_bin -0 team-brief T12 reviewer --name review --set head="$head" --set "checks=the checks"
@@ -1747,6 +1773,9 @@ after"
     --set findings_file=.work/task/review.md --set goal=g
   files+=("$output")
   brief=$(<"$output")
+  # The round fixes each finding as narrowly as it asks, and asks before reaching wider.
+  assert_contains "$brief" "4. Fix each finding on the branch as narrowly as it asks, test-first where it changes behaviour; a fix that would reach shapes the finding did not name goes to \`coordinator\` as \`T14 QUESTION\` first, and delete \`.work/task/handoff.md\` once its work is done."
+  refute_grep -F '4. Fix each finding on the branch, test-first' "$output"
   assert_contains "$brief" "   Otherwise, on a direct-PR delivery, send the \`PR\` at the push as the delivery says, its wait for the PR's GitHub checks going on in the background, so the rereview reads while CI runs, and push each fix of a failed check at once with no new report, as it says."
   assert_contains "$brief" "6. $wait"
   # The merge-base builder reports its merge at the push the same way.
@@ -1771,7 +1800,8 @@ after"
   brief=$(<"$output")
   assert_contains "$brief" "## GitHub checks
 
-Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, before you read anything, so the run and your reading overlap; every check must pass, and you deliver only once the wait has ended.
+Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, before you read anything, so the run and your reading overlap; every check must pass before you pass the PR, so a pass delivers only once the wait has ended.
+A review that sends any finding back delivers as soon as \`.work/task/review.md\` is written, its CI section naming the checks still running; a wait that ends after you delivered needs nothing more from you.
 ${act//abc1234/$head}
 ${moved//abc1234/$head}
 
@@ -1783,13 +1813,15 @@ ${moved//abc1234/$head}
   brief=$(<"$output")
   assert_contains "$brief" "## Check
 
-1. First start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, so the run and your reading overlap, and run the project's local checks (none) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; every one must pass, and \`.work/task/review.md\` says which local checks passed (they set no GitHub status).
+1. First start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, so the run and your reading overlap (a pass delivers only once it has ended; a rereview that sends any finding back delivers as soon as \`.work/task/rereview.md\` is written, naming in its CI section the checks still running, and a wait that ends after it delivered needs nothing more), and run the project's local checks (none) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; every one must pass, and \`.work/task/review.md\` says which local checks passed (they set no GitHub status).
    ${act//abc1234/$head}
    ${moved//abc1234/$head}
 2. Review what changed since the last review"
   assert_contains "$brief" "and refuses when the PR has moved past it: then set nothing, and when a failed check of \`$head\` explains the move, as step 1 says, send your \`DONE findings\` below as usual; otherwise tell the coordinator."
   assert_contains "$brief" "3. Every finding in \`.work/task/review.md\` that went back to the builder"
   refute_grep -- '--watch' "${files[@]}"
+  # No review waits for CI's end to deliver its findings.
+  refute_grep -F 'you deliver only once the wait has ended' "${files[@]}"
 }
 
 @test "the merge-base brief merges the base, resolves, runs the local checks and names the conflicted files" {
@@ -1874,7 +1906,7 @@ findings_files() {
   assert_contains "$brief" "PR: https://github.com/chanjdaniel/shop/pull/5, against"
   assert_contains "$brief" "and findings 1 and 3 in \`.scratch/task/review.md\`."
   assert_contains "$brief" "\`.scratch/task/handoff.md\`"
-  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: the shop'"'"'s checkout"'
+  assert_contains "$brief" '(the task'"'"'s goal is "the shop'"'"'s checkout": on a phase, this phase'"'"'s part of it alone)'
   assert_contains "$brief" "when the PR exists, push to it where a step opens one"
   # A gated project's first review comes before its gate opens the PR: the round takes none, and
   # the builder checks its branch against what the stowed builder pushed, not a PR's head.
@@ -1883,7 +1915,7 @@ findings_files() {
   assert_contains "$brief" "PR: none, against \`dev\` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push)."
   assert_contains "$brief" "\`! git rev-parse -q --verify origin/fix/T12-applicant-sign-in-rate-limit || git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
   assert_contains "$brief" "when it is none, the delivery opens it as it says."
-  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: g"'
+  assert_contains "$brief" '(the task'"'"'s goal is "g": on a phase, this phase'"'"'s part of it alone)'
 }
 
 # team-catch-up pushes a merge of the base to a PR's branch from the primary checkout, so a builder
@@ -1967,7 +1999,7 @@ Nor guess them.'
   assert_contains "$brief" "PR: none, against \`dev\` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push)."
   assert_contains "$brief" "and findings 3 and 5 in \`.scratch/task/rereview.md\`."
   assert_contains "$brief" "When every one of findings 3 and 5 is a plain \`note\`"
-  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: Applicants cannot flood addresses with sign-in codes."'
+  assert_contains "$brief" '(the task'"'"'s goal is "Applicants cannot flood addresses with sign-in codes.": on a phase, this phase'"'"'s part of it alone)'
   refute_grep -F 'Nor guess them' "$output"
   assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T12/brief-round-1.json")" \
     '{"findings":"3 and 5","findings_file":".scratch/task/rereview.md","goal":"Applicants cannot flood addresses with sign-in codes.","pr":"none"}'
@@ -2010,7 +2042,7 @@ Nor guess them.'
   assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" \
     '{"findings":"4","findings_file":".work/task/review-2.md","goal":"the given goal.","pr":"https://github.com/chanjdaniel/agent-team/pull/10"}'
   assert_contains "$(<"$output")" "and findings 4 in \`.work/task/review-2.md\`."
-  assert_contains "$(<"$output")" '"T14: the given goal."'
+  assert_contains "$(<"$output")" '(the task'"'"'s goal is "the given goal.":'
 }
 
 @test "a deliver brief takes the goal from the plan's Goal section, its first sentence; a plan with none is refused naming --set goal=" {
@@ -2033,16 +2065,16 @@ Nor guess them.'
 The team'"'"'s tooling runs on both machines.
 Daniel moves it with one command.'
   run_bin -0 team-brief T14 builder-deliver
-  assert_contains "$(<"$output")" "its body opening with the task's goal: \"T14: The team's tooling runs on both machines.\", then"
+  assert_contains "$(<"$output")" "its body opening with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is \"The team's tooling runs on both machines.\": on a phase, say this phase's part of it alone and name the others as their own PRs), then"
   assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" '{"goal":"The team'"'"'s tooling runs on both machines.","tickets":"every ticket"}'
   # A goal written as a list: its first item, without the marker.
   plan_goal T14 '- The team home stays packed.
 - Stack logs stay out of it.'
   run_bin -0 team-brief T14 builder-deliver --force
-  assert_contains "$(<"$output")" '"T14: The team home stays packed."'
+  assert_contains "$(<"$output")" '(the task'"'"'s goal is "The team home stays packed.":'
   # A --set wins.
   run_bin -0 team-brief T14 builder-deliver --force --set goal='the given goal.'
-  assert_contains "$(<"$output")" '"T14: the given goal."'
+  assert_contains "$(<"$output")" '(the task'"'"'s goal is "the given goal.":'
 }
 
 # team-thread wait keeps Daniel's images there with no pick, so the item says what ui-pick.md holds
