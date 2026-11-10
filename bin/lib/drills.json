@@ -125,6 +125,25 @@
         "tests/bootstrap-drill",
         ".github/workflows/bootstrap.yml"
       ]
+    },
+    {
+      "name": "load-check-probe",
+      "what": "The load check's probe form: a live planner, builder and reviewer each make the attempts of bin/lib/probe.json, and each is refused by the layer it expects.",
+      "by": "coordinator",
+      "proves": [
+        "bin/team-load-check",
+        "bin/lib/probe.json",
+        "bin/team-worker",
+        "bin/hooks/",
+        "roles/planner.md",
+        "roles/builder.md",
+        "roles/reviewer.md",
+        "settings/worker.json",
+        "settings/planner.json",
+        "settings/builder.json",
+        "settings/reviewer.json",
+        "bin/lib/tools.lock"
+      ]
     }
   ]
 }

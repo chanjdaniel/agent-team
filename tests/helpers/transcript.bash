@@ -2,7 +2,7 @@
 # Fixture transcripts of a worker session's tool calls and their results, for the tests of the
 # load check's hook check and refusal probe: load it with `load helpers/transcript` after `load
 # helpers/common`. Each helper prints one transcript line, in the shapes recorded on home-pc on
-# 2026-11-10 from transcripts of Claude Code 2.1.316 to 2.1.321, trimmed to the fields the load
+# 2026-11-10 from transcripts of Claude Code 2.1.316 to 2.1.322, trimmed to the fields the load
 # check reads (an entry's type, toolDenialKind and permissionDecision, and its message's tool_use
 # and tool_result items). A result's content is a string, as most are; a test that needs the other
 # shape Claude Code writes, a list of {type: "text", text}, pipes the line through as_text_list.
@@ -13,6 +13,8 @@
 #     ran            no toolDenialKind, is_error false (text "ok" by default)
 #     hook           a PreToolUse hook's block: permission-rule, decision source "hook"
 #     rule           a deny rule: permission-rule, source "config", reasonType "rule"
+#     file-rule      a deny rule on a file tool's path, as 2.1.322 records a Read's: no
+#                    toolDenialKind, a decision as rule's, a tool_use_error text
 #     safety-check   a built-in safety check: permission-rule, reasonType "safetyCheck"
 #     automode       auto mode's classifier refused it: automode-blocked
 #     no-verdict     auto mode's classifier gave no verdict: automode-unavailable
@@ -22,7 +24,10 @@
 #                                          hook outcome, its text Claude Code's wrapper around
 #                                          what the real bin/hooks/<hook> prints on stderr when
 #                                          it runs on that call in <cwd> (which is also its
-#                                          CLAUDE_PROJECT_DIR), so a reworded hook shows here
+#                                          CLAUDE_PROJECT_DIR), so a reworded hook shows here;
+#                                          it runs with a TMPDIR of its own and no
+#                                          CLAUDE_JOB_DIR, since the scratch hook lets a shell
+#                                          write under either, and the sandbox is under TMPDIR
 #   as_text_list                           a filter turning a result's string content into the
 #                                          list form
 
@@ -41,6 +46,9 @@ tool_result() {
       rule: {kind: "permission-rule", decision: {decision: "reject", source: "config", reasonType: "rule",
         ruleSource: "flagSettings", reasonCode: "rule:flagSettings"},
         text: "Permission to use Bash with command probe has been denied."},
+      "file-rule": {decision: {decision: "reject", source: "config", reasonType: "rule",
+        ruleSource: "flagSettings", reasonCode: "rule:flagSettings"},
+        text: "<tool_use_error>File is in a directory that is denied by your permission settings.</tool_use_error>"},
       "safety-check": {kind: "permission-rule", decision: {decision: "reject", source: "config",
         reasonType: "safetyCheck", reasonCode: "safetyCheck"},
         text: "Permission for this command was denied by a built-in Claude Code safety check"},
@@ -61,7 +69,8 @@ hook_result() {
   local id=$1 hook=$2 tool=$3 input=$4 cwd=$5 message
   message=$(jq -cn --arg tool "$tool" --argjson input "$input" --arg cwd "$cwd" \
     '{hook_event_name: "PreToolUse", cwd: $cwd, tool_name: $tool, tool_input: $input}' |
-    CLAUDE_PROJECT_DIR=$cwd "$REPO_ROOT/bin/hooks/$hook" 2>&1 >/dev/null) && {
+    TMPDIR=$BATS_TEST_TMPDIR/hook-tmp CLAUDE_JOB_DIR='' CLAUDE_PROJECT_DIR=$cwd \
+      "$REPO_ROOT/bin/hooks/$hook" 2>&1 >/dev/null) && {
     echo "hook_result: bin/hooks/$hook let the $tool call through" >&2
     return 1
   }
