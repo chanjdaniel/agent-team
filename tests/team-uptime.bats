@@ -418,10 +418,185 @@ conventioner/front-end: no longer checked as it was; its open outage is closed w
   uptime_state '.checks["conventioner/check-1"].reason' | grep -q '^HTTP 200, but its answer lacks `x*\.\.\.$'
 }
 
-@test "team-uptime takes run, and refuses anything else" {
+# A check's state as team-uptime run leaves it, one "<key>": {...} entry of the state's checks:
+# check_state <project> <name> <url> <expect> <failures> [<reason> <since>], up when <failures>
+# is 0, its checked time $checked, and down (an alert posted at its since) from 2 failures.
+check_state() {
+  jq -nc --arg project "$1" --arg name "$2" --arg url "$3" --arg expect "$4" --argjson failures "$5" \
+    --arg reason "${6:-}" --arg since "${7:-}" --arg checked "$checked" '
+    {("\($project)/\($name)"): {project: $project, name: $name, url: $url, expect: $expect,
+      checked: $checked, ok: ($failures == 0), reason: (if $failures == 0 then null else $reason end),
+      failures: $failures, since: (if $failures == 0 then null else $since end),
+      alert: (if $failures < 2 then null
+              else {since: $since, posted: $since, reminded: null, message: "1569000000000000001", back: null} end)}}'
+}
+
+# Write the state file from check_state's entries, written at $checked: put_state <entry>...
+put_state() {
+  mkdir -p "$(dirname "$state")"
+  printf '%s\n' "$@" | jq -s --arg written "$checked" '{schema: "team-uptime/1", written: $written, checks: (add // {})}' >"$state"
+}
+
+@test "status --json gives a check per registry entry in registry order, up, failing, down or not checked, holder or not" {
+  # agent-team's checks are written first, but conventioner comes first in the registry.
+  uptime_check agent-team site "$base/site" 'agent-team'
+  uptime_answer site 200 'agent-team'
+  api_check 503 'Service Unavailable'
+  uptime_check conventioner front-end "$base/front-end" '<div id="app">'
+  uptime_answer front-end 200 '<div id="app"></div>'
+  run_bin -0 team-uptime run
+  uptime_answer site 502 ''
+  run_bin -0 team-uptime run
+  uptime_check agent-team docs "$base/docs" 'docs'
+  local calls
+  calls=$(stub_calls curl | wc -l)
+  rm "$HOME/.local/state/agent-team/lease.json"
+  run_bin -0 team-uptime status --json
+  local status=$output
+  assert_equal "$(jq -c keys_unsorted <<<"$status")" '["schema","written","line","checks"]'
+  assert_equal "$(jq -c '[.schema, .written]' <<<"$status")" "$(uptime_state '["team-uptime/1", .written] | @json')"
+  assert_equal "$(jq -c '[.checks[] | "\(.project)/\(.name) \(.state)"]' <<<"$status")" \
+    '["conventioner/api down","conventioner/front-end up","agent-team/site failing","agent-team/docs unchecked"]'
+  assert_equal "$(jq -c '.checks[0] | keys_unsorted' <<<"$status")" \
+    '["project","name","url","expect","state","checked","since","failures","reason","alert"]'
+  assert_equal "$(jq -c '.checks[0] | del(.state)' <<<"$status")" \
+    "$(uptime_state '.checks["conventioner/api"] | {project, name, url, expect, checked, since, failures, reason, alert} | @json')"
+  assert_equal "$(jq -c '.checks[2] | [.failures, .reason, .alert]' <<<"$status")" '[1,"HTTP 502",null]'
+  assert_equal "$(jq -c '.checks[3] | [.url, .checked, .since, .failures, .reason, .alert]' <<<"$status")" \
+    "$(jq -nc --arg url "$base/docs" '[$url, null, null, 0, null, null]')"
+  # Read-only: no fetch, no Discord call, the state as it was.
+  assert_equal "$(stub_calls curl | wc -l)" "$calls"
+  assert_equal "$(uptime_post_ids | wc -l)" 1
+}
+
+@test "status counts a state written for another URL or expect as not checked yet" {
+  checked=$(ago 3)
+  uptime_check conventioner api "$base/api" '"status":"ok"'
+  uptime_check conventioner front-end "$base/front-end" '<div id="app">'
+  put_state "$(check_state conventioner api "$base/old-api" '"status":"ok"' 0)" \
+    "$(check_state conventioner front-end "$base/front-end" '<div>' 3 'HTTP 502' "$(ago 30)")"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -c '[.checks[] | [.state, .checked, .failures, .alert]]' <<<"$output")" \
+    '[["unchecked",null,0,null],["unchecked",null,0,null]]'
+  assert_equal "$(jq -r .line <<<"$output")" \
+    "Production: conventioner api not checked yet; conventioner front-end not checked yet, last checked $(clock "$checked")"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "the status line says all up, a check down since, failed once or not checked yet, and how many more are up" {
+  checked=$(ago 3)
+  local down
+  down=$(ago 40)
+  uptime_check conventioner api "$base/api" '"status":"ok"'
+  uptime_check conventioner front-end "$base/front-end" '<div id="app">'
+  local api front
+  api=$(check_state conventioner api "$base/api" '"status":"ok"' 0)
+  front=$(check_state conventioner front-end "$base/front-end" '<div id="app">' 0)
+  put_state "$api" "$front"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -r .line <<<"$output")" "Production: all 2 checks up, last checked $(clock "$checked")"
+
+  put_state "$(check_state conventioner api "$base/api" '"status":"ok"' 3 'HTTP 503' "$down")" "$front"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -r .line <<<"$output")" "Production: conventioner api down since $(clock "$down"): HTTP 503; 1 more up, last checked $(clock "$checked")"
+
+  put_state "$(check_state conventioner api "$base/api" '"status":"ok"' 1 'no answer in 10 s' "$checked")" "$front"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -r .line <<<"$output")" "Production: conventioner api failed once: no answer in 10 s; 1 more up, last checked $(clock "$checked")"
+
+  put_state "$api"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -r .line <<<"$output")" "Production: conventioner front-end not checked yet; 1 more up, last checked $(clock "$checked")"
+
+  rm "$state"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -r .line <<<"$output")" "Production: conventioner api not checked yet; conventioner front-end not checked yet"
+
+  # A mix, in registry order: down, failed once and not checked yet, then the two up.
+  uptime_check agent-team site "$base/site" 'agent-team'
+  uptime_check agent-team docs "$base/docs" 'docs'
+  uptime_check agent-team status "$base/status" 'ok'
+  put_state "$(check_state conventioner api "$base/api" '"status":"ok"' 2 'HTTP 500' "$down")" "$front" \
+    "$(check_state agent-team site "$base/site" 'agent-team' 1 'HTTP 200, but its answer lacks `agent-team`' "$checked")" \
+    "$(check_state agent-team status "$base/status" 'ok' 0)"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -r .line <<<"$output")" "Production: conventioner api down since $(clock "$down"): HTTP 500; agent-team site failed once: HTTP 200, but its answer lacks \`agent-team\`; agent-team docs not checked yet; 2 more up, last checked $(clock "$checked")"
+
+  # One check alone up is one check.
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  uptime_check conventioner api "$base/api" '"status":"ok"'
+  put_state "$api"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -r .line <<<"$output")" "Production: all 1 check up, last checked $(clock "$checked")"
+}
+
+@test "the status line is cut at 200 characters" {
+  checked=$(ago 3)
+  local n entries=()
+  for n in 1 2 3 4; do
+    uptime_check conventioner "check-$n" "$base/check-$n" ok
+    entries+=("$(check_state conventioner "check-$n" "$base/check-$n" ok 1 'Could not resolve host: api.conventioner.io' "$checked")")
+  done
+  put_state "${entries[@]}"
+  local line
+  run_bin -0 team-uptime status --json
+  line=$(jq -r .line <<<"$output")
+  assert_equal "${#line}" 200
+  [[ $line == "Production: conventioner check-1 failed once: Could not resolve host: api.conventioner.io; conventioner check-2 failed once: "*... ]] ||
+    { echo "line: $line" >&2; return 1; }
+}
+
+@test "status with no checks gives a null line and no checks, and its text form prints nothing" {
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -c . <<<"$output")" '{"schema":"team-uptime/1","written":null,"line":null,"checks":[]}'
+  run_bin -0 team-uptime status
+  assert_equal "$output" ""
+  assert_equal "$(stub_calls curl)" ""
+  [[ ! -e $state ]]
+}
+
+@test "status prints a line per check: its state, since when and why, when it was checked and its URL" {
+  checked=$(ago 3)
+  local down
+  down=$(ago 40)
+  uptime_check conventioner api "$base/api" '"status":"ok"'
+  uptime_check conventioner front-end "$base/front-end" '<div id="app">'
+  uptime_check agent-team site "$base/site" 'agent-team'
+  uptime_check agent-team docs "$base/docs" 'docs'
+  put_state "$(check_state conventioner api "$base/api" '"status":"ok"' 2 'HTTP 503' "$down")" \
+    "$(check_state conventioner front-end "$base/front-end" '<div id="app">' 0)" \
+    "$(check_state agent-team site "$base/site" 'agent-team' 1 'no answer in 10 s' "$checked")"
+  run_bin -0 team-uptime status
+  assert_equal "$output" "conventioner/api down since $(clock "$down"): HTTP 503, checked $(clock "$checked") ($base/api)
+conventioner/front-end up, checked $(clock "$checked") ($base/front-end)
+agent-team/site failing since $(clock "$checked"): no answer in 10 s, checked $(clock "$checked") ($base/site)
+agent-team/docs not checked yet ($base/docs)"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "status refuses a state file that is not a team-uptime/1 state, and leaves it as it is" {
+  uptime_check conventioner api "$base/api" '"status":"ok"'
+  mkdir -p "$(dirname "$state")"
+  local bad
+  for bad in 'not json {' '{"schema": "team-uptime/2", "checks": {}}' '{"schema": "team-uptime/1", "checks": []}'; do
+    printf '%s\n' "$bad" >"$state"
+    run_bin --separate-stderr -1 team-uptime status --json
+    assert_equal "$output" ""
+    assert_equal "$stderr" "team-uptime: $state is not a team-uptime/1 state"
+    run_bin --separate-stderr -1 team-uptime status
+    assert_equal "$stderr" "team-uptime: $state is not a team-uptime/1 state"
+    assert_equal "$(cat "$state")" "$bad"
+  done
+  [[ ! -e $state.bad ]]
+}
+
+@test "team-uptime takes run and status [--json], and refuses anything else" {
   run_bin -0 team-uptime --help
-  assert_contains "$output" "team-uptime run"
-  run_bin --separate-stderr -2 team-uptime
-  run_bin --separate-stderr -2 team-uptime check
-  assert_contains "$stderr" "usage: team-uptime run"
+  assert_contains "$output" "Usage: team-uptime run | status [--json]"
+  local args
+  for args in '' check 'run --json' 'status --text' 'status --json --json' 'status json'; do
+    # shellcheck disable=SC2086 # each case's words are its arguments
+    run_bin --separate-stderr -2 team-uptime $args
+    assert_equal "$stderr" "team-uptime: usage: team-uptime run | status [--json]"
+  done
 }

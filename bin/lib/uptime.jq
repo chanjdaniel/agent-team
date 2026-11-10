@@ -19,8 +19,9 @@
 # failure more than `gap_minutes` after the check's last counted result counts as the first again
 # (the machine slept, or the heartbeat stopped); a check still down `remind_minutes` after its
 # down post, or its last reminder, is due a reminder (TEAM_UPTIME_REMIND_MINUTES replaces it); a
-# failure's reason is cut to `reason_cut` characters and a post to `post_cut`, Discord's limit.
-def uptime_limits: {down_runs: 2, gap_minutes: 15, remind_minutes: 240, reason_cut: 200, post_cut: 2000};
+# failure's reason is cut to `reason_cut` characters, a post to `post_cut`, Discord's limit, and
+# the status line to `line_cut`, as the digest's resources line is.
+def uptime_limits: {down_runs: 2, gap_minutes: 15, remind_minutes: 240, reason_cut: 200, post_cut: 2000, line_cut: 200};
 
 # A state with no check in it, for a machine that has none yet.
 def uptime_empty: {schema: "team-uptime/1", written: null, checks: {}};
@@ -133,3 +134,62 @@ def uptime_posted($post; $id; $at):
     elif $post.kind == "still down" then .checks[$key].alert.reminded = $at
     elif $post.kind == "back" then .checks[$key].alert = null
     else . end);
+
+# When a check not up has been failing, as its posts say it: its outage's start, else its streak's.
+def uptime_failing_since: .alert.since // .since;
+
+# The digest's one Production line from uptime_status' checks (as input) and the state's written
+# time ($written, null for no state): null with no checks; "Production: all <n> checks up, last
+# checked <HH:MM>"; or each check not up ("<project> <name> down since <HH:MM>: <reason>",
+# "<project> <name> failed once: <reason>" or "<project> <name> not checked yet") joined by "; ",
+# then "; <n> more up" when any is, then ", last checked <HH:MM>" when the state was written; cut
+# to line_cut characters. uptime_status_line($written; $limits)
+def uptime_status_line($written; $limits):
+  if length == 0 then null
+  else map(select(.state != "up")) as $not_up
+    | (length - ($not_up | length)) as $up
+    | "Production: "
+      + (if $not_up == [] then "all \(length) check\(if length == 1 then "" else "s" end) up"
+         else ($not_up | map(
+             if .state == "down" then "\(.project) \(.name) down since \(uptime_failing_since | uptime_clock): \(.reason)"
+             elif .state == "failing" then "\(.project) \(.name) failed once: \(.reason)"
+             else "\(.project) \(.name) not checked yet" end) | join("; "))
+           + (if $up > 0 then "; \($up) more up" else "" end)
+         end)
+      + (if $written != null then ", last checked \($written | uptime_clock)" else "" end)
+    | uptime_cut($limits.line_cut)
+  end;
+
+# team-uptime status --json's object: uptime_status($checks; $limits), the state as input
+# (uptime_empty when there is no state file), $checks the registry's [{project, name, url,
+# expect}] in registry order. Gives {schema, written, line, checks}: a check per registry entry,
+# {project, name, url, expect, state, checked, since, failures, reason, alert}, its state "up",
+# "failing" (fewer than down_runs failures in a row), "down" or "unchecked" (no state for it, or a
+# state for another url or expect, which the next run drops), and the rest the state's (null, and
+# failures 0, for an unchecked one); line uptime_status_line's.
+def uptime_status($checks; $limits):
+  . as $state
+  | [$checks[] | uptime_key as $key | $state.checks[$key] as $s
+     | {project, name, url, expect} as $id
+     | if $s == null or $s.url != .url or $s.expect != .expect then
+         $id + {state: "unchecked", checked: null, since: null, failures: 0, reason: null, alert: null}
+       else
+         $id + {state: (if $s.ok then "up" elif $s.failures >= $limits.down_runs then "down" else "failing" end)}
+         + ($s | {checked, since, failures, reason, alert})
+       end] as $rows
+  | {schema: "team-uptime/1", written: $state.written,
+     line: ($rows | uptime_status_line($state.written; $limits)),
+     checks: $rows};
+
+# team-uptime status's text, a line per check, from uptime_status' object: "<project>/<name>
+# <state>[ since <HH:MM>][: <reason>], checked <HH:MM> (<url>)", or "<project>/<name> not checked
+# yet (<url>)".
+def uptime_status_text:
+  .checks[]
+  | "\(.project)/\(.name) "
+    + (if .state == "unchecked" then "not checked yet"
+       else .state
+         + (if .state == "up" then "" else " since \(uptime_failing_since | uptime_clock): \(.reason)" end)
+         + ", checked \(.checked | uptime_clock)"
+       end)
+    + " (\(.url))";

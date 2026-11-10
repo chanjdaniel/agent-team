@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Check each project's production, as projects.toml's uptime key names it, and post in
 # #coordinator when a check is down and again when it is back. The heartbeat's uptime step runs
-# it on the lease holder at every run (team-timers).
+# it on the lease holder at every run (team-timers), and show each check's last result.
 #
-# Usage: team-uptime run
+# Usage: team-uptime run | status [--json]
 #
 # run: one round of checks, on the lease holder only: a machine that is fenced, or whose lease
 # record (~/.local/state/agent-team/lease.json, as team-lease leaves it) does not say it holds the
@@ -71,13 +71,30 @@
 # starts from an empty state"), and the run starts from an empty state, so production down then
 # takes two more runs to post.
 #
+# status: each check's last result, from the registry and the state file alone, with no request
+# and no post, on any machine, holder or not; a line per check in registry order,
+#   <project>/<name> <state>[ since <HH:MM>][: <reason>], checked <HH:MM> (<url>)
+# its state up, failing (one failure counted) or down (2 or more, since the outage began), or
+# "<project>/<name> not checked yet (<url>)" for one with no state, or a state for another url or
+# expect; nothing with no check in the registry. With --json, the object team-snapshot carries as
+# production: {schema: team-uptime/1, written (when a run last wrote the state, null for none),
+# line, checks: [{project, name, url, expect, state (up, failing, down or unchecked), checked,
+# since, failures, reason, alert}]}, the state's fields of each check (null, and failures 0, for an
+# unchecked one). line is the digest's Production line, null with no check: "Production: all <n>
+# checks up, last checked <HH:MM>", or each check not up ("<project> <name> down since <HH:MM>:
+# <reason>", "<project> <name> failed once: <reason>" or "<project> <name> not checked yet")
+# joined by "; ", then "; <n> more up" when any is, then ", last checked <HH:MM>" when the state
+# was written, cut to 200 characters. A state file that is not team-uptime/1 is left as it is and
+# fails it ("team-uptime: <file> is not a team-uptime/1 state"), as a registry that cannot be read
+# does.
+#
 # Seams for the tests: TEAM_UPTIME_SECONDS replaces each fetch's 10 seconds,
 # TEAM_UPTIME_KNOWN_GOOD the known-good site, and TEAM_UPTIME_REMIND_MINUTES the 240 minutes
 # between reminders (a whole number).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-USAGE="usage: team-uptime run"
+USAGE="usage: team-uptime run | status [--json]"
 STATE_DIR=$HOME/.local/state/agent-team
 STATE_FILE=$STATE_DIR/uptime.json
 FETCH_SECONDS=${TEAM_UPTIME_SECONDS:-10}
@@ -154,6 +171,20 @@ reachable() {
   }
 }
 
+# The state file's state, or uptime_empty's when there is none; fails, printing nothing, when it
+# is not one JSON object of schema team-uptime/1 with an object of checks.
+read_state() {
+  if [[ ! -e $STATE_FILE ]]; then
+    uptime_jq uptime_empty -nc
+    return
+  fi
+  local state
+  state=$(jq -cs 'select(length == 1 and (.[0] | type == "object" and .schema == "team-uptime/1"
+    and (.checks | type) == "object")) | .[0]' "$STATE_FILE" 2>/dev/null) || state=''
+  [[ -n $state ]] || return 1
+  printf '%s\n' "$state"
+}
+
 # Write <state> whole to the state file, moved into place; a failure fails the run.
 write_state() {
   local why
@@ -193,17 +224,12 @@ run_round() {
   checks=$(registry_checks) || exit 1
   [[ $checks != '[]' ]] || exit 0
 
-  previous=''
-  if [[ -e $STATE_FILE ]]; then
-    previous=$(jq -cs 'select(length == 1 and (.[0] | type == "object" and .schema == "team-uptime/1"
-      and (.checks | type) == "object")) | .[0]' "$STATE_FILE" 2>/dev/null) || previous=''
-    if [[ -z $previous ]]; then
-      mv -f "$STATE_FILE" "$STATE_FILE.bad"
-      echo "team-uptime: $STATE_FILE is not a team-uptime/1 state; it is set aside as $STATE_FILE.bad, and this run starts from an empty state" >&2
-      rc=1
-    fi
+  if ! previous=$(read_state); then
+    mv -f "$STATE_FILE" "$STATE_FILE.bad"
+    echo "team-uptime: $STATE_FILE is not a team-uptime/1 state; it is set aside as $STATE_FILE.bad, and this run starts from an empty state" >&2
+    rc=1
+    previous=$(uptime_jq uptime_empty -nc)
   fi
-  [[ -n $previous ]] || previous=$(uptime_jq uptime_empty -nc)
 
   body=$(mktemp) err=$(mktemp)
   trap 'rm -f "$body" "$err"' EXIT
@@ -246,11 +272,28 @@ run_round() {
   exit "$rc"
 }
 
+# Each check's last result, read-only: show_status [--json]
+show_status() {
+  local checks state status
+  checks=$(registry_checks) || exit 1
+  state=$(read_state) || die "$STATE_FILE is not a team-uptime/1 state"
+  status=$(uptime_jq 'uptime_status($checks; uptime_limits)' -c --argjson checks "$checks" <<<"$state")
+  if [[ ${1:-} == --json ]]; then
+    jq . <<<"$status"
+  else
+    uptime_jq uptime_status_text -r <<<"$status"
+  fi
+}
+
 rc=0 machine='' body='' err=''
 case ${1:-} in
   run)
     (($# == 1)) || usage_error "$USAGE"
     run_round
+    ;;
+  status)
+    (($# == 1)) || [[ $# == 2 && $2 == --json ]] || usage_error "$USAGE"
+    show_status "${2:-}"
     ;;
   *) usage_error "$USAGE" ;;
 esac

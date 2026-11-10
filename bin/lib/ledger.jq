@@ -1167,10 +1167,11 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # task number order ($states; {task, error} for a task whose state could not be told), the team's
 # resource level ($level, team-level status --json's object or {error}), the registered projects
 # but the team's own a standing word of Daniel's stands for ($standing, standing_words' list), the
-# session list, each registered project's open PRs ($prs) and the current items ($items). It
-# carries $level as level, the open tasks stowed, waiting to resume, as awaiting_resume, and the
-# resources_line as resources (null when $level is {error}).
-def snapshot($tasks; $states; $level; $standing; $sessions; $prs; $items):
+# session list, each registered project's open PRs ($prs), the current items ($items) and the
+# production checks' last results ($production, team-uptime status --json's object or {error}). It
+# carries $level as level, the open tasks stowed, waiting to resume, as awaiting_resume, the
+# resources_line as resources (null when $level is {error}), and $production as production.
+def snapshot($tasks; $states; $level; $standing; $sessions; $prs; $items; $production):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed
   | {schema: "team-snapshot/1",
@@ -1179,6 +1180,7 @@ def snapshot($tasks; $states; $level; $standing; $sessions; $prs; $items):
      awaiting_resume: $stowed,
      resources: resources_line($level; $stowed),
      standing_words: $standing,
+     production: $production,
      sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
      prs: $prs,
@@ -1196,8 +1198,10 @@ def session_text:
   "\(.name) \(.session) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end;
 
 # team-snapshot's text form, one line per string, from its JSON. Lines are cut at 120 columns, so
-# ten open tasks fit one screen, but an open task's state, the resources line and a current item
-# at 200, each being a whole thought (a task's progress and its PR part come last on its line).
+# ten open tasks fit one screen, but an open task's state, the resources line, the Production line
+# and a current item at 200, each being a whole thought (a task's progress and its PR part come
+# last on its line). The Production line, after the standing merge words, is team-uptime's status
+# line, or "Production unreadable: <error>", and there is none when no project has a check.
 def snapshot_text:
   def section($title; $lines; $columns):
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
@@ -1207,6 +1211,10 @@ def snapshot_text:
   ((.standing_words // []) | standing_word_events
    | if . == [] then "Standing merge word: none"
      else .[] | "Standing merge word: \(.projects | projects_text) (Discord message \(.word.discord_message), \(.word.ts), \(.word.task))" | clip(120) end),
+  (.production // {}
+   | if .line | type == "string" then .line | clip(200)
+     elif .error != null then "Production unreadable: \(.error)" | clip(200)
+     else empty end),
   section("Live team sessions";
     [.sessions[] | session_text + if .logged then "" else " (no launch of it in the ledger)" end]),
   section("Stray sessions";
