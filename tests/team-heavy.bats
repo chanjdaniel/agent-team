@@ -382,6 +382,8 @@ gone() {
   wait_for "$BATS_TEST_TMPDIR/run.rc"
   [[ $(cat "$BATS_TEST_TMPDIR/run.rc") != 0 ]]
   assert_contains "$(cat "$BATS_TEST_TMPDIR/run.err")" "team-heavy: the run was stopped, so it leaves no cost sample"
+  # Stopped, its admission is released.
+  assert_equal "$(jq -c . "$ADMITTED")" '[]'
   [[ ! -e $COSTS ]]
   run_bin -0 team-heavy status
   assert_equal "$output" free
@@ -449,10 +451,12 @@ gone() {
   [[ $(grep '^heavy:tests-run' <<<"$output") =~ ^heavy:tests-run:\ [0-9.]+\ GiB,\ learned\ from\ 5\ samples, ]]
 }
 
-@test "a run is admitted to the level's budget once it holds the lock, its admission kept with its pid and task" {
-  AGENT_TEAM_TASK=T7 run_bin -0 --separate-stderr team-heavy run --kind tests-run -- echo ran
-  assert_equal "$output" ran
-  assert_equal "$(jq -c 'map([.kind, .task, (.pid | type)])' "$ADMITTED")" '[["heavy:tests-run","T7","number"]]'
+@test "a run is admitted to the level's budget once it holds the lock, its admission kept with its id, pid and task while it runs" {
+  AGENT_TEAM_TASK=T7 run_bin -0 --separate-stderr team-heavy run --kind tests-run -- \
+    jq -c 'map([.kind, .task, (.pid | type), (.id | test("^[0-9a-f]{12}$"))])' "$ADMITTED"
+  assert_equal "$output" '[["heavy:tests-run","T7","number",true]]'
+  # Ended, it is released.
+  assert_equal "$(jq -c . "$ADMITTED")" '[]'
   # Under a run already, and with no team home, it asks nothing.
   rm "$ADMITTED"
   TEAM_HEAVY_HELD=1 run_bin -0 team-heavy run -- echo nested
@@ -474,12 +478,22 @@ gone() {
     done
   done
     capacity_room $((16 * 1073741824)) full) &
-  TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-heavy run --wait 1 --kind tests-run -- echo ran
-  assert_equal "$output" ran
+  TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-heavy run --wait 1 --kind tests-run -- jq -c 'map(.kind)' "$ADMITTED"
+  assert_equal "$output" '["heavy:tests-run"]'
   assert_equal "$(grep -c 'room' <<<"$stderr")" 1
   assert_equal "${stderr%%$'\n'*}" "team-heavy: waiting up to 1 minutes for room in the team's budget: no room for heavy:tests-run: the team is at level none: nothing starts; room comes when Daniel raises the level"
   assert_equal "$(cat "$BATS_TEST_TMPDIR/meanwhile")" free
-  assert_equal "$(jq -c 'map(.kind)' "$ADMITTED")" '["heavy:tests-run"]'
+  assert_equal "$(jq -c . "$ADMITTED")" '[]'
+}
+
+@test "a run's admission is released at its end, when its command fails too, and its temporary directory goes" {
+  local tmp=$BATS_TEST_TMPDIR/tmp
+  mkdir "$tmp"
+  TMPDIR=$tmp run_bin -0 team-heavy run --kind tests-run -- true
+  assert_equal "$(jq -c . "$ADMITTED")" '[]'
+  TMPDIR=$tmp run_bin -3 team-heavy run --kind tests-run -- bash -c 'jq -e "length == 1" "$0" >/dev/null && exit 3' "$ADMITTED"
+  assert_equal "$(jq -c . "$ADMITTED")" '[]'
+  assert_equal "$(ls -A "$tmp")" ""
 }
 
 @test "a run whose wait for room runs out exits 75 with the reason and runs nothing" {
