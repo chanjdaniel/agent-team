@@ -77,11 +77,12 @@ def park_class:
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 
 # What a park event waits on: a typed one's (a cause bin/lib/lifecycle.json's causes list) the
-# table's class of its cause, or for a cause classed by its on (class_by_on, an outside wait) and
-# an on given, park_class of its kind and on alone; an old one's, with no cause, park_class's.
+# table's class of its cause, for a cause classed by its on (class_by_on, an outside wait) and an
+# on given, park_class of its kind and on alone, and for one classed by its words (class_by_words,
+# a worker's), park_class of the whole line; an old one's, with no cause, park_class's.
 def park_event_class:
   (if .cause == null then null else lifecycle_table.causes[.cause | tostring] end) as $cause
-  | if $cause == null then park_class
+  | if $cause == null or $cause.class_by_words == true then park_class
     elif $cause.class_by_on == true and (.on // "" | tostring) != "" then {event, on} | park_class
     else $cause.class end;
 
