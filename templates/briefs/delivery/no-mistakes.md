@@ -18,6 +18,6 @@
 8. Push each fix of a failed check at once: commit it, repeat step 1, run the gate on it as step 4 says, whose push and pr steps update the PR, and start step 7's wait on the head it pushed, but send no new `PR`: the review in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
 9. Once the wait on the head you last pushed ends with exit 0, the delivery is done: send nothing more, since a review's findings come back to you from the coordinator as a fix round.
 
-At each gate run's end (it pushed, ending `passed`, went red, or was aborted), send `{{task}} DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
+At each gate run's end (it pushed, went red, or was aborted), send `{{task}} DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, a run whose gate outcome is `passed` reported as `outcome=pushed`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
 
 Never run a command that needs `sudo`; send `{{task}} BLOCKED <the command> needs sudo` to `coordinator` instead.

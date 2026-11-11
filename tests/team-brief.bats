@@ -248,7 +248,7 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 8. Push each fix of a failed check at once: commit it, repeat step 1, run the gate on it as step 4 says, whose push and pr steps update the PR, and start step 7's wait on the head it pushed, but send no new `PR`: the review in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
 9. Once the wait on the head you last pushed ends with exit 0, the delivery is done: send nothing more, since a review's findings come back to you from the coordinator as a fix round.
 
-At each gate run's end (it pushed, ending `passed`, went red, or was aborted), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
+At each gate run's end (it pushed, went red, or was aborted), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, a run whose gate outcome is `passed` reported as `outcome=pushed`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
 
 Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
@@ -690,7 +690,9 @@ EOF
   [[ $(grep -c 'checks-passed' "$output") -eq 1 ]]
   assert_contains "$brief" 'never wait for `checks-passed`, and never abort a run to end it.'
   refute_grep -e 'stopped-green' -e 'returns checks-passed' -e 'checks were green' -e 'stop the gate' "$output"
-  assert_contains "$brief" 'outcome=<pushed|red|aborted>'
+  # The gate's own word for the run's end, passed, is reported as the ledger's pushed.
+  assert_contains "$brief" 'outcome=<pushed|red|aborted> minutes='
+  assert_contains "$brief" 'a run whose gate outcome is `passed` reported as `outcome=pushed`'
   # Every gate finding still goes to the coordinator, and the builder still approves the parks its
   # brief names.
   assert_contains "$brief" 'A finding, at any step, still goes to `coordinator` as a QUESTION.'
