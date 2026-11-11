@@ -2,8 +2,9 @@
 # `load helpers/common`, and call `tickets_sandbox` from `setup` after `sandbox`.
 #
 # tickets_sandbox writes a registry of two projects, proj (task_dir .scratch/task) and other
-# (task_dir .work/task), and opens T172 on proj ("toil") in the worktree $wt, whose ticket
-# directory is $tickets, made empty; the helpers below write its tickets and its ledger.
+# (task_dir .work/task), and opens T172 on proj ("toil") in the worktree $wt, whose task directory
+# is $task_dir and ticket directory $tickets, made empty; the helpers below write its tickets and
+# its ledger.
 # shellcheck shell=bash
 
 tickets_sandbox() {
@@ -39,7 +40,8 @@ provider = "git"
 slots = ["projects/other-slots/1"]
 TOML
   wt=$BATS_TEST_TMPDIR/wt
-  tickets=$wt/.scratch/task/tickets
+  task_dir=$wt/.scratch/task
+  tickets=$task_dir/tickets
   mkdir -p "$tickets"
   event T172 opened "$(jq -cn --arg wt "$wt" '{project: "proj", path: "feature", type: "feat", title: "toil",
     branch: "feat/T172-toil", base: "dev", base_sha: "aba9d074", worktree: $wt}')"
