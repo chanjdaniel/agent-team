@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # List a task's tickets with each one's state, or check their Blocked by:, Waits for: and Phase: lines.
 #
-# Usage: team-tickets T<n> [--check] [--json]
+# Usage: team-tickets T<n> [--check] [--json] [--html <file>]
 # The tickets are the files tickets/NN-<slug>.md in the task directory (the project's task_dir) of
 # each open worktree of the task, one set whose numbers are the task's: NN is the ticket's
 # two-digit number, which no two files share.
@@ -30,23 +30,43 @@
 # no ticket of the task, that the line names twice or that is in a later phase than its ticket;
 # and a cycle of blockers, named once at the Blocked by:
 # line of its lowest ticket. The listing refuses such a set the same way. A clean set prints how
-# many tickets it read; one with none says so on stderr. It never writes.
+# many tickets it read; one with none says so on stderr.
+# --html <file> writes the tickets as one self-contained HTML page of their dependency graph
+# (bin/lib/ticket_graph.py draws it, its header says how): each ticket a box by level, top to
+# bottom, with its number, state and slug, each phase a band, an arrow per Blocked by: entry
+# routed clear of every box, the critical path in red, and a header with the task's title, the
+# serial total, the critical path and the widest level; its head carries the digest of the --json
+# list it was drawn from (tickets_digest). It writes through a temporary file in <file>'s
+# directory, renamed over <file>, prints nothing, refuses a directory that does not exist, and
+# writes nothing for a set the listing refuses; a task with no tickets gets a page saying so.
+# Nothing else is written.
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-tickets T<n> [--check] [--json]"
-task='' check='' json=''
-for arg in "$@"; do
-  case $arg in
+usage="usage: team-tickets T<n> [--check] [--json] [--html <file>]"
+task='' check='' json='' html='' html_set=''
+while (($#)); do
+  case $1 in
     --check) check=1 ;;
     --json) json=1 ;;
-    T[0-9]*) [[ -z $task && $arg =~ ^T[0-9]+$ ]] || usage_error "$usage"; task=$arg ;;
+    --html)
+      [[ -z $html_set && $# -ge 2 && -n $2 ]] || usage_error "$usage"
+      html=$2 html_set=1
+      shift ;;
+    T[0-9]*) [[ -z $task && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"; task=$1 ;;
     *) usage_error "$usage" ;;
   esac
+  shift
 done
 [[ -n $task ]] || usage_error "$usage"
 [[ -z $check || -z $json ]] || usage_error "--check and --json do not go together; $usage"
+[[ -z $html_set || -z $check$json ]] || usage_error "--html goes with no other mode; $usage"
+if [[ -n $html_set ]]; then
+  html_dir=$(dirname -- "$html")
+  [[ -d $html_dir ]] || die "$html_dir is not a directory, so $html cannot be written"
+  [[ ! -d $html ]] || die "$html is a directory, not a file the page can be written to"
+fi
 
 events=$(known_task_events "$task")
 
@@ -184,7 +204,7 @@ JQ
 # One jq run: the analysis, then a first line of its problem and ticket counts, then each problem,
 # then the tickets as --json prints them or as text lines.
 mode=text
-[[ -z $json ]] || mode=json
+[[ -z $json$html_set ]] || mode=json
 out=$(jq -r --arg task "$task" --arg files_tsv "$files_tsv" --arg marks_tsv "$marks_tsv" --arg me "${0##*/}" \
   --arg mode "$mode" '
   def rows: split("\n") | map(select(. != "") | split("\t"));
@@ -209,6 +229,17 @@ fi
 ((count)) || echo "${0##*/}: $task has no tickets in its open worktrees" >&2
 if [[ -n $check ]]; then
   ((count == 0)) || echo "$task: $count tickets, every Blocked by:, Waits for: and Phase: line well-formed"
+  exit 0
+fi
+if [[ -n $html_set ]]; then
+  # The page, through a temporary file beside it, renamed over it once whole.
+  title=$(jq -r 'map(select(.event == "opened")) | last | .title // "" | tostring' <<<"$events")
+  digest=$(tickets_digest <<<"$rest")
+  tmp=$(mktemp "$html_dir/.${html##*/}.XXXXXX")
+  trap 'rm -f -- "$tmp"' EXIT
+  python3 -I "$TEAM_LIB/ticket_graph.py" --task "$task" --title "$title" --as-of "$(date -u '+%Y-%m-%d %H:%M')" \
+    --digest "$digest" --out "$tmp" <<<"$rest" >/dev/null || die "could not draw $task's tickets"
+  mv -f -- "$tmp" "$html"
   exit 0
 fi
 [[ -z $rest ]] || printf '%s\n' "$rest"

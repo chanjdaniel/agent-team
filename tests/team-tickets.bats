@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2154 # wt and tickets are helpers/tickets.bash's
 # team-tickets: a task's tickets read from each open worktree's task directory, with their strict
 # Blocked by: and Waits for: lines, each said done, running, ready, waiting or blocked from the
 # ledger; --check refuses a malformed set. The fixture tickets are T172's as planned
@@ -6,76 +7,12 @@
 # are done.
 
 load helpers/common
+load helpers/tickets
 
 setup() {
   sandbox
-  cat >"$TEAM_HOME/projects.toml" <<'TOML'
-[proj]
-repo = "owner/proj"
-path = "projects/proj"
-base = "dev"
-delivery = "direct-pr"
-merge_method = "merge"
-required_checks = []
-task_dir = ".scratch/task"
-docs = []
-toolkits = []
-
-[proj.pool]
-provider = "git"
-slots = ["projects/proj-slots/1"]
-
-[other]
-repo = "owner/other"
-path = "projects/other"
-base = "main"
-delivery = "direct-pr"
-merge_method = "merge"
-required_checks = []
-task_dir = ".work/task"
-docs = []
-toolkits = []
-
-[other.pool]
-provider = "git"
-slots = ["projects/other-slots/1"]
-TOML
-  wt=$BATS_TEST_TMPDIR/wt
-  tickets=$wt/.scratch/task/tickets
-  mkdir -p "$tickets"
+  tickets_sandbox
   cp "$REPO_ROOT"/tests/fixtures/tickets-T172/*.md "$tickets/"
-  event T172 opened "$(jq -cn --arg wt "$wt" '{project: "proj", path: "feature", type: "feat", title: "toil",
-    branch: "feat/T172-toil", base: "dev", base_sha: "aba9d074", worktree: $wt}')"
-}
-
-# event <task> <kind> '<jq object of the other fields>': append one ledger line.
-event() {
-  jq -cn --arg task "$1" --arg event "$2" "{ts: \"2026-11-01T10:00:00Z\", task: \$task, event: \$event} + $3" \
-    >>"$TEAM_HOME/ledger.jsonl"
-}
-
-# ticket_done <NN>...: a ticket-done of each.
-ticket_done() {
-  local n
-  for n in "$@"; do
-    event T172 ticket-done "$(jq -cn --arg n "$n" '{ticket: $n, commits: ["1f2f4a1"]}')"
-  done
-}
-
-# build_launch <NN> <session>: a builder's launch on brief-build-<NN>.
-build_launch() {
-  event T172 launch "$(jq -cn --arg b "brief-build-$1" --arg s "$2" --arg wt "$wt" \
-    '{role: "builder", session: $s, worktree: $wt, toolkits: [], brief: $b}')"
-}
-
-# ticket <NN-slug> <lines>...: write a ticket file of those lines under a title.
-ticket() {
-  printf '%s\n' "# ${1%%-*}: ${1#*-}" "" "${@:2}" "" "- [ ] it works" >"$tickets/$1.md"
-}
-
-# A fresh ticket set of the given files only.
-fresh_tickets() {
-  rm -f "$tickets"/*.md
 }
 
 @test "lists each fixture ticket with its state, and what a blocked one waits on" {
