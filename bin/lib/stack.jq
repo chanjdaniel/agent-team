@@ -104,11 +104,12 @@ def epoch:
 # and memory_floor_gib keep their kinds, so a file that still sets them is accepted, and have no
 # default: nothing reads them since the level's budget admits a stack (no_longer_read).
 def settings_defaults:
-  {disk_floor_gb: 30, wait_minutes: 15, idle_minutes: 30, heartbeat_sweep: false, heartbeat_janitor: false};
+  {disk_floor_gb: 30, wait_minutes: 15, idle_minutes: 30, gate_idle_minutes: 30, heartbeat_sweep: false,
+   heartbeat_janitor: false};
 def no_longer_read: ["stack_cap", "memory_floor_gib"];
 def settings_kinds:
   {stack_cap: "count", memory_floor_gib: "amount", disk_floor_gb: "amount", wait_minutes: "amount",
-   idle_minutes: "amount", heartbeat_sweep: "boolean", heartbeat_janitor: "boolean"};
+   idle_minutes: "amount", gate_idle_minutes: "amount", heartbeat_sweep: "boolean", heartbeat_janitor: "boolean"};
 
 # What is wrong with a settings file's JSON values (read with jq -s), to follow its name, given
 # its keys' kinds <kinds> (settings_kinds for stack.json): "" when nothing, " is not one JSON
