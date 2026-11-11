@@ -568,7 +568,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 26290 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 26410 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -598,10 +598,12 @@ $WORKER_INSTRUCTIONS"
   # park line named each park's cause, 25860 once they named resumed id= and all=true and
   # what ends Daniel's hold and an ask's wait, 25930 once step 2 named team-worker's refusals of
   # a hold, an open ask unless --past-ask, and a feature task's build before its plan, 26280
-  # once the plan ask and the build step named the ticket graph and its PNG, and 26290 once the
-  # block on another task named on=T<m> and the BLOCKED row the launch of its role that clears it).
+  # once the plan ask and the build step named the ticket graph and its PNG, 26290 once the
+  # block on another task named on=T<m> and the BLOCKED row the launch of its role that clears it,
+  # and 26410 once the review step named the gate parks a builder approves itself, in the review
+  # rules and in DONE gate's approved=).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 26290))
+  (($(wc -c <"$manual") <= 26410))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

@@ -244,7 +244,8 @@ def time_report($lo; $hi; $since; $until; $task):
        by_outcome: ($runs | map(.outcome) | tally),
        step_minutes: ([$runs[] | .minutes | objects] as $minutes
          | [$minutes[] | keys_unsorted[]] | reduce .[] as $k ([]; if IN(.[]; $k) then . else . + [$k] end)
-         | map({(.): ([$minutes[][.] | numbers] | nearest_rank(0.5))}) | add // {})},
+         | map({(.): ([$minutes[][.] | numbers] | nearest_rank(0.5))}) | add // {}),
+       approved: ([$runs[] | .approved | arrays | .[]] | tally)},
      reviews: ($reviews | group_by([.task, .pr]) | sort_by(.[0].task | ltrimstr("T") | tonumber)
        | map({task: .[0].task, pr: .[0].pr, reviews: length, findings: map(select(.verdict == "findings")) | length})),
      builders: map({task: .time.task, builders: ([.window[] | select(.event == "launch" and .role == "builder")] | length),
@@ -294,6 +295,7 @@ def time_text:
     "Gate runs by cause: \(.gate_runs.by_cause | counts_text)",
     "Gate runs by outcome: \(.gate_runs.by_outcome | counts_text)",
     "Gate minutes per step (median): \(.gate_runs.step_minutes | counts_text)",
+    "Gate parks the builder approved: \(.gate_runs.approved | counts_text)",
     "",
     (if .reviews == [] then "Reviews per PR: none"
      else "Reviews per PR", ([["task", "pr", "reviews", "findings"]] + [.reviews[] | [.task, (.pr // "-"), (.reviews | tostring), (.findings | tostring)]] | table) end),
