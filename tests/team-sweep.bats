@@ -709,6 +709,32 @@ EOF
 T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: read claude logs 88888888 for anything left to log, then stop it with claude stop 88888888"
 }
 
+@test "coordinator-twin: another session named coordinator on this machine, beside the one the sweep runs in" {
+  sessions "$(session 3169fcbd coordinator busy working)" "$(session 9a3c2d1e coordinator idle blocked 1762596000000)" \
+    "$(jq -cn '{pid: 5151, cwd: "/home/x", kind: "interactive", startedAt: 1762682400000,
+      sessionId: "c0ffee00-1111-4222-8333-444455556666", name: "coordinator", status: "idle"}')"
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -1 team-sweep
+  assert_equal "$output" "coordinator-twin: coordinator 9a3c2d1e (background, blocked, started 2025-11-08T10:00:00Z) is a second session named coordinator on this machine; next: read claude logs 9a3c2d1e for anything left to log, then stop it with claude stop 9a3c2d1e
+coordinator-twin: coordinator c0ffee00 (interactive, idle, started 2025-11-09T10:00:00Z) is a second session named coordinator on this machine; next: ask Daniel to end it, an interactive session, pid 5151"
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map([.task, .kind, .session, .name])' <<<"$output")" \
+    '[[null,"coordinator-twin","9a3c2d1e","coordinator"],[null,"coordinator-twin","c0ffee00","coordinator"]]'
+}
+
+@test "coordinator-twin: with no session of its own to tell apart, the sweep names every coordinator, each if it is not you" {
+  sessions "$(session 3169fcbd coordinator busy working)" "$(session 9a3c2d1e coordinator idle blocked)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "coordinator-twin: coordinator 3169fcbd (background, working, started 2025-10-22T02:00:00Z) is a second session named coordinator on this machine; next: if it is not you, read claude logs 3169fcbd for anything left to log, then stop it with claude stop 3169fcbd
+coordinator-twin: coordinator 9a3c2d1e (background, blocked, started 2025-10-22T02:00:00Z) is a second session named coordinator on this machine; next: if it is not you, read claude logs 9a3c2d1e for anything left to log, then stop it with claude stop 9a3c2d1e"
+}
+
+@test "coordinator-twin: one coordinator, the sweep's own or another, finds nothing" {
+  sessions "$(session 3169fcbd coordinator busy working)"
+  run_bin -0 team-sweep
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -0 team-sweep
+  CLAUDE_CODE_SESSION_ID=0badf00d-1111-4222-8333-444455556666 run_bin -0 team-sweep
+}
+
 @test "the load check's T0 sessions are never stray: T0 is the load check, not a task" {
   sessions "$(session 6f93fe38 T0-ops busy blocked)" "$(session 4f2a9c1e T0-planner idle)"
   run_bin -0 team-sweep
