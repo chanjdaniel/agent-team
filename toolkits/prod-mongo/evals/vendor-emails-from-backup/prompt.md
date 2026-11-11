@@ -12,7 +12,6 @@ allowed_tools: [Read, Glob, Grep, Skill]
 Path: research; you are the ops agent, on the one production request below.
 Project: conventioner (`chanjdaniel/Conventioner`).
 Worktree: the current directory, branch `research/T42-ops-backup-emails`.
-Task directory: `.scratch/task/` in the worktree (excluded from git), for an answer too long for one message.
 
 ## The request
 
@@ -32,7 +31,7 @@ This run has no docs in the worktree; what Conventioner's `docs/OPERATIONS.md` s
 
 ## Report
 
-Write the answer to `.scratch/answer.md`, then send `T42 DONE <answer>` to `coordinator`.
+Write the answer to `.scratch/answer.md`, the one file you can write, then send `T42 DONE <answer>` to `coordinator`.
 
 ## This is an eval run
 
