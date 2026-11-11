@@ -311,6 +311,69 @@ EVENTS
 )" '["builder"]'
 }
 
+# The library's handed_on_launches over a task's events, given one JSON event per line, each as
+# [session, handed_on]: handed_on <role of the new launch, or "" for none>
+handed_on() {
+  jq -L "$REPO_ROOT/bin/lib" -sc --arg role "$1" \
+    'include "ledger"; map({ts: "2026-10-24T12:00:00Z", task: "T1"} + .) | handed_on_launches($role; "/home/x") | map([.session, .handed_on])'
+}
+
+@test "a ticket builder ends only by its own done or its ticket's ticket-done, and a task worktree's builder as before" {
+  local two='{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
+{"event": "launch", "role": "builder", "session": "b4", "worktree": "/w/1--04", "ticket": "04"}'
+  # Ticket 03's ticket-done leaves 04's builder unfinished, and builder is named once.
+  assert_equal "$(unfinished_roles <<<"$two")" '["builder"]'
+  assert_equal "$(unfinished_roles <<EVENTS
+$two
+{"event": "ticket-done", "ticket": "03", "commits": ["abc1234"]}
+{"event": "done", "role": "builder", "session": "b3"}
+EVENTS
+)" '["builder"]'
+  assert_equal "$(unfinished_roles <<EVENTS
+$two
+{"event": "ticket-done", "ticket": "03", "commits": ["abc1234"]}
+{"event": "ticket-done", "ticket": "04", "commits": ["abc1235"]}
+EVENTS
+)" '[]'
+  # A done of its own session ends a ticket builder; a pr or another builder's done does not.
+  assert_equal "$(unfinished_roles <<EVENTS
+$two
+{"event": "done", "role": "builder", "session": "b4"}
+{"event": "pr", "url": "https://github.com/o/r/pull/3", "head": "abc1234"}
+EVENTS
+)" '["builder"]'
+  # A builder of the task worktree ends by any ticket-done, as before, a ticket builder's too.
+  assert_equal "$(unfinished_roles <<'EVENTS'
+{"event": "launch", "role": "builder", "session": "b0", "worktree": "/w/1"}
+{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
+{"event": "ticket-done", "ticket": "03", "commits": ["abc1234"]}
+EVENTS
+)" '[]'
+}
+
+@test "a ticket's ticket-done hands on only its own ticket's builder, with a new launch or none" {
+  local two='{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
+{"event": "launch", "role": "builder", "session": "b4", "worktree": "/w/1--04", "ticket": "04"}
+{"event": "ticket-done", "ticket": "03", "commits": ["abc1234"]}'
+  # With no new launch (the heartbeat's finished step), ticket 03's builder is a candidate once its
+  # ticket-done follows it, with or without its done; 04's is none.
+  assert_equal "$(handed_on '' <<<"$two")" '[["b3",true]]'
+  assert_equal "$(handed_on '' <<EVENTS
+$two
+{"event": "done", "role": "builder", "session": "b3"}
+EVENTS
+)" '[["b3",true]]'
+  # A new builder's launch sees both, and only 03's is handed on.
+  assert_equal "$(handed_on builder <<<"$two")" '[["b3",true],["b4",false]]'
+  # A pr hands on no ticket builder, but a task worktree's builder as before.
+  assert_equal "$(handed_on builder <<'EVENTS'
+{"event": "launch", "role": "builder", "session": "b0", "worktree": "/w/1"}
+{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
+{"event": "pr", "url": "https://github.com/o/r/pull/3", "head": "abc1234"}
+EVENTS
+)" '[["b0",true],["b3",false]]'
+}
+
 @test "a stowed may give its cause, level or handoff, and team-stow alone writes it" {
   local stowed='{"ts":"2026-11-01T14:05:00Z","task":"T7","event":"stowed","machine":"home-pc","worktrees":[],"roles":[],"sessions":[]'
   append_as team-stow "$stowed,\"cause\":\"level\"}"

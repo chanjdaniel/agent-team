@@ -55,7 +55,8 @@
 # work is handed on (every planner and reviewer, and every builder of the same worktree when the
 # new worker is a builder: one builder holds a worktree's work at a time, so a ticket builder's
 # launch stops only an earlier builder of its own ticket worktree) once the ledger follows
-# its launch with a done of its session, or for a builder a pr or ticket-done, or with a paused
+# its launch with a done of its session, or for a builder a pr or ticket-done (a ticket builder
+# only its own ticket's ticket-done, and no pr), or with a paused
 # reason=stowed and then a launch of its role and worktree (this one or a later logged one: the
 # fresh worker that resumes the work); so a reviewer is handed on by the done the coordinator logs
 # beside its review, a stow never hands on another role's or worktree's worker, and a paused for

@@ -94,10 +94,14 @@
 # the coordinator's message that relayed an ops answer, is logged as that done's relay, and refused
 # with any other message; an id that is not one is a malformed command line. A review's head is the head of the brief record
 # (tasks/T<n>/<brief>.json) that the reviewer's latest launch read, else a pass's own head, else
-# it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's
-# launch (its session name T<n>-<role>, or its session id), else that of the only latest launch of a
-# role with no report since (a done, review, ticket-done or pr that ends it); two are refused,
-# naming both. The session is that role's latest launch.
+# it is refused naming head=. The sender is --from's launch, the latest one its session name names
+# (T<n>-<role>, or T<n>-builder-<NN> for a builder in ticket NN's worktree) or its session id,
+# refused when its role is not the kind's (builder, reviewer); else the latest launch of the kind's
+# role, for a DONE <NN> the latest builder launch of ticket NN when there is one, else the latest
+# builder launch; else the only latest launch of a role and ticket with no report since (an event
+# that ends it: a done of its role, a review, a ticket-done or a pr, and for a ticket builder only
+# a done of its session or its ticket's ticket-done); two or more are refused, naming each by its
+# session name and id.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad

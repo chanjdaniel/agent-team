@@ -693,24 +693,31 @@ def snapshot_due($project):
   crashed or (latest_stowed as $stowed | $stowed >= 0
     and any(.[$stowed].worktrees[]?; .project == $project and .uncommitted == true));
 
-# Whether the event ends the worker of <role>: its DONE, which the coordinator logs as a done of
-# that role, a review (a reviewer's), or a ticket-done or a pr (a builder's: a delivering
+# Whether the event ends the worker of the launch <launch> (a launch event, its role, session and
+# ticket): a launch with a ticket (a builder in that ticket's worktree) only by a done of its
+# session or a ticket-done of its ticket; any other by its DONE, which the coordinator logs as a
+# done of that role, a review (a reviewer's), or a ticket-done or a pr (a builder's: a delivering
 # builder's PR <url> is logged as a pr, not a done).
-def ends_worker($role):
-  (.event == "done" and .role == $role) or (.event == "review" and $role == "reviewer")
-  or ((.event == "ticket-done" or .event == "pr") and $role == "builder");
+def ends_launch($launch):
+  if $launch.ticket != null then
+    (.event == "done" and .session == $launch.session) or (.event == "ticket-done" and .ticket == $launch.ticket)
+  else
+    (.event == "done" and .role == $launch.role) or (.event == "review" and $launch.role == "reviewer")
+    or ((.event == "ticket-done" or .event == "pr") and $launch.role == "builder")
+  end;
 
-# The task's unfinished work: each role launched since its latest stowed whose latest launch no
-# later event ends (ends_worker), in the order of those launches. The roles a handoff's stowed
-# records and a crash relaunches. Never ops: an ops session runs only on Daniel's request, so on
-# the other machine Daniel asks again.
+# The task's unfinished work: each role launched since its latest stowed whose latest launch of a
+# ticket (or of none) no later event ends (ends_launch), named once, in the order of those
+# launches. The roles a handoff's stowed records and a crash relaunches. Never ops: an ops session
+# runs only on Daniel's request, so on the other machine Daniel asks again.
 def unfinished_roles:
   . as $events
   | latest_stowed as $stowed
   | [to_entries[] | select(.key > $stowed and .value.event == "launch" and .value.role != "ops")
-    | {i: .key, role: .value.role}]
-  | group_by(.role) | map(max_by(.i)) | sort_by(.i)
-  | map(.i as $i | .role as $role | select(all($events[$i + 1:][]; ends_worker($role) | not)) | .role);
+    | .value + {i: .key}]
+  | group_by([.role, .ticket]) | map(max_by(.i)) | sort_by(.i)
+  | map(. as $l | select(all($events[$l.i + 1:][]; ends_launch($l) | not)) | .role)
+  | reduce .[] as $role ([]; if index([$role]) then . else . + [$role] end);
 
 # Every worktree the task was given (opened or added), at its latest path (worktree-moved) and on
 # its latest branch (branch-renamed), and whether it was returned since, each event matched by
@@ -756,8 +763,10 @@ def live_session($session; $sessions):
 # launch (the heartbeat's stow plan, over every open task). They are every planner and reviewer,
 # and every builder when the new worker is a builder (team-worker keeps those of its own worktree,
 # one builder holding a worktree's work at a time), or with no new launch every builder that a
-# later logged builder launch of its worktree follows. Handed on is a launch the ledger follows
-# with a done of its session, or for a builder a pr or ticket-done, or with a paused whose cause
+# later logged builder launch of its worktree follows, and every ticket builder (a launch with a
+# ticket) that its ticket's ticket-done follows. Handed on is a launch the ledger follows with a
+# done of its session, or for a builder what else ends it (ends_launch: its ticket's ticket-done
+# for a ticket builder, else a pr or any ticket-done), or with a paused whose cause
 # is stow (park_cause: "stowed", "stowed, handoff written") and then a logged launch of its role
 # and worktree (a stow carries no session, so it
 # hands on only to the fresh worker that resumes the work, and a resumed does not undo it);
@@ -771,13 +780,14 @@ def handed_on_launches($role; $home):
      | . as $l | ($l.worktree | local_path($home)) as $wt
      | select(.role == "planner" or .role == "reviewer"
          or (.role == "builder"
-             and if $role == "" then any($events[$i + 1:][]; .event == "launch" and .role == "builder"
+             and if $role == "" then any($events[$i + 1:][]; (.event == "launch" and .role == "builder"
                    and (.worktree | local_path($home)) == $wt)
+                   or ($l.ticket != null and .event == "ticket-done" and .ticket == $l.ticket))
                  else $role == "builder" end))
      | [range($i + 1; $events | length) | select($events[.] | .event == "paused" and park_cause == "stow")] as $stows
      | {session, role, worktree: $wt, stowed: ($stows != []),
         handed_on: (any($events[$i + 1:][]; (.event == "done" and .session == $l.session)
-            or ((.event == "pr" or .event == "ticket-done") and $l.role == "builder"))
+            or ($l.role == "builder" and .event != "done" and ends_launch($l)))
           or any($stows[] as $k | $events[$k + 1:][]; .event == "launch" and .role == $l.role
             and (.worktree | local_path($home)) == $wt))}];
 

@@ -587,6 +587,34 @@ workers_json() {
   assert_equal "$(jq -r '.workers.running[].session' <<<"$json")" r0070001
 }
 
+@test "a ticket builder's lifetime ends at its own ticket's ticket-done or its ticket's next launch" {
+  local opened='"task":"T7","event":"opened","project":"agent-team","path":"feature","type":"feat","title":"x","branch":"feat/T7-x","base":"dev","base_sha":"0123456","worktree":"/w/1"'
+  printf '%s\n' \
+    "{\"ts\":\"2026-10-28T09:00:00Z\",$opened}" \
+    '{"ts":"2026-10-28T09:00:00Z","task":"T7","event":"launch","role":"builder","session":"b0070001","worktree":"/w/1","toolkits":[]}' \
+    '{"ts":"2026-10-28T09:30:00Z","task":"T7","event":"ticket-done","ticket":"01","commits":["abc1234"]}' \
+    '{"ts":"2026-10-28T09:30:00Z","task":"T7","event":"done","role":"builder","session":"b0070001"}' \
+    '{"ts":"2026-10-28T10:00:00Z","task":"T7","event":"launch","role":"builder","session":"b0070003","worktree":"/w/1--03","toolkits":[],"ticket":"03"}' \
+    '{"ts":"2026-10-28T10:00:00Z","task":"T7","event":"launch","role":"builder","session":"b0070004","worktree":"/w/1--04","toolkits":[],"ticket":"04"}' \
+    '{"ts":"2026-10-28T10:30:00Z","task":"T7","event":"ticket-done","ticket":"03","commits":["abc1235"]}' \
+    '{"ts":"2026-10-28T10:30:00Z","task":"T7","event":"done","role":"builder","session":"b0070003"}' \
+    '{"ts":"2026-10-28T10:50:00Z","task":"T7","event":"launch","role":"builder","session":"b0070005","worktree":"/w/1--05","toolkits":[],"ticket":"05"}' \
+    '{"ts":"2026-10-28T11:20:00Z","task":"T7","event":"ticket-done","ticket":"04","commits":["abc1236"]}' \
+    '{"ts":"2026-10-28T11:30:00Z","task":"T7","event":"launch","role":"builder","session":"b0070006","worktree":"/w/1--05","toolkits":[],"ticket":"05"}' >"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-28T20:00:00Z)
+  # 03's ticket-done is not 04's, 05's launch does not replace 04's builder, and 05's next launch
+  # replaces its first; the task worktree's builder ends as before.
+  assert_equal "$(jq -r '.workers.lifetimes[] | [.session, .end, .ended, .minutes, .rounds] | map(. // "null") | @tsv' <<<"$json")" "$(
+    printf '%s\n' \
+      $'b0070001\t2026-10-28T09:30:00Z\tdone\t30\t1' \
+      $'b0070003\t2026-10-28T10:30:00Z\tdone\t30\t1' \
+      $'b0070004\t2026-10-28T11:20:00Z\tticket-done\t80\t1' \
+      $'b0070005\t2026-10-28T11:30:00Z\treplaced\t40\t0'
+  )"
+  assert_equal "$(jq -r '.workers.running[].session' <<<"$json")" b0070006
+}
+
 @test "a team-thread wait counts as waiting for a message, in the foreground or the background" {
   local key
   for key in "bash team-thread wait" "background bash team-thread wait"; do

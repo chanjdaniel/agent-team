@@ -1895,6 +1895,45 @@ assert_no_answer_logged() {
     --from-message 'T7 DONE review-ready a1b2c3d' --from T7-reviewer
 }
 
+# A ticket builder's launch, as team-worker logs it in ticket NN's worktree: ticket_launched <task> <NN> <session>
+ticket_launched() {
+  jq -cn --arg task "$1" --arg ticket "$2" --arg session "$3" \
+    '{ts: (now | todate), task: $task, event: "launch", role: "builder", session: $session, worktree: "/w/proj--\($ticket)",
+      toolkits: [], project: "proj", branch: "feat/\($task)-x--\($ticket)", machine: "m", brief: "brief-build-\($ticket)",
+      ticket: $ticket}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "--from-message reads a DONE <NN> as ticket NN's builder's, and names each ticket builder by its session" {
+  open_t7
+  launched T7 builder b0000001 brief-build-01
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"01","commits":["a1b2c3d"],"note":"one"}
+{"task":"T7","event":"done","role":"builder","session":"b0000001"}' --from-message 'T7 DONE 01 a1b2c3d one'
+  ticket_launched T7 03 b0000003
+  ticket_launched T7 04 b0000004
+  # Neither ticket builder has reported: each is named by its session name.
+  refuses_message "team-log: the message's sender is not known: T7-builder-03 (b0000003) and T7-builder-04 (b0000004) have no report since their launch; name it with --from <session>" \
+    --from-message 'T7 QUESTION which store?'
+  refuses_message "team-log: --from T7-builder-05 names no launch of T7: its sessions are T7-builder (b0000001), T7-builder-03 (b0000003), T7-builder-04 (b0000004)" \
+    --from-message 'T7 QUESTION which store?' --from T7-builder-05
+  # A DONE of a ticket with no ticket launch is the latest builder's, as before.
+  run_bin -0 team-log T7 --from-message 'T7 DONE 02 a1b2c3e two' --print
+  assert_equal "$(jq -c 'select(.event == "done") | .session' <<<"$output")" '"b0000004"'
+  # Each DONE <NN> is its own ticket's builder's, though 04's launched last.
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"03","commits":["a1b2c3f"],"note":"three"}
+{"task":"T7","event":"done","role":"builder","session":"b0000003"}' --from-message 'T7 DONE 03 a1b2c3f three'
+  # 03's report leaves 04's builder the only one without one.
+  logs_events '{"task":"T7","event":"question","role":"builder","text":"which store?"}' --from-message 'T7 QUESTION which store?'
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"04","commits":["a1b2c40"],"note":"four"}
+{"task":"T7","event":"done","role":"builder","session":"b0000004"}' --from-message 'T7 DONE 04 a1b2c40 four'
+  # --from names a ticket builder by its session name or its id, for a DONE of the kind's role too.
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000003","report":"review-ready a1b2c41"}' \
+    --from-message 'T7 DONE review-ready a1b2c41' --from T7-builder-03
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000003","report":"review-ready a1b2c42"}' \
+    --from b0000003 --from-message 'T7 DONE review-ready a1b2c42'
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000001","report":"review-ready a1b2c43"}' \
+    --from-message 'T7 DONE review-ready a1b2c43' --from T7-builder
+}
+
 @test "--from-message refuses a kind whose role has no launch, and a sender none is without a report" {
   open_t7
   refuses_message "team-log: the message is a builder's, but T7 has no builder launch" \
