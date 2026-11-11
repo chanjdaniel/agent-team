@@ -231,7 +231,7 @@ Who asks:
 
 | Caller | Kind | With no room |
 | - | - | - |
-| `team-worker` | `session:<role>`, once it has stopped the task's finished sessions, which `--freed` leaves out, since the reading still holds them | exits 75 with the reason, launching nothing; T0 and ops are never asked |
+| `team-worker` | `session:<role>`, once it has stopped the task's finished sessions, which `--freed` leaves out, since the reading still holds them; it logs the id on its `launch` as `admission`, and releases the admission on any end before that launch is logged | exits 75 with the reason, launching nothing; T0 and ops are never asked |
 | `team-stack up` | `stack:<project>`, once the disk floor holds | waits within `wait_minutes`, re-checking every 30 seconds, then exits 75 (`sops/docker.md`, "Admission") |
 | `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
 
