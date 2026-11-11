@@ -50,7 +50,7 @@ Two repositories hold the team, each checked out on every machine:
 - Every change is a commit on the tip just read, pushed without force: a rejected push means another machine moved it first, so two machines racing end with one holder.
   `git log origin/lease` is its history.
 - `team-lease take` takes a released lease; one another machine holds is refused, saying fresh or stale.
-  Stale (not renewed for 60 minutes) changes only that message: taking it still needs `take --steal` and the holder's name typed on a terminal, which deny rules keep every team session from doing.
+  Stale (not renewed for 60 minutes) changes only that message: taking it still needs `take --steal` and the holder's name typed on a terminal, which the coordinator's deny rules and the workers' `command-guard` keep every team session from doing.
 - `claude-coordinator` and `team-worker` (all but the load check's `T0`) refuse unless `team-lease check` confirms against origin that this machine holds it; offline, they refuse too.
 - Team sessions run with `isolatePeerMachines`, so a message to a session on another machine asks first.
 
