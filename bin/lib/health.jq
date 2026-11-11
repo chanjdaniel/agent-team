@@ -9,8 +9,8 @@
 #      ok, failed, offline, login-refused, not-holder, fenced or timed-out),
 #    last_good_run (the start of the last run that ended ok), lease_renewed (the lease's last
 #    renewal, as team-lease status gave it or the run's renew made it), last_checkpoint (the time
-#    of last-checkpoint), offline ({since}) and login_refused ({since, reason}), the heartbeat's
-#    flags as the run left them,
+#    of last-checkpoint), offline ({since}, the offline flag) and login_refused ({since, reason},
+#    the login-refused notice of the notice record), as the run left them,
 #    steps: {<step>: {since, runs, reason, more, run}}, each step failing now: since when, for how
 #      many runs in a row, its latest reason, how many more failure lines it gave, and the id of
 #      the last run that counted it,

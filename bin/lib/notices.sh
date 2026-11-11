@@ -26,14 +26,18 @@
 #                                <lock> for <n> s"), the program fails or the write fails.
 #   notices_upgrade <source>...  moves each named source's old record into the record, under the
 #                                lock: the record written first, its sources marked upgraded, then
-#                                the old field stripped (health: health.json's alerts; uptime:
-#                                each check's alert in uptime.json). Fails as notices_update
+#                                the old field stripped (health: health.json's alerts; offline:
+#                                the offline flag rewritten as {since}, still the hold;
+#                                login-refused: the login-refused file removed; uptime: each
+#                                check's alert in uptime.json). Fails as notices_update
 #                                does, the old field left for the next try. A record that lists
 #                                every named source upgraded already is neither locked nor
 #                                written: only the old field is stripped, under the caller's own
 #                                lock of that record.
-# The old records folded: health, health.json's alerts; uptime, uptime.json's checks' alerts. A
-# missing or unreadable one folds nothing.
+# The old records folded: health, health.json's alerts; offline, the offline flag's posted;
+# login-refused, the login-refused file ({since, reason}); uptime, uptime.json's checks' alerts.
+# The offline flag and the login-refused file are read whatever their age, a since they lack taken
+# from the file's time; a missing or unreadable record folds nothing.
 # shellcheck shell=bash
 
 NOTICES_STATE=$HOME/.local/state/agent-team
@@ -41,13 +45,27 @@ NOTICES=$NOTICES_STATE/notices.json
 NOTICES_LOCK=$NOTICES_STATE/notices.lock
 TEAM_NOTICES_LOCK_SECONDS=${TEAM_NOTICES_LOCK_SECONDS:-10}
 
-# The old records of the sources with a fold, as one object: {health: {alerts} or null, uptime:
-# {checks} or null}.
+# The flag file <file> as an object, its since the file's time when it gives none (a file that is
+# not JSON included), or nothing when there is no file: notices_flag <file>
+notices_flag() {
+  local mtime
+  [[ -e $1 ]] || return 0
+  mtime=$(date -u -r "$1" +%FT%TZ 2>/dev/null) || mtime=''
+  jq -c --arg mtime "$mtime" 'objects | .since = ((.since | strings) // ($mtime | select(. != "")) // null)' "$1" 2>/dev/null ||
+    jq -cn --arg mtime "$mtime" '{since: (($mtime | select(. != "")) // null)}'
+}
+
+# The old records of the sources with a fold, as one object: {health: {alerts} or null, offline:
+# the offline flag or null, "login-refused": the login-refused file or null, uptime: {checks} or
+# null}.
 notices_old() {
-  local health uptime
+  local health offline refused uptime
   health=$(jq -c 'objects | {alerts: (.alerts // null)}' "$NOTICES_STATE/health.json" 2>/dev/null) || health=''
+  offline=$(notices_flag "$NOTICES_STATE/offline")
+  refused=$(notices_flag "$NOTICES_STATE/login-refused")
   uptime=$(jq -c 'objects | {checks: (.checks // null)}' "$NOTICES_STATE/uptime.json" 2>/dev/null) || uptime=''
-  jq -cn --argjson health "${health:-null}" --argjson uptime "${uptime:-null}" '{health: $health, uptime: $uptime}'
+  jq -cn --argjson health "${health:-null}" --argjson offline "${offline:-null}" --argjson refused "${refused:-null}" \
+    --argjson uptime "${uptime:-null}" '{health: $health, offline: $offline, "login-refused": $refused, uptime: $uptime}'
 }
 
 # Whether the file <file> is one JSON object of team-notices/1: notices_valid <file>
@@ -133,6 +151,22 @@ notices_strip() {
       if jq 'del(.alerts)' "$file" >"$file.$$" && mv -f "$file.$$" "$file"; then return 0; fi
       rm -f "$file.$$"
       echo "cannot strip the alerts from $file" >&2
+      return 1
+      ;;
+    offline)
+      # Only a flag that holds more than its since is rewritten, so the hold never goes meanwhile.
+      file=$NOTICES_STATE/offline
+      jq -e 'type == "object" and (keys - ["since"]) != []' "$file" >/dev/null 2>&1 || return 0
+      if jq -c '{since}' "$file" >"$file.$$" && mv -f "$file.$$" "$file"; then return 0; fi
+      rm -f "$file.$$"
+      echo "cannot rewrite $file as the hold alone" >&2
+      return 1
+      ;;
+    login-refused)
+      file=$NOTICES_STATE/login-refused
+      [[ -e $file ]] || return 0
+      rm -f "$file" && return 0
+      echo "cannot remove $file" >&2
       return 1
       ;;
     uptime)

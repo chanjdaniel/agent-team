@@ -1,10 +1,10 @@
 # The notice module: the one lifecycle of every notice the heartbeat gives Daniel in #coordinator
 # of a standing problem, none -> open -> posted -> (reminded)* -> ended -> closed. Its callers judge
 # their notices through it and do the I/O (Discord, the record's file, its lock): bin/team-timers
-# for the health alerts and bin/team-uptime for the production outages (through bin/lib/uptime.jq),
-# both through bin/lib/notices.sh. These are pure functions of the record, a
-# source's standing problems, the lease record's taken_at and now; nothing here knows a source's
-# texts or thresholds.
+# for the health alerts, the offline hold's posts and the login refusal's, and bin/team-uptime for
+# the production outages (through bin/lib/uptime.jq), both through bin/lib/notices.sh. These are
+# pure functions of the record, a source's standing problems, the lease record's taken_at and now;
+# nothing here knows a source's texts or thresholds.
 # jq 1.7, no includes. Included as: jq -L bin/lib 'include "notice"; ...'
 #
 # The record, ~/.local/state/agent-team/notices.json, is team-notices/1, one per machine:
@@ -174,11 +174,36 @@ def notice_fold_uptime:
            reminded: (if $posted then $a.reminded else null end), ended: (if $posted then $back else null end),
            detail: null}}];
 
+# team-timers' offline flag ({since, posted}, its since filled from the file's time when it has
+# none): one whose posted is true is posted, at its since; any other is open, tried at its since,
+# so it is not posted again while the hold lasts and its back post carries the outage line:
+# notice_fold_offline
+def notice_fold_offline:
+  [objects | (.since | strings) as $since
+    | (.posted == true) as $told
+    | {id: "offline",
+       notice: {source: "offline", key: "offline", state: (if $told then "posted" else "open" end),
+         since: $since, text: null, holding: null, opened: $since,
+         tried: (if $told then null else $since end), posted: (if $told then $since else null end),
+         message: null, reminded: null, ended: null, detail: null}}];
+
+# team-timers' login-refused file ({since, reason}, its since filled from the file's time when it
+# has none), written when the refusal's post was tried: posted, at its since, with its reason:
+# notice_fold_login_refused
+def notice_fold_login_refused:
+  [objects | (.since | strings) as $since
+    | {id: "login-refused",
+       notice: {source: "login-refused", key: "login-refused", state: "posted", since: $since, text: null,
+         holding: null, opened: $since, tried: null, posted: $since, message: null, reminded: null,
+         ended: null, detail: {reason: ((.reason | strings) // null)}}}];
+
 # The notices of the old record $old of <source>, or none for a source with no fold:
 # notice_fold($source; $old)
 def notice_fold($source; $old):
   if $source == "health" then ($old | notice_fold_health)
   elif $source == "uptime" then ($old | notice_fold_uptime)
+  elif $source == "offline" then ($old | notice_fold_offline)
+  elif $source == "login-refused" then ($old | notice_fold_login_refused)
   else [] end;
 
 # Move the old records' notices into the record (the input): notice_upgrade($sources; $old), $old

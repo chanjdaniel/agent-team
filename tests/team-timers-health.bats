@@ -252,7 +252,7 @@ Nothing waits on you."
 @test "a run that went offline and one whose login was refused are recorded as such, shown as their problem, and raise no checkpoint problem" {
   # No good checkpoint yet: the checkpoint would be stale but for the flags.
   stub_sleep
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -75 team-timers run
   # The record says how the run ended.
   assert_equal "$(jq -r .last_run.ended "$record")" offline
@@ -265,17 +265,17 @@ Nothing waits on you."
   assert_equal "$(jq -r .line <<<"$view")" "**Health**: GitHub unreachable since <t:$(date -d "$since" +%s):t>, the team is holding"
 
   rm "$state/offline"
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 403)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
   run_bin -1 team-timers run
   assert_equal "$(jq -r .last_run.ended "$record")" login-refused
   view
-  since=$(jq -r .since "$state/login-refused")
+  since=$(jq -r '.notices["login-refused"].since' "$notices")
   jq -e --arg since "$since" '[.problems[].key] == ["login-refused"]
     and .problems[0] == {key: "login-refused", since: $since, text: "GitHub refuses home-pc'"'"'s login since \($since)",
       alerting: true, sweep: "health"}' <<<"$view"
 
   # GitHub answers again: the flag goes, and the next run is good.
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_equal "$(jq -r .last_run.ended "$record")" ok
   view
@@ -832,14 +832,13 @@ alert: cannot judge the alerts: another writer held $lock for 1 s"
   before=$(alert_lines | wc -l)
 
   stub_sleep
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -75 team-timers run
   run_bin -75 team-timers run
   rm "$state/offline"
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 403)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
   run_bin -1 team-timers run
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
-  rm "$state/login-refused"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   assert_equal "$(alert_lines | wc -l)" "$before"
   assert_equal "$(open_alerts)" "checkpoint $id"
   [[ $(alerts_shown | jq -r .content) != *Resolved* ]]
@@ -1139,9 +1138,9 @@ SH
   run_bin -0 team-timers run
   stub_sleep
   run -0 "$REPO_ROOT/bin/team-lease" take
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -75 team-timers run
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   rm "$state/offline"
   echo '{"since": "2026-11-01T00:00:00Z"}' >"$state/fenced"
   run_bin team-timers run
