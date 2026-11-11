@@ -364,8 +364,8 @@ problems() {
           | .phase = $phase | .since = "2026-11-01T00:00:00Z" | .opened_at = "2026-11-01T00:00:00Z"
           | .stow = (if IN($kind; "stowed", "stow-failed")
                      then {state: "stowing", cause: "level", roles: [], since: "2026-11-01T00:00:00Z", i: 0} else null end)) as $state
-       | {ts: "2026-11-01T00:01:00Z", task: "T1", event: $kind, retro: (if $status == "closed-own-retro" then "T1" else "T2" end)}
-         + (first($t.causes | to_entries[] | select(.value.kinds | index([$kind])) | {cause: .key}) // {}) as $e
+       | ({ts: "2026-11-01T00:01:00Z", task: "T1", event: $kind, retro: (if $status == "closed-own-retro" then "T1" else "T2" end)}
+          + (first($t.causes | to_entries[] | select(.value.kinds | index([$kind])) | {cause: .key}) // {})) as $e
        | [$state | lifecycle_problems($e)] as $problems
        | {kind: $kind, status: $status, phase: $phase, taken: $taken, problems: $problems}] as $cases
     | [$cases[] | select(.taken == (.problems != [])) | "\(.kind) \(.status) \(.phase): taken \(.taken), problems \(.problems)"],
