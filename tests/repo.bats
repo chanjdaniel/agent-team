@@ -1956,6 +1956,26 @@ SH
   assert_equal "$(cat "$STUB_CALLS/bats-ran")" repo.bats
 }
 
+# A skipped test counts as passed, and its line is named after the file lines, since a file's ok
+# line never shows it.
+@test "tests/run bats names each skipped test after the file lines, and counts it as passed" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  ln -f "$(shared skipping-bats <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 1..3 "ok 1 runs" "ok 2 with a real Chrome # skip no Chrome on this machine" "ok 3 bare # skip"
+SH
+)" "$copy/tests/vendor/bats-core/bin/bats"
+  changed_rebase "$copy"
+  echo 'more' >>"$copy/sops/rules.md"
+  TEAM_JOBS=2 run -0 --separate-stderr "$copy/tests/run" bats --changed base
+  assert_equal "$(grep -A 3 '^ok tests/repo.bats (' <<<"$output" | tail -n 3)" \
+    "tests/repo.bats: ok 2 with a real Chrome # skip no Chrome on this machine
+tests/repo.bats: ok 3 bare # skip
+bats: 3 tests passed; 0 of 1 files failed"
+}
+
 # Commits the copy's working tree and moves its base tag there, so a test's fixture files are no
 # change.
 changed_rebase() {
