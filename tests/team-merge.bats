@@ -771,478 +771,79 @@ EOF
   [[ -z $(git -C "$CODE_CHECKOUT" for-each-ref refs/remotes/origin/dev --contains "$(git -C "$CODE_ORIGIN" rev-parse dev)") ]]
 }
 
-@test "a pre-approved PR of a project that opts in merges on Daniel's plan-time word, with no merge-approved" {
-  plan_word
-  run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(stub_calls gh | jq -c 'select(.[0:2] == ["pr", "merge"])')" \
-    "[\"pr\",\"merge\",\"5\",\"--repo\",\"owner/proj\",\"--squash\",\"--match-head-commit\",\"$head\"]"
-  assert_equal "$(merged_events)" "$(jq -cn --arg m "$MERGE_SHA" --arg h "$head" '{task: "T14", event: "merged",
-    pr: 5, merge: $m, head: $h,
-    by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)",
-    project: "proj", branch: "feat/T14-tooling", discord_message: "1562661774950400000", discord_channel: "1563",
-    url: "https://github.com/owner/proj/pull/5", approval: "plan"}')"
-  assert_equal "$(reads | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1563/messages/1562661774950400000"
-  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
-  assert_equal "$status" 0
-}
-
-@test "Daniel's plan-time word in #coordinator counts when it is not in the task's thread" {
-  plan_word
-  approved_by 757 1562486564871995482
-  run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r '[.approval, .by] | join(" ")')" \
-    "plan Discord message 1562661774950400000 in #coordinator 1562486564871995482, from daniel (757)"
-}
-
-@test "with a merge-approved for the PR, the per-head word is read as today and the plan-time one is not" {
-  plan_word
-  # The per-head word, sent at 01:00 before the pr event, is refused though the plan-time word stands.
-  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562631575961600000"}'
-  refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the pr event of https://github.com/owner/proj/pull/5 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR"
-  [[ $stderr != *"plan-time"* ]]
-
-  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000"}'
-  run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" head
-}
-
-@test "a withdrawn plan-time word is refused, naming the withdrawal" {
-  plan_word
-  withdrawn
-  refused "no merge-approved event for https://github.com/owner/proj/pull/5: Daniel's word is not recorded" \
-    "Daniel's plan-time word on proj, Discord message 1562661774950400000, was withdrawn at 2026-10-22T02:00:00Z in Discord message 1562676874444800000"
-  [[ $stderr != *"$(ask_per_head)"* ]]
-  assert_equal "$(stub_calls curl)" ""
-}
-
-@test "a plan-time word granted again after a withdrawal merges" {
-  plan_word
-  withdrawn
-  event T14 asked '{id: "plan-T14-again", text: "Approve the merge with the plan again?"}'
-  # Message 1562691973939200000, sent at 05:00.
-  jq '.id = "1562691973939200000"' "$discord/1563-1562661774950400000.json" >"$discord/1563-1562691973939200000.json"
-  preapproved 1562691973939200000 plan-T14-again
-  run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r '[.approval, .discord_message] | join(" ")')" "plan 1562691973939200000"
-}
-
-@test "a project that does not opt in now is refused on the plan-time word" {
-  plan_word
-  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
-  refused "proj does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false" "$(ask_per_head)"
-}
-
-@test "the team's own project is refused on the plan-time word, by name, by path and by repo" {
-  # By repo: proj's repo is the origin of the code checkout team-merge runs from.
-  plan_word
-  code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
-  refused "proj is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
-}
-
-@test "the team's own project by name is refused on the plan-time word, whatever the registry says" {
-  plan_word
-  sed -i 's/^\[proj/[agent-team/' "$TEAM_HOME/projects.toml"
-  jq -c 'if .project == "proj" then .project = "agent-team" else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
-  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  registry_refused "agent-team.merge_with_plan: agent-team is the team's own project"
-  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
-  refused "agent-team is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
-}
-
-@test "the team's own project by path is refused on the plan-time word, whatever the registry says" {
-  merging_the_code
-  plan_word
-  registry_refused "proj.merge_with_plan: its path is the code checkout team-project runs from"
-  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
-  refused "proj is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
-}
-
-@test "a PR from a branch that is not the task's is refused on the plan-time word" {
-  plan_word
-  pr_field '.headRefName = "feat/T15-other"'
-  refused "PR #5 comes from feat/T15-other, not feat/T14-tooling, T14's branch for proj" "$(ask_per_head)"
-}
-
-@test "a PR from the branch a branch-renamed logged for the task merges on the plan-time word, and one from the old branch does not" {
-  plan_word
-  pr_field '.headRefName = "feat/T14-tooling-fresh"'
-  refused "PR #5 comes from feat/T14-tooling-fresh, not feat/T14-tooling, T14's branch for proj" "$(ask_per_head)"
-  event T14 branch-renamed '{project: "proj", branch: "feat/T14-tooling-fresh"}'
-  run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r '[.approval, .branch] | join(" ")')" "plan feat/T14-tooling-fresh"
-}
-
-@test "after a branch-renamed, a PR from the task's old branch is refused on the plan-time word" {
-  plan_word
-  event T14 branch-renamed '{project: "proj", branch: "feat/T14-tooling-fresh"}'
-  refused "PR #5 comes from feat/T14-tooling, not feat/T14-tooling-fresh, T14's branch for proj" "$(ask_per_head)"
-}
-
-@test "the task's branch for a project added by team-open --add is its worktree-added event's" {
-  plan_word
-  jq -c 'if .event == "opened" then .project = "lib" | .branch = "feat/T14-lib" else . end' \
-    "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
-  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  event T14 worktree-added '{project: "proj", branch: "feat/T14-tooling", base: "dev", base_sha: "0123456", worktree: "/w/4"}'
-  run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" plan
-}
-
-@test "a release-shaped PR, the base into another branch, is refused on the plan-time word" {
-  plan_word
-  pr_field '.baseRefName = "main" | .headRefName = "dev"'
-  refused "PR #5 targets main, not proj's base dev" "PR #5 comes from dev, not feat/T14-tooling, T14's branch for proj" \
-    "$(ask_per_head)"
-}
-
-@test "a plan-time word sent before the ask it answers, or answering no ask of the task, is refused without asking Discord" {
-  plan_word
-  # 1562631575961600000 is 01:00, an hour before the ask at 02:00.
-  preapproved 1562631575961600000
-  refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the asked plan-T14 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR" \
-    "$(ask_per_head)"
-  assert_equal "$(stub_calls curl)" ""
-
-  preapproved 1562661774950400000 plan-T99
-  refused "merge-preapproved answers the ask plan-T99, which T14 did not log before it" "$(ask_per_head)"
-  assert_equal "$(stub_calls curl)" ""
-}
-
-@test "a plan-time word Discord cannot show, or by an author not in allowFrom, is refused" {
-  plan_word
-  rm "$discord/1563-1562661774950400000.json"
-  refused "Discord message 1562661774950400000 cannot be fetched from the task's thread 1563 or #coordinator 1562486564871995482" \
-    "$(ask_per_head)"
-  approved_by 999
-  refused "Discord message 1562661774950400000 is by daniel (999), who is not in allowFrom" "$(ask_per_head)"
-}
-
-@test "a PR with no review of its head is refused on the plan-time word" {
-  plan_word
-  jq -c 'select(.event != "review")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
-  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  passed 0fedcba9876543210
-  refused "no review of the head ${head:0:7} is logged, so no reviewer has passed it" "$(ask_per_head)"
-}
-
-@test "a PR whose latest review of its head found something is refused on the plan-time word, and a later pass merges it" {
-  plan_word
-  event T14 review "{verdict: \"findings\", head: \"${head:0:8}\",
-    findings: {blocking: 0, correctness: 1, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: []}"
-  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" "$(ask_per_head)"
-  passed "${head:0:7}"
-  run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" plan
-}
-
-@test "a PR whose latest review of its head, a pass logged through team-log, sent findings back is refused on the plan-time word" {
-  plan_word
-  local counts='findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0'
-  run_bin -0 team-log T14 review verdict=pass head="$head" "$counts" sent_back=1 guarded=none
-  local at
-  at=$(jq -r 'select(.event == "review") | .ts' "$TEAM_HOME/ledger.jsonl" | tail -n 1)
-  refused "the latest review of the head ${head:0:7}, at $at, is findings, not pass" "$(ask_per_head)"
-  # The verify pass that sends nothing back merges it.
-  run_bin -0 team-log T14 review verdict=pass head="$head" "$counts" sent_back=none guarded=none
-  run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" plan
-}
-
-@test "a refusal on the plan-time word lists every reason at once, the checks every merge gets among them" {
-  plan_word
-  review "$head" findings
-  pr_field '.headRefName = "feat/T15-other"'
-  checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
-    {"name": "agent-review", "bucket": "pending", "state": "IN_PROGRESS"}]'
-  jq -n --arg head "$head" '[
-    {sha: "1111111111111111111111111111111111111111",
-     commit: {message: "feat: one\n\nCo-Authored-By: Claude <noreply@anthropic.com>"}},
-    {sha: $head, commit: {message: "test: two"}}]' >"$gh_dir/commits.json"
-  refused "PR #5 comes from feat/T15-other, not feat/T14-tooling, T14's branch for proj" \
-    "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" \
-    "required check lint is missing on the head" "required check test has not passed on the head" \
-    "checks failing on the head: test" "checks pending on the head: agent-review" \
-    "agent-review is in_progress on the head, not success" \
-    "commit 1111111 (feat: one) carries an attribution line: Co-Authored-By: Claude <noreply@anthropic.com>"
-  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_per_head)"
-}
-
 @test "a per-head merge reads no file list" {
   run_bin -0 team-merge T14
   [[ -z $(stub_calls gh | jq -c 'select(.[1] | test("/files$"))') ]]
 }
 
-@test "the plan-time word reads the PR's files across pages, each rename's old path too" {
-  plan_word
-  files src/a.py 'old/b.py=>src/b.py'
-  jq -c '.[:1], .[1:]' "$gh_dir/files.json" >"$gh_dir/pages" && mv "$gh_dir/pages" "$gh_dir/files.json"
-  refused "old/b.py, renamed to src/b.py, is outside the scope of Daniel's plan-time word: src/" "$(ask_per_head)"
-  [[ $stderr != *"src/a.py"* ]]
+# The default word, the plan the coordinator approved, beside Daniel's per-head word: default_word,
+# then the merge-approved again, naming <head> (none: a legacy one) in <message> (Daniel's
+# 1562661774950400000 at 03:00): both_words [<message>] [<head>]
+both_words() {
+  default_word
+  event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"${1:-1562661774950400000}\"}
+    + if \"${2:-}\" == \"\" then {} else {head: \"${2:-}\"} end"
+}
 
-  files src/a.py 'src/c.py=>src/b.py'
-  jq -c '.[:1], .[1:]' "$gh_dir/files.json" >"$gh_dir/pages" && mv "$gh_dir/pages" "$gh_dir/files.json"
+@test "a per-head word on an old head with a commit of its own since falls to the default word, which merges (T278 C6)" {
+  moved_head own
+  both_words 1562661774950400000 "$approved"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .head, .by] | join(" ")')" "default $head the plan $COORDINATOR_PLAN"
+  assert_equal "$(jq -r .content "$discord/posts" | grep -c "on the plan $COORDINATOR_PLAN")" 2
+}
+
+@test "a per-head word whose message is not Daniel's falls to a default word that holds" {
+  both_words
+  approved_by 999
   run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" plan
+  assert_equal "$(merged_events | jq -r '[.approval, .by] | join(" ")')" "default the plan $COORDINATOR_PLAN"
 }
 
-@test "a file list shorter than the PR's changed-file count is refused as one not read in full" {
-  plan_word
-  pr_field '.changedFiles = 3'
-  refused "GitHub's list of PR #5's files holds 2 files, not its 3 changed files, so not every file could be checked" \
-    "$(ask_per_head)"
-  pr_field 'del(.changedFiles)'
-  refused "GitHub's list of PR #5's files holds 2 files, not its unknown number of changed files, so not every file could be checked" \
-    "$(ask_per_head)"
-}
-
-@test "each changed file outside the scope is named; a directory entry covers what is under it and a file entry that file only" {
-  plan_word
-  preapproved 1562661774950400000 plan-T14 '["src/a/", "README.md"]'
-  files src/a/b.py src/a/c/d.py src/ab.py README.md docs/README.md README.md.bak
-  refused "src/ab.py is outside the scope of Daniel's plan-time word: src/a/, README.md" \
-    "docs/README.md is outside the scope of Daniel's plan-time word: src/a/, README.md" \
-    "README.md.bak is outside the scope of Daniel's plan-time word: src/a/, README.md" "$(ask_per_head)"
-  [[ $stderr != *"src/a/b.py"* && $stderr != *"src/a/c/d.py"* && $stderr != *"  README.md is"* ]]
-}
-
-@test "a path every project's lines guard is named with its areas; test configs, scripts, dependencies, instruction files and auth words in names are not" {
-  plan_word
-  guarded_case \
-    .github/workflows/test.yml:ci .circleci/config.yml:ci .gitlab-ci.yml:ci .no-mistakes.yaml:ci \
-    ".github/workflows/deploy.yml:ci, deploy" ".github/CODEOWNERS:ci, permissions" docs/CODEOWNERS:permissions \
-    back-end/migrations/migrate_roles.py:migrations db/migration/0001.py:migrations schema/init.sql:migrations \
-    back-end/reset_database.py:migrations back-end/init_database.py:migrations back-end/mongo-init.js:migrations \
-    front-end/vercel.json:deploy back-end/vercel.json:deploy netlify.toml:deploy fly.toml:deploy Procfile:deploy \
-    render.yaml:deploy railway.toml:deploy back-end/utils/deployment.py:deploy scripts/deploy.sh:deploy \
-    front-end/.env.example:secrets .env:secrets back-end/.env.production:secrets certs/server.pem:secrets \
-    certs/client.p12:secrets certs/client.pfx:secrets deploy/id.key:secrets config/credentials.json:secrets \
-    back-end/utils/secret_key.py:secrets \
-    front-end/e2e/auth.spec.ts back-end/tests/conftest.py front-end/package.json front-end/package-lock.json \
-    back-end/requirements.txt pyproject.toml back-end/Dockerfile docker-compose.yml AGENTS.md CLAUDE.md \
-    .claude/settings.json .vscode/launch.json .mcp.json back-end/settings.py scripts/nm-test.sh Makefile \
-    .husky/pre-push front-end/vite.config.ts front-end/tsconfig.app.json front-end/playwright.config.ts \
-    front-end/src/views/LoginView.vue back-end/guards.py back-end/api/permissions.py back-end/utils/tokens.py \
-    back-end/utils/session_storage.py src/jwt.ts src/csrf.ts docs/deploy.md back-end/lookup_indexes.py \
-    scripts/migrate_users.py db/add_roles_migration.py bin/team-merge bin/lib/team.sh roles/reviewer.md \
-    settings/worker.json bin/lib/guarded
-}
-
-@test "a camelCase name counts its humps as words, as the snake_case name it stands for" {
-  plan_word
-  guarded_case back-end/resetDatabase.py:migrations back-end/InitDatabase.py:migrations back-end/resetDb.py
-}
-
-@test "a Conventioner PR names its auth code and every project's lines; its tests, dependencies, instruction files and views match nothing" {
-  plan_word
-  as_project conventioner
-  guarded_case back-end/guards.py:permissions .github/workflows/test.yml:ci back-end/migrations/migrate_roles.py:migrations \
-    back-end/vercel.json:deploy back-end/.env.example:secrets \
-    back-end/api/applicant_auth.py:permissions back-end/api/permissions.py:permissions \
-    back-end/remembered_sign_ins.py:permissions back-end/sign_in_limits.py:permissions \
-    back-end/utils/application_token.py:permissions "back-end/utils/configured_secret.py:permissions, secrets" \
-    back-end/utils/cors.py:permissions "back-end/utils/secret_key.py:permissions, secrets" \
-    "back-end/utils/secretKey.py:permissions, secrets" back-end/utils/security_headers.py:permissions \
-    back-end/utils/session_storage.py:permissions back-end/utils/tokens.py:permissions \
-    front-end/e2e/auth.spec.ts back-end/tests/conftest.py front-end/package.json AGENTS.md \
-    front-end/src/views/LoginView.vue back-end/tests/test_guards.py front-end/guards.py back-end/api/guards.py \
-    bin/team-merge settings/worker.json
-}
-
-@test "a rename's old path on a project's own line is named, as the new one would be" {
-  plan_word
-  as_project conventioner
-  files 'back-end/guards.py=>back-end/access.py'
-  preapproved 1562661774950400000 plan-T14 '["back-end/"]'
-  refused "back-end/guards.py, renamed to back-end/access.py, is a guarded path (permissions): a change there comes back to Daniel" \
-    "$(ask_per_head)"
-  assert_equal "$(grep -c 'is a guarded path' <<<"$stderr")" 1
-}
-
-@test "another project's auth code by Conventioner's names matches nothing, so its PR merges on the plan-time word" {
-  plan_word
-  files back-end/guards.py back-end/utils/tokens.py src/tooling.py
-  preapproved 1562661774950400000 plan-T14 '["back-end/", "src/"]'
-  as_project agent-company
-  run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(merged_events | jq -r '[.project, .approval] | join(" ")')" "agent-company plan"
-}
-
-@test "an agent-team PR names its critical list as guardrails, and its other code, docs and tests match nothing" {
-  # By repo: proj's repo is the origin of the code checkout team-merge runs from.
-  plan_word
-  code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
-  local path guardrails=() plain=(bin/team-time sops/docker.md tests/team-time.bats bin/lib/time.jq bin/team-state
-    bin/lib/capacity.jq README.md src/bin/team-merge.md roles.md)
-  for path in bin/team-merge bin/team-checks bin/team-heavy bin/team-review-status bin/team-ask bin/team-run-approved \
-    bin/team-worker bin/team-lease bin/claude-coordinator bin/lib/guarded bin/lib/ledger-contract.json bin/lib/data-check \
-    bin/lib/records bin/lib/code bin/lib/command_text.py bin/lib/outbound.py bin/hooks/git/pre-push \
-    bin/hooks/records-git/pre-commit bin/hooks/lease-fence settings/worker.json settings/reviewer.json coordinator.settings.json \
-    bin/lib/team.sh bin/lib/platform.sh bin/lib/ledger.jq bin/lib/messages.jq bin/lib/review-app bin/team-next \
-    bin/team-catch-up bin/team-review-check roles/reviewer.md roles/coordinator.md; do
-    guardrails+=("$path:guardrails")
-  done
-  guarded_case "${guardrails[@]}" "${plain[@]}" .github/workflows/ci.yml:ci
-  assert_contains "$stderr" "proj is the team's own project, whose PRs merge only on Daniel's word per head"
-}
-
-@test "agent-team's critical paths in another project match nothing, so its PR merges on the plan-time word" {
-  plan_word
-  files bin/team-merge bin/lib/team.sh roles/reviewer.md settings/worker.json bin/lib/guarded
-  preapproved 1562661774950400000 plan-T14 '["bin/", "roles/", "settings/"]'
-  run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" plan
-}
-
-@test "a latest review of the head that logged no guarded areas, or named some, is refused, naming them" {
-  plan_word
-  event T14 review "{verdict: \"pass\", head: \"$head\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}}"
-  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, logged no guarded areas, so no reviewer has said the change touches none" \
-    "$(ask_per_head)"
-  event T14 review "{verdict: \"pass\", head: \"${head:0:7}\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: [\"deploy\", \"secrets\"]}"
-  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: deploy, secrets" \
-    "$(ask_per_head)"
-  passed
+@test "a per-head word that holds merges on its head and never reads the default word" {
+  both_words
+  # The plan changed and a guarded path changed: the default word would not hold.
+  echo "# T14 spec, edited" >"$BATS_TEST_TMPDIR/wt/.scratch/task/spec.md"
+  files src/tooling.py .github/workflows/test.yml
   run_bin -0 team-merge T14
-}
-
-@test "each of the six guarded areas a review names holds the PR back; a retired one a review logged before names does not" {
-  plan_word
-  local area
-  for area in ci migrations deploy permissions secrets guardrails; do
-    event T14 review "{verdict: \"pass\", head: \"$head\",
-      findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: [\"$area\"]}"
-    refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: $area" \
-      "$(ask_per_head)"
-  done
-  # A review logged before T276 that named dependencies or settings, as team-log took then.
-  event T14 review "{verdict: \"pass\", head: \"$head\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0},
-    guarded: [\"dependencies\", \"settings\", \"migrations\"]}"
-  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: migrations" \
-    "$(ask_per_head)"
-  [[ $stderr != *dependencies* && $stderr != *settings* ]]
-  event T14 review "{verdict: \"pass\", head: \"$head\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0},
-    guarded: [\"dependencies\", \"settings\"]}"
-  run_bin -0 team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" plan
-}
-
-@test "a review of the task with a security or real-data finding, even fixed later, or with no finding counts, is refused, naming its head and time" {
-  plan_word
-  ledger_line '{ts: "2026-10-21T10:00:00Z", task: "T14", event: "review", verdict: "findings", head: "0fedcba98",
-    findings: {blocking: 1, correctness: 0, security: 1, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
-  ledger_line '{ts: "2026-10-21T11:00:00Z", task: "T14", event: "review", verdict: "findings", head: "1234567ab",
-    findings: {blocking: 0, correctness: 0, security: 2, "real-data": 3, "note-change": 1, "note-before": 0}, guarded: []}'
-  ledger_line '{ts: "2026-10-21T12:00:00Z", task: "T14", event: "review", verdict: "findings", head: "7654321cd"}'
-  ledger_line '{ts: "2026-10-21T13:00:00Z", task: "T15", event: "review", verdict: "findings", head: "abcdef012"}'
-  passed
-  refused "the review of the head 0fedcba, at 2026-10-21T10:00:00Z, counted 1 security finding: such a finding on the task, even fixed, comes back to Daniel" \
-    "the review of the head 1234567, at 2026-10-21T11:00:00Z, counted 2 security findings and 3 real-data findings: such a finding on the task, even fixed, comes back to Daniel" \
-    "the review of the head 7654321, at 2026-10-21T12:00:00Z, logged no finding counts, so whether it found a security or real-data issue is not known" \
-    "$(ask_per_head)"
-  [[ $stderr != *abcdef0* ]]
-}
-
-@test "a changed path with a line break, which grep would read as two, is refused" {
-  plan_word
-  jq -n '[{filename: "src/a.py\n.github/workflows/test.yml", status: "added"}]' >"$gh_dir/files.json"
-  pr_field '.changedFiles = 1'
-  refused '"src/a.py\n.github/workflows/test.yml" holds a line break, so no guarded pattern can be matched against it' \
-    "$(ask_per_head)"
-}
-
-@test "a plan-time merge posts to the task's thread and #coordinator once merged is logged, before the inbox refresh" {
-  plan_word
-  run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(jq -r .merge <<<"$output")" "$MERGE_SHA"
-  assert_equal "$(posts)" "1563 $(merge_post 1563 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')
-1562486564871995482 $(merge_post 1563 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')"
-  assert_equal "$(jq -r .merged "$discord/posts" | sort -u)" 1
-  [[ $stderr != *post* ]]
-  # The guild for the link is read from #coordinator's channel, then again by team-inbox, which
-  # keeps it for waiting.md's links and posts nothing.
-  assert_equal "$(stub_calls curl | jq -r '.[-1] | capture("v10/(?<p>.*)").p' | grep -v '/messages/[0-9]*$')" \
-    "channels/1562486564871995482
-channels/1563/messages
-channels/1562486564871995482/messages
-channels/1562486564871995482"
-  assert_equal "$(inbox_calls)" "GET channels/1562486564871995482
-GET channels/1562486564871995482"
-}
-
-@test "the post's revert is the project's merge method's: git revert -m 1 for a merge, the rebased commits' range for a rebase" {
-  plan_word
-  sed -i 's/^merge_method = "squash"$/merge_method = "merge"/' "$TEAM_HOME/projects.toml"
-  run_bin -0 team-merge T14
-  assert_equal "$(jq -r .content "$discord/posts" | tail -n 1)" \
-    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, \`git revert -m 1 $MERGE_SHA\`."
-
-  merge_again
-  sed -i 's/^merge_method = "merge"$/merge_method = "rebase"/' "$TEAM_HOME/projects.toml"
-  # The PR's two commits and a merge of the base, which a rebase leaves out.
-  jq -n --arg head "$head" '[
-    {sha: "1111111111111111111111111111111111111111", commit: {message: "feat: one"}, parents: [{sha: "0123456"}]},
-    {sha: "2222222222222222222222222222222222222222", commit: {message: "Merge dev"}, parents: [{sha: "1111111"}, {sha: "3333333"}]},
-    {sha: $head, commit: {message: "test: two"}, parents: [{sha: "2222222"}]}]' >"$gh_dir/commits.json"
-  run_bin -0 team-merge T14
-  assert_equal "$(jq -r .content "$discord/posts" | tail -n 1)" \
-    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, \`git revert $MERGE_SHA~2..$MERGE_SHA\`, the 2 rebased commits."
-}
-
-@test "a plan-time merge with no thread posts to #coordinator alone, saying so" {
-  plan_word
-  jq -c 'select(.event != "thread")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  approved_by 757 1562486564871995482
-  run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(posts)" "1562486564871995482 $(merge_post 1562486564871995482 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')"
-  assert_contains "$stderr" "team-merge: T14 has no Discord thread, so Daniel hears of the merge in #coordinator alone"
-}
-
-@test "a plan-time merge's post links Daniel's message with the guild the inbox kept, and names it when no guild is known" {
-  plan_word
-  inbox_kept
-  run_bin -0 team-merge T14
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
-  assert_equal "$(jq -r .content "$discord/posts" | head -n 1)" "$(merge_post 1563 x | head -n 1)"
-
-  # A guild Discord does not name leaves the message named, not linked, saying why.
-  merge_again
-  rm "$HOME/.local/state/agent-team/inbox.json"
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
-  run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(jq -r .content "$discord/posts" | head -n 1)" \
-    "T14 The tooling: merged https://github.com/owner/proj/pull/5 on your plan-time word, Discord message 1562661774950400000 in the task's thread 1563, from daniel (757)"
-  assert_contains "$stderr" "team-merge: the posts name Daniel's message without a link: Discord named no guild for #coordinator: curl: (22) The requested URL returned error: 500"
-}
-
-@test "a post that fails leaves the merge logged and the exit 0, and prints which post failed and its text" {
-  plan_word
-  echo 1563 >"$discord/refuse"
-  run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" plan
-  assert_equal "$(jq -r .channel "$discord/posts")" 1562486564871995482
-  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to the task's thread 1563 failed (team-post: Discord refused the post: curl: (22) The requested URL returned error: 500; nothing was posted); post this text with team-post T14 --file <its file>:
-$(merge_post 1563 "\`git revert $MERGE_SHA\`")"
-  [[ $stderr != *"post to #coordinator"* ]]
-}
-
-@test "a fenced machine's posts fail, each said with its text, and the merge stands" {
-  plan_word
-  mkdir -p "$HOME/.local/state/agent-team"
-  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
-  run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(merged_events | jq -r .approval)" plan
+  assert_equal "$(merged_events | jq -r '[.approval, .discord_message] | join(" ")')" "head 1562661774950400000"
   assert_equal "$(posts)" ""
-  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to the task's thread 1563 failed (team-post: "
-  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to #coordinator 1562486564871995482 failed (team-post: "
-  assert_contains "$stderr" "is fenced since 2026-10-22T14:00:00Z"
-  assert_contains "$stderr" "post this text with team-post --coordinator --file <its file>:
-$(merge_post 1563 "\`git revert $MERGE_SHA\`")"
+  [[ -z $(stub_calls gh | jq -c 'select(.[1] // "" | test("/files"))') ]]
+}
+
+@test "a per-head word that holds is refused for a red check alone, with no default reason and no ask line" {
+  both_words
+  checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
+    {"name": "lint", "bucket": "pass", "state": "SUCCESS"}, {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'
+  refused "required check test has not passed on the head" "checks failing on the head: test"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+  [[ $stderr != *"(Daniel's"* ]]
+}
+
+@test "when neither word holds, both words' reasons are named once, the ask line last" {
+  moved_head own
+  both_words 1562661774950400000 "$approved"
+  files src/tooling.py .github/workflows/test.yml
+  checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
+    {"name": "lint", "bucket": "pass", "state": "SUCCESS"}, {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'
+  refused "the head moved past Daniel's word with ${own:0:7}: ask again" \
+    ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" \
+    "checks failing on the head: test" "$(ask_per_head)"
+  local reason
+  for reason in "the head moved past Daniel's word with ${own:0:7}: ask again" \
+    ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" \
+    "checks failing on the head: test" "$(ask_per_head)"; do
+    assert_equal "$(grep -cFx "  $reason" <<<"$stderr")" 1
+  done
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_per_head)"
+}
+
+@test "a per-head word sent before the pr event falls to the default word, both words' reasons named when it does not hold" {
+  both_words 1562631575961600000
+  review "$head" findings
+  refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the pr event of https://github.com/owner/proj/pull/5 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR" \
+    "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" "$(ask_per_head)"
+  [[ $stderr != *"no merge-approved"* ]]
 }
 
 @test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {

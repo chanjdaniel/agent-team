@@ -1078,6 +1078,58 @@ def unattended_review_reasons($head):
          | "\($review)counted \(join(" and ")): such a finding on the task, even fixed, comes back to Daniel"
        end);
 
+# The words PR $url of $project at the head $head may merge on, from the task's events (as an
+# array) alone, every reader's one derivation of them: {words, word}, words the per-head word and
+# then the default word, in the order team-merge tries them, each {word: "head" or "default",
+# applies, holds, reasons, facts}, and word the first that holds on the ledger, or null. $own says
+# $project is the team's own (own_project); $withdrawals is the ledger's merge-default-withdrawn
+# and merge-default-restored events, every task's, which no rule reads yet.
+# The per-head word applies when a merge-approved names $url (the latest counts, a trailing slash
+# aside); its one reason is that none does, or that no pr event of $url, nor a review since,
+# logged the head it names; facts: approval (the event, with i its index), head (the head it
+# names, or null for a legacy one) and logged ({ts, event} of the event its message is timed
+# against: head_logged's, or a legacy one's latest pr event of $url, or null).
+# The default word, the approved plan, applies while plan_approval is approved; its reasons: no
+# approval, or one withdrawn; on the team's own project, the one reason that it merges unattended
+# only behind the reviewer App's check, which is not set up; else the task's logged no branch for
+# $project, and unattended_review_reasons($head). Its facts: the approval's by, ts, legacy, plan
+# and scope, branch (task_branch), and for Daniel's approval its ask, discord_message and asked
+# (the latest asked of that id before the approval, or null).
+# A word holds on the ledger when it applies with no reason; team-merge checks what the ledger
+# cannot show (Discord, git, the plan's files and GitHub's) before it merges on one.
+def merge_authority($url; $head; $project; $own; $withdrawals):
+  . as $events
+  | (first(.[] | .task | strings) // "the task") as $task
+  | ([to_entries[] | .value + {i: .key}
+      | select(.event == "merge-approved" and (.url | strings | rtrimstr("/")) == $url)] | last) as $approval
+  | ($approval.head // null) as $approved
+  | (if $approval == null then null
+     elif $approved == null then [.[] | select(.event == "pr" and (.url | strings | rtrimstr("/")) == $url)] | last
+     else head_logged($url; $approved) end) as $logged
+  | {word: "head", applies: ($approval != null),
+     reasons: (if $approval == null then ["no merge-approved event for \($url): Daniel's word is not recorded"]
+               elif $logged == null then ["merge-approved names the head \(($approved // "")[:7]), which no pr event of \($url), nor a review since, logged: ask again on the PR's head"]
+               else [] end),
+     facts: {approval: $approval, head: $approved, logged: (if $logged == null then null else $logged | {ts, event} end)}} as $per_head
+  | plan_approval as $plan
+  | ([to_entries[] | select(.value.event == "plan-approved")] | last | .key) as $at
+  | {word: "default", applies: ($plan.state == "approved"),
+     reasons: (if $plan == null then ["\($task) has no approved plan: no plan-approved is logged"]
+               elif $plan.state == "withdrawn" then
+                 ["\($task)'s plan approval was withdrawn at \($plan.ts) in Discord message \($plan.discord_message): approve the plan again"]
+               elif $own then ["the team's own project merges unattended only behind the reviewer App's check, which is not set up"]
+               else [(task_branch($project) | select(. == null)
+                       | "\($task) logged no branch for \($project): no opened, worktree-added or branch-renamed event of it"),
+                     unattended_review_reasons($head)] end),
+     facts: (if $plan.state != "approved" then null
+             else {by: $plan.by, ts: $plan.ts, legacy: $plan.legacy, plan: $plan.plan, scope: $plan.scope,
+                   branch: task_branch($project)}
+               + if $plan.by == "Daniel" then
+                   {ask: $plan.ask, discord_message: $plan.discord_message, asked: ($events[:$at] | latest_asked($plan.ask))}
+                 else {} end end)} as $default
+  | [$per_head, $default] | map(.holds = (.applies and .reasons == []))
+  | {words: ., word: (first(.[] | select(.holds) | .word) // null)};
+
 # Whether the task's events hold an answered of ask $id read from Discord message $message.
 def answered_from($id; $message):
   any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);

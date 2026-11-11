@@ -277,6 +277,58 @@ approval_of() {
     | approval_of | jq -c '[.[0].state, .[1]]')" '["withdrawn","in-review"]'
 }
 
+# merge_authority over the events read from stdin, as approval_of reads them, for PR 5 of proj at
+# the head a1b2c3d4e5, the project the team's own when <own> is true, a string printed raw:
+# authority_of [<own>] [<filter>]
+authority_of() {
+  jq -L "$REPO_ROOT/bin/lib" -src --argjson own "${1:-false}" 'include "ledger";
+    [{event: "opened", path: "feature", project: "proj", branch: "feat/T1-x", worktree: "/w/1"},
+     {event: "pr", url: "https://github.com/o/p/pull/5", head: "a1b2c3d4"}] + . | to_entries
+    | map(.key as $n | {ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1"} + .value)
+    | merge_authority("https://github.com/o/p/pull/5"; "a1b2c3d4e5"; "proj"; $own; [])
+    | '"${2:-.}"
+}
+
+@test "merge_authority gives the per-head word and then the default word, each with its ledger reasons and facts, and the first that holds" {
+  local pass='{"event": "review", "verdict": "pass", "head": "a1b2c3d4", "findings": {"security": 0, "real-data": 0}, "guarded": []}'
+  local coordinator='{"event": "plan-approved", "by": "coordinator", "plan": {"tasks/T1/plan.md": "cd34"}, "scope": ["src/"]}'
+  local asked='{"event": "asked", "id": "plan"}'
+  local daniel='{"event": "plan-approved", "by": "Daniel", "ask": "plan", "discord_message": "1563", "plan": {"tasks/T1/plan.md": "ab12"}}'
+  local approved='{"event": "merge-approved", "url": "https://github.com/o/p/pull/5/", "discord_message": "1566", "head": "a1b2c3d4"}'
+  local words='[.words[] | [.word, .applies, .holds, .reasons]], .word'
+  # Nothing recorded: neither word applies, each saying why.
+  assert_equal "$(authority_of false "$words" </dev/null)" \
+    '[["head",false,false,["no merge-approved event for https://github.com/o/p/pull/5: Daniel'"'"'s word is not recorded"]],["default",false,false,["T1 has no approved plan: no plan-approved is logged"]]]
+null'
+  # The coordinator's approval and a passing review: the default word holds, its facts what team-merge checks.
+  assert_equal "$(printf '%s\n' "$coordinator" "$pass" | authority_of false '.word, .words[1].facts')" \
+    'default
+{"by":"coordinator","ts":"2026-11-01T00:02:00Z","legacy":false,"plan":{"tasks/T1/plan.md":"cd34"},"scope":["src/"],"branch":"feat/T1-x"}'
+  # Daniel's approval names the ask it answers, as logged before it.
+  assert_equal "$(printf '%s\n' "$asked" "$daniel" "$pass" | authority_of false '.words[1].facts | [.by, .ask, .discord_message, .asked.ts]')" \
+    '["Daniel","plan","1563","2026-11-01T00:02:00Z"]'
+  # A per-head word on the URL, a trailing slash aside, is tried first and holds on the ledger with
+  # the event its message is timed against; the default word still says its own.
+  assert_equal "$(printf '%s\n' "$coordinator" "$approved" | authority_of false '.word, (.words[] | [.word, .holds]), .words[0].facts.logged')" \
+    'head
+["head",true]
+["default",false]
+{"ts":"2026-11-01T00:01:00Z","event":"pr"}'
+  # A per-head word naming a head nothing logged does not hold, and the default word is next.
+  assert_equal "$(printf '%s\n' "$coordinator" "$pass" "${approved/a1b2c3d4/0fedcba9}" | authority_of false '.word, .words[0].reasons[]')" \
+    "default
+merge-approved names the head 0fedcba, which no pr event of https://github.com/o/p/pull/5, nor a review since, logged: ask again on the PR's head"
+  # A withdrawn approval, and the reviews and branch while one stands.
+  assert_equal "$(printf '%s\n' "$coordinator" '{"event": "plan-approval-withdrawn", "discord_message": "1564"}' | authority_of false '.words[1] | [.applies, .reasons, .facts]')" \
+    '[false,["T1'"'"'s plan approval was withdrawn at 2026-11-01T00:03:00Z in Discord message 1564: approve the plan again"],null]'
+  assert_equal "$(printf '%s\n' "$coordinator" | authority_of false '.words[1].reasons[]')" \
+    "no review of the head a1b2c3d is logged, so no reviewer has passed it"
+  # The team's own project: the one reason, whoever approved.
+  assert_equal "$(printf '%s\n' "$asked" "$daniel" "$pass" | authority_of true '.word, .words[1].reasons')" \
+    'null
+["the team'"'"'s own project merges unattended only behind the reviewer App'"'"'s check, which is not set up"]'
+}
+
 @test "a standing merge word and its withdrawal meet the contract, each naming a project, a message and its channel" {
   opened_task T7
   local at='"ts":"2026-11-01T02:00:00Z","task":"T7"' said='"discord_message":"1566","discord_channel":"1562"'

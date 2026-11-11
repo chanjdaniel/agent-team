@@ -54,9 +54,9 @@
     "merged": {
       "writer": "team-merge",
       "push": true,
-      "about": "approval: the word it merged on, head (a merge-approved of the PR at its head), plan (a merge-preapproved of its project not withdrawn) or standing (Daniel's merge-standing on its project or on all); by, discord_message and discord_channel name Daniel's Discord message whichever it is; phases_left: the phases of the task with a ticket not done when the PR merged, from team-tickets, [] when every ticket was done, absent for a task with no tickets or whose tickets could not be read; a non-empty list makes the task a merged part (bin/lib/lifecycle.json), whose next phase is still to build",
+      "about": "approval: the word it merged on, head (a merge-approved of the PR at its head) or default (the task's approved plan), and for history plan (a merge-preapproved of its project, retired) or standing (Daniel's merge-standing, retired); by, discord_message and discord_channel name Daniel's Discord message, or on a plan the coordinator approved, by says so with the approval's time and the two are left out; phases_left: the phases of the task with a ticket not done when the PR merged, from team-tickets, [] when every ticket was done, absent for a task with no tickets or whose tickets could not be read; a non-empty list makes the task a merged part (bin/lib/lifecycle.json), whose next phase is still to build",
       "required": {"pr": "number", "merge": "string", "head": "string", "by": "string"},
-      "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "plan", "standing"], "phases_left": "numbers"}
+      "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "default", "plan", "standing"], "phases_left": "numbers"}
     },
     "history-rewritten": {
       "writer": "team-clean-messages",
