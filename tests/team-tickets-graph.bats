@@ -1,10 +1,14 @@
 #!/usr/bin/env bats
 # shellcheck disable=SC2154 # wt and tickets are helpers/tickets.bash's
+# shellcheck disable=SC2153 # TEAM_HOME is the sandbox's (helpers/common.bash)
 # team-tickets --html: a task's tickets drawn as one self-contained HTML page of their dependency
 # graph (bin/lib/ticket_graph.py), read as a user would read it: the page's SVG, its header's text,
 # each box's text, colour and border, each edge's path, and tests/helpers/graph-check.py, which
 # names each edge segment that crosses a box. The wide case is T257's 14 tickets as planned
 # (tests/fixtures/tickets-T257/).
+# team-tickets --graph: that page and its PNG in the task directory, with a stub Chrome (the
+# arguments it was run with, the PNG it wrote or the way it failed) and, when this machine has
+# one, a real Chrome, whose PNG tests/helpers/png-bounds.py reads.
 
 load helpers/common
 load helpers/tickets
@@ -371,9 +375,201 @@ No tickets in T172&#x27;s open worktrees."
   [[ ! -e $page ]]
 }
 
-@test "--help documents --html, and no longer says it never writes" {
+@test "--help documents --html and --graph, and no longer says it never writes" {
   run_bin -0 team-tickets --help
-  assert_contains "$output" "Usage: team-tickets T<n> [--check] [--json] [--html <file>]"
+  assert_contains "$output" "Usage: team-tickets T<n> [--check] [--json] [--html <file> | --graph]"
   assert_contains "$output" "--html <file> writes the tickets as one self-contained HTML page"
+  assert_contains "$output" "--graph writes that page as tickets.html and a PNG of it as tickets.png"
+  assert_contains "$output" "The PNG is headless Chrome's screenshot of the page"
   [[ $output != *"never writes"* ]]
+}
+
+# The stub Chrome --graph runs through TEAM_CHROME, which notes the profile directory it was given
+# when that existed and writes a PNG's signature as its screenshot.
+stub_chrome() {
+  stub_command chrome
+  export TEAM_CHROME=$BATS_TEST_TMPDIR/stubs/chrome
+  stub_script chrome <<'SH'
+for arg; do
+  case $arg in
+    --user-data-dir=*) [[ ! -d ${arg#*=} ]] || echo "${arg#*=}" >>"$STUB_CALLS/chrome.profiles" ;;
+    --screenshot=*) printf '\x89PNG\r\n\x1a\n' >"${arg#*=}" ;;
+  esac
+done
+SH
+}
+
+# chrome_arg <name>: the value of the stub Chrome's last call's --<name>=<value>.
+chrome_arg() {
+  tail -n 1 "$STUB_CALLS/chrome.log" | jq -r --arg name "--$1=" '.[] | select(startswith($name)) | .[($name | length):]'
+}
+
+# svg_size: the page's SVG width and height, as "<width>,<height>".
+svg_size() {
+  grep -o '<svg [^>]*' "$1" | sed -E 's/.* width="([0-9]+)" height="([0-9]+)".*/\1,\2/'
+}
+
+@test "--graph writes the page and Chrome's PNG of it in the task directory and prints their paths" {
+  ticket 01-one "Blocked by: None"
+  ticket 02-two "Blocked by: 01"
+  stub_chrome
+  local dir=$wt/.scratch/task
+  run_bin -0 --separate-stderr team-tickets T172 --graph
+  assert_equal "$output" "$dir/tickets.png
+$dir/tickets.html"
+  assert_equal "$stderr" ""
+  assert_contains "$(cat "$dir/tickets.html")" "<!doctype html>"
+  assert_equal "$(head -c 8 "$dir/tickets.png" | od -An -tx1 | tr -d ' \n')" "89504e470d0a1a0a"
+  # The window is the page's exact size, at twice its scale, and the page is a file URL.
+  assert_equal "$(chrome_arg window-size)" "$(svg_size "$dir/tickets.html")"
+  assert_equal "$(chrome_arg force-device-scale-factor)" 2
+  assert_equal "$(tail -n 1 "$STUB_CALLS/chrome.log" | jq -r 'last')" "file://$dir/tickets.html"
+  assert_equal "$(tail -n 1 "$STUB_CALLS/chrome.log" | jq -r '[.[] | select(test("^--(user-data-dir|window-size|screenshot)=") | not)] | .[:-1] | join(" ")')" \
+    "--headless=new --disable-gpu --hide-scrollbars --no-first-run --no-default-browser-check --disable-extensions --disable-background-networking --disable-component-update --disable-sync --mute-audio --force-device-scale-factor=2"
+  # The screenshot was taken beside tickets.png, and the fresh profile is gone.
+  [[ $(chrome_arg screenshot) == "$dir/."*.png ]]
+  assert_equal "$(cat "$STUB_CALLS/chrome.profiles")" "$(chrome_arg user-data-dir)"
+  [[ ! -e $(chrome_arg user-data-dir) ]]
+  assert_equal "$(ls -A "$dir")" "tickets
+tickets.html
+tickets.png"
+}
+
+# chrome_fixture <name>: the stub <name> writes a PNG's signature as its screenshot.
+chrome_fixture() {
+  printf '%s\n' 'for arg; do [[ $arg != --screenshot=* ]] || printf "\x89PNG\r\n\x1a\n" >"${arg#*=}"; done' \
+    >"$STUB_FIXTURES/$1.sh"
+}
+
+@test "--graph runs a .app directory TEAM_CHROME names as the executable inside it" {
+  ticket 01-one "Blocked by: None"
+  local app="$BATS_TEST_TMPDIR/Fake Chrome.app"
+  mkdir -p "$app/Contents/MacOS"
+  ln -f "$(shared stub)" "$app/Contents/MacOS/Fake Chrome"
+  chrome_fixture "Fake Chrome"
+  TEAM_CHROME=$app/ run_bin -0 team-tickets T172 --graph
+  [[ -s "$STUB_CALLS/Fake Chrome.log" ]]
+}
+
+@test "without TEAM_CHROME, --graph on Linux runs the first of Chrome's commands on PATH" {
+  [[ $(uname -s) == Linux ]] || skip "Linux's lookup, and this machine is $(uname -s)"
+  ticket 01-one "Blocked by: None"
+  stub_command chromium google-chrome-stable
+  chrome_fixture chromium
+  chrome_fixture google-chrome-stable
+  run_bin -0 team-tickets T172 --graph
+  [[ -s $STUB_CALLS/google-chrome-stable.log && ! -e $STUB_CALLS/chromium.log ]]
+}
+
+@test "without TEAM_CHROME, --graph on macOS looks for Google Chrome's app in /Applications" {
+  [[ ! -e "/Applications/Google Chrome.app" ]] || skip "this machine has Google Chrome in /Applications"
+  ticket 01-one "Blocked by: None"
+  as_macos
+  stub_command google-chrome-stable
+  chrome_fixture google-chrome-stable
+  run_bin -1 --separate-stderr team-tickets T172 --graph
+  assert_equal "$stderr" "team-tickets: no PNG of T172's graph: no Chrome found; set TEAM_CHROME or install Google Chrome"
+  [[ ! -e $STUB_CALLS/google-chrome-stable.log ]]
+}
+
+@test "with no Chrome, or Chrome failing, timing out or writing no PNG, the page stays, the old PNG goes, and stderr says why" {
+  ticket 01-one "Blocked by: None"
+  stub_chrome
+  local dir=$wt/.scratch/task reason
+  while IFS='|' read -r fixture reason; do
+    echo old >"$dir/tickets.png"
+    rm -f "$dir/tickets.html"
+    case $fixture in
+      missing) export TEAM_CHROME=$BATS_TEST_TMPDIR/no-chrome ;;
+      *) export TEAM_CHROME=$BATS_TEST_TMPDIR/stubs/chrome
+         printf '%s\n' "$fixture" >"$STUB_FIXTURES/chrome.sh" ;;
+    esac
+    run_bin -1 --separate-stderr team-tickets T172 --graph
+    assert_equal "$output" "$dir/tickets.html"
+    assert_equal "$stderr" "team-tickets: no PNG of T172's graph: $reason"
+    assert_contains "$(cat "$dir/tickets.html")" "<!doctype html>"
+    assert_equal "$(ls -A "$dir")" "tickets
+tickets.html"
+  done <<'CASES'
+missing|no Chrome found; set TEAM_CHROME or install Google Chrome
+printf 'starting\n[ERROR] no display\n\n' >&2; exit 3|Chrome exited 3: [ERROR] no display
+exit 9|Chrome exited 9
+exit 124|Chrome timed out after 60 s
+for a; do if [[ $a == --screenshot=* ]]; then echo text >"${a#*=}"; fi; done; echo done >&2|Chrome exited 0 and wrote no PNG: done
+CASES
+}
+
+@test "--graph refuses a task with no tickets, writing nothing" {
+  rm -r "$tickets"
+  stub_chrome
+  run_bin -1 --separate-stderr team-tickets T172 --graph
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-tickets: T172 has no tickets, so it has no graph"
+  assert_equal "$(ls -A "$wt/.scratch/task")" ""
+  [[ ! -e $STUB_CALLS/chrome.log ]]
+}
+
+@test "--graph draws nothing for a set the listing refuses, and goes with no other mode" {
+  ticket 01-one "Blocked by: 02"
+  ticket 02-two "Blocked by: 01"
+  stub_chrome
+  run_bin -1 --separate-stderr team-tickets T172 --check
+  local reasons=$stderr
+  run_bin -1 --separate-stderr team-tickets T172 --graph
+  assert_equal "$stderr" "$reasons"
+  assert_equal "$(ls -A "$wt/.scratch/task")" "tickets"
+  run_bin -2 team-tickets T172 --graph --check
+  run_bin -2 team-tickets T172 --json --graph
+  run_bin -2 team-tickets T172 --graph --html "$page"
+  run_bin -2 team-tickets T172 --html "$page" --graph
+  run_bin -2 team-tickets T172 --graph --graph
+  [[ ! -e $STUB_CALLS/chrome.log && ! -e $page ]]
+}
+
+@test "the task's archive mirrors the graph's page and leaves its PNG out as an image" {
+  ticket 01-one "Blocked by: None"
+  stub_chrome
+  run_bin -0 team-tickets T172 --graph
+  run bash -c 'source "$1/bin/lib/team.sh"; archive_task_dir "$2" proj tasks/T172/scratch' archive "$REPO_ROOT" "$wt/.scratch/task"
+  assert_equal "$status" 0
+  assert_equal "$output" "left out of tasks/T172/scratch: tickets.png (image)"
+  cmp "$wt/.scratch/task/tickets.html" "$TEAM_HOME/tasks/T172/scratch/tickets.html"
+  [[ ! -e $TEAM_HOME/tasks/T172/scratch/tickets.png ]]
+}
+
+# real_chrome: the Chrome --graph finds on this machine with no TEAM_CHROME, or nothing.
+real_chrome() {
+  if [[ $(uname -s) == Darwin ]]; then
+    [[ ! -e "/Applications/Google Chrome.app" ]] || echo "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  else
+    command -v google-chrome-stable google-chrome chromium chromium-browser | head -n 1 || true
+  fi
+}
+
+@test "with a real Chrome, T257's PNG is twice the page's size, its drawing whole within a white margin" {
+  local chrome
+  chrome=$(real_chrome)
+  [[ -n $chrome ]] || skip "no Chrome on this machine"
+  unset TEAM_CHROME
+  cp "$REPO_ROOT"/tests/fixtures/tickets-T257/*.md "$tickets/"
+  local dir=$wt/.scratch/task
+  run_bin --separate-stderr team-tickets T172 --graph
+  if ((status != 0)); then
+    # Chrome may have no usable sandbox (CI's Ubuntu refuses unprivileged namespaces); its whole
+    # stderr says so where --graph's one line may not.
+    local probe
+    probe=$(timeout 60 "$chrome" --headless=new --disable-gpu --user-data-dir="$BATS_TEST_TMPDIR/probe" \
+      --screenshot="$BATS_TEST_TMPDIR/probe.png" about:blank 2>&1 </dev/null) || true
+    [[ ${probe,,} != *sandbox* ]] || skip "Chrome has no usable sandbox here: $stderr"
+  fi
+  assert_equal "$status" 0
+  local size
+  size=$(svg_size "$dir/tickets.html")
+  run python3 -I "$REPO_ROOT/tests/helpers/png-bounds.py" "$dir/tickets.png"
+  assert_equal "$status" 0
+  local width height left top right bottom
+  read -r width height left top right bottom <<<"$output"
+  assert_equal "$width,$height" "$((2 * ${size%,*})),$((2 * ${size#*,}))"
+  # The drawing starts and ends inside the 24-pixel margin's 48 device pixels on every side.
+  ((left >= 16 && top >= 16 && right <= width - 17 && bottom <= height - 17))
 }

@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
-# discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, OPS_REQUEST_MAX_AGE, and
 # LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
@@ -1841,6 +1841,15 @@ session_context() {
 # page tells the tickets it shows from the tickets as they stand: tickets_digest <list
 tickets_digest() {
   jq -cS . | sha256sum | cut -c1-64
+}
+
+# Print the task directory of the first ticket of the ticket list on stdin, as team-tickets --json
+# prints it: the directory above that ticket file's tickets/, where team-tickets --graph writes the
+# graph's page and PNG; nothing for an empty list: ticket_graph_dir <list
+ticket_graph_dir() {
+  local file
+  file=$(jq -r '.[0].file // empty')
+  [[ -z $file ]] || printf '%s\n' "${file%/tickets/*}"
 }
 
 # A task's state, as team-state --json prints it but compact, from its events (one JSON array in

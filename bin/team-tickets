@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # List a task's tickets with each one's state, or check their Blocked by:, Waits for: and Phase: lines.
 #
-# Usage: team-tickets T<n> [--check] [--json] [--html <file>]
+# Usage: team-tickets T<n> [--check] [--json] [--html <file> | --graph]
 # The tickets are the files tickets/NN-<slug>.md in the task directory (the project's task_dir) of
 # each open worktree of the task, one set whose numbers are the task's: NN is the ticket's
 # two-digit number, which no two files share.
@@ -43,13 +43,23 @@
 # (tickets_digest). It writes through a temporary file in <file>'s directory, renamed over
 # <file>, prints nothing, refuses a directory that does not exist, and writes nothing for a set
 # the listing refuses; a task with no tickets gets a page saying so.
-# Nothing else is written.
+# --graph writes that page as tickets.html and a PNG of it as tickets.png in the task directory of
+# the task's first ticket listed (ticket_graph_dir), which git ignores and whose archive leaves
+# images out, and prints the PNG's path, then the page's; a task with no tickets is refused.
+# The PNG is headless Chrome's screenshot of the page, its window the page's exact size at twice
+# its scale, so it holds every level: Chrome is the file TEAM_CHROME names (a .app directory run as
+# <app>/Contents/MacOS/<its name less .app>), else Google Chrome's app on macOS, else the first of
+# google-chrome-stable, google-chrome, chromium and chromium-browser on PATH, run under a 60-second
+# timeout with a fresh profile directory, removed after. With no Chrome, or Chrome failing, timing
+# out or writing no PNG, the page is still written and its path printed, any old tickets.png is
+# removed, stderr says why there is no PNG, and the exit is 1.
+# --html and --graph go with no other mode. Nothing else is written.
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-tickets T<n> [--check] [--json] [--html <file>]"
-task='' check='' json='' html='' html_set=''
+usage="usage: team-tickets T<n> [--check] [--json] [--html <file> | --graph]"
+task='' check='' json='' html='' html_set='' graph=''
 while (($#)); do
   case $1 in
     --check) check=1 ;;
@@ -58,6 +68,7 @@ while (($#)); do
       [[ -z $html_set && $# -ge 2 && -n $2 ]] || usage_error "$usage"
       html=$2 html_set=1
       shift ;;
+    --graph) [[ -z $graph ]] || usage_error "$usage"; graph=1 ;;
     T[0-9]*) [[ -z $task && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"; task=$1 ;;
     *) usage_error "$usage" ;;
   esac
@@ -65,7 +76,8 @@ while (($#)); do
 done
 [[ -n $task ]] || usage_error "$usage"
 [[ -z $check || -z $json ]] || usage_error "--check and --json do not go together; $usage"
-[[ -z $html_set || -z $check$json ]] || usage_error "--html goes with no other mode; $usage"
+[[ -z $html_set || -z $check$json$graph ]] || usage_error "--html goes with no other mode; $usage"
+[[ -z $graph || -z $check$json ]] || usage_error "--graph goes with no other mode; $usage"
 if [[ -n $html_set ]]; then
   html_dir=$(dirname -- "$html")
   [[ -d $html_dir ]] || die "$html_dir is not a directory, so $html cannot be written"
@@ -217,7 +229,7 @@ JQ
 # One jq run: the analysis, then a first line of its problem and ticket counts, then each problem,
 # then the tickets as --json prints them or as text lines.
 mode=text
-[[ -z $json$html_set ]] || mode=json
+[[ -z $json$html_set$graph ]] || mode=json
 out=$(jq -r --arg task "$task" --arg files_tsv "$files_tsv" --arg marks_tsv "$marks_tsv" --arg me "${0##*/}" \
   --arg mode "$mode" '
   def rows: split("\n") | map(select(. != "") | split("\t"));
@@ -239,20 +251,88 @@ if ((problems > 0)); then
   printf '%s\n' "$rest" >&2
   exit 1
 fi
+# --graph draws nothing for a task with no tickets, so it says only that.
+((count || ! graph)) || die "$task has no tickets, so it has no graph"
 ((count)) || echo "${0##*/}: $task has no tickets in its open worktrees" >&2
 if [[ -n $check ]]; then
   ((count == 0)) || echo "$task: $count tickets, every Blocked by:, Waits for: and Phase: line well-formed"
   exit 0
 fi
-if [[ -n $html_set ]]; then
-  # The page, through a temporary file beside it, renamed over it once whole.
+
+# What the script made and removes as it ends, whatever way it ends.
+made=()
+trap 'rm -rf -- "${made[@]}"' EXIT
+
+# Write the page to <file> through a temporary file in <dir>, renamed over <file> once whole, and
+# set size to the page's "<width> <height>" in CSS pixels: write_page <file> <dir>
+write_page() {
+  local title digest tmp
   title=$(jq -r 'map(select(.event == "opened")) | last | .title // "" | tostring' <<<"$events")
   digest=$(tickets_digest <<<"$rest")
-  tmp=$(mktemp "$html_dir/.${html##*/}.XXXXXX")
-  trap 'rm -f -- "$tmp"' EXIT
-  python3 -I "$TEAM_LIB/ticket_graph.py" --task "$task" --title "$title" --as-of "$(date -u '+%Y-%m-%d %H:%M')" \
-    --digest "$digest" --out "$tmp" <<<"$rest" >/dev/null || die "could not draw $task's tickets"
-  mv -f -- "$tmp" "$html"
+  tmp=$(mktemp "$2/.${1##*/}.XXXXXX")
+  made+=("$tmp")
+  size=$(python3 -I "$TEAM_LIB/ticket_graph.py" --task "$task" --title "$title" \
+    --as-of "$(date -u '+%Y-%m-%d %H:%M')" --digest "$digest" --out "$tmp" <<<"$rest") ||
+    die "could not draw $task's tickets"
+  mv -f -- "$tmp" "$1"
+}
+
+if [[ -n $html_set ]]; then
+  write_page "$html" "$html_dir"
+  exit 0
+fi
+
+# The Chrome --graph screenshots the page with, or nothing: TEAM_CHROME, else Google Chrome's app
+# on macOS, else the first of its commands on PATH in the doctor's order; a .app directory is run as
+# the executable inside it.
+chrome_command() {
+  local chrome name
+  if [[ -n ${TEAM_CHROME:-} ]]; then
+    chrome=${TEAM_CHROME%/}
+  elif [[ ${TEAM_KERNEL:-$(uname -s)} == Darwin ]]; then
+    chrome='/Applications/Google Chrome.app'
+  else
+    chrome=$(command -v google-chrome-stable google-chrome chromium chromium-browser | head -n 1) || true
+  fi
+  if [[ $chrome == *.app && -d $chrome ]]; then
+    name=${chrome##*/}
+    chrome=$chrome/Contents/MacOS/${name%.app}
+  fi
+  [[ -z $chrome || ! -f $chrome || ! -x $chrome ]] || printf '%s\n' "$chrome"
+}
+
+if [[ -n $graph ]]; then
+  dir=$(ticket_graph_dir <<<"$rest")
+  page=$dir/tickets.html png=$dir/tickets.png
+  write_page "$page" "$dir"
+  read -r width height <<<"$size"
+  # The page stands without a PNG, and an old PNG never stands for it: no_png <reason>
+  no_png() {
+    rm -f -- "$png"
+    printf '%s\n' "$page"
+    die "no PNG of $task's graph: $1"
+  }
+  chrome=$(chrome_command)
+  [[ -n $chrome ]] || no_png "no Chrome found; set TEAM_CHROME or install Google Chrome"
+  profile=$(mktemp -d)
+  shot=$(mktemp --suffix=.png "$dir/.tickets.XXXXXX")
+  err=$(mktemp)
+  made+=("$profile" "$shot" "$err")
+  url=file://$(jq -rn --arg path "$page" '$path | split("/") | map(@uri) | join("/")')
+  status=0
+  timeout -k 5 60 "$chrome" --headless=new --disable-gpu --hide-scrollbars --no-first-run \
+    --no-default-browser-check --disable-extensions --disable-background-networking \
+    --disable-component-update --disable-sync --mute-audio --user-data-dir="$profile" \
+    --force-device-scale-factor=2 --window-size="$width,$height" --screenshot="$shot" "$url" \
+    </dev/null >/dev/null 2>"$err" || status=$?
+  # A Chrome helper still ending may hold it a moment longer; the EXIT trap removes it then.
+  rm -rf -- "$profile" 2>/dev/null || true
+  ((status != 124)) || no_png "Chrome timed out after 60 s"
+  last=$(grep -v '^[[:space:]]*$' "$err" | tail -n 1) || true
+  ((status == 0)) || no_png "Chrome exited $status${last:+: $last}"
+  [[ $(image_type "$shot") == png ]] || no_png "Chrome exited 0 and wrote no PNG${last:+: $last}"
+  mv -f -- "$shot" "$png"
+  printf '%s\n%s\n' "$png" "$page"
   exit 0
 fi
 [[ -z $rest ]] || printf '%s\n' "$rest"
