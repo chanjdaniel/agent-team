@@ -280,6 +280,20 @@ with_lifecycle_from() {
   mv -f "$table.new" "$table"
 }
 
+# opened_task T<n> [<path>]: append the task's thread and opened (project proj, path <path>,
+# default feature) to the sandbox's ledger, as team-open logs them, so a test whose events a
+# refusing writer (bin/lib/lifecycle.json's refusing_writers) appends has the open task the
+# lifecycle table takes them on; the table is never loosened to fit a fixture. Both are dated
+# 2026-01-01T00:00:00Z, before every test event, so no rule that reads the task's latest ts (a
+# park's since, a Discord message's age) reads them.
+opened_task() {
+  jq -cn --arg task "$1" --arg path "${2:-feature}" '"2026-01-01T00:00:00Z" as $ts
+    | {ts: $ts, task: $task, event: "thread", discord_thread: "1563000000000000000"},
+      {ts: $ts, task: $task, event: "opened", project: "proj", path: $path, type: "feat", title: "X",
+       branch: "feat/\($task)-x", base: "dev", base_sha: "0000000000000000000000000000000000000000",
+       worktree: "/w/\($task)"}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
 # Push a commit touching <path> to <origin>'s dev from a clone of its own, as another machine's
 # merge would; prints the new commit: push_to_dev <origin> <path>
 push_to_dev() {
