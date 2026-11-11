@@ -37,7 +37,7 @@ The default word, the unattended one, needs:
 - the plan's files hashing as the approval recorded them (`plan_files` in `bin/lib/team.sh`), each one that differs, is new or is gone named: "the plan changed since its approval at <ts> (<files>): approve it again";
 - for an approval of Daniel's, their message sent no earlier than the ask it answers, read back from Discord in the task's thread or `#coordinator`, from an author in `allowFrom`;
 - the PR from the task's own branch for the project;
-- the latest review of the head passed and logged `guarded` as an empty list, where a head `team-catch-up` made (its `caught-up` event) and no review names stands on the review of the head it was made from, once git shows it adds only clean merges of the base to it;
+- the latest review of the head passed and logged `guarded` naming none of the six areas, where a head `team-catch-up` made (its `caught-up` event) and no review names stands on the review of the head it was made from, once git shows it adds only clean merges of the base to it;
 - no review of the task counted a security or real-data finding, fixed or not, or left out its finding counts;
 - GitHub's paged list of the PR's files read in full, every changed path within the approval's `scope` when it has one, and no changed path (or a rename's old path) on the short list for the PR's project.
 
