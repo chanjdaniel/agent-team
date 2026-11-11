@@ -1274,6 +1274,18 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
   done
 }
 
+# The coordinator runs in bypass mode, and a prompting receiver (auto mode counts) holds a bypass
+# sender's message for an approval nobody gives unless crossSessionInbound accepts it: the
+# workers' own settings carry it, so no machine's user settings need to.
+@test "every role's generated settings accept the coordinator's messages" {
+  thread T7
+  local role
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(jq -r .crossSessionInbound "$TEAM_HOME/tasks/T7/settings.$role.proj.json")" accept
+  done
+}
+
 # The deny matrices (sudo and Claude sessions, Docker's prune commands, the 1Password CLI, another
 # process's environment and the git hooks setting, team-run-approved, Discord) run on the source
 # files in tests/repo.bats; here each role's generated deny list is proved to be those files', and
