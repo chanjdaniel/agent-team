@@ -357,7 +357,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF '`team-log T<n> merge-approved url=<PR url> discord_message=<id> head=<the full sha it asked on>`' "$sop"
   grep -qF 'A release to `main`: it stays Daniel'"'"'s own' "$sop"
   grep -qF '"(Daniel'"'"'s standing word does not hold: ask them for the per-head word on the head <short head> with team-ask, naming <url>)"' "$sop"
-  grep -qF '(Daniel'"'"'s ${word/plan/plan-time} word does not hold: ask them for the per-head word on $on with team-ask, naming $url)' "$REPO_ROOT/bin/team-merge"
+  grep -qF '(Daniel'"'"'s default word does not hold: ask them for the per-head word on $on with team-ask, naming $url)' "$REPO_ROOT/bin/team-merge"
   grep -qF '("Standing merge word on <projects> since <link>")' "$sop"
   grep -qF '"-# Standing merge word on \(' "$REPO_ROOT/bin/lib/ledger.jq"
   # team-state's words, as the manual and the SOP quote them.

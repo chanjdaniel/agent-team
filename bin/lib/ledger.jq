@@ -1091,10 +1091,10 @@ def unattended_review_reasons($head):
 # against: head_logged's, or a legacy one's latest pr event of $url, or null).
 # The default word, the approved plan, applies while plan_approval is approved; its reasons: no
 # approval, or one withdrawn; on the team's own project, the one reason that it merges unattended
-# only behind the reviewer App's check, which is not set up; else the task's logged no branch for
-# $project, and unattended_review_reasons($head). Its facts: the approval's by, ts, legacy, plan
-# and scope, branch (task_branch), and for Daniel's approval its ask, discord_message and asked
-# (the latest asked of that id before the approval, or null).
+# only behind the reviewer App's check, which is not set up; else that the task logged no branch
+# for $project, and unattended_review_reasons($head). Its facts, null unless it applies: the
+# approval's by, ts, legacy, plan and scope, branch (task_branch), and for Daniel's approval its
+# ask, discord_message and asked (the latest asked of that id before the approval, or null).
 # A word holds on the ledger when it applies with no reason; team-merge checks what the ledger
 # cannot show (Discord, git, the plan's files and GitHub's) before it merges on one.
 def merge_authority($url; $head; $project; $own; $withdrawals):

@@ -24,40 +24,39 @@
 #   named), is refused, to ask again; the approval's head must be one such an event logged; a
 #   legacy approval with no head holds for any head, its message sent no earlier than the PR's
 #   latest pr event; it holds the PR to the checks every merge gets below and nothing more;
-#   then, when no merge-approved names the PR or the per-head word does not hold for a reason of
-#   its own (never one of the checks every merge gets), the default word, the task's approved
-#   plan: its latest plan-approved or plan-approval-withdrawn is an approval (plan_approval; a
-#   withdrawn one is refused naming when and in which message); on the team's own project
+#   then, when no merge-approved names the PR or the per-head word does not hold for a reason of its
+#   own (never one of the checks every merge gets), the default word, the task's approved plan: its
+#   latest plan-approved or plan-approval-withdrawn is an approval (plan_approval; none is refused
+#   as no approved plan, a withdrawal naming when and in which message); on the team's own project
 #   (own_project: agent-team by name, by path or by repo) its one reason is that it merges
 #   unattended only behind the reviewer App's check, which is not set up, nothing more read; else
 #   the plan's files now (plan_files in bin/lib/team.sh: tasks/T<n>/plan.md, and spec.md and
-#   scope.txt in the task directory of its first project's worktree) hash as the approval
-#   recorded, each one that differs, is new or is gone named, to approve it again (a legacy
-#   approval, logged before T276 with no plan, has none to compare and no scope, and reads as
-#   the coordinator's); an approval of Daniel's has its discord_message sent no earlier than the
-#   latest asked of the id it answers logged before it, and read back from Discord as a
-#   merge-approved's is; the PR's head branch is the task's branch for the project (its latest
-#   opened, worktree-added or branch-renamed event's, so a branch the gate made the builder move
-#   to counts once the coordinator logs it); the latest review of the head (by the shorter
-#   prefix) has verdict pass and logged guarded as an empty list (one that left it out, or named
-#   one of the six areas, is refused, naming them; a retired area a review logged before names
-#   is not one), where a head team-catch-up made (a caught-up event names it) and no review names
-#   stands on the latest review of the head it was made from, followed back through each such
-#   event to a head with a review of its own, once git (after fetching the branch and the base
-#   into the primary checkout) shows it adds only clean merges of the base to that head, else it
-#   is refused naming the first merge that is not; no review of the task counted a security or
-#   real-data finding, fixed or not, or left out its findings, each such review named by its head
-#   and time; the PR's changed files, read from GitHub's paged list of its files (each filename,
-#   and each rename's previous filename), number the PR's changedFiles, else the list is refused
-#   as not read in full; each changed path is within the approval's scope when it has one (an
-#   entry ending in / covers every path under it, any other that path only), each one outside
-#   named; and no changed path matches a guarded pattern of bin/lib/guarded that applies to the
-#   PR's project (CI, migrations, the deploy, permissions, secrets, and on the team's own
-#   project its guardrails), as it is or with its camelCase humps split off by underscores, each
-#   one named with its areas; a per-head word that holds never reads it; a refusal on it lists
-#   the per-head word's reasons too when a merge-approved names the PR (or the task logged no
-#   plan approval either), each reason once, and ends with a line saying to ask Daniel for the
-#   per-head word on the head; and every check every merge gets:
+#   scope.txt in the task directory of its first project's worktree) hash as the approval recorded,
+#   each one that differs, is new or is gone named, to approve it again, and files that cannot be
+#   read are refused (a legacy approval, logged before T276 with no plan, has none to compare and no
+#   scope, and reads as the coordinator's); an approval of Daniel's has its discord_message sent no
+#   earlier than the latest asked of the id it answers logged before it, and read back from Discord
+#   as a merge-approved's is; the PR's head branch is the task's branch for the project (its latest
+#   opened, worktree-added or branch-renamed event's, so a branch the gate made the builder move to
+#   counts once the coordinator logs it); the latest review of the head (by the shorter prefix) has
+#   verdict pass and logged guarded as an empty list (one that left it out, or named one of the six
+#   areas, is refused, naming them; a retired area a review logged before names is not one), where a
+#   head team-catch-up made (a caught-up event names it) and no review names stands on the latest
+#   review of the head it was made from, followed back through each such event to a head with a
+#   review of its own, once git (after fetching the branch and the base into the primary checkout)
+#   shows it adds only clean merges of the base to that head, else it is refused naming the first
+#   merge that is not; no review of the task counted a security or real-data finding, fixed or not,
+#   or left out its findings, each such review named by its head and time; the PR's changed files,
+#   read from GitHub's paged list of its files (each filename, and each rename's previous filename),
+#   number the PR's changedFiles, else the list is refused as not read in full; each changed path is
+#   within the approval's scope when it has one (an entry ending in / covers every path under it,
+#   any other that path only), each one outside named; and no changed path matches a guarded pattern
+#   of bin/lib/guarded that applies to the PR's project (CI, migrations, the deploy, permissions and
+#   secrets), as it is or with its camelCase humps split off by underscores, each one named with its
+#   areas; a per-head word that holds never reads it; a refusal on it lists the per-head word's
+#   reasons too when a merge-approved names the PR (or the task logged no plan approval either),
+#   each reason once, and ends with a line saying to ask Daniel for the per-head word on the head;
+#   and every check every merge gets:
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes);
@@ -74,10 +73,10 @@
 # by (naming the Discord message and its author, or "the plan the coordinator approved at <ts>"),
 # project, branch, discord_message and discord_channel (Daniel's message, left out on a plan the
 # coordinator approved), url (the PR's), approval (head for the per-head word, default for the
-# default one), local_checks (the commands that passed on head) when
-# there were any, and phases_left, the phases of the task with a ticket not done, as team-tickets
-# T<n> --json read them just before gh pr merge ([] when every ticket is done, so the task reads
-# merged, else merged-part); a task with no tickets logs none, and a team-tickets that fails logs
+# default one), local_checks (the commands that passed on head) when there were any, and
+# phases_left, the phases of the task with a ticket not done, as team-tickets T<n> --json read
+# them just before gh pr merge ([] when every ticket is done, so the task reads merged, else
+# merged-part); a task with no tickets logs none, and a team-tickets that fails logs
 # none and says so on stderr, the merge going on. Prints {task, pr, merge, head, by}, then commits
 # the ledger and pushes it to the team home's origin at once, before any later step (ledger_push
 # in bin/lib/team.sh, which says on stderr when it is not on origin yet, the exit staying 0).

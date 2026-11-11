@@ -209,7 +209,7 @@ merged"
   append_as team-log "{$at,\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"a1b2c3d\",\"findings\":[1],\"guarded\":{}}"
   assert_contains "$output" "findings must be an object, got a list; guarded must be a list, got an object"
   append_as team-merge "{$at,\"event\":\"merged\",\"pr\":5,\"merge\":\"b2c3d4e\",\"head\":\"a1b2c3d\",\"by\":\"m\",\"approval\":\"per-head\"}"
-  assert_contains "$output" "approval must be one of head, plan"
+  assert_contains "$output" "approval must be one of head, default, plan, standing"
   assert_equal "$(after_opened | wc -l)" "4"
 }
 
