@@ -195,7 +195,7 @@ FAIL salvage T2 site"
 FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git -C ~/site-wt/2 push $team_origin HEAD:refs/heads/salvage/site/T1--02-home-pc"
 
   # Both fixes keep both heads, neither overwriting the other, and the line passes.
-  while IFS= read -r fix; do eval "$fix" >/dev/null 2>&1; done < <(grep '^FAIL salvage' <<<"$output" | sed 's/.*; fix: //')
+  while IFS= read -r fix; do eval "$fix" >/dev/null 2>&1; done < <(worktree_salvage | sed 's/.*; fix: //')
   assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1-home-pc)" "$(git -C "$task_wt" rev-parse HEAD)"
   assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1--02-home-pc)" "$(git -C "$ticket_wt" rev-parse HEAD)"
   run_bin -1 team-doctor
