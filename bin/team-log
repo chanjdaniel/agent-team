@@ -83,6 +83,9 @@
 # A plan-approved's parallel, the approved cap on each phase's tickets that build at once
 # (team-next --fill reads the latest plan-approved's), is refused unless it is one cap from 1 to
 # 3 per phase in phase order joined by commas with no spaces (parallel=2, parallel=2,1).
+# A gate-run whose cause is base-merge and whose outcome is not aborted, in either form, is logged
+# with one line on stderr saying the gated delivery brief asks no gate run for a base merge; --print,
+# which logs nothing, prints no such line.
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
 # merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
 # merge-standing-withdrawn, retro-schedule) is committed and pushed to the team home's origin
@@ -543,10 +546,19 @@ fi
 
 }
 
+# A gate run that re-gates a base merge, run to its end, is one the gated delivery brief asks for
+# none of: logged all the same, with one line on stderr saying so, said only where it is logged.
+# base_merge_note <line>.
+base_merge_note() {
+  jq -r --arg task "$task" 'select(.event == "gate-run" and .cause == "base-merge" and .outcome != "aborted")
+    | "team-log: \($task) gate run \(.run) re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"' <<<"$1" >&2
+}
+
 if [[ $1 != --* ]]; then
   check_event "$@"
   # Stamped now, after the checks, so a park's since is never later than its ts.
   ledger_append "$(stamped "$typed")"
+  base_merge_note "$typed"
   ledger_push
   exit 0
 fi
@@ -665,6 +677,11 @@ if ((${#lines[@]})); then
 fi
 for line in "${lines[@]}"; do
   line=$(stamped "$line")
-  if [[ -n $print ]]; then printf '%s\n' "$line"; else ledger_append "$line"; fi
+  if [[ -n $print ]]; then
+    printf '%s\n' "$line"
+  else
+    ledger_append "$line"
+    base_merge_note "$line"
+  fi
 done
 ledger_push

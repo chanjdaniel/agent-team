@@ -435,6 +435,24 @@ LINES
   run_bin -0 team-log --check
 }
 
+@test "a gate run that re-gates a base merge is logged all the same, with one line saying the brief asks for no such run" {
+  opened_task T14
+  local said="team-log: T14 gate run 01M5Q9GR re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"
+  run_bin -0 --separate-stderr team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=pushed cause=base-merge
+  assert_equal "$output" ""
+  assert_equal "$stderr" "$said"
+  run_bin -0 --separate-stderr team-log T14 gate-run run=01M5QDHG head=a1b2c3d outcome=red cause=base-merge
+  assert_equal "$stderr" "${said//01M5Q9GR/01M5QDHG}"
+  # A run the base's move aborted says nothing more, nor does any other cause.
+  run_bin -0 --separate-stderr team-log T14 gate-run run=01M5REA0 head=e4f5a6b outcome=aborted cause=base-merge
+  assert_equal "$output$stderr" ""
+  run_bin -0 --separate-stderr team-log T14 gate-run run=01M5REA1 head=e4f5a6b outcome=pushed cause=review
+  assert_equal "$output$stderr" ""
+  assert_equal "$(logged_after 2 | jq -r '"\(.run) \(.outcome) \(.cause)"')" "$(
+    printf '%s\n' "01M5Q9GR pushed base-merge" "01M5QDHG red base-merge" "01M5REA0 aborted base-merge" "01M5REA1 pushed review"
+  )"
+}
+
 @test "a gate run with an unknown outcome or cause, or minutes that are not an object, is refused" {
   run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=green
   assert_contains "$output" "outcome must be one of pushed, red, aborted, stopped-green"
@@ -1905,6 +1923,13 @@ assert_no_answer_logged() {
   # and `approved=<ids>`; a line with no approved, as every one before it, still parses.
   logs_events "{\"task\":\"T7\",\"event\":\"gate-run\",\"run\":\"01KR2B3C4D\",\"head\":\"$HEAD_A\",\"outcome\":\"pushed\",\"minutes\":{\"review\":3.5,\"test\":12},\"cause\":\"review\"}" \
     --from-message "T7 DONE gate run=01KR2B3C4D head=$HEAD_A outcome=pushed minutes={\"review\": 3.5, \"test\": 12} cause=review"
+  # A run that re-gates a base merge is logged, with the line saying the brief asks for none.
+  run_bin -0 --separate-stderr team-log T7 --from-message "T7 DONE gate run=01KR2B3C4E head=$HEAD_A outcome=pushed cause=base-merge"
+  assert_equal "$stderr" "team-log: T7 gate run 01KR2B3C4E re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '"\(.run) \(.cause)"')" "01KR2B3C4E base-merge"
+  # --print logs nothing, so it says nothing of it either: team-next prints, then logs.
+  run_bin -0 --separate-stderr team-log T7 --print --from-message "T7 DONE gate run=01KR2B3C4F head=$HEAD_A outcome=pushed cause=base-merge"
+  assert_equal "$stderr" ""
   # The parks the builder approved itself, by the ids its brief names, are a list.
   logs_events "{\"task\":\"T7\",\"event\":\"gate-run\",\"run\":\"01KR2B3C5E\",\"head\":\"$HEAD_A\",\"outcome\":\"pushed\",\"minutes\":{\"review\":2},\"approved\":[\"review-coverage\",\"lint-before\"]}" \
     --from-message "T7 DONE gate run=01KR2B3C5E head=$HEAD_A outcome=pushed minutes={\"review\": 2} approved=review-coverage, lint-before"
