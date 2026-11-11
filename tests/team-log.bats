@@ -334,14 +334,14 @@ LINES
   run_bin -0 team-log T14 ticket-done ticket=03 commits=a0017cce,9e0e3990
   run_bin -0 team-log T14 ticket-done ticket=04 'commits= a0017cce , 9e0e3990 '
   run_bin -0 team-log T14 ticket-done ticket=05 commits=1234567
-  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=5,6 guarded=ci,settings before=none
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=5,6 guarded=ci,secrets before=none
   run_bin -0 team-log T14 review verdict=pass head=e4f5a6b sent_back=none guarded=none
   assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T14","event":"ticket-done","ticket":"03","commits":["a0017cce","9e0e3990"]}
 {"task":"T14","event":"ticket-done","ticket":"04","commits":["a0017cce","9e0e3990"]}
 {"task":"T14","event":"ticket-done","ticket":"05","commits":["1234567"]}
-{"task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[5,6],"guarded":["ci","settings"],"before":[]}
+{"task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[5,6],"guarded":["ci","secrets"],"before":[]}
 {"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b","sent_back":[],"guarded":[]}
 LINES
   )"
@@ -1268,10 +1268,16 @@ LINES
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded={"ci":1}'
   assert_contains "$output" "guarded must be a list, got an object"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded=["ci", "docs", 1]'
-  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, dependencies, migrations, settings, permissions, secrets and guardrails:
+  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, migrations, deploy, permissions, secrets and guardrails:
   \"docs\": not a guarded area
   1: not a guarded area"
-  assert_equal "$(logged_after 2 | wc -l)" "3"
+  # dependencies and settings are retired (T276): a review names them no more.
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d guarded=deploy,dependencies,settings
+  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, migrations, deploy, permissions, secrets and guardrails:
+  \"dependencies\": not a guarded area
+  \"settings\": not a guarded area"
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d guarded=ci,migrations,deploy,permissions,secrets,guardrails
+  assert_equal "$(logged_after 2 | wc -l)" "4"
 }
 
 @test "a review names its plain notes on code the PR did not change, and never sends one back" {
@@ -1998,9 +2004,9 @@ assert_no_answer_logged() {
   launched T7 reviewer c0000001 brief-rereview-2
   brief_record T7 brief-rereview-2 "{\"pr\": \"$URL\", \"head\": \"$HEAD_B\", \"reviewed\": \"$HEAD_A\"}"
   # templates/briefs/rereview.md: `{{task}} DONE findings {{task_dir}}/review.md findings=... before=... guarded=...`
-  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"$HEAD_B\",\"findings\":{\"blocking\":1,\"correctness\":1,\"security\":0,\"real-data\":0,\"note-change\":1,\"note-before\":0},\"before\":[],\"guarded\":[\"ci\",\"settings\"],\"sent_back\":[1,2,3]}
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"$HEAD_B\",\"findings\":{\"blocking\":1,\"correctness\":1,\"security\":0,\"real-data\":0,\"note-change\":1,\"note-before\":0},\"before\":[],\"guarded\":[\"ci\",\"secrets\"],\"sent_back\":[1,2,3]}
 {\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000001\"}" \
-    --from-message "T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:1,security:0,real-data:0,note-change:1,note-before:0 before=none guarded=ci,settings" \
+    --from-message "T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:1,security:0,real-data:0,note-change:1,note-before:0 before=none guarded=ci,secrets" \
     --sent-back 1,2,3
   # The review's own checks hold: a before note is never sent back.
   refuses_message "team-log: sent_back names note 2, which before lists as a plain note on code the PR did not change: such a note is queued as a follow-up, never sent back" \

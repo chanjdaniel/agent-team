@@ -1836,16 +1836,19 @@ pr_part() {
 }
 
 # Why the PR's changed files do not let a word given on no head (plan-time or standing) merge it
-# unasked, read from GitHub's paged list of the files of PR <number> in <repo>, using <dir> for
-# gh's answers. The reasons, one per element of PR_FILE_REASONS, none when the files allow it: the
-# list cannot be read; it holds other than <changed files> (the PR's changedFiles) files; a
-# guarded pattern of bin/lib/guarded cannot be read by grep -E; a path holds a line break; a path
-# a guarded pattern matches, named with its areas. PR_CHANGED is the changed paths as a JSON list
-# of {path} and, for each rename's old path, {path, renamed}, [] when the list cannot be read,
-# which returns 1, and 2 when jq fails: pr_file_reasons <dir> <repo> <number> <changed files>
+# unasked, read from GitHub's paged list of the files of PR <number> in <repo>, of the registered
+# project <project>, using <dir> for gh's answers. The reasons, one per element of
+# PR_FILE_REASONS, none when the files allow it: the list cannot be read; it holds other than
+# <changed files> (the PR's changedFiles) files; a guarded pattern of bin/lib/guarded cannot be
+# read by grep -E; a path holds a line break; a path a guarded pattern that applies to <project>
+# matches (a line with no @, one whose @ names <project>, or @own when it is the team's own,
+# own_project), named with its areas. PR_CHANGED is the changed paths as a JSON list of {path}
+# and, for each rename's old path, {path, renamed}, [] when the list cannot be read, which returns
+# 1, and 2 when jq fails: pr_file_reasons <dir> <project> <repo> <number> <changed files>
 # shellcheck disable=SC2034 # PR_CHANGED is the caller's to read
 pr_file_reasons() {
-  local dir=$1 repo=$2 number=$3 count=$4 listed paths humps area pattern lines form rc found matched out guarded=''
+  local dir=$1 project=$2 repo=$3 number=$4 count=$5 listed paths humps field area applies own='' pattern lines form rc
+  local found matched out guarded=''
   PR_FILE_REASONS=() PR_CHANGED='[]'
   if ! github "$dir" files api "repos/$repo/pulls/$number/files" --paginate; then
     PR_FILE_REASONS+=("GitHub cannot be read: $(<"$dir/error")")
@@ -1861,8 +1864,14 @@ pr_file_reasons() {
   # inside such a name. A path with a line break, which grep would read as two, is refused below.
   paths=$(jq -r '.[].path' <<<"$PR_CHANGED")
   humps=$(sed -E 's/([[:lower:][:digit:]])([[:upper:]])/\1_\2/g; s/([[:upper:]])([[:upper:]][[:lower:]])/\1_\2/g' <<<"$paths")
-  while read -r area pattern; do
-    [[ -n $area && $area != '#'* ]] || continue
+  if own_project "$project"; then own=1; fi
+  while read -r field pattern; do
+    [[ -n $field && $field != '#'* ]] || continue
+    area=${field%%@*}
+    if [[ $field == *@* ]]; then
+      applies=${field#*@}
+      if [[ $applies == own ]]; then [[ -n $own ]] || continue; elif [[ $applies != "$project" ]]; then continue; fi
+    fi
     lines=''
     for form in "$paths" "$humps"; do
       rc=0
@@ -2018,7 +2027,7 @@ pr_standing_word() {
       --arg task "$(jq -r .task <<<"$state")" --arg project "$project" --arg branch "$(jq -r .headRefName "$dir/view")" \
       --arg number "$(jq -r .number <<<"$pr")" --arg head "$(jq -r .head <<<"$pr")" <<<"$events") || return 1
     if [[ -n $out ]]; then mapfile -t -O "${#reasons[@]}" reasons <<<"$out"; fi
-    pr_file_reasons "$dir" "$(jq -r .repo <<<"$pr")" "$(jq -r .number <<<"$pr")" \
+    pr_file_reasons "$dir" "$project" "$(jq -r .repo <<<"$pr")" "$(jq -r .number <<<"$pr")" \
       "$(jq -r '.changedFiles // "unknown number of"' "$dir/view")" || rc=$?
     ((rc != 2)) || return 1
     reasons+=("${PR_FILE_REASONS[@]}")

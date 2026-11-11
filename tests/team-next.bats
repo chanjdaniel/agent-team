@@ -981,10 +981,10 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
     "merge pre-approved: run team-merge T7 for $url at $sha, agent-review success, checks green"
   # A later review that found a guarded area brings the merge back to Daniel.
   launched r0000003 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci,settings"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci,secrets"
   assert_contains "$output" "logged review verdict=pass head=$sha"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, settings, so the plan-time word does not hold"
+    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, secrets, so the plan-time word does not hold"
   # A withdrawn approval no longer holds.
   event merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000046"}'
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
@@ -1272,7 +1272,7 @@ fix_line() {
     "$(churn_line 3 "$fix" "1 and 2" "$ask" "$(fix_line 3 .scratch/task/rereview-2.md)")"
   ask="the review found guarded areas secrets and permissions, so ask Daniel with team-ask T7 <an id> --file <the question>"
   run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- \
-    "T7 DONE findings .scratch/task/rereview-2.md ${counts/blocking:0/blocking:1} before=none guarded=secrets,settings,permissions widening=3"
+    "T7 DONE findings .scratch/task/rereview-2.md ${counts/blocking:0/blocking:1} before=none guarded=secrets,deploy,permissions widening=3"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "$(churn_line 3 "$fix" "1 and 2" "$ask" "$(fix_line 3 .scratch/task/rereview-2.md)")"
   run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- \

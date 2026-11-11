@@ -305,7 +305,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF 'log their yes with `team-log T<n> plan-approved by=Daniel ask=<id> discord_message=<id>`, which records the plan'"'"'s files and scope itself' <<<"$approve"
   grep -qF 'for agent-team only Daniel'"'"'s is a merge word, yours starting the build alone' <<<"$approve"
   grep -qF 'their withdrawal, `team-log T<n> plan-approval-withdrawn discord_message=<id>`, stops the build until the plan is approved again.' <<<"$approve"
-  ! grep -qF 'merge-preapproved' <<<"$approve"
+  [[ $approve != *merge-preapproved* ]]
 }
 
 @test "the manual's plan ask attaches the ticket graph, and a building task's graph is remade when stale and posted" {
@@ -439,7 +439,7 @@ $WORKER_INSTRUCTIONS"
   local talk
   talk=$(section reviewer 'Talking to the coordinator')
   grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>`, with ` memory=.scratch/task/memory.md` after it when you added a memory, or `T<n> DONE findings <path>` with the same `findings=`, `before=`, `guarded=` and `memory=` after it' <<<"$talk"
-  section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`, `guardrails`)'
+  section reviewer 'What you do' | grep -qF '(`ci`, `migrations`, `deploy`, `permissions`, `secrets`, `guardrails`)'
   section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
 }
 

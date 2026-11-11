@@ -13,7 +13,7 @@
 # line per problem on stderr while the table's lifecycle_from is not set or later than the event,
 # and refused, logging nothing, from it on.
 # A list field (array, or numbers (a list of whole numbers), as sent_back and before are) takes
-# a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990, sent_back=5,6, guarded=ci,settings),
+# a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990, sent_back=5,6, guarded=ci,secrets),
 # each item trimmed, an empty item refused, and none is the empty list (guarded=none).
 # A list of whole numbers stores each item of a comma list, and each numeric string of a JSON list, as a number, and refuses one that is no whole number, naming it.
 # An object field takes a JSON object, or key:value pairs separated by commas (findings=blocking:0,correctness:1,security:0,real-data:0,note-change:2,note-before:0),
@@ -67,8 +67,8 @@
 # whose sent_back names any finding is logged with verdict findings, a pass's too, since a pass
 # whose notes go back before the merge is not ready to merge. A review's findings, when given,
 # must count exactly blocking, correctness, security, real-data, note-change and note-before, each
-# a whole number, and its guarded list only ci, dependencies, migrations, settings, permissions,
-# secrets and guardrails; its before, the numbers of its plain notes on code the PR did not
+# a whole number, and its guarded list only ci, migrations, deploy, permissions, secrets and
+# guardrails, the areas of bin/lib/guarded (dependencies and settings are retired); its before, the numbers of its plain notes on code the PR did not
 # change, distinct whole numbers above 0, is required when findings counts a note-before, as many
 # as it counts, and a sent_back naming one of them is refused, since such a note is queued, never
 # sent back; its widening, the numbers of a rereview's new findings in what the last fix added,

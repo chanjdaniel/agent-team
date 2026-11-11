@@ -410,3 +410,33 @@ registry_refused() {
   no_merge_call
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
+
+# Rename proj to <name> in the registry and the ledger, its repo and PR left as they are, so a
+# test reads bin/lib/guarded's lines for that project: as_project <name>
+as_project() {
+  sed -i "s/^\[proj/[$1/" "$TEAM_HOME/projects.toml"
+  jq -c --arg p "$1" 'if .project == "proj" then .project = $p else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+}
+
+# Run team-merge on the plan-time word with PR #5 changing <entry>..., each <path>:<areas> or a
+# plain <path>, its scope covering every path, and check each guarded path is named with its
+# areas, a plain one is not, and nothing else is a guarded path: guarded_case <entry>...
+guarded_case() {
+  local entry paths=() reasons=() plain=()
+  for entry in "$@"; do
+    paths+=("${entry%%:*}")
+    if [[ $entry == *:* ]]; then
+      reasons+=("${entry%%:*} is a guarded path (${entry#*:}): a change there comes back to Daniel")
+    else
+      plain+=("$entry")
+    fi
+  done
+  files "${paths[@]}"
+  preapproved 1562661774950400000 plan-T14 "$(printf '%s\n' "${paths[@]}" | jq -Rsc 'split("\n")[:-1]')"
+  run_bin -1 --separate-stderr team-merge T14
+  for entry in "${reasons[@]}"; do assert_contains "$stderr" "  $entry"; done
+  for entry in "${plain[@]}"; do [[ $stderr != *"$entry is a guarded path"* ]]; done
+  assert_equal "$(grep -c 'is a guarded path' <<<"$stderr" || true)" "${#reasons[@]}"
+  no_merge_call
+}

@@ -145,9 +145,11 @@ def numbers_fixed($contract):
 # The shapes team-log holds beyond the contract's types, each *_problems def yielding
 # "<value>: <problem>" lines.
 
-# The finding kinds a review's findings counts, and the guarded areas its guarded may name.
+# The finding kinds a review's findings counts, and the guarded areas its guarded may name, the
+# areas of bin/lib/guarded in its order; dependencies and settings are retired (T276), so a review
+# logged before naming them holds nothing back.
 def finding_kinds: ["blocking", "correctness", "security", "real-data", "note-change", "note-before"];
-def guarded_areas: ["ci", "dependencies", "migrations", "settings", "permissions", "secrets", "guardrails"];
+def guarded_areas: ["ci", "migrations", "deploy", "permissions", "secrets", "guardrails"];
 
 # How a review's findings, an object, is not the count of each finding kind, exactly.
 def findings_problems:
@@ -1050,7 +1052,8 @@ def reviewed_head($head):
 # head $head unasked, one string per reason, none when they do, judged on the latest review of
 # reviewed_head($head), so a head team-catch-up made with no review of its own stands on the
 # review of the one it was made from (both named): no review of that head (by the shorter prefix)
-# is logged; the latest one is not a pass; it logged no guarded list, or named areas in it; and
+# is logged; the latest one is not a pass; it logged no guarded list, or named guarded areas in it
+# (an area retired since, which a review logged before may name, is not one); and
 # each review of the task, of any head, that left out its finding counts or counted a security or
 # real-data finding, fixed or not, named by its head and time.
 def unattended_review_reasons($head):
@@ -1061,9 +1064,9 @@ def unattended_review_reasons($head):
   | (if $reviewed == null then "no review of the head \($named) is logged, so no reviewer has passed it"
      elif $reviewed.verdict != "pass" then "\($latest)is \($reviewed.verdict), not pass"
      else empty end),
-    ($reviewed | select(. != null)
+    ($reviewed | select(. != null) | [(.guarded // [])[] | select(IN(guarded_areas[]))] as $areas
      | if has("guarded") | not then "\($latest)logged no guarded areas, so no reviewer has said the change touches none"
-       elif .guarded != [] then "\($latest)found the change touching guarded areas: \(.guarded | join(", "))"
+       elif $areas != [] then "\($latest)found the change touching guarded areas: \($areas | join(", "))"
        else empty end),
     (.[] | select(.event == "review") | "the review of the head \(.head[:7]), at \(.ts), " as $review
      | if has("findings") | not then

@@ -2343,3 +2343,26 @@ briefs_without_gotchas() {
   assert_equal "$status" 1
   assert_equal "$output" ""
 }
+
+@test "bin/lib/guarded's areas are the ledger's guarded areas in their order, each @ naming own or a registered project" {
+  local lines fields names
+  lines=$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/guarded")
+  fields=$(cut -d ' ' -f 1 <<<"$lines")
+  assert_equal "$(cut -d @ -f 1 <<<"$fields" | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    '["ci","migrations","deploy","permissions","secrets","guardrails"]'
+  assert_equal "$(cut -d @ -f 1 <<<"$fields" | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    "$(jq -L "$REPO_ROOT/bin/lib" -nc 'include "ledger"; guarded_areas')"
+  # Every line is its area, an optional @<project>, one space and a pattern.
+  assert_equal "$(grep -Evc '^[a-z]+(@[a-z0-9-]+)? [^ ]' <<<"$lines" || true)" 0
+  names=$(sed -n 's/^\[\([a-z0-9-]*\)\]$/\1/p' "$REPO_ROOT/tests/fixtures/projects.toml")
+  [[ -n $names ]]
+  while IFS= read -r field; do
+    [[ $field == *@* ]] || continue
+    [[ ${field#*@} == own ]] || grep -Fxq -- "${field#*@}" <<<"$names" ||
+      { echo "bin/lib/guarded's $field names no project of the registry fixture" >&2; return 1; }
+  done <<<"$fields"
+  # The team's own lines are its guardrails, and Conventioner's its permissions.
+  assert_equal "$(grep -o '@[a-z0-9-]*' <<<"$fields" | sort -u | jq -Rsc 'split("\n")[:-1]')" '["@conventioner","@own"]'
+  assert_equal "$(grep '@own$' <<<"$fields" | sort -u)" guardrails@own
+  assert_equal "$(grep '@conventioner$' <<<"$fields" | sort -u)" permissions@conventioner
+}

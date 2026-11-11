@@ -1094,8 +1094,12 @@ standing_due() {
   opened T3
   launch T3 reviewer 11111111
   preapproved_pr T3
-  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"settings\"]}"
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"secrets\"]}"
   run_bin -0 team-sweep
+  # An area retired since (T276), which a review logged before may name, holds nothing back.
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"settings\", \"dependencies\"]}"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's plan-time word on proj"
   no_github
 }
 

@@ -42,11 +42,11 @@
 #   rename's previous filename), number the PR's changedFiles, else the list is refused as not
 #   read in full; each changed path is within the approval's scope (an entry ending in / covers
 #   every path under it, any other that path only), each one outside named; and no changed path
-#   matches a guarded pattern of bin/lib/guarded (CI, dependencies, migrations, settings,
-#   permissions, secrets, the team's guardrails), as it is or with its camelCase humps split off by underscores, each
-#   one named with its areas; a per-head merge checks none of these; every check below holds for
-#   it too, and a refusal ends with a line saying to ask Daniel for the per-head word on the
-#   head;
+#   matches a guarded pattern of bin/lib/guarded that applies to the PR's project (CI,
+#   migrations, the deploy, permissions, secrets, and on the team's own project its guardrails),
+#   as it is or with its camelCase humps split off by underscores, each one named with its areas;
+#   a per-head merge checks none of these; every check below holds for it too, and a refusal ends
+#   with a line saying to ask Daniel for the per-head word on the head;
 #   or, only when the ledger holds a merge-standing, and either neither word above is in play (no
 #   merge-approved names the PR's url, and no merge-preapproved of its project stands) or the one
 #   tried does not hold for a reason of its own (never one of the checks every merge gets, below),
@@ -361,7 +361,7 @@ unattended_reasons() {
         unattended+=("the head ${head:0:7} does not stand on the review of ${reviewed:0:7}, which team-catch-up made it from: $(<"$scratch/clean")")
       fi
     fi
-    pr_file_reasons "$scratch" "$repo" "$number" "$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")" || rc=$?
+    pr_file_reasons "$scratch" "$project" "$repo" "$number" "$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")" || rc=$?
     ((rc != 2)) || jq_failed
     unattended+=("${PR_FILE_REASONS[@]}")
     if ((rc == 0)); then files_read=1; fi

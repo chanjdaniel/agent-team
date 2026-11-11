@@ -169,22 +169,12 @@ TOML
   assert_equal "$(jq -r .content "$discord/posts" | grep -c 'on your standing word')" 2
 }
 
-@test "a change to the team's guardrail files is refused on the standing word, naming the guardrails area" {
+@test "the team's guardrail files in another project match nothing, so its PR merges on the standing word" {
   standing_word
-  local guardrails=(bin/lib/guarded bin/team-merge bin/team-checks bin/lib/team.sh bin/lib/platform.sh
-    bin/lib/ledger.jq bin/lib/ledger-contract.json bin/hooks/git/pre-push bin/hooks/records-git/pre-commit
-    bin/hooks/lease-fence bin/lib/data-check bin/lib/records bin/team-heavy settings/worker.json settings/reviewer.json
-    settings/builder.json coordinator.settings.json bin/team-run-approved bin/team-ask)
-  local plain=(bin/team-state bin/lib/time.jq tests/team-merge.bats src/bin/team-merge.md)
-  local path reasons=()
-  for path in "${guardrails[@]}"; do
-    reasons+=("$path is a guarded path (guardrails): a change there comes back to Daniel")
-  done
-  files "${guardrails[@]}" "${plain[@]}"
-  refused "${reasons[@]}" "$(ask_standing)"
-  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
-  for path in "${plain[@]}"; do [[ $stderr != *"$path is a guarded path"* ]]; done
-  assert_equal "$(grep -c 'is a guarded path' <<<"$stderr")" "${#guardrails[@]}"
+  files bin/lib/guarded bin/team-merge bin/lib/team.sh bin/hooks/git/pre-push settings/worker.json \
+    coordinator.settings.json roles/reviewer.md
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" standing
 }
 
 @test "a changed path, or a rename's old path, matching a guarded pattern is refused on the standing word" {
@@ -206,8 +196,8 @@ TOML
   refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, logged no guarded areas, so no reviewer has said the change touches none" \
     "$(ask_standing)"
   event T14 review "{verdict: \"pass\", head: \"$head\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: [\"settings\"]}"
-  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: settings" \
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: [\"secrets\"]}"
+  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: secrets" \
     "$(ask_standing)"
 }
 
@@ -281,11 +271,11 @@ TOML
 @test "a refusal on the standing word lists every reason at once, the checks every merge gets among them" {
   standing_word
   review "$head" findings
-  files src/tooling.py package.json
+  files src/tooling.py .github/workflows/test.yml
   checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
     {"name": "agent-review", "bucket": "pending", "state": "IN_PROGRESS"}]'
   refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" \
-    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+    ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" \
     "required check lint is missing on the head" "required check test has not passed on the head" \
     "checks failing on the head: test" "checks pending on the head: agent-review" \
     "agent-review is in_progress on the head, not success"
@@ -393,26 +383,26 @@ once() {
 @test "when neither the per-head and standing words, nor the plan-time and standing words, hold, both words' reasons are named once" {
   moved_head own
   standing_too
-  files src/tooling.py package.json
+  files src/tooling.py .github/workflows/test.yml
   checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
     {"name": "lint", "bucket": "pass", "state": "SUCCESS"}, {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'
   refused "the head moved past Daniel's word with ${own:0:7}: ask again" \
-    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+    ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" \
     "checks failing on the head: test" "$(ask_standing)"
   once "$stderr" "the head moved past Daniel's word with ${own:0:7}: ask again" \
-    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+    ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" \
     "checks failing on the head: test" "$(ask_standing)"
   assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
 
   # The plan-time word and the standing word share the guarded path: it is named once, and the
   # standing word's ask line alone ends the refusal.
   plan_word
-  files src/tooling.py package.json
-  refused "package.json is outside the scope of Daniel's plan-time word: src/" \
-    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+  files src/tooling.py .github/workflows/test.yml
+  refused ".github/workflows/test.yml is outside the scope of Daniel's plan-time word: src/" \
+    ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" \
     "checks failing on the head: test" "$(ask_standing)"
-  once "$stderr" "package.json is outside the scope of Daniel's plan-time word: src/" \
-    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+  once "$stderr" ".github/workflows/test.yml is outside the scope of Daniel's plan-time word: src/" \
+    ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" \
     "checks failing on the head: test" "$(ask_standing)"
   assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
   [[ $stderr != *"$(ask_per_head)"* ]]
@@ -440,8 +430,8 @@ caught_up_standing() {
 
 @test "a caught-up head is still refused on the standing word for a guarded path, or a later review of the head it was made from that found something" {
   caught_up_standing base
-  files src/tooling.py package.json
-  refused "package.json is a guarded path (dependencies): a change there comes back to Daniel" "$(ask_standing)"
+  files src/tooling.py .github/workflows/test.yml
+  refused ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" "$(ask_standing)"
 
   # The review that stands for the caught-up head is named with both heads.
   files src/tooling.py
@@ -467,9 +457,9 @@ caught_up_standing() {
   caught_up_standing base
   ledger_line --arg h "$head" '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "review", verdict: "findings", head: $h,
     findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 1, "note-before": 0},
-    sent_back: [1], guarded: ["settings"]}'
+    sent_back: [1], guarded: ["secrets"]}'
   refused "the latest review of the head ${head:0:7}, at 2026-10-22T05:00:00Z, is findings, not pass" \
-    "the latest review of the head ${head:0:7}, at 2026-10-22T05:00:00Z, found the change touching guarded areas: settings" \
+    "the latest review of the head ${head:0:7}, at 2026-10-22T05:00:00Z, found the change touching guarded areas: secrets" \
     "$(ask_standing)"
   [[ $stderr != *"caught up to"* ]]
 }

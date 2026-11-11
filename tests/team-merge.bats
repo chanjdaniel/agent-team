@@ -1006,84 +1006,93 @@ EOF
   [[ $stderr != *"src/a/b.py"* && $stderr != *"src/a/c/d.py"* && $stderr != *"  README.md is"* ]]
 }
 
-@test "each changed file a guarded pattern matches is named with its area, Conventioner's among them, and plain source and tests are not" {
+@test "a path every project's lines guard is named with its areas; test configs, scripts, dependencies, instruction files and auth words in names are not" {
   plan_word
-  local guarded=(
-    .github/workflows/test.yml:ci .circleci/config.yml:ci .gitlab-ci.yml:ci .no-mistakes.yaml:ci
-    .pre-commit-config.yaml:ci .githooks/pre-commit:ci release-please-config.json:ci
-    .release-please-manifest.json:ci
-    front-end/package-lock.json:dependencies front-end/package.json:dependencies
-    back-end/requirements.txt:dependencies back-end/requirements-dev.in:dependencies
-    constraints.txt:dependencies npm-shrinkwrap.json:dependencies yarn.lock:dependencies
-    pnpm-lock.yaml:dependencies bun.lockb:dependencies Pipfile:dependencies Pipfile.lock:dependencies
-    pyproject.toml:dependencies poetry.lock:dependencies uv.lock:dependencies setup.py:dependencies
-    setup.cfg:dependencies go.mod:dependencies go.sum:dependencies Cargo.toml:dependencies
-    Cargo.lock:dependencies Gemfile:dependencies Gemfile.lock:dependencies composer.json:dependencies
-    composer.lock:dependencies .nvmrc:dependencies .node-version:dependencies
-    back-end/.python-version:dependencies .tool-versions:dependencies back-end/Dockerfile:dependencies
-    web.dockerfile:dependencies docker-compose.prod.yml:dependencies compose.yml:dependencies
-    .dockerignore:dependencies
-    "back-end/migrations/migrate_roles.py:migrations, permissions" db/migration/0001.py:migrations
-    "scripts/migrate_users.py:ci, migrations" "db/add_roles_migration.py:migrations, permissions" schema/init.sql:migrations
-    .vscode/launch.json:settings .mcp.json:settings CLAUDE.md:settings front-end/AGENTS.md:settings
-    CLAUDE.local.md:settings front-end/CLAUDE.local.md:settings
-    front-end/.env.example:settings .env:settings back-end/settings.py:settings treehouse.toml:settings
-    back-end/api/permissions.py:permissions src/rbac/roles.py:permissions src/ACL.py:permissions
-    docs/CODEOWNERS:permissions
-    back-end/utils/secret_key.py:secrets config/credentials.json:secrets certs/server.pem:secrets
-    "deploy/id.key:settings, secrets" certs/client.p12:secrets certs/client.pfx:secrets
-    ".claude/settings.json:settings" ".github/CODEOWNERS:ci, permissions"
-    # What the workflows, hooks and gate run, deploy and agent settings, a container's entrypoint,
-    # the real-data guard and the database's shape outside migrations/, and authentication and
-    # session handling by the words in their paths.
-    scripts/nm-test.sh:ci scripts/lock-backend-requirements.sh:ci scripts/knowledge_graph.py:ci
-    front-end/scripts/no-eval.ts:ci front-end/scripts/bundle-budget.ts:ci scripts/treehouse-setup.sh:ci
-    .husky/pre-push:ci lefthook.yml:ci Makefile:ci back-end/justfile:ci
-    scripts/real_data_check.py:ci tools/real_data_terms.txt:ci
-    back-end/docker-entrypoint.sh:dependencies docker-entrypoint-initdb.d/seed.js:dependencies
-    back-end/reset_database.py:migrations back-end/init_database.py:migrations back-end/mongo-init.js:migrations
-    back-end/lookup_indexes.py:migrations back-end/db_config.py:migrations
-    front-end/vercel.json:settings back-end/vercel.json:settings netlify.toml:settings fly.toml:settings
-    Procfile:settings render.yaml:settings .agents/plugins/marketplace.json:settings .cursor/rules.md:settings
-    back-end/api/applicant_auth.py:permissions back-end/utils/cors.py:permissions
-    back-end/utils/security_headers.py:permissions back-end/utils/request_origin.py:permissions
-    back-end/utils/proxy.py:permissions back-end/utils/captcha.py:permissions back-end/sign_in_limits.py:permissions
-    back-end/guards.py:permissions src/csrf.ts:permissions src/oauth/callback.ts:permissions
-    src/login-form.tsx:permissions src/authz.py:permissions src/authentication/views.py:permissions
-    back-end/utils/tokens.py:secrets back-end/utils/application_token.py:secrets
-    back-end/utils/session_storage.py:secrets src/jwt.ts:secrets src/password_reset.py:secrets
-    back-end/api/floorplans_access.py:permissions back-end/tests/test_markets_roles.py:permissions
-    back-end/utils/env_file.py:settings front-end/env.d.ts:settings back-end/utils/deployment.py:settings
-    front-end/eslint.config.ts:ci front-end/vite.config.ts:ci front-end/playwright.config.ts:ci
-    back-end/pytest.ini:ci .gitattributes:ci front-end/tsconfig.app.json:ci
-    # A camelCase or PascalCase name counts its humps as words.
-    front-end/src/views/LoginView.vue:permissions front-end/src/utils/signedIn.ts:permissions
-    front-end/src/views/EmailVerificationView.vue:permissions front-end/src/utils/permissionTable.ts:permissions
-    front-end/src/utils/applicantSessionExpiry.ts:secrets front-end/src/views/PasswordResetView.vue:secrets
-    "src/CSRFToken.ts:permissions, secrets"
-    # The permissions words' verb forms, and a hump ending in a digit.
-    back-end/api/authenticate.py:permissions src/authorize.ts:permissions
-    front-end/src/utils/isAuthenticated.ts:permissions back-end/api/authorizedRoutes.py:permissions
-    front-end/src/views/OAuth2Callback.ts:permissions src/Login2fa.ts:permissions
-  )
-  local plain=(back-end/api/views.py front-end/src/App.test.tsx src/oracle.py src/environment.py src/keyboard.py
-    src/settled.py src/author.py src/tokenizer.py docs/scripts.md src/guardian.ts src/descriptions.py
-    src/indexes_doc/readme.md src/assigning.py front-end/src/utils/accessibleNames.ts src/AuthorList.vue
-    front-end/src/utils/marketGuide.ts src/environmentPicker.ts)
-  local entry paths=() reasons=()
-  for entry in "${guarded[@]}"; do
-    paths+=("${entry%%:*}")
-    reasons+=("${entry%%:*} is a guarded path (${entry#*:}): a change there comes back to Daniel")
-  done
-  files "${paths[@]}" "${plain[@]}"
-  refused "${reasons[@]}" "$(ask_per_head)"
-  for entry in "${plain[@]}"; do [[ $stderr != *"$entry is a guarded path"* ]]; done
-  assert_equal "$(grep -c 'is a guarded path' <<<"$stderr")" "${#guarded[@]}"
+  guarded_case \
+    .github/workflows/test.yml:ci .circleci/config.yml:ci .gitlab-ci.yml:ci .no-mistakes.yaml:ci \
+    ".github/workflows/deploy.yml:ci, deploy" ".github/CODEOWNERS:ci, permissions" docs/CODEOWNERS:permissions \
+    back-end/migrations/migrate_roles.py:migrations db/migration/0001.py:migrations schema/init.sql:migrations \
+    back-end/reset_database.py:migrations back-end/init_database.py:migrations back-end/mongo-init.js:migrations \
+    front-end/vercel.json:deploy back-end/vercel.json:deploy netlify.toml:deploy fly.toml:deploy Procfile:deploy \
+    render.yaml:deploy railway.toml:deploy back-end/utils/deployment.py:deploy scripts/deploy.sh:deploy \
+    front-end/.env.example:secrets .env:secrets back-end/.env.production:secrets certs/server.pem:secrets \
+    certs/client.p12:secrets certs/client.pfx:secrets deploy/id.key:secrets config/credentials.json:secrets \
+    back-end/utils/secret_key.py:secrets \
+    front-end/e2e/auth.spec.ts back-end/tests/conftest.py front-end/package.json front-end/package-lock.json \
+    back-end/requirements.txt pyproject.toml back-end/Dockerfile docker-compose.yml AGENTS.md CLAUDE.md \
+    .claude/settings.json .vscode/launch.json .mcp.json back-end/settings.py scripts/nm-test.sh Makefile \
+    .husky/pre-push front-end/vite.config.ts front-end/tsconfig.app.json front-end/playwright.config.ts \
+    front-end/src/views/LoginView.vue back-end/guards.py back-end/api/permissions.py back-end/utils/tokens.py \
+    back-end/utils/session_storage.py src/jwt.ts src/csrf.ts docs/deploy.md back-end/lookup_indexes.py \
+    scripts/migrate_users.py db/add_roles_migration.py bin/team-merge bin/lib/team.sh roles/reviewer.md \
+    settings/worker.json bin/lib/guarded
 }
 
-@test "the guarded patterns' areas are exactly the ledger's guarded areas" {
-  assert_equal "$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/guarded" | cut -d ' ' -f 1 | uniq | jq -Rsc 'split("\n")[:-1]')" \
-    "$(jq -L "$REPO_ROOT/bin/lib" -nc 'include "ledger"; guarded_areas')"
+@test "a camelCase name counts its humps as words, as the snake_case name it stands for" {
+  plan_word
+  guarded_case back-end/resetDatabase.py:migrations back-end/InitDatabase.py:migrations back-end/resetDb.py
+}
+
+@test "a Conventioner PR names its auth code and every project's lines; its tests, dependencies, instruction files and views match nothing" {
+  plan_word
+  as_project conventioner
+  guarded_case back-end/guards.py:permissions .github/workflows/test.yml:ci back-end/migrations/migrate_roles.py:migrations \
+    back-end/vercel.json:deploy back-end/.env.example:secrets \
+    back-end/api/applicant_auth.py:permissions back-end/api/permissions.py:permissions \
+    back-end/remembered_sign_ins.py:permissions back-end/sign_in_limits.py:permissions \
+    back-end/utils/application_token.py:permissions "back-end/utils/configured_secret.py:permissions, secrets" \
+    back-end/utils/cors.py:permissions "back-end/utils/secret_key.py:permissions, secrets" \
+    "back-end/utils/secretKey.py:permissions, secrets" back-end/utils/security_headers.py:permissions \
+    back-end/utils/session_storage.py:permissions back-end/utils/tokens.py:permissions \
+    front-end/e2e/auth.spec.ts back-end/tests/conftest.py front-end/package.json AGENTS.md \
+    front-end/src/views/LoginView.vue back-end/tests/test_guards.py front-end/guards.py back-end/api/guards.py \
+    bin/team-merge settings/worker.json
+}
+
+@test "a rename's old path on a project's own line is named, as the new one would be" {
+  plan_word
+  as_project conventioner
+  files 'back-end/guards.py=>back-end/access.py'
+  preapproved 1562661774950400000 plan-T14 '["back-end/"]'
+  refused "back-end/guards.py, renamed to back-end/access.py, is a guarded path (permissions): a change there comes back to Daniel" \
+    "$(ask_per_head)"
+  assert_equal "$(grep -c 'is a guarded path' <<<"$stderr")" 1
+}
+
+@test "another project's auth code by Conventioner's names matches nothing, so its PR merges on the plan-time word" {
+  plan_word
+  files back-end/guards.py back-end/utils/tokens.py src/tooling.py
+  preapproved 1562661774950400000 plan-T14 '["back-end/", "src/"]'
+  as_project agent-company
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r '[.project, .approval] | join(" ")')" "agent-company plan"
+}
+
+@test "an agent-team PR names its critical list as guardrails, and its other code, docs and tests match nothing" {
+  # By repo: proj's repo is the origin of the code checkout team-merge runs from.
+  plan_word
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  local path guardrails=() plain=(bin/team-time sops/docker.md tests/team-time.bats bin/lib/time.jq bin/team-state
+    bin/lib/capacity.jq README.md src/bin/team-merge.md roles.md)
+  for path in bin/team-merge bin/team-checks bin/team-heavy bin/team-review-status bin/team-ask bin/team-run-approved \
+    bin/team-worker bin/team-lease bin/claude-coordinator bin/lib/guarded bin/lib/ledger-contract.json bin/lib/data-check \
+    bin/lib/records bin/lib/code bin/lib/command_text.py bin/lib/outbound.py bin/hooks/git/pre-push \
+    bin/hooks/records-git/pre-commit bin/hooks/lease-fence settings/worker.json settings/reviewer.json coordinator.settings.json \
+    bin/lib/team.sh bin/lib/platform.sh bin/lib/ledger.jq bin/lib/messages.jq bin/lib/review-app bin/team-next \
+    bin/team-catch-up bin/team-review-check roles/reviewer.md roles/coordinator.md; do
+    guardrails+=("$path:guardrails")
+  done
+  guarded_case "${guardrails[@]}" "${plain[@]}" .github/workflows/ci.yml:ci
+  assert_contains "$stderr" "proj is the team's own project, whose PRs merge only on Daniel's word per head"
+}
+
+@test "agent-team's critical paths in another project match nothing, so its PR merges on the plan-time word" {
+  plan_word
+  files bin/team-merge bin/lib/team.sh roles/reviewer.md settings/worker.json bin/lib/guarded
+  preapproved 1562661774950400000 plan-T14 '["bin/", "roles/", "settings/"]'
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
 }
 
 @test "a latest review of the head that logged no guarded areas, or named some, is refused, naming them" {
@@ -1093,11 +1102,34 @@ EOF
   refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, logged no guarded areas, so no reviewer has said the change touches none" \
     "$(ask_per_head)"
   event T14 review "{verdict: \"pass\", head: \"${head:0:7}\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: [\"settings\", \"secrets\"]}"
-  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: settings, secrets" \
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: [\"deploy\", \"secrets\"]}"
+  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: deploy, secrets" \
     "$(ask_per_head)"
   passed
   run_bin -0 team-merge T14
+}
+
+@test "each of the six guarded areas a review names holds the PR back; a retired one a review logged before names does not" {
+  plan_word
+  local area
+  for area in ci migrations deploy permissions secrets guardrails; do
+    event T14 review "{verdict: \"pass\", head: \"$head\",
+      findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: [\"$area\"]}"
+    refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: $area" \
+      "$(ask_per_head)"
+  done
+  # A review logged before T276 that named dependencies or settings, as team-log took then.
+  event T14 review "{verdict: \"pass\", head: \"$head\",
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0},
+    guarded: [\"dependencies\", \"settings\", \"migrations\"]}"
+  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: migrations" \
+    "$(ask_per_head)"
+  [[ $stderr != *dependencies* && $stderr != *settings* ]]
+  event T14 review "{verdict: \"pass\", head: \"$head\",
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0},
+    guarded: [\"dependencies\", \"settings\"]}"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
 }
 
 @test "a review of the task with a security or real-data finding, even fixed later, or with no finding counts, is refused, naming its head and time" {
