@@ -690,7 +690,7 @@ old_alerts() {
   fail_checkpoint
   TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
   jq -e 'has("alerts") | not' "$record"
-  jq -e '.upgraded == ["health"]' "$notices"
+  jq -e '.upgraded | index("health") != null' "$notices"
   # The posted one, whose problem has ended, is edited resolved, never posted again.
   assert_equal "$(edits_of "$old")" 1
   [[ $(jq -r .content "$STUB_FIXTURES/inbox/$old.json") =~ ^"$text"$'\n'"-# Resolved at "[0-9]{2}:[0-9]{2}"."$ ]]
@@ -710,7 +710,7 @@ alert: coordinator: resolved (message $old edited)"
 
 @test "an alerts key put back in health.json once its alerts are moved brings no alert back, and is stripped" {
   run_bin -0 team-timers run
-  jq -e '.upgraded == ["health"] and .notices == {}' "$notices"
+  jq -e '(.upgraded | index("health") != null) and .notices == {}' "$notices"
   local old=1569000000000000099
   echo '{"content": "an old alert"}' >"$STUB_FIXTURES/inbox/$old.json"
   date_record ".alerts = {coordinator: {since: \$now, text: \"an old alert\", posted: \$now, message: \"$old\"}}"

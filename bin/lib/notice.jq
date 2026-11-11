@@ -1,7 +1,8 @@
 # The notice module: the one lifecycle of every notice the heartbeat gives Daniel in #coordinator
 # of a standing problem, none -> open -> posted -> (reminded)* -> ended -> closed. Its callers judge
 # their notices through it and do the I/O (Discord, the record's file, its lock): bin/team-timers
-# for the health alerts, through bin/lib/notices.sh. These are pure functions of the record, a
+# for the health alerts and bin/team-uptime for the production outages (through bin/lib/uptime.jq),
+# both through bin/lib/notices.sh. These are pure functions of the record, a
 # source's standing problems, the lease record's taken_at and now; nothing here knows a source's
 # texts or thresholds.
 # jq 1.7, no includes. Included as: jq -L bin/lib 'include "notice"; ...'
@@ -154,10 +155,31 @@ def notice_fold_health:
            tried: null, posted: $posted, message: (if $posted then $a.message else null end),
            reminded: null, ended: null, detail: null}}];
 
+# team-uptime's state (uptime.json, {checks: {<project>/<name>: {alert}}}), its checks' alerts
+# ({since, posted, reminded, message, back}): one never posted is open, never tried; one posted
+# with no back is posted, with its message and reminded; one with a back is ended, at its back:
+# notice_fold_uptime
+def notice_fold_uptime:
+  (now | floor | todate) as $now
+  | [(if type == "object" then .checks else null end) | objects | to_entries[]
+      | select(.value | type == "object" and (.alert | type) == "object")
+      | .key as $key | .value.alert as $a
+      | ($a.posted | if type == "string" then . else null end) as $posted
+      | ($a.back | if type == "string" then . else null end) as $back
+      | {id: notice_id("uptime"; $key),
+         notice: {source: "uptime", key: $key,
+           state: (if $posted == null then "open" elif $back == null then "posted" else "ended" end),
+           since: $a.since, text: null, holding: null, opened: ($posted // $a.since // $now),
+           tried: null, posted: $posted, message: (if $posted then $a.message else null end),
+           reminded: (if $posted then $a.reminded else null end), ended: (if $posted then $back else null end),
+           detail: null}}];
+
 # The notices of the old record $old of <source>, or none for a source with no fold:
 # notice_fold($source; $old)
 def notice_fold($source; $old):
-  if $source == "health" then ($old | notice_fold_health) else [] end;
+  if $source == "health" then ($old | notice_fold_health)
+  elif $source == "uptime" then ($old | notice_fold_uptime)
+  else [] end;
 
 # Move the old records' notices into the record (the input): notice_upgrade($sources; $old), $old
 # an object of each named source's old record (null for none). For each source not yet upgraded,

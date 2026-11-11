@@ -18,6 +18,7 @@ setup() {
   export TEAM_UPTIME_SECONDS=1 TEAM_UPTIME_KNOWN_GOOD=$base/known-good
   uptime_answer known-good 200 ''
   state=$HOME/.local/state/agent-team/uptime.json
+  notices=$HOME/.local/state/agent-team/notices.json
 }
 
 teardown() {
@@ -41,6 +42,21 @@ edit_state() {
   mv "$state.new" "$state"
 }
 
+# jq <filter> on the open outage of the check <key> ("<project>/<name>"), its notice in the notice
+# record as team-uptime status shows it, {since, posted, reminded, message, back} (back its
+# ended), or null for none: outage <key> [<filter>]
+outage() {
+  jq -r --arg id "uptime/$1" '.notices[$id] | if . == null then null else {since, posted, reminded, message, back: .ended} end
+    | '"${2:-.}" "$notices"
+}
+
+# Rewrite the notice of the check <key>'s outage with jq <filter>, given $at: edit_outage <key>
+# <filter> <at>
+edit_outage() {
+  jq --arg id "uptime/$1" --arg at "$3" ".notices[\$id] |= ($2)" "$notices" >"$notices.new"
+  mv "$notices.new" "$notices"
+}
+
 # The UTC time <minutes> ago.
 ago() {
   date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ
@@ -60,8 +76,9 @@ ago() {
   assert_equal "$output" ""
   assert_equal "$(uptime_posts)" ""
   assert_equal "$(uptime_state .schema)" team-uptime/1
-  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.project, .name, .url, .expect, .ok, .failures, .since, .reason, .alert] | @json')" \
-    "$(jq -nc --arg url "$base/api" '["conventioner", "api", $url, "\"status\":\"ok\"", true, 0, null, null, null]')"
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.project, .name, .url, .expect, .ok, .failures, .since, .reason] | @json')" \
+    "$(jq -nc --arg url "$base/api" '["conventioner", "api", $url, "\"status\":\"ok\"", true, 0, null, null]')"
+  assert_equal "$(outage conventioner/api)" null
   uptime_state '.checks["conventioner/api"].checked | fromdateiso8601 > now - 60' | grep -qx true
 }
 
@@ -85,9 +102,9 @@ ago() {
 posted to #coordinator (message 1569000000000000001): down: conventioner/api"
   assert_equal "$(uptime_posts)" "Production down: conventioner api (<$base/api>) since $(clock "$since"), 2 checks in a row from home-pc: HTTP 503."
   assert_equal "$(uptime_bodies | jq -c '[.allowed_mentions, .flags]')" '[{"parse":[]},4]'
-  assert_equal "$(uptime_state '.checks["conventioner/api"].alert | [.since, .message, .reminded, .back] | @json')" \
+  assert_equal "$(outage conventioner/api '[.since, .message, .reminded, .back] | @json')" \
     "$(jq -nc --arg since "$since" '[$since, "1569000000000000001", null, null]')"
-  uptime_state '.checks["conventioner/api"].alert.posted | fromdateiso8601 > now - 60' | grep -qx true
+  outage conventioner/api '.posted | fromdateiso8601 > now - 60' | grep -qx true
 }
 
 @test "a third failure posts nothing more" {
@@ -106,7 +123,8 @@ posted to #coordinator (message 1569000000000000001): down: conventioner/api"
   # The outage began 75 minutes ago.
   local since before after
   since=$(ago 75)
-  edit_state '.checks["conventioner/api"] |= (.since = $at | .alert.since = $at)' "$since"
+  edit_state '.checks["conventioner/api"].since = $at' "$since"
+  edit_outage conventioner/api '.since = $at' "$since"
   uptime_answer api 200 '{"status":"ok"}'
   before=$(date -u +%FT%TZ)
   run_bin -0 team-uptime run
@@ -117,7 +135,8 @@ posted to #coordinator (message 1569000000000000001): down: conventioner/api"
   [[ $back == "Production back: conventioner api (<$base/api>) answers again at $(clock "$before"), down since $(clock "$since") (1 hour 15 minutes)." ||
     $back == "Production back: conventioner api (<$base/api>) answers again at $(clock "$after"), down since $(clock "$since") (1 hour 15 minutes)." ]] ||
     { echo "the back post: $back" >&2; return 1; }
-  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.ok, .failures, .since, .alert] | @json')" '[true,0,null,null]'
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.ok, .failures, .since] | @json')" '[true,0,null]'
+  assert_equal "$(outage conventioner/api)" null
   run_bin -0 team-uptime run
   assert_equal "$output" ""
   assert_equal "$(uptime_post_ids | wc -l)" 2
@@ -163,8 +182,8 @@ conventioner/slow: failed: no answer in 1 s'
   api_check 503 ''
   run_bin -0 team-uptime run
   run_bin -0 team-uptime run
-  # Everything but the lease record and the uptime state is gone, as after a reboot.
-  find "$HOME/.local/state/agent-team" -mindepth 1 ! -name lease.json ! -name uptime.json -delete
+  # Everything but the lease record, the uptime state and the notice record is gone, as after a reboot.
+  find "$HOME/.local/state/agent-team" -mindepth 1 ! -name lease.json ! -name uptime.json ! -name notices.json -delete
   run_bin -0 team-uptime run
   assert_equal "$(uptime_post_ids | wc -l)" 1
   uptime_answer api 200 '{"status":"ok"}'
@@ -193,9 +212,11 @@ conventioner/slow: failed: no answer in 1 s'
   run_bin -0 team-uptime run
   local old down
   old=$(ago 20)
-  edit_state '.checks["conventioner/api"] |= (.checked = $at | .since = $at | .alert.since = $at)' "$old"
+  edit_state '.checks["conventioner/api"] |= (.checked = $at | .since = $at)' "$old"
+  edit_outage conventioner/api '.since = $at' "$old"
   run_bin -0 team-uptime run
-  assert_equal "$(jq -c --arg old "$old" '.checks["conventioner/api"] | [.failures, .alert.since == $old]' "$state")" '[1,true]'
+  assert_equal "$(uptime_state '.checks["conventioner/api"].failures')" 1
+  assert_equal "$(outage conventioner/api .since)" "$old"
   run_bin -0 team-uptime status --json
   assert_equal "$(jq -r '.checks[0].state' <<<"$output")" down
   down=$(clock "$old")
@@ -276,8 +297,9 @@ conventioner/slow: failed: no answer in 1 s'
       { echo "stderr: $stderr" >&2; return 1; }
   done
   assert_equal "$(uptime_posts)" ""
-  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.failures, .since, .alert] | @json')" \
-    "$(jq -nc --arg since "$since" '[1, $since, null]')"
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.failures, .since] | @json')" \
+    "$(jq -nc --arg since "$since" '[1, $since]')"
+  assert_equal "$(outage conventioner/api)" null
   uptime_state '.written | fromdateiso8601 > now - 60' | grep -qx true
 }
 
@@ -293,16 +315,17 @@ conventioner/slow: failed: no answer in 1 s'
   run_bin -0 team-uptime run
   local old
   old=$(ago 240)
-  edit_state '.checks["conventioner/api"] |= (.since = $at | .alert.since = $at | .alert.posted = $at)' "$old"
+  edit_state '.checks["conventioner/api"].since = $at' "$old"
+  edit_outage conventioner/api '.since = $at | .posted = $at' "$old"
   run_bin -0 team-uptime run
   assert_equal "$(sed -n 2p <<<"$output")" "posted to #coordinator (message 1569000000000000002): still down: conventioner/api"
   assert_equal "$(uptime_posts | sed -n 2p)" "Production still down: conventioner api (<$base/api>) since $(clock "$old"), 4 hours: HTTP 503."
-  uptime_state '.checks["conventioner/api"].alert.reminded | fromdateiso8601 > now - 60' | grep -qx true
+  outage conventioner/api '.reminded | fromdateiso8601 > now - 60' | grep -qx true
   run_bin -0 team-uptime run
   assert_equal "$(uptime_post_ids | wc -l)" 2
   # Reminded 45 minutes ago: due at 30 minutes, not at the default 240.
   old=$(ago 45)
-  edit_state '.checks["conventioner/api"].alert.reminded = $at' "$old"
+  edit_outage conventioner/api '.reminded = $at' "$old"
   run_bin -0 team-uptime run
   assert_equal "$(uptime_post_ids | wc -l)" 2
   TEAM_UPTIME_REMIND_MINUTES=30 run_bin -0 team-uptime run
@@ -317,12 +340,12 @@ conventioner/slow: failed: no answer in 1 s'
   run_bin --separate-stderr -1 team-uptime run
   assert_equal "$stderr" "team-uptime: the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run"
   assert_equal "$(uptime_posts)" ""
-  assert_equal "$(uptime_state '.checks["conventioner/api"].alert | [.since != null, .posted, .message] | @json')" '[true,null,null]'
+  assert_equal "$(outage conventioner/api '[.since != null, .posted, .message] | @json')" '[true,null,null]'
   rm "$STUB_FIXTURES/inbox/fail"
   run_bin -0 team-uptime run
   assert_equal "$(sed -n 2p <<<"$output")" "posted to #coordinator (message 1569000000000000001): down: conventioner/api"
   uptime_posts | grep -q '^Production down: conventioner api .* 3 checks in a row from home-pc: HTTP 503\.$'
-  assert_equal "$(uptime_state '.checks["conventioner/api"].alert.message')" 1569000000000000001
+  assert_equal "$(outage conventioner/api .message)" 1569000000000000001
 }
 
 @test "a back post Discord refused is made at the next run" {
@@ -333,13 +356,13 @@ conventioner/slow: failed: no answer in 1 s'
   echo 500 >"$STUB_FIXTURES/inbox/fail"
   run_bin --separate-stderr -1 team-uptime run
   local back
-  back=$(uptime_state '.checks["conventioner/api"].alert.back')
+  back=$(outage conventioner/api .back)
   [[ $back != null ]]
   rm "$STUB_FIXTURES/inbox/fail"
   run_bin -0 team-uptime run
   assert_equal "$output" "posted to #coordinator (message 1569000000000000002): back: conventioner/api"
   uptime_posts | sed -n 2p | grep -qF "answers again at $(clock "$back"),"
-  assert_equal "$(uptime_state '.checks["conventioner/api"].alert')" null
+  assert_equal "$(outage conventioner/api)" null
 }
 
 @test "a check that fails again before its back post went through stays the same outage and posts no new down" {
@@ -347,7 +370,7 @@ conventioner/slow: failed: no answer in 1 s'
   run_bin -0 team-uptime run
   run_bin -0 team-uptime run
   local alert
-  alert=$(uptime_state '.checks["conventioner/api"].alert | {since, posted, message} | @json')
+  alert=$(outage conventioner/api '{since, posted, message} | @json')
   uptime_answer api 200 '{"status":"ok"}'
   echo 500 >"$STUB_FIXTURES/inbox/fail"
   run_bin -1 team-uptime run
@@ -355,8 +378,8 @@ conventioner/slow: failed: no answer in 1 s'
   uptime_answer api 503 ''
   run_bin -0 team-uptime run
   assert_equal "$(uptime_post_ids | wc -l)" 1
-  assert_equal "$(uptime_state '.checks["conventioner/api"].alert | {since, posted, message} | @json')" "$alert"
-  assert_equal "$(uptime_state '.checks["conventioner/api"].alert.back')" null
+  assert_equal "$(outage conventioner/api '{since, posted, message} | @json')" "$alert"
+  assert_equal "$(outage conventioner/api .back)" null
   uptime_answer api 200 '{"status":"ok"}'
   run_bin -0 team-uptime run
   assert_equal "$(uptime_post_ids | wc -l)" 2
@@ -373,7 +396,7 @@ conventioner/slow: failed: no answer in 1 s'
   run_bin -0 team-uptime run
   assert_equal "$output" "conventioner/api: answered again before its outage post went through; closed"
   assert_equal "$(uptime_posts)" ""
-  assert_equal "$(uptime_state '.checks["conventioner/api"].alert')" null
+  assert_equal "$(outage conventioner/api)" null
 }
 
 @test "a check removed from the registry, or given a new URL, is dropped and its outage closed without a post" {
@@ -392,8 +415,9 @@ conventioner/slow: failed: no answer in 1 s'
 conventioner/front-end: no longer checked as it was; its open outage is closed without a post"
   assert_equal "$(uptime_post_ids | wc -l)" 1
   assert_equal "$(uptime_state '.checks | keys | @json')" '["conventioner/api"]'
-  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.url, .ok, .failures, .alert] | @json')" \
-    "$(jq -nc --arg url "$base/api-v2" '[$url, true, 0, null]')"
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | [.url, .ok, .failures] | @json')" \
+    "$(jq -nc --arg url "$base/api-v2" '[$url, true, 0]')"
+  assert_equal "$(jq -c '[.notices[] | select(.source == "uptime")]' "$notices")" '[]'
 }
 
 @test "a check whose expect changed starts fresh" {
@@ -406,6 +430,119 @@ conventioner/front-end: no longer checked as it was; its open outage is closed w
   assert_equal "$(uptime_posts)" ""
 }
 
+# Stamp the lease record with the holding that began at <at>, as team-lease's take leaves it:
+# take_lease <at>
+take_lease() {
+  local lease=$HOME/.local/state/agent-team/lease.json
+  jq --arg at "$1" '.taken_at = $at' "$lease" >"$lease.new"
+  mv "$lease.new" "$lease"
+}
+
+@test "an outage posted in an earlier holding of the lease is closed with no back post, and a check still down is posted down afresh" {
+  take_lease "$(ago 60)"
+  api_check 503 ''
+  uptime_check conventioner front-end "$base/front-end" '<div id="app">'
+  uptime_answer front-end 502 ''
+  uptime_check conventioner admin "$base/admin" 'admin'
+  uptime_answer admin 500 ''
+  run_bin -0 team-uptime run
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 1
+  # As if the admin check's down post had been refused: its outage opened, never posted.
+  edit_outage conventioner/admin '.state = "open" | .posted = null | .message = null' ''
+  # The lease went to another machine and came back to this one: a new holding.
+  take_lease "$(date -u +%FT%TZ)"
+  uptime_answer api 200 '{"status":"ok"}'
+  run_bin -0 team-uptime run
+  local front admin
+  front=$(uptime_state '.checks["conventioner/front-end"].since')
+  admin=$(uptime_state '.checks["conventioner/admin"].since')
+  assert_equal "$output" "conventioner/front-end: failed: HTTP 502 (3 in a row, since $front)
+conventioner/admin: failed: HTTP 500 (3 in a row, since $admin)
+conventioner/api: its outage was posted in an earlier holding of the lease; closed without a post
+conventioner/front-end: its outage was posted in an earlier holding of the lease; closed without a post
+conventioner/admin: its outage was opened in an earlier holding of the lease and never posted; closed
+posted to #coordinator (message 1569000000000000002): down: conventioner/front-end, conventioner/admin"
+  assert_equal "$(uptime_posts | sed -n '4,$p')" "Production down: conventioner front-end (<$base/front-end>) since $(clock "$front"), 3 checks in a row from home-pc: HTTP 502.
+Production down: conventioner admin (<$base/admin>) since $(clock "$admin"), 3 checks in a row from home-pc: HTTP 500."
+  assert_equal "$(outage conventioner/api)" null
+  assert_equal "$(outage conventioner/front-end '[.since, .message] | @json')" \
+    "$(jq -nc --arg since "$front" '[$since, "1569000000000000002"]')"
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 2
+}
+
+@test "an uptime.json from before the notice record has its outages moved by the next run, which posts what it would have" {
+  # api's down post was refused, front-end's went through, and admin answered again before its
+  # back post went through.
+  api_check 503 ''
+  uptime_check conventioner front-end "$base/front-end" '<div id="app">'
+  uptime_answer front-end 502 ''
+  uptime_check conventioner admin "$base/admin" 'admin'
+  uptime_answer admin 200 'admin'
+  local at since posted back
+  at=$(ago 3) since=$(ago 60) posted=$(ago 55) back=$(ago 5)
+  mkdir -p "$(dirname "$state")"
+  jq -n --arg base "$base" --arg checked "$at" --arg since "$since" --arg posted "$posted" --arg back "$back" '
+    def check($name; $expect; $failures; $reason; $alert):
+      {("conventioner/\($name)"): {project: "conventioner", name: $name, url: "\($base)/\($name)", expect: $expect,
+        checked: $checked, ok: ($failures == 0), reason: $reason, failures: $failures,
+        since: (if $failures == 0 then null else $since end), alert: $alert}};
+    {schema: "team-uptime/1", written: $checked,
+     checks: (check("api"; "\"status\":\"ok\""; 2; "HTTP 503"; {since: $since, posted: null, reminded: null, message: null, back: null})
+       + check("front-end"; "<div id=\"app\">"; 3; "HTTP 502";
+           {since: $since, posted: $posted, reminded: null, message: "1568000000000000001", back: null})
+       + check("admin"; "admin"; 0; null; {since: $since, posted: $posted, reminded: null, message: "1568000000000000002", back: $back}))}' \
+    >"$state"
+  run_bin -0 team-uptime run
+  assert_equal "$output" "conventioner/api: failed: HTTP 503 (3 in a row, since $since)
+conventioner/front-end: failed: HTTP 502 (4 in a row, since $since)
+posted to #coordinator (message 1569000000000000001): down: conventioner/api
+posted to #coordinator (message 1569000000000000002): back: conventioner/admin"
+  assert_equal "$(uptime_posts)" "Production down: conventioner api (<$base/api>) since $(clock "$since"), 3 checks in a row from home-pc: HTTP 503.
+Production back: conventioner admin (<$base/admin>) answers again at $(clock "$back"), down since $(clock "$since") (55 minutes)."
+  assert_equal "$(uptime_state '[.checks[] | has("alert")] | any')" false
+  assert_equal "$(jq -c '.upgraded | index("uptime") != null' "$notices")" true
+  assert_equal "$(outage conventioner/api '[.since, .message] | @json')" "$(jq -nc --arg since "$since" '[$since, "1569000000000000001"]')"
+  assert_equal "$(outage conventioner/front-end '[.since, .posted, .message, .back] | @json')" \
+    "$(jq -nc --arg since "$since" --arg posted "$posted" '[$since, $posted, "1568000000000000001", null]')"
+  assert_equal "$(outage conventioner/admin)" null
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 2
+}
+
+@test "an outage left in uptime.json after its move brings nothing back" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  run_bin -0 team-uptime run
+  uptime_answer api 200 '{"status":"ok"}'
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 2
+  # A crash between the move's two writes leaves the old field behind.
+  edit_state '.checks["conventioner/api"].alert = {since: $at, posted: $at, reminded: null, message: "1569000000000000001", back: null}' "$(ago 30)"
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -c '.checks[0] | [.state, .alert]' <<<"$output")" '["up",null]'
+  run_bin -0 team-uptime run
+  assert_equal "$output" ""
+  assert_equal "$(uptime_post_ids | wc -l)" 2
+  assert_equal "$(outage conventioner/api)" null
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | has("alert")')" false
+}
+
+@test "a notice record that cannot be written fails the run, and the outage is judged again at the next run" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  exec {lock}>"$HOME/.local/state/agent-team/notices.lock"
+  flock -n "$lock"
+  TEAM_NOTICES_LOCK_SECONDS=1 run_bin --separate-stderr -1 team-uptime run
+  exec {lock}>&-
+  assert_equal "$stderr" "team-uptime: cannot write $notices: another writer held $HOME/.local/state/agent-team/notices.lock for 1 s"
+  assert_equal "$(uptime_posts)" ""
+  run_bin -0 team-uptime run
+  assert_equal "$(uptime_post_ids | wc -l)" 1
+  uptime_posts | grep -q '^Production down: conventioner api .* 2 checks in a row from home-pc: HTTP 503\.$'
+}
+
 @test "a state file that is not JSON is set aside, and the run starts from an empty state and fails" {
   api_check 503 ''
   mkdir -p "$(dirname "$state")"
@@ -416,6 +553,20 @@ conventioner/front-end: no longer checked as it was; its open outage is closed w
   assert_equal "$(uptime_state '.checks["conventioner/api"].failures')" 1
   run_bin -0 team-uptime run
   assert_equal "$(uptime_post_ids | wc -l)" 1
+}
+
+@test "a notice record that is not team-notices/1 is set aside, the run goes on from an empty record and fails, and status refuses it" {
+  api_check 503 ''
+  run_bin -0 team-uptime run
+  echo '{"schema": "team-notices/2", "notices": {}}' >"$notices"
+  run_bin --separate-stderr -1 team-uptime status --json
+  assert_equal "$stderr" "team-uptime: $notices is not a team-notices/1 record"
+  assert_equal "$(cat "$notices")" '{"schema": "team-notices/2", "notices": {}}'
+  run_bin --separate-stderr -1 team-uptime run
+  assert_equal "$stderr" "team-uptime: $notices is not a team-notices/1 record; it is set aside as $notices.bad, and the notices start again from empty"
+  assert_equal "$(cat "$notices.bad")" '{"schema": "team-notices/2", "notices": {}}'
+  assert_equal "$(sed -n 2p <<<"$output")" "posted to #coordinator (message 1569000000000000001): down: conventioner/api"
+  assert_equal "$(outage conventioner/api .message)" 1569000000000000001
 }
 
 @test "a post is cut to Discord's 2000 characters, and each reason to 200" {
@@ -477,13 +628,28 @@ put_state() {
   assert_equal "$(jq -c '.checks[0] | keys_unsorted' <<<"$status")" \
     '["project","name","url","expect","state","checked","since","failures","reason","alert"]'
   assert_equal "$(jq -c '.checks[0] | del(.state)' <<<"$status")" \
-    "$(uptime_state '.checks["conventioner/api"] | {project, name, url, expect, checked, since, failures, reason, alert} | @json')"
+    "$(uptime_state '.checks["conventioner/api"] | {project, name, url, expect, checked, since, failures, reason} | @json' |
+      jq -c --argjson alert "$(outage conventioner/api)" '. + {alert: $alert}')"
   assert_equal "$(jq -c '.checks[2] | [.failures, .reason, .alert]' <<<"$status")" '[1,"HTTP 502",null]'
   assert_equal "$(jq -c '.checks[3] | [.url, .checked, .since, .failures, .reason, .alert]' <<<"$status")" \
     "$(jq -nc --arg url "$base/docs" '[$url, null, null, 0, null, null]')"
   # Read-only: no fetch, no Discord call, the state as it was.
   assert_equal "$(stub_calls curl | wc -l)" "$calls"
   assert_equal "$(uptime_post_ids | wc -l)" 1
+}
+
+@test "status before any run shows an outage of an uptime.json from before the notice record, and writes nothing" {
+  checked=$(ago 3)
+  local down before
+  down=$(ago 40)
+  uptime_check conventioner api "$base/api" '"status":"ok"'
+  put_state "$(check_state conventioner api "$base/api" '"status":"ok"' 3 'HTTP 503' "$down")"
+  before=$(cat "$state")
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -c '.checks[0] | [.state, .alert]' <<<"$output")" \
+    "$(jq -nc --arg down "$down" '["down", {since: $down, posted: $down, reminded: null, message: "1569000000000000001", back: null}]')"
+  assert_equal "$(cat "$state")" "$before"
+  [[ ! -e $notices ]]
 }
 
 @test "status counts a state written for another URL or expect as not checked yet" {

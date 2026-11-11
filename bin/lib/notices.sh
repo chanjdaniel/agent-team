@@ -1,4 +1,5 @@
-# The notice record's I/O, sourced after team.sh by the scripts that judge notices (team-timers):
+# The notice record's I/O, sourced after team.sh by the scripts that judge notices (team-timers,
+# team-uptime):
 #
 #   # shellcheck source=bin/lib/notices.sh
 #   source "$TEAM_LIB/notices.sh"
@@ -25,9 +26,14 @@
 #                                <lock> for <n> s"), the program fails or the write fails.
 #   notices_upgrade <source>...  moves each named source's old record into the record, under the
 #                                lock: the record written first, its sources marked upgraded, then
-#                                the old field stripped (health: health.json's alerts). Fails as
-#                                notices_update does, the old field left for the next try.
-# The old records folded: health, health.json's alerts. A missing or unreadable one folds nothing.
+#                                the old field stripped (health: health.json's alerts; uptime:
+#                                each check's alert in uptime.json). Fails as notices_update
+#                                does, the old field left for the next try. A record that lists
+#                                every named source upgraded already is neither locked nor
+#                                written: only the old field is stripped, under the caller's own
+#                                lock of that record.
+# The old records folded: health, health.json's alerts; uptime, uptime.json's checks' alerts. A
+# missing or unreadable one folds nothing.
 # shellcheck shell=bash
 
 NOTICES_STATE=$HOME/.local/state/agent-team
@@ -35,11 +41,13 @@ NOTICES=$NOTICES_STATE/notices.json
 NOTICES_LOCK=$NOTICES_STATE/notices.lock
 TEAM_NOTICES_LOCK_SECONDS=${TEAM_NOTICES_LOCK_SECONDS:-10}
 
-# The old records of the sources with a fold, as one object: {health: {alerts} or null}.
+# The old records of the sources with a fold, as one object: {health: {alerts} or null, uptime:
+# {checks} or null}.
 notices_old() {
-  local health
+  local health uptime
   health=$(jq -c 'objects | {alerts: (.alerts // null)}' "$NOTICES_STATE/health.json" 2>/dev/null) || health=''
-  jq -cn --argjson health "${health:-null}" '{health: $health}'
+  uptime=$(jq -c 'objects | {checks: (.checks // null)}' "$NOTICES_STATE/uptime.json" 2>/dev/null) || uptime=''
+  jq -cn --argjson health "${health:-null}" --argjson uptime "${uptime:-null}" '{health: $health, uptime: $uptime}'
 }
 
 # Whether the file <file> is one JSON object of team-notices/1: notices_valid <file>
@@ -127,19 +135,39 @@ notices_strip() {
       echo "cannot strip the alerts from $file" >&2
       return 1
       ;;
+    uptime)
+      file=$NOTICES_STATE/uptime.json
+      jq -e 'type == "object" and (.checks | type) == "object" and any(.checks[]; type == "object" and has("alert"))' \
+        "$file" >/dev/null 2>&1 || return 0
+      if jq '.checks |= map_values(if type == "object" then del(.alert) else . end)' "$file" >"$file.$$" &&
+        mv -f "$file.$$" "$file"; then
+        return 0
+      fi
+      rm -f "$file.$$"
+      echo "cannot strip the alerts from $file" >&2
+      return 1
+      ;;
   esac
+}
+
+# Whether the record lists every source of the JSON array <sources> upgraded: notices_upgraded <sources>
+notices_upgraded() {
+  [[ -e $NOTICES ]] && notices_valid "$NOTICES" &&
+    jq -e --argjson sources "$1" '.upgraded as $u | all($sources[]; . as $s | any($u[]?; . == $s))' \
+      "$NOTICES" >/dev/null 2>&1
 }
 
 notices_upgrade() (
   local source sources
   sources=$(jq -cn '$ARGS.positional' --args "$@")
-  notices_lock || exit 1
-  # A record that holds every source upgraded already is not written again.
+  # A record that holds every source upgraded already is neither locked nor written again, so a
+  # run whose move is done never waits on another writer for it.
   # The read folds every source not yet upgraded, so the program only passes its record on.
-  if ! { [[ -e $NOTICES ]] && notices_valid "$NOTICES" &&
-    jq -e --argjson sources "$sources" '.upgraded as $u | all($sources[]; . as $s | any($u[]?; . == $s))' \
-      "$NOTICES" >/dev/null 2>&1; }; then
-    notices_apply "$(notices_old)" notice '{record: .}' >/dev/null || exit 1
+  if ! notices_upgraded "$sources"; then
+    notices_lock || exit 1
+    if ! notices_upgraded "$sources"; then
+      notices_apply "$(notices_old)" notice '{record: .}' >/dev/null || exit 1
+    fi
   fi
   for source in "$@"; do notices_strip "$source" || exit 1; done
 )

@@ -199,10 +199,11 @@
 #                     how). Each line it prints is logged; with no check it fetches nothing and
 #                     logs nothing. A production that is down never fails the run: the step fails
 #                     only when team-uptime does (this machine cannot reach the internet, a post
-#                     Discord refused, a state it cannot write), so a machine unable to check
-#                     production for an hour is the step-uptime alert. It is stopped after 180 s,
-#                     which holds ten checks of 10 s, the known-good probe's 10 s and three posts
-#                     of 20 s, killed 10 s later ("uptime: failed: timed out after 180 s").
+#                     Discord refused, a state or notice record it cannot write), so a machine
+#                     unable to check production for an hour is the step-uptime alert. It is
+#                     stopped after 180 s, which holds ten checks of 10 s, the known-good probe's
+#                     10 s and three posts of 20 s, killed 10 s later ("uptime: failed: timed out
+#                     after 180 s").
 #              inbox  On the holder, after the uptime step: team-inbox, which writes the team
 #                     home's waiting.md, so what waits on Daniel is there within five minutes
 #                     whatever changed it. It logs only the one edit that retires the message
