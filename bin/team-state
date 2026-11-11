@@ -4,10 +4,11 @@
 # Usage: team-state T<n> [--json]
 # Prints one line: the task, its project and path, its phase, its live workers, its progress and
 # its PR, as
-#   T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7 | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
+#   T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7, graph stale | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
 # each live worker with its status, its state unless working or unknown, its context in thousands
 # and the brief its launch logged, less "brief-"; then "tickets <done>/<total>" ("tickets <done>
-# done" while the total is unknown or 0, nothing with neither), "review <count> <verdict>" with
+# done" while the total is unknown or 0, nothing with neither), with ", graph fresh" or ", graph
+# stale" when the tickets have a graph, "review <count> <verdict>" with
 # ", sent back <findings>" when the latest review sent any back (nothing before the first review),
 # and in the PR part "<n> behind <base>" when the base has commits the head lacks.
 # With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
@@ -19,7 +20,11 @@
 # pending_asks are the asks no later event settles, an answered or a
 # merge-preapproved with the ask's id or a merge-approved whose url its text names.
 # progress is where the task is: tickets (done, the ticket numbers with a ticket-done, each once,
-# and total, the ticket files team-tickets T<n> --json lists, or null when it refuses them), on
+# total, the ticket files team-tickets T<n> --json lists, or null when it refuses them, and graph,
+# the page team-tickets T<n> --graph wrote in the task directory of the first ticket listed, as
+# {html, png, fresh}, png null without tickets.png and fresh true only while the page's digest is
+# that of the --json list now, tickets.png exists and it is no older than tickets.html, or null
+# with no tickets, no tickets.html or a refused set), on
 # (each live worker's role, session and brief), and reviews (count, the task's review events, and
 # the latest one's verdict, head and sent_back, each null when there is none).
 # Recorded worktree paths under another machine's home (/home/<name>, /Users/<name>) show as the

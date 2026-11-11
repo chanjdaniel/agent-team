@@ -297,6 +297,19 @@ $WORKER_INSTRUCTIONS"
   grep -qF 'Messages sent while no coordinator listened are never delivered to you, only readable: on a resume, read `#coordinator` and each open task'"'"'s thread back to your own last message' "$manual"
 }
 
+@test "the manual's plan ask attaches the ticket graph, and a building task's graph is remade when stale and posted" {
+  local approve build
+  approve=$(grep '^3\. \*\*Approve\.\*\*' "$manual")
+  build=$(awk '/^4\. \*\*Build\.\*\*/ { on = 1 } /^5\. / { on = 0 } on' "$manual")
+  grep -qF '`team-tickets T<n> --graph`' <<<"$approve"
+  grep -qF '`team-ask T<n> plan --file <question> --attach <png>`' <<<"$approve"
+  grep -qF 'goes without the image when `--graph` made none' <<<"$approve"
+  grep -qF 'for a project that opts in, the ask lists `scope.txt` and offers a plan-time merge approval' <<<"$approve"
+  grep -qF '`team-tickets T<n> --graph`' <<<"$build"
+  grep -qF '`team-state` says `graph stale`' <<<"$build"
+  grep -qF '`team-post T<n> --file <text> --attach <png>`' <<<"$build"
+}
+
 @test "the manual says the plan-time merge: the rule, the offer and its log, the merge with no ask, the refusal, the withdrawal and a failed post" {
   grep -qF 'A PR merges only on Daniel'"'"'s recorded word: per head; at plan time, for a project that opts in (`merge_with_plan`); or on their standing word; the last two unasked, never for agent-team or on' "$manual"
   grep -qF 'for a project that opts in, the ask lists `scope.txt` and offers a plan-time merge approval' "$manual"
@@ -552,7 +565,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25280 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25620 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message.
   found=$(grep -nE 'team-log T<n> (done|ticket-done|review|pr|paused|question|gate-run)\b' "${files[@]}" || true)
@@ -575,10 +588,11 @@ $WORKER_INSTRUCTIONS"
   # message of Daniel's each ops launch needs, 24590 once the ops line named the logging of its
   # answer as its length, with the pointer to its relay, 24640 once the load check's line named
   # team-drill status, 24690 once it named the probe form, and 117 lines and 25190 bytes once
-  # waiting.md, team-inbox --post and the reply by number replaced the Waiting on you message, and
-  # 25280 once the heartbeat's line named team-uptime).
+  # waiting.md, team-inbox --post and the reply by number replaced the Waiting on you message,
+  # 25280 once the heartbeat's line named team-uptime, and 25620 once the plan ask and the build
+  # step named the ticket graph and its PNG).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 25280))
+  (($(wc -c <"$manual") <= 25620))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

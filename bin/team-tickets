@@ -2,7 +2,7 @@
 # List a task's tickets with each one's state, or check their Blocked by:, Waits for:, Phase: and
 # Touches: lines and the spec's Parallel: line.
 #
-# Usage: team-tickets T<n> [--check] [--json]
+# Usage: team-tickets T<n> [--check | --json | --html <file> | --graph]
 # The tickets are the files tickets/NN-<slug>.md in the task directory (the project's task_dir) of
 # each of the task's own open worktrees (never a ticket worktree's copy, team-open --ticket), one
 # set whose numbers are the task's: NN is the ticket's two-digit number, which no two files share.
@@ -31,9 +31,12 @@
 # waiting (every blocker done, and a Waits for: line, quoted) or ready (every blocker done).
 # It prints one line per ticket, "NN <state> <slug>", then ": session <id>" for running, ": on
 # <blockers not done>" for blocked and ": <its Waits for: text>" for waiting; --json prints a list
-# of {ticket, slug, state, project, file, phase, blocked_by, waits_for, on, session, touches},
-# waits_for and session null when there is none, touches the Touches: paths, null with no line.
-# A task with no ticket files prints none (--json, []), saying so on stderr.
+# of {ticket, slug, state, project, file, phase, blocked_by, waits_for, on, session, touches,
+# minutes}, waits_for and session null when there is none, touches the Touches: paths, null with no
+# line, and minutes a done ticket's build minutes: from the latest builder launch on brief-build-NN
+# to the latest ticket-done of NN, rounded half up and at least 1, null for a ticket not done or
+# done with no launch before it (logged by hand). A task with no ticket files prints none (--json,
+# []), saying so on stderr.
 # --check prints, as "<file>:<line>: <reason>" (the file alone when there is no line), and exits 1
 # on: a file in tickets/ not named NN-<slug>.md; a number two files share; a missing, second or
 # malformed Blocked by: line; a second or malformed Waits for:, Phase: or Touches: line; a blocker
@@ -47,23 +50,63 @@
 # the other is under), named once per pair at the higher-numbered ticket's Touches: line with the
 # first path both touch; and a second or malformed Parallel: line in spec.md, or one naming more
 # caps than the tickets have phases. The listing refuses such a set the same way. A clean set
-# prints how many tickets it read; one with none says so on stderr. It never writes.
+# prints how many tickets it read; one with none says so on stderr.
+# --html <file> writes the tickets as one self-contained HTML page of their dependency graph
+# (bin/lib/ticket_graph.py draws it, its header says how): each ticket a box by level, top to
+# bottom, with its number, state, minutes and slug, each phase a band, an arrow per Blocked by:
+# entry routed clear of every box, the critical path in red, weighed by build minutes (a done
+# ticket its own, every other ticket their median, or each ticket 1 when none has any), and a
+# header with the task's title, the serial total, the critical path, the widest level and how the
+# tickets were weighed; its head carries the digest of the --json list it was drawn from
+# (tickets_digest). It writes through a temporary file in <file>'s directory, renamed over
+# <file>, prints nothing, refuses a directory that does not exist, and writes nothing for a set
+# the listing refuses; a task with no tickets gets a page saying so.
+# --graph writes that page as tickets.html and a PNG of it as tickets.png in the task directory of
+# the task's first ticket listed (ticket_graph_dir), which git ignores and whose archive leaves
+# images out, and prints the PNG's path, then the page's; a task with no tickets is refused.
+# The PNG is headless Chrome's screenshot of the page, its window the page's exact size at twice
+# its scale, so it holds every level: Chrome is bin/lib/chrome.sh's, as team-doctor's chrome line
+# finds it (the file TEAM_CHROME names, a .app directory run as <app>/Contents/MacOS/<its name less
+# .app>, else Google Chrome's app on macOS, else the first of google-chrome-stable, google-chrome,
+# chromium and chromium-browser on PATH), run under a 60-second timeout with a fresh profile
+# directory, removed after. The PNG counts when Chrome exits 0 and wrote one, or when it exits
+# otherwise, but for the timeout, and its stderr says "<n> bytes written to file <the
+# screenshot's path>" of a PNG of n bytes (a Mac with no display writes the screenshot, then
+# hangs until its teardown watchdog ends it with exit 2). With no Chrome, or Chrome failing,
+# timing out or writing no PNG, the page is still written and its path printed, any old
+# tickets.png is removed, stderr says why there is no PNG, and the exit is 1.
+# Make the graph for the plan ask to Daniel and when Daniel asks how a building task stands, and
+# attach its PNG with team-ask --attach or team-post --attach.
+# --html and --graph go with no other mode. Nothing else is written.
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-tickets T<n> [--check] [--json]"
-task='' check='' json=''
-for arg in "$@"; do
-  case $arg in
+usage="usage: team-tickets T<n> [--check | --json | --html <file> | --graph]"
+task='' check='' json='' html='' html_set='' graph=''
+while (($#)); do
+  case $1 in
     --check) check=1 ;;
     --json) json=1 ;;
-    T[0-9]*) [[ -z $task && $arg =~ ^T[0-9]+$ ]] || usage_error "$usage"; task=$arg ;;
+    --html)
+      [[ -z $html_set && $# -ge 2 && -n $2 ]] || usage_error "$usage"
+      html=$2 html_set=1
+      shift ;;
+    --graph) [[ -z $graph ]] || usage_error "$usage"; graph=1 ;;
+    T[0-9]*) [[ -z $task && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"; task=$1 ;;
     *) usage_error "$usage" ;;
   esac
+  shift
 done
 [[ -n $task ]] || usage_error "$usage"
 [[ -z $check || -z $json ]] || usage_error "--check and --json do not go together; $usage"
+[[ -z $html_set || -z $check$json$graph ]] || usage_error "--html goes with no other mode; $usage"
+[[ -z $graph || -z $check$json ]] || usage_error "--graph goes with no other mode; $usage"
+if [[ -n $html_set ]]; then
+  html_dir=$(dirname -- "$html")
+  [[ -d $html_dir ]] || die "$html_dir is not a directory, so $html cannot be written"
+  [[ ! -d $html ]] || die "$html is a directory, not a file the page can be written to"
+fi
 
 events=$(known_task_events "$task")
 
@@ -269,6 +312,13 @@ def cycle($g; $start):
 | ($runs | map_values(
     if .launch and (.done == null or .launch.key > .done) then "running"
     elif .done != null then "done" else null end)) as $ran
+# A done ticket's build minutes: from its latest launch to its latest ticket-done, rounded half up
+# and at least 1, or null with no launch before that ticket-done or a time that does not parse.
+| ($runs | map_values(
+    if .done != null and .launch and .launch.key < .done then
+      (try ((($events[.done].ts | fromdate) - (.launch.value.ts | fromdate)) / 60 + 0.5 | floor | [., 1] | max)
+       catch null)
+    else null end)) as $minutes
 | {problems: $problems,
    tickets: [$named[]
      | (.blocked[0].value // "None" | if . == "None" then [] else split(", ") end) as $blockers
@@ -277,15 +327,16 @@ def cycle($g; $start):
      | {ticket, slug,
         state: ($ran[.ticket] // (if $on != [] then "blocked" elif $waits then "waiting" else "ready" end)),
         project, file, phase: $phase[.ticket], blocked_by: $blockers, waits_for: $waits, on: [], session: null,
-        touches: .paths} as $t
+        touches: .paths, minutes: null} as $t
      | $t + (if $t.state == "blocked" then {on: $on}
-             elif $t.state == "running" then {session: $runs[.ticket].launch.value.session} else {} end)]}
+             elif $t.state == "running" then {session: $runs[.ticket].launch.value.session}
+             elif $t.state == "done" then {minutes: $minutes[.ticket]} else {} end)]}
 JQ
 
 # One jq run: the analysis, then a first line of its problem and ticket counts, then each problem,
 # then the tickets as --json prints them or as text lines.
 mode=text
-[[ -z $json ]] || mode=json
+[[ -z $json$html_set$graph ]] || mode=json
 out=$(jq -r --arg task "$task" --arg files_tsv "$files_tsv" --arg marks_tsv "$marks_tsv" --arg dirs_tsv "$dirs_tsv" \
   --arg scope_tsv "$scope_tsv" --arg me "${0##*/}" --arg mode "$mode" '
   def rows: split("\n") | map(select(. != "") | split("\t"));
@@ -309,9 +360,86 @@ if ((problems > 0)); then
   printf '%s\n' "$rest" >&2
   exit 1
 fi
+# --graph draws nothing for a task with no tickets, so it says only that.
+((count || ! graph)) || die "$task has no tickets, so it has no graph"
 ((count)) || echo "${0##*/}: $task has no tickets in its open worktrees" >&2
 if [[ -n $check ]]; then
   ((count == 0)) || echo "$task: $count tickets, every Blocked by:, Waits for:, Phase:, Touches: and Parallel: line well-formed"
+  exit 0
+fi
+
+# What the script made and removes as it ends, whatever way it ends.
+made=()
+trap 'rm -rf -- "${made[@]}"' EXIT
+
+# Write the page to <file> through a temporary file in <dir>, renamed over <file> once whole, and
+# set size to the page's "<width> <height>" in CSS pixels: write_page <file> <dir>
+write_page() {
+  local title digest tmp
+  title=$(jq -r 'map(select(.event == "opened")) | last | .title // "" | tostring' <<<"$events")
+  digest=$(tickets_digest <<<"$rest")
+  tmp=$(mktemp "$2/.${1##*/}.XXXXXX")
+  made+=("$tmp")
+  size=$(python3 -I "$TEAM_LIB/ticket_graph.py" --task "$task" --title "$title" \
+    --as-of "$(date -u '+%Y-%m-%d %H:%M')" --digest "$digest" --out "$tmp" <<<"$rest") ||
+    die "could not draw $task's tickets"
+  mv -f -- "$tmp" "$1"
+}
+
+if [[ -n $html_set ]]; then
+  write_page "$html" "$html_dir"
+  exit 0
+fi
+
+# The Chrome --graph screenshots the page with: bin/lib/chrome.sh's lookup, the doctor's chrome line's.
+# shellcheck source=bin/lib/chrome.sh
+source "$TEAM_LIB/chrome.sh"
+
+if [[ -n $graph ]]; then
+  dir=$(ticket_graph_dir <<<"$rest")
+  page=$dir/tickets.html png=$dir/tickets.png
+  write_page "$page" "$dir"
+  read -r width height <<<"$size"
+  # The page stands without a PNG, and an old PNG never stands for it: no_png <reason>
+  no_png() {
+    rm -f -- "$png"
+    printf '%s\n' "$page"
+    die "no PNG of $task's graph: $1"
+  }
+  chrome=$(chrome_path)
+  [[ -n $chrome ]] || no_png "no Chrome found; set TEAM_CHROME or install Google Chrome"
+  chrome=$(chrome_binary "$chrome")
+  profile=$(mktemp -d)
+  shot=$(mktemp --suffix=.png "$dir/.tickets.XXXXXX")
+  err=$(mktemp)
+  made+=("$profile" "$shot" "$err")
+  url=file://$(jq -rn --arg path "$page" '$path | split("/") | map(@uri) | join("/")')
+  status=0
+  timeout -k 5 60 "$chrome" --headless=new --disable-gpu --hide-scrollbars --no-first-run \
+    --no-default-browser-check --disable-extensions --disable-background-networking \
+    --disable-component-update --disable-sync --mute-audio --user-data-dir="$profile" \
+    --force-device-scale-factor=2 --window-size="$width,$height" --screenshot="$shot" "$url" \
+    </dev/null >/dev/null 2>"$err" || status=$?
+  # A Chrome helper still ending may hold it a moment longer; the EXIT trap removes it then.
+  rm -rf -- "$profile" 2>/dev/null || true
+  ((status != 124)) || no_png "Chrome timed out after 60 s"
+  last=$(grep -v '^[[:space:]]*$' "$err" | tail -n 1) || true
+  # Whether Chrome's stderr says it wrote the screenshot whole: a line "<n> bytes written to file
+  # <the screenshot's path, or its real path>", n the file's size.
+  wrote_shot() {
+    local bytes
+    bytes=$(($(wc -c <"$shot")))
+    grep -qxF -e "$bytes bytes written to file $shot" -e "$bytes bytes written to file $(realpath -- "$shot")" "$err"
+  }
+  # A Mac with no display (CI's macOS runner) writes the screenshot, then hangs in its teardown
+  # until Chrome's watchdog ends it with exit 2, so a nonzero exit, but the timeout's kill, still
+  # takes a PNG that Chrome says it wrote whole.
+  if ((status != 0)) && ! { ((status != 137)) && [[ $(image_type "$shot") == png ]] && wrote_shot; }; then
+    no_png "Chrome exited $status${last:+: $last}"
+  fi
+  [[ $(image_type "$shot") == png ]] || no_png "Chrome exited 0 and wrote no PNG${last:+: $last}"
+  mv -f -- "$shot" "$png"
+  printf '%s\n%s\n' "$png" "$page"
   exit 0
 fi
 [[ -z $rest ]] || printf '%s\n' "$rest"

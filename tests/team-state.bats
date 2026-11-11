@@ -5,6 +5,7 @@ load helpers/common
 
 setup() {
   sandbox
+  # shellcheck disable=SC2153 # TEAM_HOME is the sandbox's, not a misspelt TEAM_CHROME
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
 [proj]
 repo = "owner/proj"
@@ -110,7 +111,7 @@ phase_of() {
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
     waiting: null, walk: null, rehome_failures: [], merge_preapproval: null, pr: null,
-    progress: {tickets: {done: [], total: 0}, on: [],
+    progress: {tickets: {done: [], total: 0, graph: null}, on: [],
       reviews: {count: 0, verdict: null, head: null, sent_back: null}}}')"
   assert_equal "$(stub_calls gh)" ""
 }
@@ -1007,7 +1008,7 @@ progress_task() {
     {"id": "3ed2d1f2", "sessionId": "3ed2d1f2-1111", "name": "T14-ops", "status": "busy", "state": "working"}]'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .progress <<<"$output")" "$(jq -cn '{
-    tickets: {done: ["01", "02", "03"], total: 7},
+    tickets: {done: ["01", "02", "03"], total: 7, graph: null},
     on: [{role: "builder", session: "59709d99", brief: "brief-build-04"}, {role: "ops", session: "3ed2d1f2", brief: null}],
     reviews: {count: 0, verdict: null, head: null, sent_back: null}}')"
   assert_equal "$(jq -c '[.workers[] | .brief]' <<<"$output")" \
@@ -1022,17 +1023,80 @@ progress_task() {
   event T14 ticket-done '{ticket: "01", commits: ["a0017cce"]}'
   event T14 ticket-done '{ticket: "01", commits: ["9e0e3990"]}'
   run_bin -0 team-state T14 --json
-  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":2}'
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":2,"graph":null}'
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature building | no live worker | tickets 1/2"
 
   # A second Blocked by: line: team-tickets refuses the set, so the total is unknown.
   echo "Blocked by: 01" >>"$BATS_TEST_TMPDIR/wt/.scratch/task/tickets/02-ticket-2.md"
   run_bin -0 --separate-stderr team-state T14 --json
-  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":null}'
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":null,"graph":null}'
   assert_equal "$stderr" ""
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature building | no live worker | tickets 1 done"
+}
+
+# A stub Chrome, by TEAM_CHROME, whose screenshot is a PNG's signature, for team-tickets --graph.
+stub_chrome() {
+  stub_command chrome
+  export TEAM_CHROME=$BATS_TEST_TMPDIR/stubs/chrome
+  stub_script chrome <<'SH'
+for arg; do
+  [[ $arg != --screenshot=* ]] || printf '\x89PNG\r\n\x1a\n' >"${arg#*=}"
+done
+SH
+}
+
+@test "the tickets' graph is null and unsaid with no tickets or no page" {
+  progress_task 2
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":[],"total":2,"graph":null}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 0/2"
+
+  # A page left in a task directory with no tickets names no graph.
+  local dir=$BATS_TEST_TMPDIR/wt/.scratch/task
+  rm "$dir"/tickets/*.md
+  echo '<!doctype html>' >"$dir/tickets.html"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":[],"total":0,"graph":null}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker"
+}
+
+@test "the graph team-tickets --graph made is fresh until a ticket-done, and stale with its PNG missing or older" {
+  progress_task 2
+  stub_chrome
+  local dir=$BATS_TEST_TMPDIR/wt/.scratch/task
+  run_bin -0 team-tickets T14 --graph
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph <<<"$output")" \
+    "$(jq -cn --arg dir "$dir" '{html: "\($dir)/tickets.html", png: "\($dir)/tickets.png", fresh: true}')"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 0/2, graph fresh"
+
+  # A ticket-done changes the tickets the page shows.
+  event T14 ticket-done '{ticket: "01", commits: ["a0017cce"]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph.fresh <<<"$output")" false
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 1/2, graph stale"
+
+  # Remade, it is fresh again; a PNG older than its page is stale.
+  run_bin -0 team-tickets T14 --graph
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph.fresh <<<"$output")" true
+  touch -d '2026-10-01 00:00' "$dir/tickets.png"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph.fresh <<<"$output")" false
+
+  # With no PNG it is stale, and png is null.
+  rm "$dir/tickets.png"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph <<<"$output")" \
+    "$(jq -cn --arg dir "$dir" '{html: "\($dir)/tickets.html", png: null, fresh: false}')"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 1/2, graph stale"
 }
 
 @test "progress carries the review count and the latest review's verdict, head and sent-back findings" {
@@ -1094,15 +1158,16 @@ progress_task() {
   assert_equal "$output" "T14 proj feature building | no live worker"
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .progress <<<"$output")" \
-    '{"tickets":{"done":[],"total":0},"on":[],"reviews":{"count":0,"verdict":null,"head":null,"sent_back":null}}'
+    '{"tickets":{"done":[],"total":0,"graph":null},"on":[],"reviews":{"count":0,"verdict":null,"head":null,"sent_back":null}}'
 }
 
-@test "--help documents progress, each worker's brief and the PR's behind_by and caught_up" {
+@test "--help documents progress, the tickets' graph, each worker's brief and the PR's behind_by and caught_up" {
   run_bin -0 team-state --help
   assert_contains "$output" "progress"
   assert_contains "$output" "behind_by"
   assert_contains "$output" "on build-04"
-  assert_contains "$output" "tickets 3/7"
+  assert_contains "$output" "tickets 3/7, graph stale"
+  assert_contains "$output" "{html, png, fresh}"
   assert_contains "$output" "16 behind dev"
   assert_contains "$output" "caught_up"
   assert_contains "$output" "(caught up cleanly with <base>)"
