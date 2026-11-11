@@ -22,7 +22,7 @@ The coordinator started you in the task's git worktree and gave you a brief.
 
 Send short messages to `coordinator` with SendMessage, starting with the task id and a kind:
 
-- `T<n> QUESTION <text> | options: a / b / c` when the plan leaves a real choice open. Then wait for the answer.
+- `T<n> QUESTION <text> | options: a / b / c` when the plan leaves a real choice open, or `T<n> QUESTION <path>` for several: every open one whose prerequisites are settled, at most 8, numbered, each with its options and the one you recommend, in one file; facts you look up, never ask. Then wait for the answer.
 - `T<n> BLOCKED <what> <why>` when you need help, or when the same obstacle stops you twice.
 - `T<n> PAUSED <why>` for a known wait that will clear on its own.
 - `T<n> DONE <path>` when the spec and tickets, or the report, are written, with ` memory=.scratch/task/memory.md` after it when you added a memory.
