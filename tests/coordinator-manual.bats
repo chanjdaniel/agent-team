@@ -287,7 +287,7 @@ $WORKER_INSTRUCTIONS"
   # A crashed task: the roles of its latest launches nothing ended, with the crash brief.
   grep -qF 'For each task whose `crashed` is not null, for each role of `crashed.roles`' "$skill"
   grep -qF '`team-brief T<n> resume-crash --name resume-<role> --force --set role=<role> --set brief=<that brief> --set machine=<crashed.machine> --set checkpoint=<crashed.checkpoint> --set snapshot=' "$skill"
-  grep -qF '`team-log T<n> resumed`' "$skill"
+  grep -qF '`team-log T<n> resumed all=true`' "$skill"
   # Each failed worktree is in the ledger, and every report of the day goes at the end.
   grep -qF 'Each failure is also a `rehome-failed` in the ledger' "$skill"
   grep -qF 'delete every report of the day, `tasks/resume-<date>-*.json`, the earlier runs'"'"' included' "$skill"
@@ -552,7 +552,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25680 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25860 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -578,10 +578,11 @@ $WORKER_INSTRUCTIONS"
   # answer as its length, with the pointer to its relay, 24640 once the load check's line named
   # team-drill status, 24690 once it named the probe form, and 117 lines and 25190 bytes once
   # waiting.md, team-inbox --post and the reply by number replaced the Waiting on you message, and
-  # 25280 once the heartbeat's line named team-uptime, and 25680 once the message table and the
-  # park line named each park's cause).
+  # 25280 once the heartbeat's line named team-uptime, 25680 once the message table and the
+  # park line named each park's cause, and 25860 once they named resumed id= and all=true and
+  # what ends Daniel's hold and an ask's wait).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 25680))
+  (($(wc -c <"$manual") <= 25860))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

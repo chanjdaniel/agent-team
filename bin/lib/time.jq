@@ -52,9 +52,10 @@ def park_class:
 
 # A task's events up to $end as segments {from, to, class}, from its opened. The walk steps the
 # ledger's lifecycle fold (lifecycle_step) beside its own phase markers, and takes from it which
-# parks stand and which asks are open: a park stands until the fold ends it (a launch ends every
-# blocked, waiting and paused, never a held; a resumed with none of id, all and brief ends every
-# park; a merge-approved ends an old wait on Daniel), never at an answered, and the latest standing
+# parks stand and which asks are open: a park stands until the fold ends it (by its cause's rules,
+# an old line's as before: a launch ends every blocked, waiting and paused, never a held, a resumed
+# with none of id, all and brief every park; a merge-approved ends an old wait on Daniel; an
+# answered only a typed wait on its ask), and the latest standing
 # one sets the class (park_time_class); an asked with no park standing opens a wait on Daniel
 # (askwait) that ends once every ask it noted (that one and any asked while it stands) is settled,
 # or at a launch, a resumed, another park or a merge-approved, which answers what an old ask's

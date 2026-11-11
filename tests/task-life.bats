@@ -323,7 +323,7 @@ level_reading() {
   local resume_brief=$output
   assert_contains "$(cat "$resume_brief")" "resuming the task after the stow for the level at "
   ok team-worker T1 builder "$wt" -- "Read your brief at $resume_brief"
-  ok team-log T1 resumed
+  ok team-log T1 resumed all=true
   step building
   run_bin -0 team-log --check
 }

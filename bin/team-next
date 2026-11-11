@@ -17,7 +17,7 @@
 #                since; refused for the first review and for verify
 #   --template   with a review launch after the first, rereview or verify instead of the rule's
 # First every check, each refusal changing nothing (no ledger line, no brief, no launch): the task
-# is open (team-open's opened, not closed) and not held (a held with no resumed since), has no ask
+# is open (team-open's opened, not closed) and not held (a held standing in the ledger's lifecycle fold), has no ask
 # to Daniel that nothing settled yet, and the message reads as team-log --from-message --print
 # reads it (its refusal is team-log's, with its exit code).
 # Then it logs, through team-log, each of the message's events that the ledger does not already

@@ -68,7 +68,7 @@ looked_in() {
   assert_equal "$output" $'Five a minute.\n\n  Keep "ten an hour" for the API, `not` the site.  '
   assert_equal "$stderr" ""
   assert_equal "$(logged)" '{"task":"T7","event":"answered","id":"sign-in","answer":"Five a minute.\n\n  Keep \"ten an hour\" for the API, `not` the site.  ","discord_message":"1564000000000000001"}
-{"task":"T7","event":"resumed"}'
+{"task":"T7","event":"resumed","id":"waiting-1"}'
   assert_equal "$(looked_in)" "2222"
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
@@ -174,13 +174,23 @@ answered 1564000000000000002"
   assert_equal "$(reads)" ""
 }
 
-@test "resumed is logged only while the ask's own wait is the task's standing park" {
+@test "an old wait on the ask still standing is ended by a resumed naming it, whatever stands beside it" {
+  # The setup's wait has no cause, as team-ask logged it before it typed one: a resumed id= ends it
+  # alone, past any later park, which stays.
   local park
   for park in \
-    '{"event":"launch","role":"builder","session":"s","worktree":"/w/7","toolkits":[]}' \
-    '{"event":"paused","reason":"stowed"}' \
+    '{"event":"paused","cause":"stow","reason":"stowed"}' \
     '{"event":"waiting","on":"Daniel","reason":"ask reset"}' \
-    '{"event":"waiting","on":"Daniel","reason":"merge"}' \
+    '{"event":"pr","url":"https://github.com/o/r/pull/1","head":"a1b2c3d"}'; do
+    head -n 4 "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+    jq -c '. + {ts: "2026-10-01T10:00:04Z", task: "T7"}' <<<"$park" >>"$TEAM_HOME/l"
+    mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+    run_bin -0 team-answer T7 sign-in 1564000000000000001
+    assert_equal "$(tail -n +6 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)' | jq -sc 'map([.event, .id])')" '[["answered","sign-in"],["resumed","waiting-1"]]'
+  done
+  # A launch, or an old resumed, ended it already: no resumed is logged.
+  for park in \
+    '{"event":"launch","role":"builder","session":"s","worktree":"/w/7","toolkits":[]}' \
     '{"event":"resumed"}'; do
     head -n 4 "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
     jq -c '. + {ts: "2026-10-01T10:00:04Z", task: "T7"}' <<<"$park" >>"$TEAM_HOME/l"
@@ -188,13 +198,16 @@ answered 1564000000000000002"
     run_bin -0 team-answer T7 sign-in 1564000000000000001
     assert_equal "$(tail -n +6 "$TEAM_HOME/ledger.jsonl" | jq -r .event)" "answered"
   done
-  # Events that are not parks leave the wait standing.
-  head -n 4 "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
-  echo '{"ts":"2026-10-01T10:00:04Z","task":"T7","event":"pr","url":"https://github.com/o/r/pull/1","head":"a1b2c3d"}' >>"$TEAM_HOME/l"
+}
+
+@test "a typed wait on the ask is ended by the answered alone, with no resumed" {
+  head -n 3 "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  echo '{"ts":"2026-10-01T10:00:03Z","task":"T7","event":"waiting","on":"Daniel","cause":"ask","ask":"sign-in","reason":"ask sign-in"}' >>"$TEAM_HOME/l"
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  run_bin -0 team-answer T7 sign-in 1564000000000000001
-  assert_equal "$(tail -n +6 "$TEAM_HOME/ledger.jsonl" | jq -r .event)" "answered
-resumed"
+  run_bin -0 --separate-stderr team-answer T7 sign-in 1564000000000000001
+  assert_equal "$stderr" ""
+  assert_equal "$(logged | jq -r .event)" "answered"
+  assert_equal "$(jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; [waiting, lifecycle.parks, pending_asks]' "$TEAM_HOME/ledger.jsonl")" '[null,[],[]]'
 }
 
 @test "a message sent before the ask's question, or before its asked when no question is logged, is refused without asking Discord" {
@@ -312,9 +325,9 @@ logged_since() {
   assert_equal "$output" "no"
   assert_equal "$stderr" ""
   assert_equal "$(logged_since)" '{"task":"T7","event":"answered","id":"sign-in","answer":"3 yes, 5 no","discord_message":"1564000000000000010","item":3}
-{"task":"T7","event":"resumed"}
+{"task":"T7","event":"resumed","id":"waiting-1"}
 {"task":"T8","event":"answered","id":"port","answer":"3 yes, 5 no","discord_message":"1564000000000000010","item":5}
-{"task":"T8","event":"resumed"}'
+{"task":"T8","event":"resumed","id":"waiting-1"}'
   # Each task's thread is looked in first, then #coordinator.
   assert_equal "$(looked_in)" "2222
 $COORDINATOR

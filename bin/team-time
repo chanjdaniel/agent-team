@@ -8,8 +8,10 @@
 # from --since (default the ledger's start) to --until; --task measures that task alone.
 # Each stretch of a task's time is one phase, walked through its events in ledger order:
 #   the waits come from the ledger's lifecycle fold, the one team-state reads: a park (waiting,
-#   blocked, paused, held) stands until the fold ends it (a launch ends every one but a held, a
-#   resumed with none of id, all and brief every one, a merge-approved an old wait on Daniel),
+#   blocked, paused, held) stands until the fold ends it (by its cause's rules in
+#   bin/lib/lifecycle.json's causes, as team-log's header says; an old line's as before, a launch
+#   every one but a held and a resumed with none of id, all and brief every one; a merge-approved
+#   an old wait on Daniel),
 #   never at an answered, and the latest standing one holds the stretch; a park whose line
 #   carries its cause is classed by the cause's class in bin/lib/lifecycle.json's causes (an
 #   outside wait that names its on by that on, as below); an old one, with no cause, first

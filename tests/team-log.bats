@@ -266,7 +266,7 @@ TABLE
   grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
   grep -Eq '^  ran +team-run-approved +id, exit \(number\); pushed at once  \(.*\)$' <<<"$output"
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional cause \(ask\|daniel\|outside\), ask, since  \(.*cause: why, .*daniel when on is Daniel.*\)$' <<<"$output"
-  grep -Eq '^  resumed +team-log, team-answer +-; optional brief +\(clears held, blocked, paused and waiting; brief: ' <<<"$output"
+  grep -Eq '^  resumed +team-log, team-answer +-; optional id, all \(boolean\), discord_message \(id\), brief +\(ends standing parks, by bin/lib/lifecycle.json.s causes: id, .*all true, .*brief alone, .*ends none; .*\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional cause \(task\|worker\|denial\), role, session, since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
   grep -Eq '^  held +team-log +reason; optional cause \(daniel-hold\), discord_message \(id\), head, since  \(Daniel.s hold on the task; .*\)$' <<<"$output"
   grep -Eq '^  paused +team-log, team-worker +reason; optional cause \(worker\|room\|stow\|coordinator-hold\|offline\|limit\|machine\|shutdown\), role, session, since  \(.*\)$' <<<"$output"
@@ -294,9 +294,9 @@ TABLE
   [[ $ts =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
   [[ ! $ts < $before && ! $ts > $after ]]
 
-  run_bin -0 team-log T14 resumed
+  run_bin -0 team-log T14 resumed all=true
   assert_equal "$(logged_after 2 | wc -l)" "2"
-  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" '{"task":"T14","event":"resumed"}'
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" '{"task":"T14","event":"resumed","all":true}'
 }
 
 @test "values that parse as JSON are stored as JSON, others as strings" {
@@ -459,11 +459,11 @@ LINES
 @test "a Discord id is stored as a string, declared or not, and so is any whole number of 16 digits or more" {
   opened_task T14
   run_bin -0 team-log T14 asked id=q1 text=Which? discord_message=1564584780744491089
-  run_bin -0 team-log T14 resumed discord_channel=1562486564871995482 ref=1565336870932582522 count=42 big=999999999999999
+  run_bin -0 team-log T14 resumed all=true discord_channel=1562486564871995482 ref=1565336870932582522 count=42 big=999999999999999
   assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T14","event":"asked","id":"q1","text":"Which?","discord_message":"1564584780744491089"}
-{"task":"T14","event":"resumed","discord_channel":"1562486564871995482","ref":"1565336870932582522","count":42,"big":999999999999999}
+{"task":"T14","event":"resumed","all":true,"discord_channel":"1562486564871995482","ref":"1565336870932582522","count":42,"big":999999999999999}
 LINES
   )"
   # A declared id is a string of digits: anything else is refused.
@@ -493,8 +493,8 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
   # merge-preapproved names a project of the task that opts in, and an ask it logged before;
   # branch-renamed a new branch of it that names the task; merge-standing #coordinator's channel,
   # and merge-standing-withdrawn, after it, the word it logged; retro-change a retro Daniel answered;
-  # a kind with one_of sets the first field of each (a question its text); a paused its cause and a
-  # held Daniel's message, which team-log requires of each.
+  # a kind with one_of sets the first field of each (a question its text); a paused its cause, a
+  # held Daniel's message and a resumed all=true, which team-log requires of each.
   plan_registry
   opened T14 proj
   a_retro T150 answered
@@ -509,6 +509,7 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4"),
       (select($k == "paused") | "cause=limit"), (select($k == "held") | "discord_message=\($soon)"),
+      (select($k == "resumed") | "all=true"),
       (.kinds[$k].one_of // [] | .[] | "\(.[0])=x y")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
@@ -1258,7 +1259,7 @@ null
   assert_contains "$output" "since 2999-01-01T00:00:00Z is later than now ("
   run_bin -1 team-log T14 blocked reason=x since=2026-10-25T14:00:00Z
   assert_contains "$output" "since 2026-10-25T14:00:00Z is earlier than T14's latest event, at 2026-10-25T14:51:44Z"
-  run_bin -1 team-log T14 resumed since=2026-10-25T15:00:00Z
+  run_bin -1 team-log T14 resumed all=true since=2026-10-25T15:00:00Z
   assert_contains "$output" "since is taken only by a park (waiting, blocked, paused, held), not resumed"
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
@@ -2050,8 +2051,8 @@ assert_no_answer_logged() {
   AGENT_TEAM_ROLE=builder run_bin -0 team-log --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-log")"
   opened_task T14
-  AGENT_TEAM_ROLE=coordinator run_bin -0 team-log T14 resumed
-  assert_equal "$(logged_after 2)" '{"task":"T14","event":"resumed"}'
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-log T14 resumed all=true
+  assert_equal "$(logged_after 2)" '{"task":"T14","event":"resumed","all":true}'
 }
 
 @test "an event holding an address at a public provider is refused, naming its field and never the value, since the records hook would refuse every later ledger commit" {
@@ -2107,6 +2108,7 @@ origin_subject() {
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4"),
       (select($k == "paused") | "cause=limit"), (select($k == "held") | "discord_message=\($soon)"),
+      (select($k == "resumed") | "all=true"),
       (.kinds[$k].one_of // [] | .[] | "\(.[0])=x y")' "$CONTRACT")
     tip=$(git -C "$team_origin" rev-parse dev)
     run_bin -0 --separate-stderr team-log T14 "$kind" "${args[@]}"
@@ -2272,4 +2274,63 @@ retro-schedule"
   run_bin -1 team-log T99 review verdict=pass head=abcdef1234567
   assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $unopened"
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+}
+
+# T14's phase and standing parks' ids, by the fold over the ledger.
+T14_state() {
+  jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map(select(.task == "T14")) | [phase, (lifecycle.parks | map(.id))]' \
+    "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "a resumed names what it ends, and one the fold would not end, or a second held, is warned and then refused" {
+  opened_task T14
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 resumed
+  assert_equal "$output" "team-log: resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T14 lists the standing parks"
+  run_bin -1 team-log T14 resumed all=false
+  assert_equal "$output" "team-log: resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T14 lists the standing parks"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  run_bin -0 team-log T14 resumed all=true
+  run_bin -0 team-log T14 resumed brief=brief-merge-base
+  assert_equal "$(logged_after 2)" '{"task":"T14","event":"resumed","all":true}
+{"task":"T14","event":"resumed","brief":"brief-merge-base"}'
+  # Daniel's hold, a typed wait on an ask, then each resumed or held the fold would not take.
+  printf '%s\n' \
+    '{"ts":"2026-01-01T00:01:00Z","task":"T14","event":"held","cause":"daniel-hold","discord_message":"1567157155797139608","reason":"hold"}' \
+    '{"ts":"2026-01-01T00:02:00Z","task":"T14","event":"asked","id":"door","text":"Which door?"}' \
+    '{"ts":"2026-01-01T00:03:00Z","task":"T14","event":"waiting","on":"Daniel","cause":"ask","ask":"door","reason":"ask door"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  local note="(logged anyway; bin/lib/lifecycle.json refuses it from its lifecycle_from, not set yet)"
+  local hold="held-1 is Daniel's hold, which only a resumed with discord_message, Daniel's word, lifts"
+  local again="T14 is on Daniel's hold already: held-1 since 2026-01-01T00:01:00Z"
+  local none="T14 has no standing park blocked-1; its standing parks: held-1, waiting-1"
+  local ask="waiting-1 is the wait on ask door, which ends when the ask is answered (team-answer), not with a resumed"
+  with_lifecycle_from null
+  run_bin -0 --separate-stderr team-log T14 resumed id=held-1
+  assert_equal "$stderr" "team-log: lifecycle: $hold $note"
+  run_bin -0 --separate-stderr team-log T14 held discord_message=1567157155797139609 reason=again
+  assert_equal "$stderr" "team-log: lifecycle: $again $note"
+  run_bin -0 --separate-stderr team-log T14 resumed id=blocked-1
+  assert_equal "$stderr" "team-log: lifecycle: $none, held-2 $note"
+  run_bin -0 --separate-stderr team-log T14 resumed id=waiting-1
+  assert_equal "$stderr" "team-log: lifecycle: $ask $note"
+  # Each was logged, and the fold ended none of them: the hold and the wait stand.
+  assert_equal "$(T14_state)" '["held",["held-1","waiting-1","held-2"]]'
+  # From a time before them, each is refused and nothing is logged; Daniel's word lifts the hold.
+  cp "$BATS_TEST_TMPDIR/before.jsonl" "$TEAM_HOME/ledger.jsonl"
+  with_lifecycle_from 2026-01-01T00:00:00Z
+  run_bin -1 team-log T14 resumed id=held-1
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $hold"
+  run_bin -1 team-log T14 held discord_message=1567157155797139609 reason=again
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $again"
+  run_bin -1 team-log T14 resumed id=blocked-1
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $none"
+  run_bin -1 team-log T14 resumed id=waiting-1
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $ask"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  run_bin -0 --separate-stderr team-log T14 resumed id=held-1 discord_message=1567157155797139610
+  assert_equal "$stderr" ""
+  assert_equal "$(T14_state)" '["planning",["waiting-1"]]'
 }

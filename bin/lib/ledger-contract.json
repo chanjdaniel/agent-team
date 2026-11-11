@@ -152,9 +152,9 @@
     },
     "resumed": {
       "writer": ["team-log", "team-answer"],
-      "about": "clears held, blocked, paused and waiting; brief: the file name without .md of the brief the holder was sent, on a merge-base round, which holds team-sweep's merge-due",
+      "about": "ends standing parks, by bin/lib/lifecycle.json's causes: id, the park it ends (team-state's parks name each), Daniel's hold only with discord_message, Daniel's message lifting it, and an ask's wait never; all true, every park whose cause takes all; brief alone, the file name without .md of the brief the holder was sent, on a merge-base round, which holds team-sweep's merge-due, ends none; an old line with none of the three ended every park",
       "required": {},
-      "optional": {"brief": "string"}
+      "optional": {"id": "string", "all": "boolean", "discord_message": "id", "brief": "string"}
     },
     "pr": {
       "writer": "team-log",

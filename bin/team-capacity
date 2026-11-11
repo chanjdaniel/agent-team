@@ -253,9 +253,9 @@
 #          launch follows it), oldest stow first, each with the estimate of its roles to
 #          relaunch, whether that fits now (never at none) and what holds it, if anything (its
 #          latest held while it stands, or a waiting or blocked logged after its stow while it
-#          stands: stow_hold in bin/lib/ledger.jq), which keeps it from being relaunched until a
-#          resumed lifts it; then the tasks whose launches were refused for room and not
-#          launched or resumed since (refused_launches in bin/lib/ledger.jq), oldest refusal
+#          stands: stow_hold in bin/lib/ledger.jq), which keeps it from being relaunched until it
+#          ends; then the tasks whose launches were refused for room with the refusal standing
+#          (refused_launches in bin/lib/ledger.jq), oldest refusal
 #          first, each with its roles' estimate, whether it fits and what holds it alike (a
 #          waiting or blocked logged after its latest refusal). Text: "Over budget at minor (30%): 14.5 GiB
 #          reserved of 9.6 GiB.", then "  stop T1-reviewer aaaa0012, its work handed on: frees

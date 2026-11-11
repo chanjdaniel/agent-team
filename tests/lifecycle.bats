@@ -451,3 +451,113 @@ LEDGER
   assert_equal "$status" 0
   assert_equal "$output" '{"total":8,"from":null,"bad":[{"line":5,"task":"T3","event":"asked","ts":"2026-11-01T00:02:00Z","problems":["T3 is not opened (no opened event), and it takes only thread and opened before its opened, not asked"]},{"line":8,"task":"T2","event":"answered","ts":"2026-11-01T00:05:00Z","problems":["T2 is closed, and a closed task takes no answered"]}]}'
 }
+
+@test "each typed park is ended by exactly the events its cause's row names, and by nothing else" {
+  # Generated from lifecycle.json's causes: for each cause a park of its first kind (a blocked or
+  # paused naming the builder's role), after an open ask a1 (the ask of a wait of cause ask), then
+  # one event, the park ended exactly when the row says that event ends it.
+  run jq -L "$REPO_ROOT/bin/lib" -nc 'include "ledger";
+    [{ts: "2026-11-01T00:00:00Z", task: "T1", event: "opened", path: "feature"},
+     {ts: "2026-11-01T00:01:00Z", task: "T1", event: "asked", id: "a1", text: "Which?"}] as $base
+    | {"launch of its role": {event: "launch", role: "builder", session: "b9"},
+       "launch of another role": {event: "launch", role: "reviewer", session: "r9"},
+       "resumed id= of it": {event: "resumed", id: "@"},
+       "resumed id= of it with discord_message": {event: "resumed", id: "@", discord_message: "1"},
+       "resumed id= of another park": {event: "resumed", id: "paused-9"},
+       "resumed all=true": {event: "resumed", all: true},
+       "resumed brief= alone": {event: "resumed", brief: "brief-merge-base"},
+       "its ask answered": {event: "answered", id: "a1"},
+       "another ask answered": {event: "answered", id: "a2"}} as $cases
+    | lifecycle_table.causes | to_entries | map(.key as $cause | .value as $row | $row.kinds[0] as $kind
+      | ({reason: "r", cause: $cause}
+         + if IN($kind; "blocked", "paused") then {role: "builder", session: "b1"} else {} end
+         + if $kind == "waiting" then {on: "Daniel"} else {} end
+         + if $kind == "held" then {discord_message: "1"} else {} end
+         + if $cause == "ask" then {ask: "a1"} else {} end) as $fields
+      | $cases | to_entries[] | .key as $case
+      | ({ts: "2026-11-01T00:03:00Z", task: "T1"} + .value | if .id == "@" then .id = "\($kind)-1" else . end) as $e
+      | ($base + [{ts: "2026-11-01T00:02:00Z", task: "T1", event: $kind} + $fields, $e] | lifecycle.parks == []) as $ended
+      | {"launch of its role": IN($row.launch; "any", "role"),
+         "launch of another role": ($row.launch == "any"),
+         "resumed id= of it": ($row.resume == "id"),
+         "resumed id= of it with discord_message": IN($row.resume; "id", "daniel"),
+         "resumed id= of another park": false,
+         "resumed all=true": $row.all,
+         "resumed brief= alone": false,
+         "its ask answered": ($cause == "ask"),
+         "another ask answered": false}[$case] as $want
+      | select($ended != $want) | "\($cause): \($case) \(if $ended then "ends" else "leaves" end) it")'
+  assert_equal "$status" 0
+  assert_equal "$output" "[]"
+  # The rows as the spec gives them, so the generated test reads what the table says.
+  assert_equal "$(fold_read 'lifecycle_table.causes | to_entries | map("\(.key) \(.value.launch) \(.value.resume) \(.value.all)") | join("; ")')" \
+    "daniel-hold never daniel false; ask never never false; daniel any id true; outside any id true; task any id true; worker role id true; denial any id true; room role id true; stow role id true; coordinator-hold role id true; offline role id true; limit any id true; machine any id true; shutdown any id true"
+}
+
+@test "a typed park of role cause that names no role is ended by any launch" {
+  opened feature
+  on paused '{reason: "waiting for the gate", cause: "worker"}'
+  on launch '{role: "reviewer", session: "r1", worktree: "/w/1", toolkits: []}'
+  assert_equal "$(fold_read 'lifecycle.parks')" "[]"
+}
+
+@test "T278's A2: a resumed id= of a worker's block leaves Daniel's held standing" {
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  on held '{reason: "Daniel: hold until I say", cause: "daniel-hold", discord_message: "1"}'
+  on blocked '{reason: "builder: npm registry down", cause: "worker"}'
+  on resumed '{id: "blocked-1"}'
+  assert_equal "$(fold_read '[phase, (lifecycle.parks | map(.id))]')" '["held",["held-1"]]'
+  # all=true leaves it too, and Daniel's word lifts it.
+  on resumed '{all: true}'
+  assert_equal "$(fold_read '[phase, (lifecycle.parks | map(.id))]')" '["held",["held-1"]]'
+  on resumed '{id: "held-1", discord_message: "2"}'
+  assert_equal "$(fold_read '[phase, (lifecycle.parks | map(.id))]')" '["building",[]]'
+}
+
+@test "T278's A3: a typed wait on an ask stands through a launch until the ask is answered" {
+  opened feature
+  on asked '{id: "door-data", text: "Which door data?"}'
+  on waiting '{on: "Daniel", cause: "ask", ask: "door-data", reason: "ask door-data"}'
+  builder_launch b3
+  assert_equal "$(fold_read '[waiting.reason, (pending_asks | map(.id)), parked]')" '["ask door-data",["door-data"],true]'
+  on answered '{id: "door-data", answer: "the old data"}'
+  assert_equal "$(fold_read '[waiting, (pending_asks | map(.id)), parked]')" '[null,[],false]'
+}
+
+@test "old untyped parks read as phase 1 did, and a resumed id= or all=true ends them too" {
+  opened feature
+  on held '{reason: "on hold by Daniel"}'
+  on blocked '{reason: "a denied push"}'
+  on resumed
+  assert_equal "$(fold_read '[phase, lifecycle.parks]')" '["planning",[]]'
+  # A resumed id= names an old park whatever its cause, as team-answer ends an old ask's wait;
+  # all=true ends the old parks whose legacy_cause takes all, never an old held, Daniel's.
+  on held '{reason: "on hold by Daniel"}'
+  on waiting '{on: "Daniel", reason: "ask door-data"}'
+  on waiting '{on: "CI", reason: "the runner"}'
+  on resumed '{id: "waiting-1"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map(.id)')" '["held-2","waiting-2"]'
+  on resumed '{all: true}'
+  assert_equal "$(fold_read 'lifecycle.parks | map(.id)')" '["held-2"]'
+  on resumed '{id: "held-2"}'
+  assert_equal "$(fold_read 'lifecycle.parks')" '[]'
+}
+
+@test "a second held while Daniel's hold stands, and a resumed id= the fold would not end, break the table" {
+  opened feature
+  on asked '{id: "door-data", text: "Which door data?"}'
+  on waiting '{on: "Daniel", cause: "ask", ask: "door-data", reason: "ask door-data"}'
+  assert_equal "$(problems resumed '{id: "held-1"}')" "T1 has no standing park held-1; its standing parks: waiting-1"
+  assert_equal "$(problems resumed '{id: "waiting-1"}')" \
+    "waiting-1 is the wait on ask door-data, which ends when the ask is answered (team-answer), not with a resumed"
+  on held '{reason: "Daniel: hold", cause: "daniel-hold", discord_message: "1"}'
+  assert_equal "$(problems held '{reason: "again", cause: "daniel-hold", discord_message: "2"}')" \
+    "T1 is on Daniel's hold already: held-1 since 2026-11-01T00:03:00Z"
+  assert_equal "$(problems resumed '{id: "held-1"}')" "held-1 is Daniel's hold, which only a resumed with discord_message, Daniel's word, lifts"
+  assert_equal "$(problems resumed '{id: "held-1", discord_message: "3"}')" ""
+  assert_equal "$(problems resumed '{all: true}')" ""
+  on answered '{id: "door-data", answer: "the old data"}'
+  on resumed '{id: "held-1", discord_message: "3"}'
+  assert_equal "$(problems resumed '{id: "held-1"}')" "T1 has no standing park held-1; its standing parks: none"
+}

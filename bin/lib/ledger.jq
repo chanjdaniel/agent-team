@@ -407,14 +407,17 @@ def park_role:
 #   reviews each review's head and verdict, in the order logged, for a PR's verdict when its head
 #           moves.
 #   parks   the standing parks (held, blocked, waiting, paused) in the order logged, as {id, kind,
-#           cause, typed, on, reason, role, session, since, ts, i, passed}: id <kind>-<n>, n the
-#           park's ordinal among the task's events of its kind; cause park_cause's, typed whether
-#           the line carries its own cause; role park_role's; on, reason and session its fields,
-#           or null; since its since field or its ts; i its index among the task's events; passed
-#           false. A launch ends every standing blocked, waiting and paused, never a held; a
-#           resumed with none of id, all and brief ends every park, and any other ends none (one
-#           with only brief is a merge-base round's holder brief); a merge-approved ends every old
-#           wait on Daniel (lifecycle_old_wait_on_daniel).
+#           cause, typed, on, reason, role, session, ask, since, ts, i, passed}: id <kind>-<n>, n
+#           the park's ordinal among the task's events of its kind; cause park_cause's, typed
+#           whether the line carries its own cause; role park_role's; on, reason, session and ask
+#           (a wait's ask id) its fields, or null; since its since field or its ts; i its index
+#           among the task's events; passed false. A typed park ends by its cause's rules in the
+#           table's causes: a launch by lifecycle_launch_ends, a resumed by lifecycle_resume_ends,
+#           and an ask's wait (lifecycle_ask_wait) only once no ask of the state is its ask. An old
+#           park (no cause on its line) ends as before: at a launch unless it is a held, and at a
+#           resumed with none of id, all and brief; a resumed's id naming it ends it too, and all
+#           true when its legacy_cause takes all. A brief alone (a merge-base round's holder brief)
+#           ends none; a merge-approved ends every old wait on Daniel (lifecycle_old_wait_on_daniel).
 #   asks    the asks no later event settles (settles), as {id, text, ts, i, passed}, passed false.
 #   stow    null, or {state: "stowed", cause, roles, since, i} from the latest stowed with no
 #           launch after it.
@@ -446,6 +449,35 @@ def lifecycle_open_prs: [.prs[] | select(.merged | not)];
 # Whether a park of the state is an old (untyped) wait on Daniel, which a merge-approved ends, as
 # Daniel's word on a merge answers what the wait was for.
 def lifecycle_old_wait_on_daniel: .kind == "waiting" and (.typed | not) and IN(.cause; "daniel", "ask");
+
+# The table's rules for a park of the state (its cause's row of causes), or null for a cause the
+# table lacks.
+def lifecycle_rules: lifecycle_table.causes[.cause // ""] // null;
+
+# Whether a park of the state is a typed wait on an ask (cause ask on its own line), which only
+# its ask's settling ends.
+def lifecycle_ask_wait: .typed and .cause == "ask";
+
+# Whether the launch $e ends a park of the state: a typed park by its cause's launch rule (any;
+# role, a launch of the park's role, or any launch when the park names none; never), an old one
+# by phase 1's (every blocked, waiting and paused, never a held).
+def lifecycle_launch_ends($e):
+  lifecycle_rules as $rules
+  | if .typed and $rules != null then
+      $rules.launch == "any" or ($rules.launch == "role" and (.role == null or .role == $e.role))
+    else .kind != "held" end;
+
+# Whether the resumed $e ends a park of the state: an id naming it ends a typed park whose cause's
+# resume is id, or daniel with $e's discord_message, Daniel's word, and an old one whatever its
+# cause, as team-answer ends an old ask's wait; all true ends one whose cause (legacy_cause's on an
+# old line) takes all; an old line with none of id, all and brief ends every old park, and a
+# brief alone ends none.
+def lifecycle_resume_ends($e):
+  lifecycle_rules as $rules
+  | ($e.id != null and .id == $e.id
+     and ((.typed | not) or $rules.resume == "id" or ($rules.resume == "daniel" and $e.discord_message != null)))
+    or ($e.all == true and $rules.all == true)
+    or ($e.id == null and $e.all == null and $e.brief == null and (.typed | not));
 
 # The review phase at $ts: awaiting-merge when the task has an open PR and every open PR's verdict
 # is pass, else in-review; applied only while the phase is one of $from.
@@ -481,7 +513,7 @@ def lifecycle_step($e):
       if .phase == "planning" then lifecycle_move("building"; $e.ts) else . end
     elif $effect == "launch" then
       (if $e.role == "builder" and IN(.phase; "planning", "merged-part", "merged") then lifecycle_move("building"; $e.ts) else . end)
-      | .parks |= map(select(.kind == "held"))
+      | .parks |= map(select(lifecycle_launch_ends($e) | not))
       | .stow = null
     elif $effect == "build" then
       if IN(.phase; "planning", "merged-part", "merged") then lifecycle_move("building"; $e.ts) else . end
@@ -516,13 +548,15 @@ def lifecycle_step($e):
     elif $effect == "settle" then
       .asks |= map(. as $ask | select($e | settles($ask) | not))
       | if $e.event == "merge-approved" then .parks |= map(select(lifecycle_old_wait_on_daniel | not)) else . end
+      | .asks as $asks
+      | .parks |= map(select(lifecycle_ask_wait and (.ask as $ask | all($asks[]; .id != $ask)) | not))
     elif $effect == "park" then
       .counts[$e.event] = ((.counts[$e.event] // 0) + 1)
       | .parks += [{id: "\($e.event)-\(.counts[$e.event])", kind: $e.event, cause: ($e | park_cause),
           typed: ($e.cause != null), on: ($e.on // null), reason: ($e.reason // null), role: ($e | park_role),
-          session: ($e.session // null), since: ($e.since // $e.ts), ts: $e.ts, i: $i, passed: false}]
+          session: ($e.session // null), ask: ($e.ask // null), since: ($e.since // $e.ts), ts: $e.ts, i: $i, passed: false}]
     elif $effect == "resume" then
-      if $e.id == null and $e.all == null and $e.brief == null then .parks = [] else . end
+      .parks |= map(select(lifecycle_resume_ends($e) | not))
     elif $effect == "stowed" then
       .stow = {state: "stowed", cause: ($e.cause // null), roles: ($e.roles // []), since: $e.ts, i: $i}
     else . end;
@@ -533,9 +567,11 @@ def lifecycle: reduce .[] as $e (lifecycle_start; lifecycle_step($e));
 # How the event $e breaks the table in the state (the input), one string each, nothing when the
 # table takes it: a status its kind does not take (closed, with closed-own-retro for a closed
 # task's own retro-change, its retro this task; not opened, unknown or legacy, naming the kinds
-# that status takes in the table's order; opened already), else a phase it does not take, and a
-# park (a kind of effect park) with no cause, naming the causes the table gives its kind. A kind
-# the table does not list takes default.
+# that status takes in the table's order; opened already), else a phase it does not take, a park
+# (a kind of effect park) with no cause, naming the causes the table gives its kind, a held while
+# Daniel's hold (a park of cause daniel-hold) stands, and a resumed whose id names no standing
+# park, an ask's wait, or Daniel's hold with no discord_message: every resumed id= the fold would
+# not end. A kind the table does not list takes default.
 def lifecycle_problems($e):
   lifecycle_table as $t
   | ($t.kinds[$e.event] // {}) as $row
@@ -549,6 +585,19 @@ def lifecycle_problems($e):
      else "\($e.task) is \(.phase) since \(.since), and \($e.event) is taken only while it is \($phases | listed("or"))" end),
     (if $row.effect == "park" and $e.cause == null then
        "a \($e.event) needs a cause, one of \([$t.causes | to_entries[] | select(.value.kinds | index([$e.event])) | .key] | sort | join(", "))"
+     else empty end),
+    (if $e.event == "held" then
+       first(.parks[] | select(.cause == "daniel-hold")) | "\($e.task) is on Daniel's hold already: \(.id) since \(.since)"
+     else empty end),
+    (if $e.event == "resumed" and $e.id != null then
+       (first(.parks[] | select(.id == $e.id)) // null) as $park
+       | if $park == null then
+           "\($e.task) has no standing park \($e.id); its standing parks: \(.parks | map(.id) | if . == [] then "none" else join(", ") end)"
+         elif $park | lifecycle_ask_wait then
+           "\($e.id) is the wait on ask \($park.ask), which ends when the ask is answered (team-answer), not with a resumed"
+         elif ($park | lifecycle_rules.resume == "daniel" and (lifecycle_resume_ends($e) | not)) then
+           "\($e.id) is Daniel's hold, which only a resumed with discord_message, Daniel's word, lifts"
+         else empty end
      else empty end)
   elif .status == "closed" then "\($e.task) is closed, and a closed task takes no \($e.event)"
   elif IN(.status; "unknown", "legacy") then

@@ -710,8 +710,12 @@ EOF
   assert_equal "$(jq -c .waiting <<<"$output")" '{"on":"Daniel","reason":"ask naming","since":"2026-10-22T02:20:00Z"}'
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature blocked | no live worker | parks: blocked-1 denial since 2026-10-22T02:00:00Z: Bash(git push) denied by a deny rule; paused-1 stow since 2026-10-22T02:10:00Z: stowed, handoff written; waiting-1 ask since 2026-10-22T02:15:00Z: ask naming"
-  # With none standing, the JSON lists none and the line has no parks part.
-  event T14 resumed
+  # With none standing, the JSON lists none and the line has no parks part: all=true ends the
+  # block and the pause, and the ask's answer its typed wait.
+  event T14 resumed '{all: true}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.parks | map(.id)' <<<"$output")" '["waiting-1"]'
+  event T14 answered '{id: "naming", answer: "the short one"}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .parks <<<"$output")" '[]'
   run_bin -0 team-state T14

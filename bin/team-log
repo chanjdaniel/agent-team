@@ -70,7 +70,15 @@
 # a paused has no default and is refused without one ("a paused needs cause=, one of limit,
 # machine, shutdown, worker"). A park logged after the fact takes since=<UTC time>, when it began: no later
 # than now and no earlier than the task's latest event, or it is refused naming both times; no
-# other kind takes since. A retro-change is refused when its retro names a
+# other kind takes since. A resumed names what it ends, and is refused with none of id, all=true
+# and brief ("resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T<n> lists
+# the standing parks"): id=<park> ends that park, Daniel's hold only with discord_message, their
+# word lifting it, and never an ask's wait, which its ask's answer ends; all=true every standing
+# park whose cause in bin/lib/lifecycle.json takes all (all but Daniel's hold and an ask's wait);
+# brief=<brief> alone, a merge-base round's holder brief, none. The lifecycle table names a
+# resumed id= the fold would not end (of no standing park, of an ask's wait, of Daniel's hold
+# with no discord_message) and a held while Daniel's hold stands, warned or refused as above.
+# A retro-change is refused when its retro names a
 # task with no opened event of path retro, or a retro with no answered of id retro.
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
 # merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
@@ -305,6 +313,11 @@ case $event in
       elif .event == "blocked" then .cause = (if (.on // "" | tostring | test("^[Tt][0-9]+$")) then "task" else "worker" end)
       else "a paused needs cause=, one of limit, machine, shutdown, worker" | halt_error(1) end' <<<"$typed" 2>&1) ||
       die "${typed%$'\n'}"
+    ;;
+  # A resumed names what it ends, so one never lifts every park again.
+  resumed)
+    jq -e '.id != null or .all == true or .brief != null' <<<"$typed" >/dev/null ||
+      die "resumed needs id=<a standing park>, all=true or brief=<brief>; team-state $task lists the standing parks"
     ;;
 esac
 
