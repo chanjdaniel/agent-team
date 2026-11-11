@@ -1242,7 +1242,7 @@ null
   run_bin -0 team-log T14 blocked 'reason=usage limit: the weekly limit' since=2026-10-25T14:58:00Z
   run_bin -0 team-log T15 waiting on=Daniel reason=x since=2026-10-25T14:58:00Z
   run_bin -0 team-log T16 paused cause=machine reason=x since=2026-10-25T14:51:44Z
-  run_bin -0 team-log T17 held discord_message=1567157155797139608 reason=x since=2026-10-25T14:58:00Z
+  run_bin -0 team-log T17 held discord_message=1564000000000000020 reason=x since=2026-10-25T14:58:00Z
   assert_equal "$(tail -n 4 "$TEAM_HOME/ledger.jsonl" | jq -r '[.event, .since] | join(" ")')" "$(
     printf '%s\n' 'blocked 2026-10-25T14:58:00Z' 'waiting 2026-10-25T14:58:00Z' 'paused 2026-10-25T14:51:44Z' 'held 2026-10-25T14:58:00Z'
   )"
@@ -1692,7 +1692,7 @@ assert_no_answer_logged() {
   run_bin -0 team-log T14 blocked cause=denial reason="Bash(git push) denied"
   run_bin -0 team-log T14 waiting on=Daniel cause=outside reason="kept as given"
   run_bin -0 team-log T14 paused cause=limit reason="the weekly limit"
-  run_bin -0 team-log T14 held discord_message=1567157155797139608 reason="Daniel holds it for the release"
+  run_bin -0 team-log T14 held discord_message=1564000000000000020 reason="Daniel holds it for the release"
   assert_equal "$(logged_after 2 | jq -r '[.event, .on // "-", .cause] | join(" ")')" "$(printf '%s\n' \
     "waiting Daniel daniel" "waiting daniel daniel" "waiting GitHub outside" "blocked T31 task" "blocked - worker" \
     "blocked - denial" "waiting Daniel outside" "paused - limit" "held - daniel-hold")"
@@ -1704,7 +1704,7 @@ assert_no_answer_logged() {
   run_bin -1 team-log T14 held reason="Daniel holds it"
   assert_equal "$output" "team-log: a held is Daniel's hold, and needs discord_message, the id of Daniel's message saying so"
   # A cause the kind does not take is the contract's refusal.
-  run_bin -1 team-log T14 held discord_message=1567157155797139608 cause=limit reason="x"
+  run_bin -1 team-log T14 held discord_message=1564000000000000020 cause=limit reason="x"
   assert_contains "$output" "cause must be one of daniel-hold"
   run_bin -1 team-log T14 blocked cause=stow reason="x"
   assert_contains "$output" "cause must be one of task, worker, denial"
@@ -2255,7 +2255,7 @@ retro-schedule"
   local closed="T1 is closed, and a closed task takes no"
   local unopened="T99 is not opened (no opened event), and it takes only thread and opened before its opened, not review"
   with_lifecycle_from null
-  run_bin -0 --separate-stderr team-log T1 held discord_message=1567157155797139608 reason="after close"
+  run_bin -0 --separate-stderr team-log T1 held discord_message=1564000000000000020 reason="after close"
   assert_equal "$stderr" "team-log: lifecycle: $closed held $note"
   run_bin -0 --separate-stderr team-log T1 asked id=late text="asked after close"
   assert_equal "$stderr" "team-log: lifecycle: $closed asked $note"
@@ -2269,7 +2269,7 @@ retro-schedule"
   head -2 "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/before.jsonl"
   cp "$BATS_TEST_TMPDIR/before.jsonl" "$TEAM_HOME/ledger.jsonl"
   with_lifecycle_from 2026-01-01T00:00:00Z
-  run_bin -1 team-log T1 held discord_message=1567157155797139608 reason="after close"
+  run_bin -1 team-log T1 held discord_message=1564000000000000020 reason="after close"
   assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $closed held"
   run_bin -1 team-log T1 asked id=late text="asked after close"
   assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $closed asked"
@@ -2301,7 +2301,7 @@ T14_state() {
 {"task":"T14","event":"resumed","brief":"brief-merge-base"}'
   # Daniel's hold, a typed wait on an ask, then each resumed or held the fold would not take.
   printf '%s\n' \
-    '{"ts":"2026-01-01T00:01:00Z","task":"T14","event":"held","cause":"daniel-hold","discord_message":"1567157155797139608","reason":"hold"}' \
+    '{"ts":"2026-01-01T00:01:00Z","task":"T14","event":"held","cause":"daniel-hold","discord_message":"1564000000000000020","reason":"hold"}' \
     '{"ts":"2026-01-01T00:02:00Z","task":"T14","event":"asked","id":"door","text":"Which door?"}' \
     '{"ts":"2026-01-01T00:03:00Z","task":"T14","event":"waiting","on":"Daniel","cause":"ask","ask":"door","reason":"ask door"}' \
     >>"$TEAM_HOME/ledger.jsonl"
