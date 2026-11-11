@@ -36,14 +36,19 @@ daemon_refuses() {
   assert_equal "$(line_of docker)" "FAIL docker: \`docker info\` cannot reach the daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?; fix: Daniel opens Docker Desktop once and accepts its license"
 }
 
-@test "the chrome line warns without Google Chrome or Chromium, with this OS's install" {
+@test "the chrome line warns without Google Chrome or Chromium that runs, with this OS's install" {
   only_checks 050-chrome.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of chrome)" "PASS chrome: $TEAM_CHROME"
+  local warn="WARN chrome: neither Google Chrome nor Chromium is installed, so chrome-devtools-axi has no browser; fix: Daniel installs google-chrome from the AUR, or runs sudo pacman -S --needed chromium"
+  # A TEAM_CHROME that is no executable is no browser, as team-tickets --graph finds none there.
+  chmod -x "$TEAM_CHROME"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of chrome)" "$warn"
   rm "$TEAM_CHROME"
   run_bin -0 team-doctor
-  assert_equal "$(line_of chrome)" "WARN chrome: neither Google Chrome nor Chromium is installed, so chrome-devtools-axi has no browser; fix: Daniel installs google-chrome from the AUR, or runs sudo pacman -S --needed chromium"
+  assert_equal "$(line_of chrome)" "$warn"
   # Without the seam, Arch looks for the browser's command.
   unset TEAM_CHROME
   printf '#!/bin/sh\n' >"$TOOL_STUBS/google-chrome-stable"

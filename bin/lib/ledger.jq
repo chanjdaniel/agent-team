@@ -798,11 +798,12 @@ def workers($sessions):
        context: $live.context, brief: (.brief // null)}];
 
 # Where the task is, over its events and its workers: tickets (done, the tickets with a
-# ticket-done, each once, and total, null here, which task_state_json reads from team-tickets),
+# ticket-done, each once, and total and graph, null here, which task_state_json reads from
+# team-tickets and the graph's page and PNG),
 # on (each live worker's role, session and brief) and reviews (the count of the task's reviews,
 # and the latest one's verdict, head and sent_back, each null when there is none).
 def progress($workers):
-  {tickets: {done: [.[] | select(.event == "ticket-done") | .ticket] | unique, total: null},
+  {tickets: {done: [.[] | select(.event == "ticket-done") | .ticket] | unique, total: null, graph: null},
    on: [$workers[] | select(.live) | {role, session, brief}],
    reviews: (map(select(.event == "review"))
      | {count: length} + (last // {} | {verdict, head, sent_back}))};
@@ -970,8 +971,9 @@ def task_state($sessions; $home):
      progress: progress($workers)};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands
-# and the brief it is on, then the tickets done and the latest review:
-# T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7 | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
+# and the brief it is on, then the tickets done, with the graph fresh or stale when there is one,
+# and the latest review:
+# T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7, graph stale | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
 def state_line:
   .task as $task
   | ([.task, .project, .path, .phase] | map(select(. != null)) | join(" "))
@@ -984,7 +986,8 @@ def state_line:
   + (.progress.tickets // {} | (.done // [] | length) as $done
      | if (.total | type) == "number" and .total > 0 then " | tickets \($done)/\(.total)"
        elif $done > 0 then " | tickets \($done) done"
-       else "" end)
+       else "" end
+     + if .graph == null then "" elif .graph.fresh then ", graph fresh" else ", graph stale" end)
   + (.progress.reviews // {} | if (.count // 0) == 0 then ""
      else " | review \(.count) \(.verdict)"
        + (if (.sent_back | type) == "array" and .sent_back != [] then ", sent back \(.sent_back | map(tostring) | join(", "))" else "" end)

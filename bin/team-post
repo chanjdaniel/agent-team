@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Post a file's text to Discord through its REST API, with no plugin and no gateway: to a task's
-# thread (the ledger's latest thread event for the task), its interview thread (--thread
-# interview: the latest interview-thread event, which team-thread --interview logs) or to
-# #coordinator, never to a channel named by id. Unlike discord_api alone, it refuses on a machine
-# that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh, as the lease-fence hook
-# does), and posts nothing then; while the team holds offline it still posts, since Discord is up
-# and the plugin's posts go on too. In a worker session it posts only a planner's question, with
-# its images, to its own task's interview thread, or retracts one of those images
-# (worker_refusal in bin/lib/team.sh); the coordinator posts the rest.
+# Post a file's text, and images with it, to Discord through its REST API, with no plugin and no
+# gateway: to a task's thread (the ledger's latest thread event for the task), its interview thread
+# (--thread interview: the latest interview-thread event, which team-thread --interview logs) or
+# to #coordinator (text only), never to a channel named by id. Unlike discord_api alone, it
+# refuses on a machine that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh, as
+# the lease-fence hook does), and posts nothing then; while the team holds offline it still
+# posts, since Discord is up and the plugin's posts go on too. In a worker session it posts only a
+# planner's question, with its images, to its own task's interview thread, or retracts one of
+# those images (worker_refusal in bin/lib/team.sh); the coordinator posts the rest, the task's
+# thread's images included.
 #
-# Usage: team-post T<n> [--thread task|interview] --file <path>
-#        team-post T<n> --thread interview --file <path> --attach <image> [--attach <image>]...
+# Usage: team-post T<n> [--thread task|interview] --file <path> [--attach <image>]...
 #        team-post T<n> --thread interview --retract <message id>
 #        team-post --coordinator --file <path>
 # The message is the file's text with its trailing blank lines and spaces dropped. One over
@@ -25,8 +25,9 @@
 #              20 MiB, an empty one, or one with a control character in its name is refused. Each
 #              image posted is one image-posted event in the ledger, with its thread, message id
 #              and file name, appended once its message is sent.
-#   --retract  Deletes a message the ledger records for the task as carrying images, and logs
-#              image-retracted; any other id, or one already retracted, is refused. Prints
+#   --retract  Deletes a message the ledger records for the task as carrying images in its
+#              interview thread, and logs image-retracted; any other id, an image of the task's
+#              thread among them, or one already retracted, is refused. Prints
 #              "retracted <id>". A copy Discord's CDN holds may outlive it.
 # In a worker session --file must be inside the task's own directory (<worktree>/<task_dir> of its
 # open worktrees), and each --attach there too, no symbolic link, no file with a second hard link,
@@ -52,7 +53,7 @@ FRAMING=$((64 * 1024))
 UPLOAD_TIMEOUT=120
 # The request body of a message that holds only files.
 NO_TEXT='{"allowed_mentions":{"parse":["users"]}}'
-USAGE="usage: team-post T<n> [--thread task|interview] --file <path> | team-post T<n> --thread interview --file <path> --attach <image> [--attach <image>]... | team-post T<n> --thread interview --retract <message id> | team-post --coordinator --file <path>"
+USAGE="usage: team-post T<n> [--thread task|interview] --file <path> [--attach <image>]... | team-post T<n> --thread interview --retract <message id> | team-post --coordinator --file <path>"
 
 task='' coordinator=0 thread='' file='' retracting=0 retract='' attachments=()
 while (($#)); do
@@ -72,7 +73,7 @@ if ((retracting)); then
 else
   [[ -n $file ]] || usage_error "$USAGE"
 fi
-((!${#attachments[@]})) || [[ $thread == interview ]] || usage_error "$USAGE"
+((!${#attachments[@]} || !coordinator)) || usage_error "$USAGE"
 if ((coordinator)); then
   [[ -z $task && -z $thread ]] || usage_error "$USAGE"
 else
@@ -124,8 +125,8 @@ check_attachment() {
 if ((retracting)); then
   retracted=$(task_events "$task" | jq -r --arg id "$retract" 'select(.event == "image-retracted" and .discord_message == $id) | .discord_message')
   [[ -z $retracted ]] || die "message $retract of $task is already retracted"
-  channel=$(task_events "$task" | jq -r --arg id "$retract" 'select(.event == "image-posted" and .discord_message == $id) | .discord_thread' | tail -n 1)
-  [[ -n $channel ]] || die "the ledger records no image post $retract for $task, so nothing was retracted"
+  channel=$(task_events "$task" | jq -r --arg id "$retract" 'select(.event == "image-posted" and .thread == "interview" and .discord_message == $id) | .discord_thread' | tail -n 1)
+  [[ -n $channel ]] || die "the ledger records no image post $retract in $task's interview thread, so nothing was retracted"
 else
   # A worker's files stay in the task's own place, each open worktree's task directory; ui/ only
   # names what the refusal of a capture says.
@@ -251,7 +252,8 @@ for ((part = 0; part < total; part++)); do
     for i in "${!attachments[@]}"; do
       ((carried_by[i] == part)) || continue
       ledger_append "$(jq -cn --arg task "$task" --arg channel "$channel" --arg id "$id" --arg file "${names[i]}" \
-        '{ts: (now | todate), task: $task, event: "image-posted", thread: "interview", discord_thread: $channel, discord_message: $id, file: $file}')"
+        --arg thread "${thread:-task}" \
+        '{ts: (now | todate), task: $task, event: "image-posted", thread: $thread, discord_thread: $channel, discord_message: $id, file: $file}')"
     done
     continue
   fi
