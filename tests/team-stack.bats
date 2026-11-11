@@ -598,7 +598,7 @@ compose port web 80"
   n=$(($(docker_compose_env | wc -l) + 1))
   export TEAM_OWNER=someone TEAM_TASK=T7 TEAM_KIND=gate TEAM_WORKTREE=/elsewhere TEAM_EXPIRES=never
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
-  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE"
   run_bin -0 team-stack seed --worktree "$STACK_WORKTREE"
   # The config call, which finds the project, sees no labels; every later one the stack's own.
   assert_equal "$(compose_env_since "$n" | jq -c 'select(.call | test(" config ")) | .labels | map_values(. // "") | [.[]] | unique')" '[""]
@@ -616,7 +616,8 @@ compose port web 80"
   local port
   port=$(jq -r --arg name "/$PROJECT-web-1" '.[] | select(.Name == $name) | .NetworkSettings.Ports["80/tcp"][0].HostPort' "$DOCKER_STATE/containers.json")
   run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" ""
+  # Started with --no-seed, it warns on stderr.
+  assert_equal "$stderr" "team-stack: warning: $PROJECT is not seeded: it was started with --no-seed at $(record .seed.at -r) and never seeded; team-stack seed seeds it"
   assert_equal "$output" "export COMPOSE_PROJECT_NAME=$PROJECT
 export TH_WEB_PORT=$port
 export TEAM_OWNER=agent-team
@@ -647,7 +648,7 @@ TH_WEB_PORT=$port"
   printf '#!/usr/bin/env bash\necho "half seeded"\nexit 3\n' >"$STACK_WORKTREE/scripts/seed.sh"
   run_bin -1 --separate-stderr team-stack seed --worktree "$STACK_WORKTREE"
   assert_equal "$output" "half seeded"
-  assert_equal "$stderr" "team-stack: the seed command scripts/seed.sh failed (exit 3) for $PROJECT"
+  assert_equal "$stderr" "team-stack: the seed command scripts/seed.sh failed (exit 3) for $PROJECT; the next team-stack up or team-stack seed seeds it again"
   run_bin -0 team-stack stop --worktree "$STACK_WORKTREE"
   run_bin -1 --separate-stderr team-stack seed --worktree "$STACK_WORKTREE"
   assert_contains "$stderr" "$PROJECT is not running"
@@ -1044,8 +1045,9 @@ busy_ago() {
   assert_equal "$(stopped)" ""
   (($(busy_ago conventioner-2) < 60))
   assert_equal "$(jq -c 'keys' "$HOME/.local/state/agent-team/stacks/conventioner-2.json")" '["last_busy"]'
-  # Only running team stacks get a state file.
-  assert_equal "$(ls "$HOME/.local/state/agent-team/stacks")" conventioner-2.json
+  # Only running team stacks get a record, beside the records' lock.
+  assert_equal "$(ls "$HOME/.local/state/agent-team/stacks")" "conventioner-2.json
+records.lock"
   assert_equal "$(stub_calls claude)" '["agents","--json"]'
 }
 
@@ -1242,6 +1244,244 @@ team-stack: docker compose stop of conventioner-3 failed: Error response from da
   run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
   [[ ! -e $HOME/.local/state/agent-team/stacks/$PROJECT.json ]]
   [[ -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
+}
+
+# The stack record: the fixture stack's state file, its seed state and its writes.
+
+# The fixture stack's record, through the jq filter <filter> (default the whole record), with
+# jq's options <options...>: record [<filter>] [<options...>]
+record() {
+  jq -c "${1:-.}" "${@:2}" "$HOME/.local/state/agent-team/stacks/$PROJECT.json"
+}
+
+# The fixture stack's record holds the seed <seed JSON>, written as the test's: stack_record <seed>
+stack_record() {
+  sweep_state "$PROJECT" "$(jq -cn --argjson seed "$1" '{schema: "team-stack/1", seed: $seed}')"
+}
+
+# The worktree's seed command exits 3 after half its work; fixed_seed puts the fixture's back.
+failing_seed() {
+  printf '#!/usr/bin/env bash\necho "half seeded"\nexit 3\n' >"$STACK_WORKTREE/scripts/seed.sh"
+}
+fixed_seed() {
+  git -C "$STACK_WORKTREE" checkout -q -- scripts/seed.sh
+}
+
+# The worktree's wrapper makes its stack, but its up -d --wait fails while
+# $BATS_TEST_TMPDIR/unhealthy exists, as when a service never turns healthy.
+unhealthy_wrapper() {
+  mv "$STACK_WORKTREE/scripts/compose.sh" "$STACK_WORKTREE/scripts/compose-real.sh"
+  cat >"$STACK_WORKTREE/scripts/compose.sh" <<SH
+#!/usr/bin/env bash
+"\$(dirname "\$0")/compose-real.sh" "\$@" || exit
+if [[ \${1:-} == up && -e "$BATS_TEST_TMPDIR/unhealthy" ]]; then echo "web is unhealthy" >&2; exit 1; fi
+SH
+  chmod +x "$STACK_WORKTREE/scripts/compose.sh"
+  touch "$BATS_TEST_TMPDIR/unhealthy"
+}
+
+# A process whose command line names team-stack, as a seed's team-stack does (bash
+# .../team-stack), running until the test ends it; its process ID in LIVE_SEED.
+live_team_stack() {
+  mkdir -p "$BATS_TEST_TMPDIR/fake"
+  echo 'sleep 120' >"$BATS_TEST_TMPDIR/fake/team-stack"
+  bash "$BATS_TEST_TMPDIR/fake/team-stack" >/dev/null 2>&1 3>&- &
+  LIVE_SEED=$!
+}
+
+@test "a seed that fails in up leaves the record failed, and the next up seeds the stack again (E-seed-half)" {
+  open_task T22
+  failing_seed
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "${stderr##*$'\n'}" "team-stack: the seed command scripts/seed.sh failed (exit 3) for $PROJECT; the next team-stack up or team-stack seed seeds it again"
+  assert_equal "$(record '.seed | [.state, .exit, (.pid // "none")]')" '["failed",3,"none"]'
+  assert_equal "$(record .seed.commit -r)" "$(git -C "$STACK_WORKTREE" rev-parse HEAD)"
+  local at
+  at=$(record .seed.at -r)
+  [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  run_bin -0 team-stack stop --worktree "$STACK_WORKTREE"
+  fixed_seed
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, seeded again: its seed failed at $at (exit 3)"
+  assert_contains "$stderr" "seeded $PROJECT on port "
+  assert_equal "$(record '.seed | [.state, (.exit // "none"), (.pid // "none")]')" '["done","none","none"]'
+  # Seeded, the next up leaves it.
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, not seeded: its database was there"
+}
+
+@test "an up -d --wait that fails on a new stack leaves its record pending, and the next up seeds it, again when its volume was left" {
+  open_task T22
+  unhealthy_wrapper
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "${stderr##*$'\n'}" "team-stack: scripts/compose.sh up -d --wait failed for $PROJECT (exit 1)"
+  assert_equal "$(record '[.schema, .seed.state, .seed.commit]')" '["team-stack/1","pending",null]'
+  local at
+  at=$(record .seed.at -r)
+  # Its volume was left: the next up seeds the existing stack again.
+  rm "$BATS_TEST_TMPDIR/unhealthy"
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, seeded again: its seed, owed since $at, never ran"
+  assert_contains "$stderr" "seeded $PROJECT on port "
+  assert_equal "$(record .seed.state -r)" "done"
+  # Nothing was left: the next up seeds it as a new database.
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  docker_fail 'compose up' 'Error response from daemon: a stand-in failure'
+  run_bin -1 team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$(record .seed.state -r)" pending
+  assert_equal "$(stack_left)" ""
+  rm "$DOCKER_STATE/fail-compose-up"
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, seeded: a new database"
+  assert_equal "$(record .seed.state -r)" "done"
+}
+
+@test "up seeds again a stack whose seed never finished, and leaves one whose seed a live team-stack runs" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  # A process that has ended, and a live one that is not team-stack: neither runs the seed.
+  local dead other pid
+  sleep 0 3>&- &
+  dead=$!
+  wait "$dead"
+  sleep 120 >/dev/null 2>&1 3>&- &
+  other=$!
+  for pid in "$dead" "$other"; do
+    stack_record "{\"state\": \"running\", \"at\": \"2026-11-11T09:00:00Z\", \"commit\": null, \"pid\": $pid}"
+    run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+    assert_equal "$output" "team-stack: $PROJECT is up for T22, seeded again: its seed, started at 2026-11-11T09:00:00Z, never finished"
+    assert_contains "$stderr" "seeded $PROJECT on port "
+    assert_equal "$(record .seed.state -r)" "done"
+  done
+  kill "$other"
+  live_team_stack
+  stack_record "{\"state\": \"running\", \"at\": \"2026-11-11T09:00:00Z\", \"commit\": null, \"pid\": $LIVE_SEED}"
+  local before
+  before=$(record)
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  kill "$LIVE_SEED"
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, not seeded: its seed is running in team-stack $LIVE_SEED"
+  [[ $stderr != *"seeded $PROJECT"* ]]
+  assert_equal "$(record)" "$before"
+}
+
+@test "up --no-seed records a new stack skipped, a later up leaves it unseeded, and --no-seed on an owed stack names what is owed" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, not seeded: --no-seed"
+  assert_equal "$(record '[.schema, .seed.state, .seed.commit]')" '["team-stack/1","skipped",null]'
+  local at before
+  at=$(record .seed.at -r)
+  before=$(record)
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, not seeded: it was started with --no-seed at $at and never seeded; team-stack seed seeds it"
+  [[ $stderr != *"seeded $PROJECT"* ]]
+  assert_equal "$(record)" "$before"
+  # An owed seed is left with --no-seed, which names it.
+  stack_record '{"state": "failed", "at": "2026-11-11T09:00:00Z", "commit": null, "exit": 3}'
+  before=$(record)
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, not seeded: --no-seed, though its seed failed at 2026-11-11T09:00:00Z (exit 3); team-stack seed seeds it"
+  [[ $stderr != *"seeded $PROJECT"* ]]
+  assert_equal "$(record)" "$before"
+  # A seed that is not owed: --no-seed alone.
+  stack_record '{"state": "done", "at": "2026-11-11T09:00:00Z", "commit": null}'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, not seeded: --no-seed"
+}
+
+@test "a stack with an old state file, none, or one that is no JSON object reads unknown: up leaves it unseeded and env warns of nothing" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  local file=$HOME/.local/state/agent-team/stacks/$PROJECT.json content
+  for content in '{"last_busy": "2026-10-25T09:00:00Z"}' '[1]' 'not json' '' none; do
+    if [[ $content == none ]]; then rm -f "$file"; else sweep_state "$PROJECT" "$content"; fi
+    run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+    assert_equal "$output" "team-stack: $PROJECT is up for T22, not seeded: its database was there"
+    [[ $stderr != *"seeded $PROJECT"* ]]
+    run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE"
+    assert_equal "$stderr" ""
+    # The file is left as it was.
+    if [[ $content == none ]]; then [[ ! -e $file ]]; else assert_equal "$(cat "$file")" "$content"; fi
+  done
+}
+
+@test "env warns on stderr when the seed is pending, failed, running or skipped, none when done, its stdout the same" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" ""
+  local exports=$output dead seed want
+  sleep 0 3>&- &
+  dead=$!
+  wait "$dead"
+  live_team_stack
+  local at=2026-11-11T09:00:00Z
+  while IFS='|' read -r seed want; do
+    stack_record "$seed"
+    run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE"
+    assert_equal "$output" "$exports"
+    assert_equal "$stderr" "$want"
+  done <<EOF
+{"state": "pending", "at": "$at", "commit": null}|team-stack: warning: $PROJECT is not seeded: its seed, owed since $at, never ran; team-stack seed seeds it
+{"state": "failed", "at": "$at", "commit": null, "exit": 3}|team-stack: warning: $PROJECT is not seeded: its seed failed at $at (exit 3); team-stack seed seeds it
+{"state": "running", "at": "$at", "commit": null, "pid": $dead}|team-stack: warning: $PROJECT is not seeded: its seed, started at $at, never finished; team-stack seed seeds it
+{"state": "running", "at": "$at", "commit": null, "pid": $LIVE_SEED}|team-stack: warning: $PROJECT is not seeded: its seed is running in team-stack $LIVE_SEED
+{"state": "skipped", "at": "$at", "commit": null}|team-stack: warning: $PROJECT is not seeded: it was started with --no-seed at $at and never seeded; team-stack seed seeds it
+{"state": "done", "at": "$at", "commit": null}|
+EOF
+  kill "$LIVE_SEED"
+}
+
+@test "seed records its run: running with its pid and commit while the seed runs, then done or failed; down removes the record" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  local file=$HOME/.local/state/agent-team/stacks/$PROJECT.json during=$BATS_TEST_TMPDIR/during
+  # The seed command keeps the record as it runs, and the command line of the pid it names.
+  printf 'cp %q %q.json\nps -o args= -p "$(jq .seed.pid %q)" >%q.ps\n' "$file" "$during" "$file" "$during" \
+    >>"$STACK_WORKTREE/scripts/seed.sh"
+  run_bin -0 team-stack seed --worktree "$STACK_WORKTREE"
+  local head
+  head=$(git -C "$STACK_WORKTREE" rev-parse HEAD)
+  assert_equal "$(jq -c --arg head "$head" '[.schema, .seed.state, .seed.commit == $head, (.seed.pid | type)]' "$during.json")" \
+    '["team-stack/1","running",true,"number"]'
+  assert_contains "$(cat "$during.ps")" "bin/team-stack seed"
+  assert_equal "$(record --arg head "$head" '.seed | [.state, .commit == $head, has("pid"), has("exit")]')" '["done",true,false,false]'
+  failing_seed
+  run_bin -1 --separate-stderr team-stack seed --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: the seed command scripts/seed.sh failed (exit 3) for $PROJECT; the next team-stack up or team-stack seed seeds it again"
+  assert_equal "$(record --arg head "$head" '.seed | [.state, .commit == $head, has("pid"), .exit]')" '["failed",true,false,3]'
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  [[ ! -e $file ]]
+}
+
+@test "every write of the record holds records.lock and moves a temporary file into place, and the sweep's last_busy keeps the seed" {
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  local dir=$HOME/.local/state/agent-team/stacks
+  local seed='{"state":"failed","at":"2026-11-11T09:00:00Z","commit":null,"exit":3}'
+  sweep_state conventioner-2 "{\"schema\":\"team-stack/1\",\"seed\":$seed,\"last_busy\":\"2026-10-25T09:00:00Z\"}"
+  local fd sweep
+  exec {fd}>>"$dir/records.lock"
+  flock -x "$fd"
+  # The sweep gets no copy of the test's lock, which would hold it after the test lets go.
+  "$REPO_ROOT/bin/team-stack" sweep >"$BATS_TEST_TMPDIR/sweep.out" 2>"$BATS_TEST_TMPDIR/sweep.err" 3>&- {fd}>&- &
+  sweep=$!
+  # The sweep waits on the lock, its write not made.
+  local _
+  for _ in $(seq 100); do
+    if pgrep -P "$sweep" -x flock >/dev/null; then break; fi
+    sleep 0.1
+  done
+  pgrep -P "$sweep" -x flock >/dev/null
+  assert_equal "$(jq -r .last_busy "$dir/conventioner-2.json")" 2026-10-25T09:00:00Z
+  exec {fd}>&-
+  wait "$sweep"
+  (($(busy_ago conventioner-2) < 60))
+  assert_equal "$(jq -c .seed "$dir/conventioner-2.json")" "$seed"
+  assert_equal "$(jq -r .schema "$dir/conventioner-2.json")" team-stack/1
+  # No temporary file is left beside it.
+  assert_equal "$(ls -A "$dir")" "conventioner-2.json
+records.lock"
 }
 
 # reap, on the fixture machine: conventioner-4's worktree is gone, nmtest-1895520 is past its
@@ -1684,7 +1924,8 @@ compose port web 80 $PROJECT-a auto"
   assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a") $(state_of "$PROJECT-b")" "running running running"
   assert_equal "$(printf '%s\n' "$own" "$a" "$b" | sort -u | grep -c .)" 3
   run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance a
-  assert_equal "$stderr" ""
+  # The instance's own record, started with --no-seed.
+  assert_equal "$stderr" "team-stack: warning: $PROJECT-a is not seeded: it was started with --no-seed at $(jq -r .seed.at "$HOME/.local/state/agent-team/stacks/$PROJECT-a.json") and never seeded; team-stack seed seeds it"
   assert_equal "$output" "export COMPOSE_PROJECT_NAME=$PROJECT-a
 export TH_WEB_PORT=$a
 export TH_PORTS=auto
@@ -1696,10 +1937,10 @@ export TEAM_EXPIRES=''"
   # The wrapper run by hand with those exports reaches the instance.
   assert_equal "$(eval "$output"; cd "$STACK_WORKTREE" && scripts/compose.sh ports)" "export COMPOSE_PROJECT_NAME=$PROJECT-a
 export TH_WEB_PORT=$a"
-  run_bin -0 team-stack env --worktree "$STACK_WORKTREE" --instance b
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance b
   assert_equal "${lines[0]} ${lines[1]} ${lines[2]}" "export COMPOSE_PROJECT_NAME=$PROJECT-b export TH_WEB_PORT=$b export TH_PORTS=auto"
   # The worktree's own stack's env names no TH_PORTS.
-  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE"
   assert_equal "${lines[0]} ${lines[1]} ${lines[2]}" "export COMPOSE_PROJECT_NAME=$PROJECT export TH_WEB_PORT=$own export TEAM_OWNER=agent-team"
 }
 
@@ -1860,12 +2101,12 @@ team-stack: $PROJECT has no stack, so there is nothing to remove"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
-  run_bin -0 team-stack env --worktree "$STACK_WORKTREE" --instance a
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance a
   local n
   n=$(($(docker_compose_env | wc -l) + 1))
   # As in a shell that ran eval "$(team-stack env --instance a)".
   eval "$output"
-  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE"
   assert_equal "${lines[0]} ${lines[1]}" "export COMPOSE_PROJECT_NAME=$PROJECT export TH_WEB_PORT=$(port_of "$PROJECT")"
   run_bin -0 team-stack stop --worktree "$STACK_WORKTREE" --instance b
   assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a") $(state_of "$PROJECT-b")" "running running exited"

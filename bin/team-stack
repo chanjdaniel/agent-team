@@ -45,9 +45,19 @@
 #           name an open task and agree with the ledger. A team stack of another task is taken
 #           down first, as down does, its logs saved as <its task>-<project>-<service>.log. Then
 #           <wrapper> up -d --wait, a new stack with TEAM_OWNER=agent-team, TEAM_TASK,
-#           TEAM_KIND=dev, TEAM_WORKTREE (the worktree) and an empty TEAM_EXPIRES; then, for a
-#           new stack none of whose named volumes was there before, the stack block's seed command
-#           as seed runs it, unless --no-seed. Prints one line saying whether it seeded.
+#           TEAM_KIND=dev, TEAM_WORKTREE (the worktree) and an empty TEAM_EXPIRES; then the stack
+#           block's seed command as seed runs it, unless --no-seed: for a new stack, none of whose
+#           named volumes was there before, whose record it writes new before its up -d --wait,
+#           its seed pending (skipped with --no-seed); and for an existing stack whose seed is
+#           owed (the record below). Prints one line saying whether it seeded and why:
+#             <name> is up for <task>, seeded: a new database
+#             ..., seeded again: <the owed words>
+#             ..., not seeded: --no-seed (a stack whose seed is not owed)
+#             ..., not seeded: --no-seed, though <the owed words>; team-stack seed seeds it
+#             ..., not seeded: its database was there (its seed done, or unknown)
+#             ..., not seeded: it was started with --no-seed at <at> and never seeded; team-stack
+#                  seed seeds it
+#             ..., not seeded: its seed is running in team-stack <pid>
 #           A stack not running is first admitted, under an exclusive flock on
 #           ~/.local/state/agent-team/stacks.lock held until its up -d --wait returns (a running
 #           one is not checked). There is room when both hold, in this order: free space (df -Pk)
@@ -75,15 +85,22 @@
 #           (COMPOSE_PROJECT_NAME and a TH_<SERVICE>_PORT per service), then TEAM_OWNER,
 #           TEAM_TASK, TEAM_KIND, TEAM_WORKTREE and TEAM_EXPIRES as the stack carries them, and
 #           for an instance TH_PORTS=auto after the ports; use eval "$(team-stack env)". A stack
-#           that is not running is refused with the wrapper's reason.
-# seed      Runs the stack block's seed command from the worktree, with env's exports.
+#           that is not running is refused with the wrapper's reason. When its seed is pending,
+#           failed, running or skipped, it first prints one line on stderr, its stdout the same
+#           and exit 0: "team-stack: warning: <name> is not seeded: <the owed words, or 'it was
+#           started with --no-seed at <at> and never seeded'>; team-stack seed seeds it", or
+#           "...: its seed is running in team-stack <pid>"; none for done and unknown.
+# seed      Runs the stack block's seed command from the worktree, with env's exports, its record's
+#           seed running while it runs, then done or failed. A seed that fails, in up or seed, is
+#           exit 1, "the seed command <seed> failed (exit <n>) for <name>; the next team-stack up
+#           or team-stack seed seeds it again".
 # stop      docker compose -p <project> stop: the containers stopped, their data kept.
 # down      Saves the last 1 MiB of each log_services service's log (docker compose -p <project>
 #           logs --no-color --timestamps <service>) to
 #           <worktree>/<task_dir>/stack-logs/<project>-<service>.log, then runs docker compose -p
 #           <project> down -v --remove-orphans and docker volume rm on each anonymous volume its
 #           containers mounted that is still there, and fails naming each container, volume and
-#           network of the stack left, and removes the stack's sweep state file. A worktree with
+#           network of the stack left, and removes the stack's record. A worktree with
 #           no stack is told so, exit 0 (as for stop). Without --instance, it first takes down
 #           the worktree's instances in name order, each as it takes down a stack, with a line
 #           each: the team stacks whose Compose project is <stack>-<anything> and whose worktree
@@ -94,9 +111,9 @@
 #           whose worktree has had no busy session for idle_minutes. A live session (claude agents
 #           --json, interactive ones included) with status busy whose cwd is the stack's worktree
 #           label or below it, another spelling of it included, makes it busy: the time is
-#           written to ~/.local/state/agent-team/stacks/<project>.json as last_busy. Otherwise it
-#           is idle since the later of that last_busy (a missing or unreadable file has none) and
-#           its running containers' latest start; idle more than idle_minutes, it is stopped with
+#           written to its record as last_busy, the rest kept. Otherwise it is idle since the
+#           later of that last_busy (a missing or unreadable record has none) and its running
+#           containers' latest start; idle more than idle_minutes, it is stopped with
 #           docker compose -p <project> stop, its data kept, and one line is printed and added to
 #           ~/.local/state/agent-team/stacks/sweep.log ("<time> stopped <project> of <task> in
 #           <worktree>: last busy at <time> (idle_minutes <n>), its data kept", or "not seen busy
@@ -138,6 +155,22 @@
 #           totals by rule. A removal that fails is named on stderr with Docker's reason, the
 #           others still happen, exit 1. Test seam: TEAM_STACK_REAP_PROJECTS, a pattern, limits it
 #           to the Compose projects whose names match it and their objects.
+#
+# The stack record, ~/.local/state/agent-team/stacks/<Compose project>.json, holds what Docker
+# cannot tell of a team stack: {schema: "team-stack/1", seed: {state, at, commit, pid, exit},
+# last_busy}, each key optional. Its seed's state is pending (owed since an up started a new
+# stack), running (pid the team-stack running it), done, failed (exit the seed command's
+# status) or skipped (a new stack started with --no-seed); at is when it took that state, in
+# UTC, and commit the worktree's HEAD when the seed started (null when git cannot say, and for
+# pending and skipped). A record with no seed, a missing one for a stack that exists, and a file
+# that is not a JSON object read as unknown, and are left alone. Only team-stack writes it, each
+# write under an exclusive flock on ~/.local/state/agent-team/stacks/records.lock, a temporary
+# file moved into place. Its seed is owed when pending, failed, or running with a pid that ps -o
+# args= does not show as a team-stack (a pid reused by another process included), the owed
+# words being "its seed, owed since <at>, never ran", "its seed failed at <at> (exit <n>)" and
+# "its seed, started at <at>, never finished"; the seed command may run again on a half-seeded
+# database (sops/docker.md, the wrapper contract). stop, the sweep and team-level leave the
+# record; down, the reaper's removal and up's takedown of another task's stack remove it.
 #
 # The owner classes, from each object's own labels and its Compose project, and the registry's
 # stack blocks (team-project --help):
@@ -547,6 +580,86 @@ volumes_left() {
   grep -Fx -f <(printf '%s\n' "$@") <<<"$DOCKER_OUT" || true
 }
 
+# Change the record of the stack <project>, $STATE/stacks/<project>.json: under an exclusive flock
+# on $STATE/stacks/records.lock, the record as it is (an object, else {}) goes through the jq
+# filter <filter>, with jq's options <options...>, into a temporary file moved into place; with
+# --remove for the filter, the record is removed. The one way the record is written, so the
+# sweep's last_busy and an up's seed never overwrite each other:
+# record_update <project> <filter>|--remove [<options...>]
+record_update() {
+  local project=$1 filter=$2 file=$STATE/stacks/$1.json fd current rc=0
+  shift 2
+  mkdir -p "$STATE/stacks"
+  exec {fd}>>"$STATE/stacks/records.lock"
+  flock -x "$fd"
+  if [[ $filter == --remove ]]; then
+    rm -f "$file" || rc=$?
+  else
+    current=$(jq -cs 'if length == 1 and (.[0] | type) == "object" then .[0] else {} end' "$file" 2>/dev/null) ||
+      current='{}'
+    { jq -c "$filter" "$@" <<<"$current" >"$file.tmp.$$" && mv "$file.tmp.$$" "$file"; } || rc=$?
+    rm -f "$file.tmp.$$"
+  fi
+  exec {fd}>&-
+  ((rc == 0)) || die "could not write the record of $project, $file"
+}
+
+# The seed state of the stack STACK_NAME, from its record: SEED, the record's seed (JSON), or
+# {"state": "unknown"} for a record with no seed of the five states, a missing file and one that
+# is not a JSON object; SEED_CASE, what an up makes of it (owed: seeded again; running: left to
+# the live team-stack seeding it; skipped; settled: done or unknown); and SEED_WORDS, the words
+# that say it (none when settled).
+read_seed() {
+  local state at pid status
+  SEED=$(jq -cs 'if length == 1 and (.[0] | type) == "object" and (.[0].seed | type) == "object"
+      and (.[0].seed.state | IN("pending", "running", "done", "failed", "skipped")) then .[0].seed
+    else {state: "unknown"} end' "$STATE/stacks/$STACK_NAME.json" 2>/dev/null) || SEED='{"state":"unknown"}'
+  # A unit separator, which no field holds, keeps an empty field in its place.
+  IFS=$'\x1f' read -r state at pid status < <(jq -r '[.state, .at // "", .pid // "", .exit // ""] | map(tostring) | join("\u001f")' <<<"$SEED")
+  SEED_CASE=owed
+  case $state in
+    pending) SEED_WORDS="its seed, owed since $at, never ran" ;;
+    failed) SEED_WORDS="its seed failed at $at (exit $status)" ;;
+    running)
+      if seed_pid_live "$pid"; then
+        SEED_CASE=running SEED_WORDS="its seed is running in team-stack $pid"
+      else
+        SEED_WORDS="its seed, started at $at, never finished"
+      fi
+      ;;
+    skipped) SEED_CASE=skipped SEED_WORDS="it was started with --no-seed at $at and never seeded" ;;
+    *) SEED_CASE=settled SEED_WORDS='' ;;
+  esac
+}
+
+# Whether the process <pid> is a team-stack, as a seed's is: ps names team-stack as its command
+# or, run by an interpreter (bash .../team-stack), its script; a pid reused by another process,
+# or none, is not: seed_pid_live <pid>
+seed_pid_live() {
+  local args
+  local -a words
+  [[ $1 =~ ^[0-9]+$ ]] || return 1
+  args=$(ps -o args= -p "$1" 2>/dev/null) || return 1
+  read -ra words <<<"$args"
+  [[ ${words[0]##*/} == team-stack || ${words[1]:-} == */team-stack || ${words[1]:-} == team-stack ]]
+}
+
+# Move the record's seed to running, by this team-stack ($$) at the worktree's HEAD (SEED_COMMIT,
+# empty when git cannot say), when it is still <seen> (the SEED read_seed gave), or whatever it is
+# with no <seen>. SEED_CLAIMED is 1 when the record says this team-stack runs the seed, else
+# empty (another one moved it first): claim_seed [<seen>]
+claim_seed() {
+  SEED_COMMIT=$(git -C "$WT" rev-parse --verify -q HEAD 2>/dev/null) || SEED_COMMIT=''
+  record_update "$STACK_NAME" 'if $seen == null or .seed == $seen
+    then .schema = "team-stack/1"
+      | .seed = {state: "running", at: (now | floor | todate), commit: (if $commit == "" then null else $commit end), pid: $pid}
+    else . end' --argjson seen "${1:-null}" --arg commit "$SEED_COMMIT" --argjson pid $$
+  SEED_CLAIMED=''
+  if jq -e --argjson pid $$ '.seed.state == "running" and .seed.pid == $pid' "$STATE/stacks/$STACK_NAME.json" >/dev/null 2>&1; then
+    SEED_CLAIMED=1
+  fi
+}
+
 # Take the stack down: the log of each service in LOG_SERVICES that has a container saved (the
 # last 1 MiB, as <dir>/<prefix><project>-<service>.log; none when <dir> is empty), then docker
 # compose down with its volumes, then the anonymous volumes its containers mounted that are
@@ -575,7 +688,7 @@ teardown() {
     [(.objects | map(select(.type != "network"))), ($anonymous | map({type: "volume", name: .})),
      (.objects | map(select(.type == "network")))] | add | map("\(.type) \(.name)") | join(", ")' "$WORK/stack.json")
   [[ -z $summary ]] || die "$STACK_NAME is not all gone after its down: $summary"
-  rm -f "$STATE/stacks/$STACK_NAME.json"
+  record_update "$STACK_NAME" --remove
   TEARDOWN_LOGS=$dir
 }
 
@@ -599,13 +712,33 @@ up_command() {
   echo "team-stack up${INSTANCE:+ --instance $INSTANCE}"
 }
 
-# Run the stack block's seed command from the worktree, with env's exports.
+# Run the stack block's seed command from the worktree, with env's exports, the record's seed
+# running while it runs, then done or failed (with its exit status). With <seen>, only when the
+# record's seed is still <seen> (claim_seed), so two ups never seed at once; SEED_CLAIMED says
+# whether it ran: run_seed [<seen>]
 run_seed() {
-  local exports seed
+  local exports seed rc=0
   exports=$(stack_env) || exit 1
   seed=$(jq -r .seed <<<"$STACK")
-  (cd "$WT" && eval "$exports" && exec "$WT/$seed") ||
-    die "the seed command $seed failed (exit $?) for $STACK_NAME"
+  claim_seed "${1:-}"
+  [[ -n $SEED_CLAIMED ]] || return 0
+  (cd "$WT" && eval "$exports" && exec "$WT/$seed") || rc=$?
+  record_update "$STACK_NAME" '.schema = "team-stack/1"
+    | .seed = {state: (if $rc == 0 then "done" else "failed" end), at: (now | floor | todate),
+        commit: (if $commit == "" then null else $commit end)}
+      + (if $rc == 0 then {} else {exit: $rc} end)' --argjson rc "$rc" --arg commit "$SEED_COMMIT"
+  ((rc == 0)) ||
+    die "the seed command $seed failed (exit $rc) for $STACK_NAME; the next team-stack up or team-stack seed seeds it again"
+}
+
+# env's warning, on stderr, when the stack's seed is not done (owed, running or skipped); none
+# for done and unknown.
+seed_warning() {
+  read_seed
+  case $SEED_CASE in
+    owed | skipped) echo "${0##*/}: warning: $STACK_NAME is not seeded: $SEED_WORDS; team-stack seed seeds it" >&2 ;;
+    running) echo "${0##*/}: warning: $STACK_NAME is not seeded: $SEED_WORDS" >&2 ;;
+  esac
 }
 
 # The machine's stack settings, every key optional, into $WORK/settings.json with the defaults
@@ -765,17 +898,36 @@ cmd_up() {
   fi
   # A running stack of the task is admitted without a check; a stopped one is counted as new.
   jq -e .running "$WORK/stack.json" >/dev/null || admit
+  # A new stack's record is written new, its seed owed (or skipped) until a seed runs, so an up
+  # that fails or is killed before its seed leaves the seed owed.
+  if [[ -n $fresh ]]; then
+    record_update "$STACK_NAME" '{schema: "team-stack/1", seed: {state: $state, at: (now | floor | todate), commit: null}}' \
+      --arg state "$([[ -n $seed ]] && echo pending || echo skipped)"
+  fi
   wrapper up -d --wait >&2 || die "${WRAPPER#"$WT/"} up -d --wait failed for $STACK_NAME (exit $?)"
   if [[ -n $LOCK_FD ]]; then exec {LOCK_FD}>&-; fi
   level_cpus
-  if [[ -z $seed ]]; then
-    note="not seeded: --no-seed"
-  elif [[ -z $fresh ]]; then
-    note="not seeded: its database was there"
-  else
-    run_seed >&2
-    note="seeded: a new database"
-  fi
+  # Seed when the record says the seed is owed; another team-stack moving the record first
+  # (SEED_CLAIMED empty) is read again.
+  while :; do
+    read_seed
+    if [[ -z $seed ]]; then
+      note="not seeded: --no-seed"
+      if [[ $SEED_CASE == owed ]]; then note+=", though $SEED_WORDS; team-stack seed seeds it"; fi
+      break
+    fi
+    case $SEED_CASE in
+      owed)
+        run_seed "$SEED" >&2
+        [[ -n $SEED_CLAIMED ]] || continue
+        if [[ -n $fresh ]]; then note="seeded: a new database"; else note="seeded again: $SEED_WORDS"; fi
+        ;;
+      running) note="not seeded: $SEED_WORDS" ;;
+      skipped) note="not seeded: $SEED_WORDS; team-stack seed seeds it" ;;
+      *) note="not seeded: its database was there" ;;
+    esac
+    break
+  done
   echo "${0##*/}: $STACK_NAME is up for $TASK, $note"
 }
 
@@ -825,7 +977,7 @@ cmd_sweep() {
     file=$STATE/stacks/$project.json
     now=$(date +%s)
     if sweep_busy "${worktrees[@]}"; then
-      jq -n --argjson now "$now" '{last_busy: ($now | todate)}' >"$file.tmp" && mv "$file.tmp" "$file"
+      record_update "$project" '.last_busy = ($now | todate)' --argjson now "$now"
       continue
     fi
     # A state file that is missing, unreadable or holds no time is never seen busy.
@@ -1106,7 +1258,12 @@ stack_command() {
   fi
   read_back_labels
   case $cmd in
-    env) stack_env ;;
+    env)
+      local exports
+      exports=$(stack_env) || exit 1
+      seed_warning
+      printf '%s\n' "$exports"
+      ;;
     seed) run_seed ;;
     stop)
       docker compose -p "$STACK_NAME" stop >"$WORK/stop.log" 2>&1 ||
