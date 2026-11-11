@@ -71,15 +71,20 @@ def stored_readings:
 # idle at the time <now> (seconds), for team-stack sweep: when the newest reading is at most 10
 # minutes old, each gate stack of it with in_use false, as {name, since}, since the time (its at)
 # of the earliest reading of the unbroken run of latest readings that each hold the stack by name,
-# as a gate stack with in_use false; else []. A reading that lacks the stack (Docker did not
-# answer, the stack was stopped) or shows it in use breaks the run.
+# as a gate stack with in_use false, each at most 10 minutes after the one before; else []. A
+# reading that lacks the stack (Docker did not answer, the stack was stopped) or shows it in use
+# breaks the run, and so does a gap of more than 10 minutes with no reading (the heartbeat off,
+# the machine asleep), so idleness is never counted across time nothing was read in.
 def gate_stacks_idle($readings; $now):
   def idle_in($name): any(.stacks // [] | .[]; .name == $name and .class == "gate" and .in_use == false);
   ($readings | reverse) as $newest_first
   | if $newest_first == [] or ($newest_first[0].at | fromdateiso8601) < $now - 600 then []
     else [$newest_first[0].stacks // [] | .[] | select(.class == "gate" and .in_use == false) | .name] | unique
       | map(. as $name
-        | (first(range(0; $newest_first | length) as $i | select($newest_first[$i] | idle_in($name) | not) | $i)
+        | (first(range(0; $newest_first | length) as $i
+             | select(($newest_first[$i] | idle_in($name) | not)
+                 or ($i > 0 and ($newest_first[$i - 1].at | fromdateiso8601) - ($newest_first[$i].at | fromdateiso8601) > 600))
+             | $i)
            // ($newest_first | length)) as $run
         | {name: $name, since: $newest_first[$run - 1].at})
     end;

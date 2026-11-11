@@ -73,7 +73,8 @@
 #           release <id>) on every exit before its up -d --wait has returned 0, a TERM included,
 #           then writes it to the stack's record as admission, which stop and down release. A
 #           release that fails is one line on stderr, "team-stack: warning: could not release
-#           admission <id>: <reason>; it ends 10 minutes after it was made", and changes nothing else.
+#           admission <id>: <reason>; it ends 10 minutes after it was made", and changes nothing
+#           else.
 #           With no room, it says once on stderr that it waits and why, re-checks every 30 seconds
 #           (the lock let go between checks) up to wait_minutes from that first refusal, then exits
 #           75 naming the failing check with its numbers.
@@ -122,8 +123,11 @@
 #           without logs), and prints one line and adds it to
 #           ~/.local/state/agent-team/stacks/sweep.log: "<time> removed gate stack <project>: no
 #           process in use in it since <time> (gate_idle_minutes <n>), its test data removed". A
-#           reading that lacks the stack or shows it in use breaks the run; with no reading of the
-#           last 10 minutes (a missing or unreadable file included) it removes none. This runs
+#           reading that lacks the stack or shows it in use breaks the run, and so does a gap of
+#           more than 10 minutes between two readings; with no reading of the last 10 minutes (a
+#           missing or unreadable file included) it removes none. A gate step that runs no process
+#           in the gate's worktree (a long wait on GitHub's checks, say) reads as idle, so
+#           gate_idle_minutes is a guess at the gate's longest such step. This runs
 #           whether or not a team stack runs, before the session list is read.
 #           Then it stops each running team stack (every container of its Compose project of class
 #           team) whose worktree has had no busy session for idle_minutes. A live session (claude
@@ -1097,8 +1101,8 @@ sweep_gates() {
     | (now | floor) as $now
     | $idle[0][] | select(.name | IN($running[]))
     | select($now - (.since | fromdateiso8601) >= $minutes * 60)
-    | {line: "\($now | todate) removed gate stack \(.name): no process in use in it since \(.since)"
-         + " (gate_idle_minutes \($minutes)), its test data removed",
+    | {line: ("\($now | todate) removed gate stack \(.name): no process in use in it since \(.since)"
+         + " (gate_idle_minutes \($minutes)), its test data removed"),
        action: {rule: "gate stack", type: "stack", name, ref: .name, class: "gate", tasks: [], worktrees: []}}' \
     --slurpfile stacks "$WORK/stacks.json" --slurpfile idle "$WORK/gates-idle.json" --arg gate_root "$GATE_WORKTREES" \
     --argjson minutes "$(setting gate_idle_minutes)" "$WORK/containers.json" >"$WORK/gates.jsonl"

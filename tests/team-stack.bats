@@ -1454,6 +1454,32 @@ gate_downs() {
   assert_equal "$(gate_downs)" nmtest-1895520
 }
 
+@test "sweep counts a gate stack's idleness only across readings at most 10 minutes apart, so a gap with no reading restarts it" {
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  # Idle 40 minutes ago and now, with nothing read between: idle since the newest reading alone.
+  gate_readings 40:idle 0:idle
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output$stderr" ""
+  assert_equal "$(gate_downs)" ""
+  # Readings 9 minutes apart are one run.
+  gate_readings 36:idle 27:idle 18:idle 9:idle 0:idle
+  local since
+  since=$(reading_at 36)
+  run_bin -0 team-stack sweep
+  [[ $output == *" removed gate stack nmtest-1895520: no process in use in it since $since (gate_idle_minutes 30), its test data removed" ]]
+  assert_equal "$(gate_downs)" nmtest-1895520
+}
+
+@test "sweep counts a gate stack's idleness from the first reading after a gap of more than 10 minutes" {
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  gate_readings 80:idle 75:idle 70:idle 35:idle 30:idle 25:idle 20:idle 15:idle 10:idle 5:idle 0:idle
+  local since
+  since=$(reading_at 35)
+  run_bin -0 team-stack sweep
+  [[ $output == *" removed gate stack nmtest-1895520: no process in use in it since $since (gate_idle_minutes 30), its test data removed" ]]
+  assert_equal "$(gate_downs)" nmtest-1895520
+}
+
 @test "sweep's gate rule runs with no team stack running and reads no session list; with no readings it removes nothing and says nothing" {
   docker_state containers 'map(select(.Config.Labels["com.docker.compose.project"] != "conventioner-2"))'
   rm "$HOME/.local/state/agent-team/capacity/readings.jsonl"
