@@ -252,7 +252,7 @@ TABLE
   grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
   grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\|standing\); pushed at once  \(approval: .*\)$' <<<"$output"
-  grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
+  grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\), approved \(list\)  \(.*approved the ids of the parks the builder approved itself.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\); pushed at once  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  walk +team-ui +state \(on\|off\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head; pushed at once  \(.*team-log requires head of every new line.*\)$' <<<"$output"
@@ -1736,8 +1736,12 @@ assert_no_answer_logged() {
   open_t7
   launched T7 builder b0000002 brief-deliver
   # templates/briefs/delivery/no-mistakes.md: `{{task}} DONE gate run=<its id> head=<sha> outcome=<...> minutes=<one JSON object>`, with `cause=<...>`
+  # and `approved=<ids>`; a line with no approved, as every one before it, still parses.
   logs_events "{\"task\":\"T7\",\"event\":\"gate-run\",\"run\":\"01KR2B3C4D\",\"head\":\"$HEAD_A\",\"outcome\":\"pushed\",\"minutes\":{\"review\":3.5,\"test\":12},\"cause\":\"review\"}" \
     --from-message "T7 DONE gate run=01KR2B3C4D head=$HEAD_A outcome=pushed minutes={\"review\": 3.5, \"test\": 12} cause=review"
+  # The parks the builder approved itself, by the ids its brief names, are a list.
+  logs_events "{\"task\":\"T7\",\"event\":\"gate-run\",\"run\":\"01KR2B3C5E\",\"head\":\"$HEAD_A\",\"outcome\":\"pushed\",\"minutes\":{\"review\":2},\"approved\":[\"review-coverage\",\"lint-before\"]}" \
+    --from-message "T7 DONE gate run=01KR2B3C5E head=$HEAD_A outcome=pushed minutes={\"review\": 2} approved=review-coverage, lint-before"
   refuses_message "team-log: refusing a ledger event: outcome must be one of pushed, red, aborted, stopped-green" \
     --from-message "T7 DONE gate run=01KR2B3C4D head=$HEAD_A outcome=green minutes={}"
   refuses_message "team-log: DONE gate takes key=value pairs, got 'run 01KR2B3C4D' before the first" \
