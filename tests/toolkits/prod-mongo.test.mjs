@@ -4,6 +4,8 @@
 // test's own PATH (CI's toolkits job installs them into ~/.local/bin). A spy mongodump first on the
 // server's PATH records the argument list and environment the server starts it with, then runs the
 // real one; files in its directory make it hold after the dump, or lose a collection's documents.
+// Spies of mongorestore and docker stand first on its PATH for the restore drill, which runs
+// through team-heavy (at once under tests/run's heavy-run lock), as the tool and by hand.
 // Every backups folder lives under ~/.cache/agent-team-tests/, since a dump of real data is never
 // kept in a temporary directory, and is removed when the file exits.
 import assert from "node:assert/strict";

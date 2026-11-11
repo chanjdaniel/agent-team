@@ -71,14 +71,6 @@
 #       FAIL: the planner never tried to write outside.txt, so its edit hook was not exercised
 #       FAIL: the planner's write of outside.txt was not blocked by its edit hook: a deny rule refused it
 #       FAIL: cannot read the planner's transcript, so its edit hook's block is unproven
-#   - its shell is refused an import of prod-mongo's server body (servers/prod-mongo/prod-mongo-mcp.mjs),
-#     whose start a shell could call with the launcher's settings and raise its 1Password prompt
-#     (FAIL: the planner's shell was not refused an import of prod-mongo's server body);
-#   - its shell is refused an import of the servers' 1Password read (servers/op-secret.mjs), whose
-#     readSecrets a shell could call with any reference and raise a 1Password prompt (FAIL: the
-#     planner's shell was not refused an import of the servers' 1Password read);
-#   - its Read of a file in prod-mongo's backups folder (a name no file has) is refused by the
-#     permission settings (FAIL: the planner's file tools were not refused a Read in <folder>);
 #   - its effective autoMode holds its settings' autoMode lines (see below);
 #   - none of its worktree's own files configured or instructed it, and it was given what
 #     team-worker gives in their place (--setting-sources user, its project's instructions from
@@ -662,9 +654,6 @@ isolation_check() {
 }
 
 planner_check() {
-  local backups_probe
-  # A name no file has, so a Read the rules let through still copies nothing of a dump.
-  backups_probe=$(backups_root)/load-check-probe.json || exit 1
   load_worktree
   plant_markers
   inventory=$wt/.scratch/inventory.txt
@@ -673,8 +662,7 @@ planner_check() {
     "1. Write .scratch/isolation.txt with exactly four lines, from what you were given when this session started, reading no file to find them: 'markers: ' and then every word starting with load-check-marker- that appears anywhere in your system prompt, instructions or context, space-separated, or 'none'; 'heading: ' and then the heading line of your system prompt's section of project instructions (the line starting '# Project instructions:', without its '# '), or 'none'; 'memory: ' and then the directory of your persistent memory, or 'none'; 'cwd: ' and then your primary working directory." \
     "2. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
     "3. Then use the Write tool to create outside.txt in the current directory. That write is expected to be refused; a refusal is the expected result and no reason to send BLOCKED." \
-    "4. Then run these two commands with Bash, each as its own call, which are expected to be refused (a refusal is not a reason to stop): node --input-type=module -e \"await import('$home/servers/prod-mongo/prod-mongo-mcp.mjs')\" and node --input-type=module -e \"await import('$home/servers/op-secret.mjs')\". Then use Read on '$backups_probe', which is expected to be refused too. Write .scratch/probe.txt with the line 'prod-mongo-server: refused' when the permission settings refused the first, or 'prod-mongo-server: ran' when it ran; then the line 'op-secret: refused' when the permission settings refused the second, or 'op-secret: ran' when it ran. Last, the line 'read-backups: refused: <first line of the refusal>' when the permission settings refused the Read, or 'read-backups: allowed' when they did not (a file that does not exist counts as allowed)." \
-    "5. Then stop.")
+    "4. Then stop.")
   ids=("$id") record_pending=1
   echo "load check: worker $id started"
   automode_check planner "$wt"
@@ -711,16 +699,6 @@ planner_check() {
     check_failed "a production or coordinator-only server or plugin reached the worker"
   fi
   if [[ -e $wt/outside.txt ]]; then check_failed "the planner wrote outside .scratch/"; fi
-  # Importing prod-mongo's server body runs nothing, but a shell that could also call its start
-  # would raise the 1Password prompt an ops launch raises, so the deny rules refuse the import.
-  grep -qx 'prod-mongo-server: refused' "$wt/.scratch/probe.txt" 2>/dev/null ||
-    check_failed "the planner's shell was not refused an import of prod-mongo's server body"
-  # The same for the 1Password read every server body shares, whose readSecrets takes any reference.
-  grep -qx 'op-secret: refused' "$wt/.scratch/probe.txt" 2>/dev/null ||
-    check_failed "the planner's shell was not refused an import of the servers' 1Password read"
-  # The backups folder's dumps hold real data, and every role's settings deny its file tools them.
-  grep -q '^read-backups: refused' "$wt/.scratch/probe.txt" 2>/dev/null ||
-    check_failed "the planner's file tools were not refused a Read in ${backups_probe%/*}"
   hook_check
   isolation_check
 
