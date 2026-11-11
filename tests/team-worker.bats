@@ -1615,9 +1615,8 @@ assert_prod_write_gated() {
   jq -e '.permissions.deny | index("Read(**/.env*)") != null' "$s" >/dev/null
   assert_equal "$(jq -r '.permissions.deny[] | select(test("^(Grep|Glob)\\("))' "$s")" ""
   assert_equal "$(jq -c .env.MCP_TIMEOUT "$s")" '"120000"'
-  # --restricted ignores the user settings, and without the worker settings' crossSessionInbound
-  # the coordinator's replies (the write protocol's answers) never reach the session (T16 ticket
-  # 04's live check).
+  # --restricted ignores the user settings, and without this the coordinator's replies (the
+  # write protocol's answers) never reach the session (T16 ticket 04's live check).
   assert_equal "$(jq -r .crossSessionInbound "$s")" accept
   # The same for the push of a permission prompt to Daniel's phone: without these no write
   # prompt reached it (T16 ticket 08's first live run).
