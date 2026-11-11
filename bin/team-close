@@ -3,6 +3,7 @@
 # its task directories, remove its sessions, return its worktrees and append closed.
 #
 # Usage: team-close T<n> [--keep-worktree] [--stop-busy] [--worktree <path>]...
+#        team-close T<n> --ticket <NN>
 # Checks first, changing nothing: the task has events and no closed; each of its open worktrees
 # (opened and added, minus returned) has landed after git fetch --prune origin; no live session of its
 # launch events, nor the task's ops session (named T<n>-ops in claude agents --json --all), is
@@ -10,7 +11,9 @@
 # files are fine), and the head on a remote-tracking branch of origin (not wip/* or salvage/*,
 # which a project whose origin is the team home's fetches, holding work that has not landed) or
 # the head of a merged PR of the branch in the project's repo (gh); a worktree with no commits of
-# its own has landed.
+# its own has landed. A ticket worktree (team-open --ticket) is open too: its ticket branch is
+# never pushed, so its head lands held by a remote-tracking branch of origin (the pushed task
+# branch it was integrated into) or by the head of a merged PR of the task branch.
 # Any failure is exit 1 with every reason. --keep-worktree keeps unlanded worktrees instead of
 # refusing, and --stop-busy stops busy sessions instead of refusing (an ops session through
 # team-ops-end, like an idle one).
@@ -29,7 +32,8 @@
 # ~/.local/state/agent-team/prompts/T<n>/, the system prompts team-worker generated for its
 # sessions, removed, since they stay on this machine and are never archived;
 # each worktree's task directory mirrored to tasks/T<n>/scratch/ (the opened project) or
-# tasks/T<n>/scratch-<project>/ (an added one), less what archive_left_out (bin/lib/team.sh)
+# tasks/T<n>/scratch-<project>/ (an added one), a ticket worktree's to its task worktree's with
+# --NN after it (scratch--03), less what archive_left_out (bin/lib/team.sh)
 # leaves out, each named on stderr, a missing or empty one reported on stderr, a mirror that
 # fails stopping the close with rsync's reason, the task half closed; claude rm <id>
 # for each of the task's other sessions (an ops session is team-ops-end's alone, so a launched one
@@ -40,7 +44,10 @@
 # is reported on stderr and team-doctor's captures line names it; a kept worktree keeps its own),
 # and neither that folder nor a treehouse task directory is removed through a link on the way to it,
 # which may point at another worktree's, only reported on stderr,
-# each return appending worktree-returned; the task's
+# each return appending worktree-returned (with ticket for a ticket worktree, whose ticket branch
+# is then deleted when the task branch's local tip holds its tip, "deleted <branch> at <sha8>,
+# which <task branch> holds", else kept, "kept <branch> at <sha8>: the task branch does not hold
+# it", on stderr); the task's
 # wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, and its
 # copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
 # checkout, one that cannot be deleted reported on stderr with the command that deletes it; and
@@ -58,18 +65,37 @@
 # HOME, as for every recorded worktree) and be on a branch naming the task, else exit 1. The first named slot archives to
 # scratch/, others to scratch-<project>/, one slot per project.
 # A failure after the checks leaves the task half closed: fix the cause and run team-close again.
+# --ticket <NN> (two digits, alone) returns ticket NN's open worktree of an open task, as
+# team-next does once the ticket is integrated, and touches nothing else of the task: refused,
+# exit 1, for a legacy task or one with no open worktree of NN, and for a ticket worktree with
+# changes to tracked files or untracked files git does not ignore, naming them. Its sessions are
+# the launches since the worktree was given to the ticket (worktree-added, -moved or rehomed of
+# NN) recorded in that worktree, an ops session's never; a busy live one is waited on, the list
+# read again each second, up to TEAM_CLOSE_IDLE_SECONDS (default 20, a whole number), then exit
+# 75, "<name> <id> is still busy; run this again once it is idle", nothing changed. Then, as the
+# close does: claude stop for each live one (then the changes check again), the worktree's stack
+# taken down, its task directory mirrored to tasks/T<n>/scratch--NN (scratch-<project>--NN for an
+# added project), claude rm for each of its sessions, the slot returned through its pool
+# with worktree-returned and the ticket branch's rule above. Prints {task, ticket, stopped,
+# removed, archive (null when nothing was archived), returned, branch, branch_deleted}. A failure
+# after the checks leaves it half returned: fix the cause and run it again.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "closes no task") && die "$why"
 
-usage="usage: team-close T<n> [--keep-worktree] [--stop-busy] [--worktree <path>]..."
+usage="usage: team-close T<n> [--keep-worktree] [--stop-busy] [--worktree <path>]..., or team-close T<n> --ticket <NN>"
 
-task='' keep='' stop_busy='' named=()
+task='' keep='' stop_busy='' named=() ticket=''
 while (($#)); do
   case $1 in
     --keep-worktree) keep=1 ;;
+    --ticket)
+      [[ $# -ge 2 && $2 =~ ^[0-9]{2}$ && -z $ticket ]] || usage_error "$usage"
+      ticket=$2
+      shift
+      ;;
     --stop-busy) stop_busy=1 ;;
     --worktree)
       [[ $# -ge 2 && -n $2 ]] || usage_error "$usage"
@@ -86,6 +112,12 @@ while (($#)); do
 done
 [[ -n $task ]] || usage_error "$usage"
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+if [[ -n $ticket ]]; then
+  [[ -z $keep$stop_busy && ${#named[@]} -eq 0 ]] || usage_error "$usage"
+  idle_seconds=${TEAM_CLOSE_IDLE_SECONDS:-20}
+  [[ $idle_seconds =~ ^[0-9]+$ ]] ||
+    usage_error "TEAM_CLOSE_IDLE_SECONDS must be a whole number of seconds, got '$idle_seconds'"
+fi
 
 events=$(known_task_events "$task")
 [[ $(task_status "$events") != closed ]] || die "$task is already closed"
@@ -93,12 +125,17 @@ opened_project=$(jq -r 'map(select(.event == "opened")) | first | .project // em
 if [[ -n $opened_project && ${#named[@]} -gt 0 ]]; then
   usage_error "--worktree is for a legacy task (one with no opened event); $task's worktrees are in the ledger"
 fi
+[[ -z $ticket || -n $opened_project ]] || die "$task is not open: the ledger has no opened event for it"
 
-# The worktrees to close, one compact {project, branch, worktree, archive} per entry, the
-# archive being the directory under tasks/T<n>/ its task directory is mirrored to.
+# The worktrees to close, one compact {project, branch, worktree, archive, ticket, base} per entry,
+# the archive being the directory under tasks/T<n>/ its task directory is mirrored to, and for a
+# ticket worktree ticket its ticket and base the task's branch in its project (null for the task's
+# own worktree).
 worktrees=()
 if [[ -n $opened_project ]]; then
-  mapfile -t worktrees < <(ledger_jq 'archived_worktrees($home) | {project, branch, worktree, archive}' -c <<<"$events")
+  mapfile -t worktrees < <(ledger_jq '. as $events | archived_worktrees($home)
+    | {project, branch, worktree, archive, ticket,
+      base: (if .ticket == null then null else (.project as $p | $events | task_branch($p)) end)}' -c <<<"$events")
 else
   # A legacy task names its slots: never inferred, since slots were shared and reused.
   mapfile -t launched < <(ledger_jq '.[] | select(.event == "launch") | local_worktree($home) | .worktree // empty' -r <<<"$events")
@@ -145,9 +182,21 @@ linked_part() {
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
-# Why the worktree <wt> of <project> on <branch> has not landed, or nothing when it has.
+# Whether a merged PR's head in <prs> (gh pr list's JSON) holds <head>, read in the worktree <wt>,
+# whose repository has each head the task branch reached: held_by_pr <wt> <head> <prs>
+held_by_pr() {
+  local oid
+  while IFS= read -r oid; do
+    git -C "$1" merge-base --is-ancestor "$2" "$oid" 2>/dev/null && return 0
+  done < <(jq -r '.[].headRefOid // empty' "$3")
+  return 1
+}
+
+# Why the worktree <wt> of <project> on <branch> has not landed, or nothing when it has; <base>,
+# for a ticket worktree, is the task branch, whose merged PR may hold its head, since a ticket
+# branch is never pushed.
 unlanded() {
-  local wt=$1 project=$2 branch=$3 head ahead repo found=()
+  local wt=$1 project=$2 branch=$3 base=${4:-} head ahead repo found=()
   git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
     echo "it is not a git worktree"
     return
@@ -168,12 +217,18 @@ unlanded() {
       echo "cannot read $project's repo from projects.toml"
       return
     }
-    if [[ -z $branch ]]; then
+    ((ahead == 1)) && ahead="1 commit" || ahead="$ahead commits"
+    if [[ -n $base ]]; then
+      if ! github "$scratch" prs pr list --repo "$repo" --head "$base" --state merged --json number,headRefOid; then
+        found+=("head ${head:0:7} is on no branch of origin, and GitHub cannot tell whether a PR of $base merged it ($(<"$scratch/error"))")
+      elif ! held_by_pr "$wt" "$head" "$scratch/prs"; then
+        found+=("head ${head:0:7} is on no branch of origin ($ahead not pushed) and no merged PR of $base holds it")
+      fi
+    elif [[ -z $branch ]]; then
       found+=("head ${head:0:7} is on no branch of origin (detached HEAD, so no PR to look for)")
     elif ! github "$scratch" prs pr list --repo "$repo" --head "$branch" --state merged --json number,headRefOid; then
       found+=("head ${head:0:7} is on no branch of origin, and GitHub cannot tell whether a PR merged it ($(<"$scratch/error"))")
     elif ! jq -e --arg head "$head" 'any(.[]; .headRefOid == $head)' "$scratch/prs" >/dev/null; then
-      ((ahead == 1)) && ahead="1 commit" || ahead="$ahead commits"
       found+=("head ${head:0:7} is on no branch of origin ($ahead not pushed) and is not the head of a merged PR")
     fi
   fi
@@ -188,7 +243,7 @@ sort_landed() {
   returning=()
   for wt in "$@"; do
     project=$(field project "$wt") branch=$(field branch "$wt") path=$(field worktree "$wt")
-    reason=$(unlanded "$path" "$project" "$branch")
+    reason=$(unlanded "$path" "$project" "$branch" "$(field base "$wt")")
     if [[ -z $reason ]]; then
       returning+=("$wt")
     elif [[ -n $keep ]]; then
@@ -199,6 +254,175 @@ sort_landed() {
     fi
   done
 }
+
+# Return the worktree <wt> (one entry of worktrees) through its project's pool, append its
+# worktree-returned and add it to returned; for a ticket worktree, then drop_ticket_branch:
+# return_worktree <wt>
+return_worktree() {
+  local project branch path ticket_of facts primary shots linked return_cmd task_dir
+  project=$(field project "$1") branch=$(field branch "$1") path=$(field worktree "$1") ticket_of=$(field ticket "$1")
+  facts=$(team_project "$project")
+  primary=$(jq -r .path <<<"$facts")
+  # Screenshots outside the task directory go with the task too: a treehouse return leaves what git
+  # ignores in the slot. The work has landed, so a folder that will not go never stops the return.
+  shots=$path/.scratch/shots
+  if linked=$(linked_part "$path" .scratch); then
+    [[ ! -e $shots ]] || echo "team-close: left .scratch/shots/ of $path: $linked is a link, to what may be another worktree's" >&2
+  elif [[ -e $shots || -L $shots ]]; then
+    if rm -rf -- "$shots" 2>"$scratch/error"; then
+      echo "team-close: removed .scratch/shots/ of $path" >&2
+    else
+      echo "team-close: cannot remove .scratch/shots/ of $path ($(grep -m1 . "$scratch/error" || echo "no reason given")); team-doctor's captures line names it until it is gone" >&2
+    fi
+  fi
+  case $(jq -r .pool.provider <<<"$facts") in
+    git)
+      git -C "$primary" worktree remove -- "$path" || die "cannot remove the worktree $path"
+      ;;
+    treehouse)
+      return_cmd=$(jq -r .pool.return <<<"$facts")
+      task_dir=$(jq -r .task_dir <<<"$facts")
+      if linked=$(linked_part "$path" "$task_dir"); then
+        echo "team-close: left $task_dir of $path: $linked is a link, to what may be another worktree's" >&2
+      elif [[ -d $path/$task_dir ]]; then
+        find "$path/$task_dir" -mindepth 1 -delete
+      fi
+      (cd "$primary" && "$return_cmd" "$path") </dev/null >&2 || die "$return_cmd failed for $path"
+      # A treehouse return of a slot it finds dirty asks, and with no terminal leaves it leased.
+      ! git -C "$path" symbolic-ref -q HEAD >/dev/null || die "$return_cmd did not return $path: it is still on a branch"
+      ;;
+    *) die "team-close does not return worktrees to a $(jq -r .pool.provider <<<"$facts") pool" ;;
+  esac
+  ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg worktree "$path" --arg branch "$branch" \
+    --arg ticket "$ticket_of" \
+    '{ts: (now | todate), task: $task, event: "worktree-returned", project: $project, worktree: $worktree}
+      + (if $branch == "" then {} else {branch: $branch} end) + if $ticket == "" then {} else {ticket: $ticket} end')"
+  returned+=("$path")
+  [[ -z $ticket_of || -z $branch ]] || drop_ticket_branch "$primary" "$branch" "$(field base "$1")"
+}
+
+# Delete the ticket branch <branch> of the repository of <primary> when the task branch <base>
+# there holds its tip, else keep it, a line on stderr either way, setting branch_deleted (true or
+# false); the branch is local, never pushed: drop_ticket_branch <primary> <branch> <base>
+drop_ticket_branch() {
+  local primary=$1 branch=$2 base=$3 tip
+  branch_deleted=false
+  tip=$(git -C "$primary" rev-parse -q --verify "refs/heads/$branch") || return 0
+  if [[ -z $base ]] || ! git -C "$primary" merge-base --is-ancestor "$tip" "refs/heads/$base" 2>/dev/null; then
+    echo "team-close: kept $branch at ${tip:0:8}: the task branch does not hold it" >&2
+  elif git -C "$primary" update-ref -d "refs/heads/$branch" "$tip" 2>"$scratch/error"; then
+    echo "team-close: deleted $branch at ${tip:0:8}, which $base holds" >&2
+    branch_deleted=true
+  else
+    echo "team-close: cannot delete $branch ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: git -C $primary branch -D $branch" >&2
+  fi
+}
+
+# Mirror the task directory of the worktree <wt> (one entry of worktrees) into tasks/T<n>/<its
+# archive>, adding that to archived; its notes go to stderr, and a mirror that fails exits:
+# archive_worktree <wt>
+archive_worktree() {
+  local project path archive task_dir rc=0 notes line
+  project=$(field project "$1") path=$(field worktree "$1") archive=$(field archive "$1")
+  task_dir=$path/$(team_project "$project" task_dir)
+  notes=$(archive_task_dir "$task_dir" "$project" "tasks/$task/$archive" 2>"$scratch/error") || rc=$?
+  while IFS= read -r line; do echo "team-close: $line" >&2; done < <(grep . <<<"$notes")
+  case $rc in
+    0) archived+=("tasks/$task/$archive") ;;
+    1) ;;
+    *) die "$(grep -m1 . "$scratch/error" || echo "cannot archive $task_dir (exit $rc)")" ;;
+  esac
+}
+
+# Take down the stack of each worktree to be returned whose project has a stack block, before the
+# archive, so nothing of it is left running; its logs land in the worktree's task directory, which
+# the archive leaves them out of (archive_left_out); a kept worktree keeps its stack.
+teardown_stacks() {
+  local wt project path
+  for wt in "${returning[@]}"; do
+    project=$(field project "$wt") path=$(field worktree "$wt")
+    team_project "$project" >"$scratch/project.json" || exit 1
+    jq -e 'has("stack")' "$scratch/project.json" >/dev/null || continue
+    TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-stack" down --worktree "$path" </dev/null >&2 ||
+      die "cannot take down the stack of $path ($project); its reason is above"
+  done
+}
+# team-close T<n> --ticket <NN>: return ticket NN's worktree alone, then exit.
+if [[ -n $ticket ]]; then
+  wt=$(jq -c --arg t "$ticket" 'select(.ticket == $t)' <<<"$(printf '%s\n' "${worktrees[@]}")" | head -n 1)
+  [[ -n $wt ]] || die "$task has no open worktree of ticket $ticket"
+  project=$(field project "$wt") path=$(field worktree "$wt")
+  printf -v label "%s's ticket %s worktree %s" "$task" "$ticket" "$path"
+  git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$label is not a git worktree"
+  # A ticket worktree's work lands by its committed head alone, so what is not committed is refused.
+  # Its changes, one line, or nothing when it is clean: changes_of
+  changes_of() { worktree_changes "$path" | paste -sd ';' | sed 's/;/; /g'; }
+  changes=$(changes_of)
+  [[ -z $changes ]] || die "$label has $changes, so nothing was returned"
+
+  # The sessions launched in the worktree since it was given to the ticket (added, or moved or
+  # remade on a resume), never an ops session: an earlier ticket's builder in the same slot was
+  # removed with its own worktree.
+  mapfile -t ticket_sessions < <(ledger_jq '
+    ([to_entries[] | select((.value.event | IN("worktree-added", "worktree-moved", "rehomed"))
+      and .value.project == $project and .value.ticket == $ticket) | .key] | last) as $since
+    | [.[($since // -1) + 1:][] | select(.event == "launch" and .role != "ops" and (.session | type) == "string"
+        and .session != "") | local_worktree($home) | select(.worktree == $wt) | .session]
+    | reduce .[] as $s ([]; if index([$s]) then . else . + [$s] end) | .[]' \
+    -r --arg project "$project" --arg ticket "$ticket" --arg wt "$path" <<<"$events")
+
+  # The live ones among them, each {session, name, busy}, waiting up to idle_seconds for a busy one.
+  deadline=$((SECONDS + idle_seconds))
+  while :; do
+    live_sessions
+    live=$(ledger_jq '[.[] as $s | live_session($s; $sessions) | select(. != null)
+      | {session: $s, name, busy: (.status == "busy")}]' -c --argjson sessions "$LIVE_SESSIONS" \
+      < <(jq -cn '$ARGS.positional' --args "${ticket_sessions[@]}"))
+    busy=$(jq -r 'map(select(.busy)) | first | values | "\(.name // "session") \(.session)"' <<<"$live")
+    [[ -n $busy ]] || break
+    if ((SECONDS >= deadline)); then
+      echo "team-close: $busy is still busy; run this again once it is idle" >&2
+      exit 75
+    fi
+    sleep 1
+    LIVE_SESSIONS=''
+  done
+
+  trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-close: $label is half returned; fix the cause above and run team-close $task --ticket $ticket again" >&2' EXIT
+  stopped=()
+  while IFS= read -r id; do
+    claude stop "$id" >&2 || die "cannot stop session $id"
+    stopped+=("$id")
+  done < <(jq -r '.[].session' <<<"$live")
+  # A builder may have written between the check and its stop.
+  if ((${#stopped[@]})); then
+    changes=$(changes_of)
+    [[ -z $changes ]] || die "$label has $changes since its sessions were stopped, so it was not returned"
+  fi
+
+  returning=("$wt")
+  teardown_stacks
+  archived=()
+  archive_worktree "$wt"
+  removed=()
+  for id in "${ticket_sessions[@]}"; do
+    if claude rm "$id" >&2; then
+      removed+=("$id")
+    else
+      echo "team-close: claude rm $id failed; remove it by hand if it still exists" >&2
+    fi
+  done
+  returned=() branch_deleted=false
+  return_worktree "$wt"
+
+  jq -n --arg task "$task" --arg ticket "$ticket" --argjson stopped "$(jq -cn '$ARGS.positional' --args "${stopped[@]}")" \
+    --argjson removed "$(jq -cn '$ARGS.positional' --args "${removed[@]}")" --arg archive "${archived[0]:-}" \
+    --arg returned "${returned[0]}" --arg branch "$(field branch "$wt")" --argjson deleted "$branch_deleted" \
+    '{task: $task, ticket: $ticket, stopped: $stopped, removed: $removed,
+      archive: (if $archive == "" then null else $archive end), returned: $returned, branch: $branch,
+      branch_deleted: $deleted}'
+  exit 0
+fi
 
 # The read-only checks: every reason the task cannot close, collected before anything changes.
 problems=() returning=() kept=() unlanded_count=0 busy_count=0
@@ -266,19 +490,6 @@ if ((${#stopped[@]})); then
   fi
 fi
 
-# Take down the stack of each worktree to be returned whose project has a stack block, before the
-# archive, so nothing of it is left running; its logs land in the worktree's task directory, which
-# the archive leaves them out of (archive_left_out); a kept worktree keeps its stack.
-teardown_stacks() {
-  local wt project path
-  for wt in "${returning[@]}"; do
-    project=$(field project "$wt") path=$(field worktree "$wt")
-    team_project "$project" >"$scratch/project.json" || exit 1
-    jq -e 'has("stack")' "$scratch/project.json" >/dev/null || continue
-    TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-stack" down --worktree "$path" </dev/null >&2 ||
-      die "cannot take down the stack of $path ($project); its reason is above"
-  done
-}
 teardown_stacks
 
 # The task's UI captures (team-ui) stay on this machine and go with the task, before the archive.
@@ -297,16 +508,7 @@ fi
 # Mirror each worktree's task directory into tasks/T<n>/.
 archived=()
 for wt in "${worktrees[@]}"; do
-  project=$(field project "$wt") path=$(field worktree "$wt") archive=$(field archive "$wt")
-  task_dir=$path/$(team_project "$project" task_dir)
-  rc=0
-  notes=$(archive_task_dir "$task_dir" "$project" "tasks/$task/$archive" 2>"$scratch/error") || rc=$?
-  while IFS= read -r line; do echo "team-close: $line" >&2; done < <(grep . <<<"$notes")
-  case $rc in
-    0) archived+=("tasks/$task/$archive") ;;
-    1) ;;
-    *) die "$(grep -m1 . "$scratch/error" || echo "cannot archive $task_dir (exit $rc)")" ;;
-  esac
+  archive_worktree "$wt"
 done
 
 # Remove every other session of the task, live or not, now that the archive is made.
@@ -321,43 +523,7 @@ done < <(jq -r '.[] | select(.ops | not) | .session' <<<"$sessions")
 # Return each landed worktree through its project's pool.
 returned=()
 for wt in "${returning[@]}"; do
-  project=$(field project "$wt") branch=$(field branch "$wt") path=$(field worktree "$wt")
-  facts=$(team_project "$project")
-  primary=$(jq -r .path <<<"$facts")
-  # Screenshots outside the task directory go with the task too: a treehouse return leaves what git
-  # ignores in the slot. The work has landed, so a folder that will not go never stops the return.
-  shots=$path/.scratch/shots
-  if linked=$(linked_part "$path" .scratch); then
-    [[ ! -e $shots ]] || echo "team-close: left .scratch/shots/ of $path: $linked is a link, to what may be another worktree's" >&2
-  elif [[ -e $shots || -L $shots ]]; then
-    if rm -rf -- "$shots" 2>"$scratch/error"; then
-      echo "team-close: removed .scratch/shots/ of $path" >&2
-    else
-      echo "team-close: cannot remove .scratch/shots/ of $path ($(grep -m1 . "$scratch/error" || echo "no reason given")); team-doctor's captures line names it until it is gone" >&2
-    fi
-  fi
-  case $(jq -r .pool.provider <<<"$facts") in
-    git)
-      git -C "$primary" worktree remove -- "$path" || die "cannot remove the worktree $path"
-      ;;
-    treehouse)
-      return_cmd=$(jq -r .pool.return <<<"$facts")
-      task_dir=$(jq -r .task_dir <<<"$facts")
-      if linked=$(linked_part "$path" "$task_dir"); then
-        echo "team-close: left $task_dir of $path: $linked is a link, to what may be another worktree's" >&2
-      elif [[ -d $path/$task_dir ]]; then
-        find "$path/$task_dir" -mindepth 1 -delete
-      fi
-      (cd "$primary" && "$return_cmd" "$path") </dev/null >&2 || die "$return_cmd failed for $path"
-      # A treehouse return of a slot it finds dirty asks, and with no terminal leaves it leased.
-      ! git -C "$path" symbolic-ref -q HEAD >/dev/null || die "$return_cmd did not return $path: it is still on a branch"
-      ;;
-    *) die "team-close does not return worktrees to a $(jq -r .pool.provider <<<"$facts") pool" ;;
-  esac
-  ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg worktree "$path" --arg branch "$branch" \
-    '{ts: (now | todate), task: $task, event: "worktree-returned", project: $project, worktree: $worktree}
-      + if $branch == "" then {} else {branch: $branch} end')"
-  returned+=("$path")
+  return_worktree "$wt"
 done
 
 # Delete the task's work-in-progress snapshots, team-checkpoint's wip/<project>/T<n> on the team
