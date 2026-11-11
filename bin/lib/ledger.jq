@@ -533,7 +533,8 @@ def lifecycle: reduce .[] as $e (lifecycle_start; lifecycle_step($e));
 # How the event $e breaks the table in the state (the input), one string each, nothing when the
 # table takes it: a status its kind does not take (closed, with closed-own-retro for a closed
 # task's own retro-change, its retro this task; not opened, unknown or legacy, naming the kinds
-# that status takes in the table's order; opened already), else a phase it does not take. A kind
+# that status takes in the table's order; opened already), else a phase it does not take, and a
+# park (a kind of effect park) with no cause, naming the causes the table gives its kind. A kind
 # the table does not list takes default.
 def lifecycle_problems($e):
   lifecycle_table as $t
@@ -544,8 +545,11 @@ def lifecycle_problems($e):
     def listed($word): if length < 2 then join("") else "\(.[:-1] | join(", ")) \($word) \(.[-1])" end;
   if (.status | IN($statuses[]))
      or (.status == "closed" and $e.retro == $e.task and ("closed-own-retro" | IN($statuses[]))) then
-    if $phases == null or (.phase | IN($phases[])) then empty
-    else "\($e.task) is \(.phase) since \(.since), and \($e.event) is taken only while it is \($phases | listed("or"))" end
+    (if $phases == null or (.phase | IN($phases[])) then empty
+     else "\($e.task) is \(.phase) since \(.since), and \($e.event) is taken only while it is \($phases | listed("or"))" end),
+    (if $row.effect == "park" and $e.cause == null then
+       "a \($e.event) needs a cause, one of \([$t.causes | to_entries[] | select(.value.kinds | index([$e.event])) | .key] | sort | join(", "))"
+     else empty end)
   elif .status == "closed" then "\($e.task) is closed, and a closed task takes no \($e.event)"
   elif IN(.status; "unknown", "legacy") then
     "\($e.task) is not opened (no opened event), and it takes only \(kinds_taken(.status) | listed("and")) before its opened, not \($e.event)"
@@ -599,6 +603,10 @@ def phase: lifecycle | lifecycle_phase;
 
 # The state's latest standing park of $kind, or null.
 def lifecycle_park($kind): [.parks[] | select(.kind == $kind)] | last;
+
+# The state's standing parks as team-state shows them, in the order logged, each {id, kind, cause
+# (its own, else legacy_cause's), on, reason, since, passed}.
+def lifecycle_parks: [.parks[] | {id, kind, cause, on, reason, since, passed}];
 
 # What the task is waiting on, from the fold's latest standing waiting, as {on, reason, since (its
 # ts)}, or null.
@@ -965,12 +973,13 @@ def task_state($sessions; $home):
      path: $opened.path, phase: ($state | lifecycle_phase), worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
      workers: $workers, last_event: last, pending_asks: ($state | lifecycle_pending_asks),
-     waiting: ($state | lifecycle_waiting), walk: qc_walk,
+     waiting: ($state | lifecycle_waiting), parks: ($state | lifecycle_parks), walk: qc_walk,
      rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null,
      progress: progress($workers)};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands
-# and the brief it is on, then the tickets done and the latest review:
+# and the brief it is on, then the tickets done, the latest review, the PR and the words on it, and
+# last the standing parks:
 # T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7 | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
 def state_line:
   .task as $task
@@ -1018,7 +1027,8 @@ def state_line:
        else " | standing word does not cover it: \(.reasons[0])"
          + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end)
   + (if .walk == null then "" else " | walk on since \(.walk.since)" end)
-  + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
+  + (.parks // [] | if . == [] then ""
+     else " | parks: " + (map("\(.id) \(.cause) since \(.since): \(.reason)" + if .passed then " (passed by a launch)" else "" end) | join("; ")) end);
 
 # Whether a task is parked, waiting on something other than a worker, by the fold: awaiting merge,
 # a park standing (held, blocked, waiting or paused), or an ask nothing settled (settles).

@@ -121,16 +121,16 @@
       "required": {"by": "string"}
     },
     "paused": {
-      "writer": "team-log",
-      "about": "since: when the park began, when it is logged after the fact",
+      "writer": ["team-log", "team-worker"],
+      "about": "a worker's or the task's work paused; cause: why, a cause bin/lib/lifecycle.json gives paused, which team-log requires of every new line it logs; role and session: the paused worker's, when the line names one; since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
-      "optional": {"since": "string"}
+      "optional": {"cause": ["worker", "room", "stow", "coordinator-hold", "offline", "limit", "machine", "shutdown"], "role": "string", "session": "string", "since": "string"}
     },
     "blocked": {
       "writer": "team-log",
-      "about": "a worker stopped by an obstacle; the next launch or resumed clears it; since: when the park began, when it is logged after the fact",
+      "about": "a worker stopped by an obstacle; the next launch or resumed clears it; cause: why, a cause bin/lib/lifecycle.json gives blocked, task when on names a task, else worker unless given; role and session: the blocked worker's, when the line names one; since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
-      "optional": {"since": "string"}
+      "optional": {"cause": ["task", "worker", "denial"], "role": "string", "session": "string", "since": "string"}
     },
     "denied": {
       "writer": ["team-log", "denial-log"],
@@ -140,15 +140,15 @@
     },
     "held": {
       "writer": "team-log",
-      "about": "since: when the park began, when it is logged after the fact",
+      "about": "Daniel's hold on the task; cause: daniel-hold; discord_message: Daniel's message saying so, which team-log requires of every new line; since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
-      "optional": {"head": "string", "since": "string"}
+      "optional": {"cause": ["daniel-hold"], "discord_message": "id", "head": "string", "since": "string"}
     },
     "waiting": {
       "writer": ["team-log", "team-ask"],
-      "about": "a task parked on Daniel or something outside the team; the next launch or resumed clears it; since: when the park began, when it is logged after the fact",
+      "about": "a task parked on Daniel or something outside the team; the next launch or resumed clears it; cause: why, a cause bin/lib/lifecycle.json gives waiting, daniel when on is Daniel (any case), else outside unless given, and ask for team-ask's wait on its ask, whose id ask names; since: when the park began, when it is logged after the fact",
       "required": {"on": "string", "reason": "string"},
-      "optional": {"since": "string"}
+      "optional": {"cause": ["ask", "daniel", "outside"], "ask": "string", "since": "string"}
     },
     "resumed": {
       "writer": ["team-log", "team-answer"],

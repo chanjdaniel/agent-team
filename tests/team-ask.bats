@@ -63,7 +63,7 @@ logged() {
 "<@757> T7 has a question for you in <#2222>: Which of the two sign-in limits stays?"'
   assert_equal "$(logged)" '{"task":"T7","event":"question","role":"planner","text":"Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour."}
 {"task":"T7","event":"asked","id":"sign-in","text":"Which of the two sign-in limits stays?","discord_message":"1564000000000000001"}
-{"task":"T7","event":"waiting","on":"Daniel","reason":"ask sign-in"}'
+{"task":"T7","event":"waiting","on":"Daniel","cause":"ask","ask":"sign-in","reason":"ask sign-in"}'
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
   # waiting.md lists it by the end of the command, linked to the question.
@@ -147,7 +147,7 @@ waiting"
 \"<@757> T7 has a question for you in <#2222>: $line\""
   assert_equal "$(logged)" "{\"task\":\"T7\",\"event\":\"question\",\"role\":\"ops\",\"chars\":71,\"discord_message\":\"1564000000000000001\"}
 {\"task\":\"T7\",\"event\":\"asked\",\"id\":\"write-1\",\"text\":\"$line\",\"discord_message\":\"1564000000000000001\"}
-{\"task\":\"T7\",\"event\":\"waiting\",\"on\":\"Daniel\",\"reason\":\"ask write-1\"}"
+{\"task\":\"T7\",\"event\":\"waiting\",\"on\":\"Daniel\",\"cause\":\"ask\",\"ask\":\"write-1\",\"reason\":\"ask write-1\"}"
   if grep -E 'Dupré|1187' "$TEAM_HOME/ledger.jsonl"; then
     echo "the ledger holds the ops question's text" >&2
     return 1

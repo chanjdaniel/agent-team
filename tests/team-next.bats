@@ -320,7 +320,7 @@ launched T7-builder c0000001"
   local count
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   run_bin -0 team-next T7 -- "T7 PAUSED stowed"
-  assert_equal "$output" "logged paused reason=stowed
+  assert_equal "$output" "logged paused reason=stowed cause=stow role=builder session=b0000001
 no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
   # A stow with detail is a stow too, by park_cause, as every reader of a stow has it.
   run_bin -0 team-next T7 -- "T7 PAUSED stowed ad6520fc for shutdown; next: re-run the gate"
@@ -1315,7 +1315,7 @@ fix_line() {
   echo "# review" >"$wt/.scratch/task/review.md"
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
-  assert_equal "$output" "logged paused reason=stowed
+  assert_equal "$output" "logged paused reason=stowed cause=stow
 brief $TEAM_HOME/tasks/T7/brief-round-1.md
 launched T7-builder c0000001"
   assert_equal "$(record round-1 | jq -cS .)" "$(jq -cnS --arg url "$url" '{template: "builder-round",
@@ -1324,7 +1324,7 @@ launched T7-builder c0000001"
     "$(jq -cn --arg wt "$wt" '{role: "builder", worktree: $wt, toolkits: ["browser"], brief: "brief-round-1"}')"
   # A second stow after that launch launches nothing.
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
-  assert_equal "$output" "logged paused reason=stowed
+  assert_equal "$output" "logged paused reason=stowed cause=stow role=builder session=c0000001
 no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
   assert_equal "$(bg_calls | wc -l)" 1
 }
@@ -1336,7 +1336,7 @@ no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
   touch "$STUB_FIXTURES/fail-once"
   run_bin -1 team-next T7 -- "T7 PAUSED stowed"
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
-  assert_equal "$output" "already logged paused reason=stowed
+  assert_equal "$output" "already logged paused reason=stowed cause=stow
 brief $TEAM_HOME/tasks/T7/brief-round-1.md
 launched T7-builder c0000001"
   # The next round's stow after a re-review that had findings takes round-2.
@@ -1364,7 +1364,7 @@ launched T7-builder c0000001"
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowedaway"
   assert_equal "$(tail -n 1 <<<"$output")" "no hand-off for PAUSED"
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed, handoff.md written"
-  assert_equal "$output" "logged paused reason=stowed, handoff.md written
+  assert_equal "$output" "logged paused reason=stowed, handoff.md written cause=stow
 brief $TEAM_HOME/tasks/T7/brief-round-1.md
 launched T7-builder c0000001"
 }

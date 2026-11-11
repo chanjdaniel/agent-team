@@ -195,10 +195,11 @@ team-drill: recorded compaction pass on home-pc at $(git -C "$REPO_ROOT" rev-par
   local digest
   digest=$(cat "$STUB_FIXTURES/turn-1.digest")
   # T92's and T94's builder launches put them in building (the lifecycle's launch rule).
+  # Each task's standing parks show with their ids and causes, T93's block too.
   assert_contains "$digest" "Open tasks (4):
   T91 drill feature planning | no live worker
-  T92 drill feature building | no live worker | waiting on Daniel: rotate the staging database password
-  T93 drill feature blocked | no live worker
+  T92 drill feature building | no live worker | parks: waiting-1 daniel since 2026-10-27T09:40:00Z: rotate the staging database password
+  T93 drill feature blocked | no live worker | parks: blocked-1 worker since 2026-10-27T09:50:00Z: the migration needs T92 on the new database first
   T94 drill feature building | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 Standing merge word: none

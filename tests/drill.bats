@@ -403,7 +403,7 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   git -C "$wt" commit -q -m "feat: c"
   echo "later" >"$wt/a.txt"
   run_bin -0 team-log T1 plan-approved by=daniel
-  run_bin -0 team-log T1 paused reason="waiting on Daniel"
+  run_bin -0 team-log T1 paused cause=worker reason="waiting on Daniel"
   age_lease 75
 
   resume_by_stealing

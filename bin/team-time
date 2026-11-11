@@ -10,7 +10,9 @@
 #   the waits come from the ledger's lifecycle fold, the one team-state reads: a park (waiting,
 #   blocked, paused, held) stands until the fold ends it (a launch ends every one but a held, a
 #   resumed with none of id, all and brief every one, a merge-approved an old wait on Daniel),
-#   never at an answered, and the latest standing one holds the stretch; it is classed first
+#   never at an answered, and the latest standing one holds the stretch; a park whose line
+#   carries its cause is classed by the cause's class in bin/lib/lifecycle.json's causes (an
+#   outside wait that names its on by that on, as below); an old one, with no cause, first
 #   match wins: wait:limit (the usage, token, weekly or session limit), wait:off (stowed,
 #   shutdown, OS update, handoff);
 #   then its on, when given, decides before its reason, in any case: wait:daniel (on=Daniel),

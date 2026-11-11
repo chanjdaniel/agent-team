@@ -14,7 +14,7 @@
 # worktrees (returned or not), thread, workers (every launch, live when claude agents --json
 # lists its session, with that session's status, state and context, the tokens its latest
 # main-conversation reply read, from its transcript, or null, and the brief its launch logged, or
-# null), last_event, pending_asks, waiting, walk, rehome_failures, merge_preapproval, pr, and progress;
+# null), last_event, pending_asks, waiting, parks, walk, rehome_failures, merge_preapproval, pr, and progress;
 # pending_asks are the asks no later event settles, an answered or a
 # merge-preapproved with the ask's id or a merge-approved whose url its text names.
 # progress is where the task is: tickets (done, the ticket numbers with a ticket-done, each once,
@@ -64,16 +64,22 @@
 # judged. Otherwise covers is null, reasons empty and no file list is read. While awaiting merge,
 # the text form says the first that holds of "standing word withdrawn", "standing word covers it"
 # and "standing word does not cover it: <the first reason>" (with " (and <n> more)" for more),
-# before any waiting.
+# before the parks.
 # waiting is the task's latest waiting (on, reason, since) until a later launch or resumed, or
-# null; the text form ends with "waiting on <on>: <reason>".
+# null. parks are the task's standing parks (held, blocked, waiting, paused) in the order logged,
+# each {id, kind, cause, on, reason, since, passed}: id <kind>-<n>, the park's ordinal among the
+# task's events of its kind; cause the line's own, else for an old line the one bin/lib/ledger.jq's
+# legacy_cause reads from its words; since its since, else its ts; passed, false for every park
+# until a launch may go past an ask's wait, which will set it. The text form ends with "parks:
+# <id> <cause> since <since>: <reason>" for each, joined by "; ", " (passed by a launch)" after a
+# passed one, and has no parks part with none.
 # walk is the task's manual QC walk (team-ui T<n> --walk), {"since": "<ts>"} while it is on, from
 # its latest walk event's ts, and null while it is off or the task is closed; the text form says
-# "walk on since <ts>" while it is on, before any waiting, and nothing of it while it is off.
+# "walk on since <ts>" while it is on, before the parks, and nothing of it while it is off.
 # rehome_failures are the worktrees team-resume could not re-home and nothing has made since: each
 # project's latest rehome-failed, as {project, branch, machine, reason, since}, until a later
 # opened, worktree-added, worktree-moved, rehomed or worktree-returned in that project; the text
-# form says "not re-homed: <project> on <machine>: <reason>", before any waiting.
+# form says "not re-homed: <project> on <machine>: <reason>", before the parks.
 # merge_preapproval is Daniel's plan-time merge word: null when the task logged no
 # merge-preapproved, else its latest one's project, ask, discord_message, scope and ts, with
 # withdrawn (the first merge-preapproval-withdrawn of that project after it, as {ts,
@@ -81,7 +87,7 @@
 # projects.toml now, false for a project it no longer has) and own (the team's own project, as
 # own_project in bin/lib/team.sh reads it). The text form says the first that holds of "merge
 # pre-approval withdrawn", "merge pre-approved, but <project> is the team's own project", "merge
-# pre-approved, but <project> does not opt in" and "merge pre-approved", before any waiting.
+# pre-approved, but <project> does not opt in" and "merge pre-approved", before the parks.
 # Exit 1 for a task with no events, or when the live session list or the registry cannot be read.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"

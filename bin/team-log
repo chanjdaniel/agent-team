@@ -62,7 +62,13 @@
 # sent back; its widening, the numbers of a rereview's new findings in what the last fix added,
 # distinct whole numbers above 0 too, is refused naming any before lists, since a before note is
 # on code the PR did not change, and may name a finding sent_back does not. A park (waiting,
-# blocked, paused, held) logged after the fact takes since=<UTC time>, when it began: no later
+# blocked, paused, held) carries a cause, one bin/lib/lifecycle.json's causes give its kind, and
+# a cause= given is kept: a held is daniel-hold, Daniel's hold, and is refused without
+# discord_message ("a held is Daniel's hold, and needs discord_message, the id of Daniel's message
+# saying so"); a waiting on=Daniel (any case) is daniel, on anyone else outside (ask is team-ask's);
+# a blocked on=T<m> is task, any other worker (denial, for a denial that stops the work, is given);
+# a paused has no default and is refused without one ("a paused needs cause=, one of limit,
+# machine, shutdown, worker"). A park logged after the fact takes since=<UTC time>, when it began: no later
 # than now and no earlier than the task's latest event, or it is refused naming both times; no
 # other kind takes since. A retro-change is refused when its retro names a
 # task with no opened event of path retro, or a retro with no answered of id retro.
@@ -74,8 +80,11 @@
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
 # coordinator's message table gives it, checks each as above, and logs them all, or with --print
 # prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
-# task. QUESTION <text> is a question; BLOCKED <text> and NEED toolkit <name> a blocked; PAUSED
-# <why> a paused; FAILED <why> a failed; INJECTION <where> <what> an injection (source its first
+# task. QUESTION <text> is a question; BLOCKED <text> and NEED toolkit <name> a blocked of cause
+# worker; PAUSED <why> a paused, its cause its first word's (stowed stow, held coordinator-hold,
+# offline offline, any other worker), its reason the whole why; each park carrying the sender's
+# role and session when the sender is known (--from's launch, else the only latest launch of a role
+# with no report since), and neither when it is not, a --from naming no launch refused; FAILED <why> a failed; INJECTION <where> <what> an injection (source its first
 # word). PR <url>, optionally followed by merged <base> conflicts: <files or none>, is a pr whose
 # head is the PR's on GitHub (gh pr view), and a branch-renamed when the PR's head branch is not
 # the task's in the project of the PR's repo. DONE <NN> <sha>... <line> is a ticket-done (commits
@@ -281,6 +290,23 @@ typed=$(ledger_jq '
       | .line[$key] = $typed.value | .problems += ($typed.problems // []))
   | if .problems == [] then .line | review_sent_back else .problems | join("; ") | halt_error(1) end end' \
   -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}" 2>&1) || die "${typed%$'\n'}"
+
+# A park carries its cause (bin/lib/lifecycle.json's causes): a cause= given is kept; a held is
+# Daniel's hold and needs their message; a waiting on Daniel is daniel, on anyone else outside; a
+# blocked on a task is task, any other worker; a paused has no default.
+case $event in
+  held | blocked | waiting | paused)
+    typed=$(jq -c '
+      if .event == "held" and .discord_message == null then
+        "a held is Daniel'"'"'s hold, and needs discord_message, the id of Daniel'"'"'s message saying so" | halt_error(1)
+      elif .cause != null then .
+      elif .event == "held" then .cause = "daniel-hold"
+      elif .event == "waiting" then .cause = (if (.on // "" | tostring | ascii_downcase) == "daniel" then "daniel" else "outside" end)
+      elif .event == "blocked" then .cause = (if (.on // "" | tostring | test("^[Tt][0-9]+$")) then "task" else "worker" end)
+      else "a paused needs cause=, one of limit, machine, shutdown, worker" | halt_error(1) end' <<<"$typed" 2>&1) ||
+      die "${typed%$'\n'}"
+    ;;
+esac
 
 # Daniel's word is on one PR at one head: the approval names the PR as one of the task's pr events
 # does, and a head that PR's pr events, or the task's reviews since its first one, logged (pr_heads

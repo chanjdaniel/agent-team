@@ -48,6 +48,35 @@ builder_launch() {
   assert_equal "$output" "[]"
 }
 
+@test "the table's causes name park kinds, known ends and team-time classes, and the contract types each kind's causes" {
+  # Each cause is logged on park kinds only, ends by the rules the fold reads, and has a class of
+  # team-time's phases; each park kind's cause choices in the contract are the table's causes of it.
+  run jq -L "$REPO_ROOT/bin/lib" -nc --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" \
+    'include "time"; include "ledger"; $contract[0] as $contract
+    | lifecycle_table as $t
+    | [$t.kinds | to_entries[] | select(.value.effect == "park") | .key] as $parks
+    | [($t.causes | to_entries[] | .key as $cause | .value
+         | ((.kinds // [] | if . == [] then "cause \($cause) names no kind" else empty end),
+            (.kinds // [] | .[] | select(IN($parks[]) | not) | "cause \($cause) names \(.), no park kind"),
+            (select(IN(.launch; "any", "role", "never") | not) | "cause \($cause) has launch \(.launch)"),
+            (select(IN(.resume; "id", "daniel", "never") | not) | "cause \($cause) has resume \(.resume)"),
+            (select(.all | type != "boolean") | "cause \($cause) has all \(.all)"),
+            (select(IN(.class; time_phases[][0]) | not) | "cause \($cause) has class \(.class), no team-time phase"))),
+       ($parks[] as $kind
+         | [$t.causes | to_entries[] | select(.value.kinds | index([$kind])) | .key] | sort as $causes
+         | ($contract.kinds[$kind].optional.cause // [] | sort) as $typed
+         | select($causes != $typed) | "\($kind): the table gives causes \($causes), the contract \($typed)")]'
+  assert_equal "$status" 0
+  assert_equal "$output" "[]"
+  # Every park kind has a cause, and the spec's table is the one written.
+  assert_equal "$(fold_read 'lifecycle_table.causes | to_entries | map("\(.key) \(.value.kinds | join(",")) \(.value.launch) \(.value.resume) \(.value.all) \(.value.class)") | join("\n")')" \
+    "$(printf '%s\n' "daniel-hold held never daniel false wait:daniel" "ask waiting never never false wait:daniel" \
+      "daniel waiting any id true wait:daniel" "outside waiting any id true wait:external" "task blocked any id true wait:task" \
+      "worker blocked,paused role id true wait:other" "denial blocked any id true wait:denial" "room paused role id true wait:machine" \
+      "stow paused role id true wait:off" "coordinator-hold paused role id true wait:off" "offline paused role id true wait:external" \
+      "limit paused any id true wait:limit" "machine paused any id true wait:machine" "shutdown paused any id true wait:off")"
+}
+
 @test "a feature task plans, builds on its plan, is in review on its PR and awaits merge once every open PR's head passed" {
   assert_equal "$(fold_read 'task_status + " " + phase')" "unknown planning"
   on thread '{discord_thread: "1563"}'
@@ -321,7 +350,7 @@ problems() {
 @test "the table test: every contract kind, in every status and phase, is refused exactly where lifecycle.json does not take it" {
   # Generated from lifecycle.json, so a new row is tested by being written: each case a state of
   # that status and phase, and a T1 event of the kind, whose retro is T1 for closed-own-retro and
-  # T2 otherwise; taken when the kind's status (or default's) names the status, a closed task's
+  # T2 otherwise, a park carrying its kind's first cause; taken when the kind's status (or default's) names the status, a closed task's
   # own retro taken where it names closed too, and its phases (or default's) are null or name it.
   run fold_read 'lifecycle_table as $t
     | [$contract.kinds | keys[] as $kind | lifecycle_statuses[] as $status | $t.phases[] as $phase
@@ -332,7 +361,8 @@ problems() {
           and ($phases == null or ($phases | index([$phase])))) as $taken
        | (lifecycle_start | .status = (if $status == "closed-own-retro" then "closed" else $status end)
           | .phase = $phase | .since = "2026-11-01T00:00:00Z" | .opened_at = "2026-11-01T00:00:00Z") as $state
-       | {ts: "2026-11-01T00:01:00Z", task: "T1", event: $kind, retro: (if $status == "closed-own-retro" then "T1" else "T2" end)} as $e
+       | {ts: "2026-11-01T00:01:00Z", task: "T1", event: $kind, retro: (if $status == "closed-own-retro" then "T1" else "T2" end)}
+         + (first($t.causes | to_entries[] | select(.value.kinds | index([$kind])) | {cause: .key}) // {}) as $e
        | [$state | lifecycle_problems($e)] as $problems
        | {kind: $kind, status: $status, phase: $phase, taken: $taken, problems: $problems}] as $cases
     | [$cases[] | select(.taken == (.problems != [])) | "\(.kind) \(.status) \(.phase): taken \(.taken), problems \(.problems)"],
@@ -391,6 +421,19 @@ problems() {
   # A held shows over the work phase, but the table reads the work phase.
   on held '{reason: "on hold by Daniel"}'
   assert_equal "$(problems plan-approved)" ""
+}
+
+@test "a park with no cause breaks the table, naming its kind's causes, and a typed one does not" {
+  opened feature
+  assert_equal "$(problems paused '{reason: "the usage limit"}')" \
+    "a paused needs a cause, one of coordinator-hold, limit, machine, offline, room, shutdown, stow, worker"
+  assert_equal "$(problems held '{reason: "Daniel holds it"}')" "a held needs a cause, one of daniel-hold"
+  assert_equal "$(problems waiting '{on: "Daniel", reason: "an interview"}')" "a waiting needs a cause, one of ask, daniel, outside"
+  assert_equal "$(problems blocked '{reason: "a denial"}')" "a blocked needs a cause, one of denial, task, worker"
+  assert_equal "$(problems paused '{reason: "the usage limit", cause: "limit"}')" ""
+  # A closed task's park gets only the status text.
+  on closed '{archive: [], returned: [], kept: []}'
+  assert_equal "$(problems paused '{reason: "the usage limit"}')" "T1 is closed, and a closed task takes no paused"
 }
 
 @test "check_lifecycle replays raw lines in one pass, each task's event against the state before it" {

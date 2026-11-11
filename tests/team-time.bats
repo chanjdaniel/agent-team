@@ -315,6 +315,35 @@ t90_hours() {
     '04:00 done {role: "builder", session: "s2"}')" '{"building":2,"unattributed":1,"wait:daniel":2}'
 }
 
+@test "a typed park is classed by its cause's class in bin/lib/lifecycle.json, an outside wait by its on" {
+  # park_class would read each of these words as another wait (wait:other, the gate's pause as gate).
+  assert_equal "$(t90_hours 06:00 '01:00 paused {cause: "room", role: "builder", reason: "no room for session:builder at full"}' \
+    '02:00 resumed {}' '02:00 paused {cause: "coordinator-hold", reason: "held"}' \
+    '03:00 resumed {}' '03:00 paused {cause: "offline", reason: "offline GitHub"}' \
+    '04:00 resumed {}' '04:00 blocked {cause: "denial", reason: "the push target"}' \
+    '05:00 resumed {}' '05:00 paused {cause: "worker", reason: "waiting for the gate"}')" \
+    '{"building":1,"wait:external":1,"wait:machine":1,"wait:off":1,"wait:denial":1,"wait:other":1}'
+  # An outside wait is classed by its on as park_class reads it.
+  assert_equal "$(t90_hours 04:00 '01:00 waiting {cause: "outside", on: "gate", reason: "the run"}' \
+    '02:00 resumed {}' '02:00 waiting {cause: "outside", on: "T31", reason: "its merge"}' \
+    '03:00 resumed {}' '03:00 waiting {cause: "outside", on: "Vercel", reason: "the support ticket"}')" \
+    '{"building":1,"gate":1,"wait:task":1,"wait:external":1}'
+  # A typed blocked of cause denial counts as a denial, whatever its words.
+  t90_hours 02:00 '01:00 blocked {cause: "denial", reason: "the push target"}' >/dev/null
+  assert_equal "$(time_json --until 2026-10-24T02:00:00Z | jq -c .denials)" 1
+}
+
+@test "an old park, with no cause, is classed by park_class from its kind, on and reason" {
+  # The same words untyped: a pause for room, a coordinator's hold and an offline worker are other
+  # waits, a pause naming the gate gate time, and a blocked naming a denial a denial.
+  assert_equal "$(t90_hours 06:00 '01:00 paused {reason: "no room for session:builder at full"}' \
+    '02:00 resumed {}' '02:00 paused {reason: "held"}' \
+    '03:00 resumed {}' '03:00 paused {reason: "offline GitHub"}' \
+    '04:00 resumed {}' '04:00 blocked {reason: "the push target was denied"}' \
+    '05:00 resumed {}' '05:00 paused {reason: "waiting for the gate"}')" \
+    '{"building":1,"gate":1,"wait:denial":1,"wait:other":3}'
+}
+
 @test "a merge-approved ends an ask's wait whose text names no url of it, so the merge is merging" {
   assert_equal "$(t90_hours 04:00 '01:00 done {role: "builder", session: "s1"}' \
     '01:00 asked {id: "merge", text: "merge PR #30 at 0123456"}' \
