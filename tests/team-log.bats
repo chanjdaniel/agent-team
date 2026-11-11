@@ -221,6 +221,7 @@ TABLE
   assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array","widening":"numbers","memory":"string"}'
   assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","plan","standing"]'
   assert_equal "$(jq -c '.kinds.walk.required.state' "$CONTRACT")" '["on","off"]'
+  assert_equal "$(jq -c '.kinds["plan-approved"] | [.required, .optional]' "$CONTRACT")" '[{"by":"string"},{"parallel":"string"}]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
 
@@ -581,6 +582,28 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 {"task":"T26","event":"retro-schedule","every_hours":0,"discord_message":"1563171945980370999"}
 LINES
   )"
+  run_bin -0 team-log --check
+}
+
+@test "plan-approved takes the phases' caps as parallel, a cap from 1 to 3 per phase joined by commas, and refuses any other" {
+  opened_task T26
+  run_bin -0 team-log T26 plan-approved by=Daniel parallel=2
+  run_bin -0 team-log T26 plan-approved by=Daniel parallel=2,1,3
+  run_bin -0 team-log T26 plan-approved by=coordinator
+  assert_equal "$(logged_after 2)" "$(
+    cat <<'LINES'
+{"task":"T26","event":"plan-approved","by":"Daniel","parallel":"2"}
+{"task":"T26","event":"plan-approved","by":"Daniel","parallel":"2,1,3"}
+{"task":"T26","event":"plan-approved","by":"coordinator"}
+LINES
+  )"
+  local before value
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  for value in 4 0 2,4 "2, 1" 2, ,2 two 12 "[2]"; do
+    run_bin -1 team-log T26 plan-approved by=Daniel "parallel=$value"
+    assert_equal "$output" "team-log: parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '$value'"
+  done
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
   run_bin -0 team-log --check
 }
 

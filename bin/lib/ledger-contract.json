@@ -120,7 +120,9 @@
     "plan-approved": {
       "writer": "team-log",
       "push": true,
-      "required": {"by": "string"}
+      "about": "parallel: the approved cap on the tickets of each phase that build at once, one from 1 to 3 per phase in phase order joined by commas (2, 2,1), the last holding for any later phase; with none, every phase builds one ticket at a time",
+      "required": {"by": "string"},
+      "optional": {"parallel": "string"}
     },
     "paused": {
       "writer": "team-log",

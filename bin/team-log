@@ -65,7 +65,10 @@
 # blocked, paused, held) logged after the fact takes since=<UTC time>, when it began: no later
 # than now and no earlier than the task's latest event, or it is refused naming both times; no
 # other kind takes since. A retro-change is refused when its retro names a
-# task with no opened event of path retro, or a retro with no answered of id retro.
+# task with no opened event of path retro, or a retro with no answered of id retro. A
+# plan-approved's parallel, the approved cap on each phase's tickets that build at once
+# (team-next --fill reads the latest plan-approved's), is refused unless it is one cap from 1 to
+# 3 per phase in phase order joined by commas with no spaces (parallel=2, parallel=2,1).
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
 # merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
 # merge-standing-withdrawn, retro-schedule) is committed and pushed to the team home's origin
@@ -479,6 +482,11 @@ if [[ $event == retro-change && -n ${seen[retro]:-} ]]; then
     die "$retro is not a retro task: it has no opened event with the path retro, so retro-change links no retro's proposals"
   [[ $answered == true ]] ||
     die "$retro has no answered with id retro: Daniel has not answered its proposals, so none is approved to build"
+fi
+
+# A plan's approved caps, one per phase, which team-next --fill reads.
+if [[ $event == plan-approved && -v seen[parallel] && ! ${seen[parallel]} =~ ^[1-3](,[1-3])*$ ]]; then
+  die "parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '${seen[parallel]}'"
 fi
 
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.

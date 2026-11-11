@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Take a worker's message to the task's next step: log its events, then hand the work on.
+# Take a worker's message to the task's next step: log its events, then hand the work on; or start
+# a phase's ready tickets' builders, up to its cap (--fill).
 #
 # Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>]
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
+#        team-next T<n> --fill [--next <NN>]
 #   --from       the sender, as team-log --from-message takes it, when the message cannot tell it
 #   --relay      with an ops session's DONE, the Discord id of the message that relayed its answer,
 #                logged as its done's relay, as team-log --from-message takes it
 #   --sent-back  with a DONE findings message, required, the numbers sent back (none for none), logged
 #                as the review's sent_back; with a DONE pass, the findings it counts that go back
 #                before the merge, required while it counts any
-#   --next       with a builder's DONE <NN>, the ticket to launch next instead of the lowest-numbered
-#                ready one; a ticket with a Waits for: line is launched only so
+#   --next       with a builder's DONE <NN> or --fill, the ticket to launch next (first) instead of
+#                the lowest-numbered ready one; a ticket with a Waits for: line is launched only so
+#   --fill       launch the ready tickets of the phase being built up to its cap, with no message
 #   --checks     with a review launch, the first review's checks file (the reviewer's checks);
 #                required when the task has no review yet, refused once it has one
 #   --since      with a rereview launch, a file of the coordinator's words, added after the derived
@@ -42,7 +45,35 @@
 # with tickets set to "every ticket of phase <n> (<its tickets>)", a name a launch already read
 # taking -2, -3 and so on, in the sending builder's project; the next phase's first ticket is
 # launched by hand, as the first one is. Each is launched as a builder with the toolkits of the
-# task's latest builder launch.
+# task's latest builder launch. In a phase whose cap is above 1 (below), a DONE <NN> with tickets of
+# its phase left is logged and checked the same way, but its hand-off is --fill's, and none ready
+# is no refusal, since others may run; with cap 1 every step above is as it was.
+# --fill, with no message, takes the same task checks and needs a plan-approved; it launches the
+# ready tickets of the phase being built (the earliest with a ticket not done), as team-tickets
+# T<n> --json reads them (its refusal is its own). A phase's cap is the latest plan-approved's
+# parallel (team-log), its entry for that phase, the last entry for a later phase, and 1 when the
+# latest plan-approved has none, so a later approval without it builds one ticket at a time again.
+# Running are the phase's tickets team-tickets calls running, whatever their sessions' state. With
+# cap 1, the lowest-numbered ready ticket is launched in the task's worktree, as a DONE <NN>'s
+# hand-off launches it (T<n>-builder), when none runs. With a cap above 1, each ready ticket is
+# launched in number order while fewer than the cap run, one with no Touches: line only when none
+# runs and nothing beside it once it does: team-open --task T<n> --ticket NN (a ticket worktree,
+# which a rerun reuses), team-brief T<n> builder-ticket --ticket NN --name build-NN (with --force
+# when the brief exists and no launch read it, refused when one did), then team-worker as a builder
+# in that worktree (T<n>-builder-NN). --next adds a ready or waiting ticket of that phase first,
+# within the cap, refused as with a DONE <NN> ("--next NN is none of T<n>'s tickets: they are ...",
+# "is not ready: ...", "is in phase <q>, but phase <p> has tickets not done: ..."). Each line it
+# prints is a step: "worktree <path> for ticket NN", "brief <path>", "launched T<n>-builder-NN
+# <id>"; then, with ready tickets left unlaunched, "full: <k> of phase <p>'s cap <c> build
+# (<tickets>)" (", and NN builds alone (no Touches: line)" when such a ticket runs) "; ready and
+# waiting for a slot: <tickets>", each with no Touches: line marked so; having launched nothing
+# with none ready, "nothing to launch: <each ticket of the phase not done with what it waits on>",
+# or with every ticket done "phase <p>'s tickets are all done: its deliverer comes from the last
+# ticket's DONE". A room refusal (exit 75) of team-worker stops the fill, "no room for build-NN:
+# the launch said <its last stderr line>; ready and waiting for room: <NN and the tickets after
+# it>; run team-next T<n> --fill once there is room", exit 75, and so does a pool with no free
+# slot, "no worktree for ticket NN: <team-open's reason>; ..."; the ticket worktree is kept for the
+# next fill, and any other failure exits with its code.
 # The hand-off of a builder's PR <url> (with or without its merged <base> conflicts: line), DONE
 # review-ready <sha> or DONE merged <base> <sha> conflicts: <files or none> is a fresh reviewer's
 # launch: refused, before anything is logged, when the task has no plan-approved; when the same
@@ -138,15 +169,20 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "runs no team-next") && die "$why"
 
 bin=$(dirname "$TEAM_LIB")
-usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>'"
+usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>' | team-next T<n> --fill [--next <NN>]"
 
 [[ $# -ge 1 && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"
 task=$1
 shift
-log_opts=() next='' checks='' since='' template_opt=''
+log_opts=() next='' checks='' since='' template_opt='' fill=''
 declare -A given=()
 while (($#)) && [[ $1 != -- ]]; do
   case $1 in
+    --fill)
+      [[ -z $fill ]] || usage_error "--fill is given twice"
+      fill=1
+      shift
+      ;;
     --from | --sent-back | --relay | --next | --checks | --since | --template)
       [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
       [[ $# -ge 2 && -n $2 ]] || usage_error "$1 needs a value"
@@ -174,10 +210,18 @@ while (($#)) && [[ $1 != -- ]]; do
     *) usage_error "missing '--' before the worker's message; $usage" ;;
   esac
 done
-[[ ${1:-} == -- ]] || usage_error "missing '--' before the worker's message; $usage"
-shift
-message="$*"
-[[ -n ${message//[[:space:]]/} ]] || usage_error "missing the worker's message; $usage"
+if [[ -n $fill ]]; then
+  [[ $# -eq 0 ]] || usage_error "--fill takes no message; $usage"
+  for opt in "${!given[@]}"; do
+    [[ $opt == --next ]] || usage_error "--fill takes only --next, not $opt; $usage"
+  done
+  message=''
+else
+  [[ ${1:-} == -- ]] || usage_error "missing '--' before the worker's message; $usage"
+  shift
+  message="$*"
+  [[ -n ${message//[[:space:]]/} ]] || usage_error "missing the worker's message; $usage"
+fi
 
 # A sibling script of this checkout, with the team home passed explicitly.
 sibling() {
@@ -199,12 +243,15 @@ esac
 [[ -z $problems ]] || die "$problems"
 
 # The message's events, as team-log reads them, nothing logged yet: one compact object a line,
-# joined into one array.
-printed=$(sibling team-log "$task" --from-message "$message" "${log_opts[@]}" --print) || exit
-parsed_lines=()
-while IFS= read -r line; do [[ -z $line ]] || parsed_lines+=("$line"); done <<<"$printed"
-printf -v parsed '%s,' "${parsed_lines[@]}"
-parsed="[${parsed%,}]"
+# joined into one array; --fill has none.
+parsed='[]'
+if [[ -z $fill ]]; then
+  printed=$(sibling team-log "$task" --from-message "$message" "${log_opts[@]}" --print) || exit
+  parsed_lines=()
+  while IFS= read -r line; do [[ -z $line ]] || parsed_lines+=("$line"); done <<<"$printed"
+  printf -v parsed '%s,' "${parsed_lines[@]}"
+  parsed="[${parsed%,}]"
+fi
 
 # same($p): whether the event is the parsed event $p, as a rerun finds it logged.
 same_def='def same($p): .event == $p.event and
@@ -275,7 +322,8 @@ case $kind in
   "PAUSED stowed") handoff=round ;;
   *) handoff=none ;;
 esac
-[[ -z $next || $handoff == ticket ]] || usage_error "--next is taken only with a builder's DONE <NN> message, not $kind"
+[[ -z $fill ]] || handoff=fill
+[[ -z $next || $handoff == ticket || $handoff == fill ]] || usage_error "--next is taken only with a builder's DONE <NN> message, not $kind"
 for opt in --checks --since --template; do
   [[ -z ${given[$opt]:-} || $handoff == review ]] ||
     usage_error "$opt is taken only with a builder's PR, DONE review-ready or DONE merged message, not $kind"
@@ -310,20 +358,27 @@ log_events() {
   done
 }
 
+# brief_force <name>: refuses brief-<name> when a launch read it, and sets force to --force when it
+# exists and none did (a rerun after a failed launch), else to nothing.
+brief_force() {
+  local used
+  force=()
+  [[ -e $TEAM_HOME/tasks/$task/brief-$1.md ]] || return 0
+  if brief_launched "$1"; then
+    used=$(jq -r --arg b "brief-$1" --arg task "$task" 'map(select(.event == "launch" and .brief == $b)) | last
+      | "\($task)-\(.role) \(.session) at \(.ts)"' <<<"$events")
+    die "brief-$1 was launched already ($used), so it is not launched again"
+  fi
+  force=(--force)
+}
+
 # hand_off <role> <template> <name> <project> <worktree> [<team-brief option>...]: renders the
 # brief (refused when a launch read it, with --force when one exists that none did), logs the
 # events, and launches <role> in <worktree> with the toolkits of the task's latest launch of
 # <role>, else of its latest builder launch.
 hand_off() {
-  local role=$1 template=$2 name=$3 project=$4 worktree=$5 used force=() toolkits=() kit kits brief id status
-  if [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]]; then
-    if brief_launched "$name"; then
-      used=$(jq -r --arg b "brief-$name" --arg task "$task" 'map(select(.event == "launch" and .brief == $b)) | last
-        | "\($task)-\(.role) \(.session) at \(.ts)"' <<<"$events")
-      die "brief-$name was launched already ($used), so it is not launched again"
-    fi
-    force=(--force)
-  fi
+  local role=$1 template=$2 name=$3 project=$4 worktree=$5 force=() toolkits=() kit kits brief id status
+  brief_force "$name"
   case $role in builder) kits=$builder_kits ;; *) kits=$reviewer_kits ;; esac
   while IFS= read -r kit; do [[ -z $kit ]] || toolkits+=(--toolkit "$kit"); done <<<"$kits"
 
@@ -348,6 +403,132 @@ project_worktree() {
   echo "$worktree"
 }
 
+# A ticket's state with what it waits on, as the hand-offs name it: "02 blocked on 01".
+waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
+
+# The plan's caps, the latest plan-approved's parallel, 1 when it has none; cap_of <phase>: that
+# phase's, the last one for a later phase, refused when the caps are malformed (a hand-edited line).
+caps=$(jq -r 'map(select(.event == "plan-approved")) | last | .parallel // "1" | tostring' <<<"$events")
+cap_of() {
+  local -a list
+  [[ $caps =~ ^[1-3](,[1-3])*$ ]] ||
+    die "$task's latest plan-approved has parallel '$caps', which is not a cap from 1 to 3 per phase joined by commas; log the approval again with team-log $task plan-approved by=<who> parallel=<caps>"
+  IFS=, read -ra list <<<"$caps"
+  if (($1 <= ${#list[@]})); then echo "${list[$1 - 1]}"; else echo "${list[-1]}"; fi
+}
+
+# launch_ticket <NN> <project> <cap> <the tickets waiting after it>: ticket NN's builder, at cap 1 in
+# the task's worktree as today's hand-off launches it, else in a ticket worktree of its own
+# (team-open --task T<n> --ticket NN, which a rerun reuses) on team-brief --ticket; a room refusal
+# (exit 75) of team-open or team-worker stops the fill, naming NN and the tickets after it.
+launch_ticket() {
+  local n=$1 project=$2 cap=$3 rest=$4 name=build-$1 force=() toolkits=() kit worktree opened brief id rc err said
+  local session=$task-builder
+  brief_force "$name"
+  while IFS= read -r kit; do [[ -z $kit ]] || toolkits+=(--toolkit "$kit"); done <<<"$builder_kits"
+  if ((cap == 1)); then
+    worktree=$(project_worktree "$project") || exit
+    brief=$(sibling team-brief "$task" builder-ticket --project "$project" --name "$name" --set "ticket=$n" "${force[@]}") || exit
+  else
+    rc=0 err=$(mktemp)
+    opened=$(sibling team-open --task "$task" --ticket "$n" 2>"$err") || rc=$?
+    cat -- "$err" >&2
+    # Its reason, the last line it starts with its name (a full pool's list of slots follows it).
+    said=$(grep '^team-open: ' -- "$err" | tail -n 1) || said="team-open: it gave no reason"
+    rm -f -- "$err"
+    if ((rc == 75)); then
+      echo "${0##*/}: no worktree for ticket $n: ${said%:}; ready and waiting for room: $n$rest; run team-next $task --fill once there is room" >&2
+      exit 75
+    fi
+    ((rc == 0)) || exit "$rc"
+    worktree=$(jq -r .worktree <<<"$opened")
+    echo "worktree $worktree for ticket $n"
+    brief=$(sibling team-brief "$task" builder-ticket --ticket "$n" --project "$project" --name "$name" "${force[@]}") || exit
+    session+=-$n
+  fi
+  echo "brief $brief"
+  rc=0 err=$(mktemp)
+  id=$(sibling team-worker "$task" builder "$worktree" "${toolkits[@]}" -- "Read your brief at $brief" 2>"$err") || rc=$?
+  cat -- "$err" >&2
+  said=$(grep . -- "$err" | tail -n 1) || said="it printed nothing"
+  rm -f -- "$err"
+  if ((rc == 75)); then
+    echo "${0##*/}: no room for $name: the launch said $said; ready and waiting for room: $n$rest; run team-next $task --fill once there is room" >&2
+    exit 75
+  elif ((rc != 0)); then
+    echo "${0##*/}: the launch failed; run the same command again to finish it, which logs nothing twice" >&2
+    exit "$rc"
+  fi
+  echo "launched $session $id"
+}
+
+# fill: launches, in number order (--next's first), each ready ticket of the phase being built (the
+# earliest with a ticket not done) while fewer than its cap run, as the header says, printing one
+# line a step and, when it launched nothing or tickets wait, the line that says why.
+fill() {
+  local tickets phase building cap problem open running_tsv candidates_tsv n alone project k=0 c
+  local -a running=() waiting=() todo=() todo_projects=() bare=() launched=()
+  tickets=$(sibling team-tickets "$task" --json) || exit
+  json_vars phase='.phase' building='.building' problem='.problem' open='.open' \
+    running_tsv='[.running[] | [.ticket, .alone] | @tsv] | join("\n")' \
+    candidates_tsv='[.candidates[] | [.ticket, .alone, .project] | @tsv] | join("\n")' \
+    <<<"$(jq -c --arg n "$next" --arg task "$task" "$waits"'
+    def ph: .phase // 1;
+    ([.[] | select(.state != "done") | ph] | min) as $b
+    | ($b // ([.[] | ph] | max) // 1) as $p
+    | (map(select(.ticket == $n)) | first) as $nx
+    | ([sort_by(.ticket)[] | select(.state != "done" and ph == $p) | waits] | join("; ")) as $open
+    | {phase: $p, building: $b, open: $open,
+       problem: (if $n == "" then null
+         elif $nx == null then "--next \($n) is none of \($task)'"'"'s tickets: they are \(map(.ticket) | sort | join(", "))"
+         elif ($nx.state | IN("ready", "waiting") | not) then "--next \($n) is not ready: \($nx | waits)"
+         elif ($nx | ph) != $b then "--next \($n) is in phase \($nx | ph), but phase \($b) has tickets not done: \($open)"
+         else null end),
+       running: [sort_by(.ticket)[] | select(.state == "running" and ph == $p) | {ticket, alone: (.touches == null)}],
+       candidates: ([$nx | select(. != null)] + [sort_by(.ticket)[] | select(.state == "ready" and ph == $p)]
+         | reduce .[] as $t ([]; if any(.[]; .ticket == $t.ticket) then . else . + [$t] end)
+         | map({ticket, alone: (.touches == null), project}))}' <<<"$tickets")"
+  [[ -z $problem ]] || die "$problem"
+  cap=$(cap_of "$phase") || exit
+  alone=''
+  while IFS=$'\t' read -r n c; do
+    [[ -n $n ]] || continue
+    running+=("$n") k=$((k + 1))
+    if ((cap > 1)) && [[ $c == true && -z $alone ]]; then alone=$n; fi
+  done <<<"$running_tsv"
+  while IFS=$'\t' read -r n c project; do
+    [[ -z $n ]] || { todo+=("$n") bare+=("$c") todo_projects+=("$project"); }
+  done <<<"$candidates_tsv"
+
+  local i j rest note
+  for ((i = 0; i < ${#todo[@]}; i++)); do
+    n=${todo[i]} note=''
+    ((cap == 1)) || [[ ${bare[i]} != true ]] || note=" (no Touches: line, so it builds alone)"
+    if [[ -n $alone ]] || ((k >= cap)) || [[ -n $note && $k -gt 0 ]]; then
+      waiting+=("$n$note")
+      continue
+    fi
+    rest=''
+    for ((j = i + 1; j < ${#todo[@]}; j++)); do rest+=", ${todo[j]}"; done
+    launch_ticket "$n" "${todo_projects[i]}" "$cap" "$rest"
+    launched+=("$n") running+=("$n") k=$((k + 1))
+    [[ -z $note ]] || alone=$n
+  done
+
+  if ((${#waiting[@]})); then
+    local built
+    built=$(printf '%s\n' "${running[@]}" | sort | paste -sd, - | sed 's/,/, /g')
+    printf -v rest '%s, ' "${waiting[@]}"
+    echo "full: $k of phase $phase's cap $cap build ($built)${alone:+, and $alone builds alone (no Touches: line)}; ready and waiting for a slot: ${rest%, }"
+  elif ((${#launched[@]} == 0)); then
+    if [[ -z $building ]]; then
+      echo "phase $phase's tickets are all done: its deliverer comes from the last ticket's DONE"
+    else
+      echo "nothing to launch: $open"
+    fi
+  fi
+}
+
 # A stow hands a round on only while the latest review (findings, or a pass logged before team-log made it so)
 # sent findings back and no launch (an ops session's aside) has taken them since.
 if [[ $handoff == round ]] && ! jq -e '(to_entries | map(select(.value.event == "review")) | last) as $r
@@ -361,6 +542,13 @@ fi
 if [[ $handoff == none ]]; then
   log_events
   echo "no hand-off for $kind"
+  exit 0
+fi
+
+if [[ $handoff == fill ]]; then
+  jq -e 'any(.[]; .event == "plan-approved")' <<<"$events" >/dev/null ||
+    die "$task has no plan-approved, so no ticket is launched; approve the plan first (step 3 of the manual)"
+  fill
   exit 0
 fi
 
@@ -673,7 +861,6 @@ tickets=$(sibling team-tickets "$task" --json) || exit
 # NN's, with a ticket not done; empty when none), the ticket chosen (--next's, else that phase's
 # lowest-numbered ready one), whether it is ready or waiting, what it waits on, its phase, its
 # project, and NN's phase's tickets as a list.
-waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
 updated='def updated: map(if .ticket == $t then .state = "done" | .session = null else . end)
   | [.[] | select(.state == "done") | .ticket] as $done
   | map(if .state == "blocked" then (.on - $done) as $on
@@ -714,6 +901,7 @@ done <<<"$commits"
 open_list() {
   jq -r --arg t "$ticket" --argjson b "$building" "$updated $waits"' updated | map(select(.state != "done" and (.phase // 1) == $b) | waits) | join("; ")' <<<"$tickets"
 }
+phase_cap=$(cap_of "$phase") || exit
 if [[ -n $next ]]; then
   [[ $chosen != null ]] || die "--next $next is none of $task's tickets: they are $(jq -r --arg t "$ticket" "$updated"' updated | map(.ticket) | join(", ")' <<<"$tickets")"
   [[ $chosen_ok == true ]] || die "--next $next is not ready once $ticket is done: $chosen_waits"
@@ -723,9 +911,17 @@ if [[ -n $next ]]; then
     die "--next $next is in phase $chosen_phase, but phase $building has tickets not done: $(open_list)"
 elif [[ -z $building ]]; then
   chosen=deliver
+elif ((phase_cap > 1)); then
+  # In a phase whose cap is above 1 the fill hands off, which says why when it launches nothing.
+  :
 else
   [[ $chosen != null ]] ||
     die "tickets $([[ $phased == false ]] || echo "of phase $building ")remain once $ticket is done, but none is ready: $(open_list); --next <NN> launches a waiting one"
+fi
+if [[ $chosen != deliver ]] && ((phase_cap > 1)); then
+  log_events
+  fill
+  exit 0
 fi
 
 if [[ $chosen == deliver ]]; then
