@@ -53,11 +53,11 @@ Act on each, then end the turn."
 @test "the Stop event's session is the sweep's own, so a coordinator twin names only the other" {
   stub_reply claude '[{"kind": "background", "id": "3169fcbd", "sessionId": "3169fcbd-0000-4000-8000-000000000000",
       "name": "coordinator", "status": "busy", "state": "working", "startedAt": 1762596000000},
-    {"kind": "background", "id": "9a3c2d1e", "sessionId": "9a3c2d1e-1111", "name": "coordinator", "status": "idle",
+    {"kind": "background", "id": "5e7b1c04", "sessionId": "5e7b1c04-1111", "name": "coordinator", "status": "idle",
       "state": "blocked", "startedAt": 1762596000000}]'
   stop -0
   assert_equal "$(jq -r .reason <<<"$output")" "team-sweep found 1 thing to reconcile before this turn ends:
-coordinator-twin: coordinator 9a3c2d1e (background, blocked, started 2025-11-08T10:00:00Z) is a second session named coordinator on this machine; next: read claude logs 9a3c2d1e for anything left to log, then stop it with claude stop 9a3c2d1e
+coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-11-08T10:00:00Z) is a second session named coordinator on this machine; next: read claude logs 5e7b1c04 for anything left to log, then stop it with claude stop 5e7b1c04
 Act on each, then end the turn."
 }
 

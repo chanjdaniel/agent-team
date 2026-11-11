@@ -1129,9 +1129,11 @@ def activity_finding:
 # --json lists it) and the full session id of the session the sweep runs in ($self, "" when it is
 # not known): when more than one session is named coordinator, one finding for each of them but
 # $self's, session being its short id (an interactive one's, the first 8 characters of its session
-# id), saying "if it is not you" when $self names none of them. A background twin is stopped
-# with claude stop; an interactive one is Daniel's to end. A Remote Control row is not in the list:
-# the coordinator's own ListAgents finds that one (bin/hooks/session-digest).
+# id), and when $self names none of them, "one of <n> sessions" in place of "a second session" and
+# "if it is not you" before the next step; a session whose startedAt is not a number "started at
+# an unknown time". A background twin is stopped with claude stop; an interactive one is Daniel's
+# to end. A Remote Control row is not in the list: the coordinator's own ListAgents finds that one
+# (bin/hooks/session-digest).
 def coordinator_twin_findings($self):
   [.[] | select(.name == "coordinator")] as $coordinators
   | select(($coordinators | length) > 1)
@@ -1142,7 +1144,11 @@ def coordinator_twin_findings($self):
      else "read claude logs \($short) for anything left to log, then stop it with claude stop \($short)" end
      | if $known then . else "if it is not you, " + . end) as $next
   | {task: null, kind: "coordinator-twin", session: $short, name: "coordinator", next: $next,
-     text: "coordinator-twin: coordinator \($short) (\(.kind), \(.state // .status // "no state"), started \(.startedAt / 1000 | floor | todate)) is a second session named coordinator on this machine; next: \($next)"};
+     text: "coordinator-twin: coordinator \($short) (\(.kind), \(.state // .status // "no state"), \(
+       if (.startedAt | type) == "number" then "started \(.startedAt / 1000 | floor | todate)"
+       else "started at an unknown time" end)) is \(
+       if $known then "a second session" else "one of \($coordinators | length) sessions" end
+       ) named coordinator on this machine; next: \($next)"};
 
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings

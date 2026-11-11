@@ -73,10 +73,12 @@
 #                  id: "coordinator-twin: coordinator <id> (<kind>, <state or status>, started
 #                  <time>) is a second session named coordinator on this machine; next: read claude
 #                  logs <id> for anything left to log, then stop it with claude stop <id>" ("ask
-#                  Daniel to end it, an interactive session, pid <pid>" for an interactive one),
-#                  each next starting "if it is not you, " when CLAUDE_CODE_SESSION_ID names none
-#                  of them. The list is this machine's: a Remote Control twin is the coordinator's
-#                  own ListAgents check (bin/hooks/session-digest)
+#                  Daniel to end it, an interactive session, pid <pid>" for an interactive one, and
+#                  "started at an unknown time" for one whose startedAt is not a number); when
+#                  CLAUDE_CODE_SESSION_ID names none of them, each is "one of <n> sessions named
+#                  coordinator" and its next starts "if it is not you, ". The list is this
+#                  machine's: a Remote Control twin is the coordinator's own ListAgents check
+#                  (bin/hooks/session-digest)
 #   activity       after the coordinator-twin findings, with task and session null: session-activity
 #                  failed (a Python older than 3.11, say, or a session with a transcript whose
 #                  startedAt is not epoch milliseconds) or printed no JSON object, so no busy
