@@ -375,13 +375,14 @@ No tickets in T172&#x27;s open worktrees."
   [[ ! -e $page ]]
 }
 
-@test "--help documents --html and --graph, and no longer says it never writes" {
+@test "--help documents --html and --graph, when to make the graph and how to attach it, and no longer says it never writes" {
   run_bin -0 team-tickets --help
   assert_contains "$output" "Usage: team-tickets T<n> [--check] [--json] [--html <file> | --graph]"
   assert_contains "$output" "--html <file> writes the tickets as one self-contained HTML page"
   assert_contains "$output" "--graph writes that page as tickets.html and a PNG of it as tickets.png"
   assert_contains "$output" "The PNG is headless Chrome's screenshot of the page"
   [[ $output != *"never writes"* ]]
+  assert_contains "$(tr '\n' ' ' <<<"$output")" "Make the graph for the plan ask to Daniel and when Daniel asks how a building task stands, and attach its PNG with team-ask --attach or team-post --attach."
 }
 
 # The stub Chrome --graph runs through TEAM_CHROME, which notes the profile directory it was given

@@ -53,6 +53,8 @@
 # timeout with a fresh profile directory, removed after. With no Chrome, or Chrome failing, timing
 # out or writing no PNG, the page is still written and its path printed, any old tickets.png is
 # removed, stderr says why there is no PNG, and the exit is 1.
+# Make the graph for the plan ask to Daniel and when Daniel asks how a building task stands, and
+# attach its PNG with team-ask --attach or team-post --attach.
 # --html and --graph go with no other mode. Nothing else is written.
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
 set -euo pipefail

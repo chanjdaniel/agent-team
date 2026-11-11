@@ -5,6 +5,7 @@ load helpers/common
 
 setup() {
   sandbox
+  # shellcheck disable=SC2153 # TEAM_HOME is the sandbox's, not a misspelt TEAM_CHROME
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
 [proj]
 repo = "owner/proj"
