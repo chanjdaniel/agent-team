@@ -124,6 +124,24 @@ ended_at() {
   cat "$GH_DIR/look"
 }
 
+# both <team-ci-wait arguments>...: run team-ci-wait with them, then again with --json first, each
+# from look 0, and hold the two to each other: the same exit code and the look it ended at, one
+# line of JSON with nothing else, schema team-ci-wait/1, and its text the text form without its
+# starting line. The text form's status and output stay in text_status and text_output.
+both() {
+  local ended
+  run_bin team-ci-wait "$@"
+  text_status=$status text_output=$output ended=$(ended_at)
+  echo 0 >"$GH_DIR/look"
+  run_bin team-ci-wait --json "$@"
+  assert_equal "$status" "$text_status"
+  assert_equal "$(ended_at)" "$ended"
+  assert_equal "${#lines[@]}" 1
+  assert_equal "$(jq -r .schema <<<"$output")" team-ci-wait/1
+  assert_equal "$(jq -r .text <<<"$output")" "$(sed '/^team-ci-wait: waiting on the checks of /d' <<<"$text_output")"
+  assert_equal "$(jq -r 'keys | join(" ")' <<<"$output")" "failures head outcome schema text"
+}
+
 @test "T121: a summary check left in_progress on a run that completed ends the wait after 5 minutes, naming the re-run" {
   checks 0 "$(check test SUCCESS 41110572636)" "$(check e2e IN_PROGRESS 41110572636)"
   workflow_run 0 41110572636 completed success
@@ -246,7 +264,7 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   the PR's: test was not reported for 2 minutes, and the project requires it"
 }
 
-@test "a required check listed in time, skipped ones too, passes; agent-review, delivered after the wait, is never missed" {
+@test "a required check listed in time, skipped ones too, passes; agent-review, set at a reviewer's verdict, is never missed" {
   required test docs agent-review
   checks 0 "$(check test IN_PROGRESS 7001)"
   workflow_run 0 7001 in_progress
@@ -556,7 +574,7 @@ EOF
 @test "a malformed command line is a usage error, and a repo no project has is refused" {
   run_bin team-ci-wait
   assert_equal "$status" 2
-  assert_contains "$output" "usage: team-ci-wait [--no-agent-review] <pr url> [<sha>]"
+  assert_contains "$output" "usage: team-ci-wait [--no-agent-review] [--json] [--look] <pr url> [<sha>]"
   run_bin team-ci-wait "$url" extra
   assert_equal "$status" 2
   run_bin team-ci-wait "$url" a1b2c3
@@ -567,6 +585,15 @@ EOF
   assert_equal "$status" 2
   run_bin team-ci-wait "$url" --no-agent-review
   assert_equal "$status" 2
+  # The options come before the URL, and a refused command line prints no JSON object.
+  run_bin team-ci-wait --json "$url" --look
+  assert_equal "$status" 2
+  assert_contains "$output" "usage: team-ci-wait [--no-agent-review] [--json] [--look] <pr url> [<sha>]"
+  run_bin team-ci-wait --look --json --bogus "$url"
+  assert_equal "$status" 2
+  run_bin team-ci-wait --json "$url" "$head" extra
+  assert_equal "$status" 2
+  [[ $output != *'{'* ]]
   run_bin team-ci-wait https://github.com/owner/proj/issues/217
   assert_equal "$status" 2
   assert_contains "$output" "not a GitHub pull request URL"
@@ -794,4 +821,243 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   assert_equal "$(stub_calls gh | jq -c 'select(.[1] | contains("/jobs/"))')" '["api","repos/owner/proj/actions/jobs/72"]
 ["api","repos/owner/proj/actions/jobs/73"]'
   [[ $output != *OUTPUT-MARKER* ]]
+}
+
+# --json: one object on every end, its text the text form's end and its exit code the same (T295).
+
+@test "--json on checks that passed is outcome passed with no failures; on no checks, none" {
+  checks 0 "$(check test SUCCESS 7001)" "$(check docs SKIPPED 7001)"
+  both "$url"
+  assert_equal "$status" 0
+  assert_equal "$(jq -c '[.outcome, .head, .failures, .text]' <<<"$output")" \
+    "[\"passed\",\"$head\",[],\"team-ci-wait: every check passed on a1b2c3d: test passed, docs skipped\"]"
+  echo 0 >"$GH_DIR/look"
+  rm "$GH_DIR"/checks.*
+  answer 0 checks none
+  both "$url"
+  assert_equal "$status" 0
+  assert_equal "$(jq -c '[.outcome, .failures]' <<<"$output")" '["none",[]]'
+  assert_equal "$(jq -r .text <<<"$output")" "team-ci-wait: a1b2c3d has no GitHub checks: none reported for 2 minutes"
+}
+
+@test "--json on a failure gives each failure's class, kind, state, link, run, job, step and rerun, in the text's order" {
+  required test docs "test-shards (1)" e2e deploy "macos-shards (1)" build
+  checks 0 "$(check test FAILURE 7001 71)" "$(check docs FAILURE 7001 72)" "$(check "test-shards (1)" FAILURE 7001 73)" \
+    "$(check e2e IN_PROGRESS 7002 74)" "$(check deploy CANCELLED)" "$(check "macos-shards (1)" QUEUED 7003 75)"
+  workflow_run 0 7002 completed failure
+  workflow_run 0 7003 queued
+  head_runs 0 7003:macOS:queued
+  job 0 72 "GitHub Actions 2" "Set up job=success" "Run actions/checkout@v4=failure"
+  job 0 73 "GitHub Actions 3" "Set up job=success" "Run tests/run bats --shard 1/3=failure"
+  TEAM_CI_WAIT_QUEUED_SECONDS=600 both "$url"
+  assert_equal "$status" 1
+  assert_equal "$(jq -r .outcome <<<"$output")" failed
+  assert_equal "$(jq -c '.failures[]' <<<"$output")" \
+'{"name":"test-shards (1)","state":"failure","link":"https://github.com/owner/proj/actions/runs/7001/job/73","run":7001,"job":73,"step":"Run tests/run bats --shard 1/3","rerun":null,"class":"pr","kind":"failed"}
+{"name":"deploy","state":"cancelled","link":"https://ci.example.invalid/deploy","run":null,"job":null,"step":null,"rerun":null,"class":"pr","kind":"cancelled"}
+{"name":"docs","state":"failure","link":"https://github.com/owner/proj/actions/runs/7001/job/72","run":7001,"job":72,"step":"Run actions/checkout@v4","rerun":"gh run rerun 7001 --job 72 --repo owner/proj","class":"infrastructure","kind":"setup"}
+{"name":"e2e","state":"in_progress","link":"https://github.com/owner/proj/actions/runs/7002/job/74","run":7002,"job":74,"step":null,"rerun":"gh run rerun 7002 --repo owner/proj","class":"infrastructure","kind":"stuck"}
+{"name":"macos-shards (1)","state":"queued","link":"https://github.com/owner/proj/actions/runs/7003/job/75","run":7003,"job":75,"step":null,"rerun":"gh run rerun 7003 --job 75 --repo owner/proj","class":"infrastructure","kind":"queued"}
+{"name":"test","state":"failure","link":"https://github.com/owner/proj/actions/runs/7001/job/71","run":7001,"job":71,"step":null,"rerun":null,"class":"rollup","kind":"rollup"}'
+  # Each failure's line in the text is in the same order, the first line before them.
+  assert_equal "$(jq -r '.text | split("\n") | map(split(":")[0] | ltrimstr("  ")) | join(",")' <<<"$output")" \
+    "team-ci-wait,the PR's,the PR's,infrastructure,infrastructure,infrastructure,roll-up"
+  [[ $output != *OUTPUT-MARKER* ]]
+}
+
+@test "--json names a required check not reported as missing, and a job never started with its rerun" {
+  required build
+  checks 0 "$(check "macos-shards (1)" CANCELLED 7001 81)" "$(check macos FAILURE 7001 82)"
+  job 0 81 ""
+  both "$url"
+  assert_equal "$status" 1
+  assert_equal "$(jq -c '.failures[] | [.name, .class, .kind, .state, .link, .run, .job, .rerun]' <<<"$output")" \
+'["macos-shards (1)","infrastructure","never-started","cancelled","https://github.com/owner/proj/actions/runs/7001/job/81",7001,81,"gh run rerun 7001 --job 81 --repo owner/proj"]
+["macos","rollup","rollup","failure","https://github.com/owner/proj/actions/runs/7001/job/82",7001,82,null]'
+  echo 0 >"$GH_DIR/look"
+  rm "$GH_DIR"/checks.*
+  checks 0 "$(check test SUCCESS 7001)"
+  both "$url"
+  assert_equal "$status" 1
+  assert_equal "$(jq -c '[.outcome, .failures]' <<<"$output")" \
+    '["failed",[{"name":"build","class":"pr","kind":"missing","state":null,"link":null,"run":null,"job":null,"step":null,"rerun":null}]]'
+}
+
+@test "--json ends as other-head, moved and closed with the PR's head and no failures" {
+  other=9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+  checks 0 "$(check test SUCCESS)"
+  both "$url" "$other"
+  assert_equal "$status" 1
+  assert_equal "$(jq -c '[.outcome, .head, .failures]' <<<"$output")" "[\"other-head\",\"$head\",[]]"
+  assert_contains "$(jq -r .text <<<"$output")" "is a1b2c3d, not 9f8e7d6, after 2 minutes of looks"
+  echo 0 >"$GH_DIR/look"
+  rm "$GH_DIR"/checks.*
+  checks 0 "$(check test PENDING)"
+  pr OPEN "$other" 2
+  both "$url"
+  assert_equal "$status" 1
+  assert_equal "$(jq -c '[.outcome, .head, .failures]' <<<"$output")" "[\"moved\",\"$other\",[]]"
+  echo 0 >"$GH_DIR/look"
+  pr MERGED "$head" 2
+  both "$url"
+  assert_equal "$status" 1
+  assert_equal "$(jq -c '[.outcome, .head, .text]' <<<"$output")" \
+    "[\"closed\",\"$head\",\"team-ci-wait: owner/proj#217 is merged: its checks no longer matter\"]"
+}
+
+@test "--json ends as deadline, unreadable and offline, each with exit 75" {
+  checks 0 "$(check test IN_PROGRESS 7001)"
+  workflow_run 0 7001 in_progress
+  TEAM_CI_WAIT_DEADLINE_SECONDS=600 both "$url"
+  assert_equal "$status" 75
+  assert_equal "$(jq -c '[.outcome, .head, .failures]' <<<"$output")" "[\"deadline\",\"$head\",[]]"
+  assert_contains "$(jq -r .text <<<"$output")" "checks still pending on a1b2c3d: test (in_progress, run 7001 in_progress)"
+  echo 0 >"$GH_DIR/look"
+  answer 0 view fail
+  both "$url"
+  assert_equal "$status" 75
+  assert_equal "$(jq -c '[.outcome, .head, .text]' <<<"$output")" \
+    '["unreadable",null,"team-ci-wait: GitHub could not be read for 5 minutes running: gh pr view: error connecting to api.github.com"]'
+  echo 0 >"$GH_DIR/look"
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"since": "2026-10-22T13:05:00Z", "posted": true}' >"$HOME/.local/state/agent-team/offline"
+  both "$url"
+  assert_equal "$status" 75
+  assert_equal "$(jq -c '[.outcome, .head, .failures]' <<<"$output")" '["offline",null,[]]'
+  assert_contains "$(jq -r .text <<<"$output")" "the team is holding"
+  # A deadline shorter than gh's 5 minutes, with no look read yet, is unreadable too.
+  rm "$HOME/.local/state/agent-team/offline"
+  echo 0 >"$GH_DIR/look"
+  TEAM_CI_WAIT_DEADLINE_SECONDS=60 both "$url"
+  assert_equal "$status" 75
+  assert_equal "$(ended_at)" 2
+  assert_equal "$(jq -c '[.outcome, .head, .text]' <<<"$output")" \
+    '["unreadable",null,"team-ci-wait: 1 minute, and GitHub not read yet: gh pr view: error connecting to api.github.com: run team-ci-wait again to wait, or report BLOCKED"]'
+}
+
+# --look: one readable look at the head, what has failed so far, classed, with no wait (T295).
+
+@test "--look on a failed check, its roll-up and pending checks exits 1 at the first look, naming each" {
+  checks 0 "$(check test FAILURE 7001 71)" "$(check "test-shards (2)" FAILURE 7001 73)" \
+    "$(check "test-shards (1)" SUCCESS 7001 72)" "$(check e2e IN_PROGRESS 7002 74)" "$(check lint QUEUED 7002 76)"
+  workflow_run 0 7002 in_progress
+  head_runs 0 7002:E2E:in_progress
+  job 0 73 "GitHub Actions 3" "Set up job=success" "Run tests/run bats --shard 2/3=failure"
+  run_bin team-ci-wait --look "$url" "$head"
+  assert_equal "$status" 1
+  assert_equal "$(ended_at)" 0
+  assert_equal "$output" "team-ci-wait: the checks on a1b2c3d did not pass:
+  the PR's: test-shards (2) failed: https://github.com/owner/proj/actions/runs/7001/job/73
+  roll-up: test, of test-shards (2), left out
+  still pending: e2e (in_progress, run 7002 in_progress); lint (queued, run 7002 in_progress)"
+  echo 0 >"$GH_DIR/look"
+  run_bin team-ci-wait --look --json "$url" "$head"
+  assert_equal "$status" 1
+  assert_equal "$(jq -c '[.outcome, .head, [.failures[] | [.name, .class, .kind, .step]]]' <<<"$output")" \
+    "[\"failed\",\"$head\",[[\"test-shards (2)\",\"pr\",\"failed\",\"Run tests/run bats --shard 2/3\"],[\"test\",\"rollup\",\"rollup\",null]]]"
+  assert_contains "$(jq -r .text <<<"$output")" "  still pending: e2e (in_progress, run 7002 in_progress)"
+}
+
+@test "--look with nothing failed exits 0: pending, passed or none" {
+  checks 0 "$(check test SUCCESS 7001)" "$(check e2e IN_PROGRESS 7002)"
+  workflow_run 0 7002 in_progress
+  both --look "$url"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 0
+  assert_equal "$(jq -c '[.outcome, .failures, .text]' <<<"$output")" \
+    '["pending",[],"team-ci-wait: no check has failed on a1b2c3d so far; still pending: e2e (in_progress, run 7002 in_progress)"]'
+  # A workflow run still open with no check pending is pending too: a rerun may replace a check.
+  echo 0 >"$GH_DIR/look"
+  checks 1 "$(check test SUCCESS 7001)"
+  head_runs 1 7003:Docs:queued
+  echo 1 >"$GH_DIR/look"
+  run_bin team-ci-wait --look "$url"
+  assert_equal "$status" 0
+  assert_equal "$output" "team-ci-wait: no check has failed on a1b2c3d so far; still pending: Docs (workflow run 7003 queued)"
+  echo 0 >"$GH_DIR/look"
+  rm "$GH_DIR"/checks.* "$GH_DIR"/runs.*
+  head_runs 0
+  checks 0 "$(check test SUCCESS 7001)" "$(check docs SKIPPED 7001)"
+  both --look "$url"
+  assert_equal "$status" 0
+  assert_equal "$(jq -c '[.outcome, .text]' <<<"$output")" '["passed","team-ci-wait: every check passed on a1b2c3d: test passed, docs skipped"]'
+  echo 0 >"$GH_DIR/look"
+  answer 0 checks none
+  both --look "$url"
+  assert_equal "$status" 0
+  assert_equal "$(jq -c '[.outcome, .text]' <<<"$output")" '["none","team-ci-wait: a1b2c3d has no GitHub checks reported so far"]'
+  # A look reads no job but a failed one's, and nothing that writes.
+  assert_equal "$(stub_calls gh | jq -c 'select(.[1] | contains("/jobs/"))')" ""
+}
+
+@test "--look names no stuck, queued or missing check, only pending ones, since each needs a clock" {
+  required test build
+  checks 0 "$(check test SUCCESS 7001)" "$(check e2e IN_PROGRESS 7002 74)" "$(check "macos-shards (1)" QUEUED 7003 75)"
+  workflow_run 0 7002 completed success
+  workflow_run 0 7003 queued
+  head_runs 0 7003:macOS:queued
+  run_bin team-ci-wait --look "$url"
+  assert_equal "$status" 0
+  assert_equal "$output" "team-ci-wait: no check has failed on a1b2c3d so far; still pending: e2e (in_progress, run 7002 completed); macos-shards (1) (queued, run 7003 queued)"
+  [[ $output != *infrastructure* && $output != *build* ]]
+}
+
+@test "--look keeps the grace for a push, then ends as another head; merged, offline and unreadable end as the wait does" {
+  other=9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+  checks 0 "$(check test SUCCESS)"
+  checks 2 "$(check test FAILURE)"
+  pr OPEN "$other" 2
+  run_bin team-ci-wait --look "$url" "$other"
+  assert_equal "$status" 1
+  assert_equal "$(ended_at)" 2
+  assert_equal "$output" "team-ci-wait: the checks on 9f8e7d6 did not pass:
+  the PR's: test failed: https://ci.example.invalid/test"
+  echo 0 >"$GH_DIR/look"
+  rm "$GH_DIR/view.2"
+  both --look "$url" "$other"
+  assert_equal "$status" 1
+  assert_equal "$(ended_at)" 4
+  assert_equal "$(jq -r .outcome <<<"$output")" other-head
+  assert_contains "$text_output" "the head of owner/proj#217 is a1b2c3d, not 9f8e7d6, after 2 minutes of looks"
+  echo 0 >"$GH_DIR/look"
+  pr MERGED "$head" 1
+  both --look "$url" "$other"
+  assert_equal "$status" 1
+  assert_equal "$(jq -r .outcome <<<"$output")" closed
+  # GitHub not read for the grace is exit 75; read within it, the look ends as it would.
+  echo 0 >"$GH_DIR/look"
+  rm "$GH_DIR"/view.*
+  answer 0 view fail
+  both --look "$url"
+  assert_equal "$status" 75
+  assert_equal "$(ended_at)" 4
+  assert_equal "$(jq -c '[.outcome, .text]' <<<"$output")" \
+    '["unreadable","team-ci-wait: GitHub could not be read for 2 minutes running: gh pr view: error connecting to api.github.com"]'
+  echo 0 >"$GH_DIR/look"
+  pr OPEN "$head" 2
+  both --look "$url"
+  assert_equal "$status" 1
+  assert_equal "$(ended_at)" 2
+  echo 0 >"$GH_DIR/look"
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"since": "2026-10-22T13:05:00Z", "posted": true}' >"$HOME/.local/state/agent-team/offline"
+  both --look "$url"
+  assert_equal "$status" 75
+  assert_equal "$(jq -r .outcome <<<"$output")" offline
+}
+
+@test "--json, --look and --no-agent-review combine in any order" {
+  checks 0 "$(check test SUCCESS 7001)" "$(check agent-review FAILURE)"
+  local order
+  for order in "--look --json --no-agent-review" "--no-agent-review --look --json" "--json --no-agent-review --look"; do
+    echo 0 >"$GH_DIR/look"
+    # shellcheck disable=SC2086 # each order is split into its options
+    run_bin team-ci-wait $order "$url" "${head:0:7}"
+    assert_equal "$status" 0
+    assert_equal "$(jq -c '[.outcome, .text]' <<<"$output")" '["passed","team-ci-wait: every check passed on a1b2c3d: test passed"]'
+  done
+  echo 0 >"$GH_DIR/look"
+  run_bin team-ci-wait --json --look "$url"
+  assert_equal "$status" 1
+  assert_equal "$(jq -c '[.failures[] | [.name, .class, .kind]]' <<<"$output")" '[["agent-review","pr","failed"]]'
 }
