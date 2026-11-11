@@ -323,6 +323,64 @@ t90_hours() {
     '04:00 done {role: "builder", session: "s2"}')" '{"building":2,"unattributed":1,"wait:daniel":2}'
 }
 
+@test "a typed park is classed by its cause's class in bin/lib/lifecycle.json, an outside wait by its on, a worker's by its words" {
+  # park_class would read the first four's words as another wait (wait:other); a worker's pause is
+  # classed by its words as park_class reads them, so naming the gate it is gate time.
+  assert_equal "$(t90_hours 06:00 '01:00 paused {cause: "room", role: "builder", reason: "no room for session:builder at full"}' \
+    '02:00 resumed {}' '02:00 paused {cause: "coordinator-hold", reason: "held"}' \
+    '03:00 resumed {}' '03:00 paused {cause: "offline", reason: "offline GitHub"}' \
+    '04:00 resumed {}' '04:00 blocked {cause: "denial", reason: "the push target"}' \
+    '05:00 resumed {}' '05:00 paused {cause: "worker", reason: "waiting for the gate"}')" \
+    '{"building":1,"gate":1,"wait:external":1,"wait:machine":1,"wait:off":1,"wait:denial":1}'
+  # An outside wait is classed by its on as park_class reads it.
+  assert_equal "$(t90_hours 04:00 '01:00 waiting {cause: "outside", on: "gate", reason: "the run"}' \
+    '02:00 resumed {}' '02:00 waiting {cause: "outside", on: "T31", reason: "its merge"}' \
+    '03:00 resumed {}' '03:00 waiting {cause: "outside", on: "Vercel", reason: "the support ticket"}')" \
+    '{"building":1,"gate":1,"wait:task":1,"wait:external":1}'
+  # A typed blocked of cause denial counts as a denial, whatever its words.
+  t90_hours 02:00 '01:00 blocked {cause: "denial", reason: "the push target"}' >/dev/null
+  assert_equal "$(time_json --until 2026-10-24T02:00:00Z | jq -c .denials)" 1
+}
+
+@test "an old park, with no cause, is classed by park_class from its kind, on and reason" {
+  # The same words untyped: a pause for room, a coordinator's hold and an offline worker are other
+  # waits, a pause naming the gate gate time, and a blocked naming a denial a denial.
+  assert_equal "$(t90_hours 06:00 '01:00 paused {reason: "no room for session:builder at full"}' \
+    '02:00 resumed {}' '02:00 paused {reason: "held"}' \
+    '03:00 resumed {}' '03:00 paused {reason: "offline GitHub"}' \
+    '04:00 resumed {}' '04:00 blocked {reason: "the push target was denied"}' \
+    '05:00 resumed {}' '05:00 paused {reason: "waiting for the gate"}')" \
+    '{"building":1,"gate":1,"wait:denial":1,"wait:other":3}'
+}
+
+# A park team-log logs and the time it took to: the last ledger line, team-log's own, moved to
+# 2026-10-24T<HH:MM>, so the hours are known.
+logged_at() {
+  local at=$1 ledger=$TEAM_HOME/ledger.jsonl last
+  last=$(tail -n 1 "$ledger" | jq -c --arg ts "2026-10-24T$at:00Z" '.ts = $ts')
+  sed -i '$d' "$ledger"
+  printf '%s\n' "$last" >>"$ledger"
+}
+
+@test "a worker's park, typed worker, is classed by park_class of its words, as an old one is" {
+  # T90's opened and its builder's launch at 00:00.
+  t90_hours 01:00 >/dev/null
+  # A worker's BLOCKED reporting a denial, as every role's "When something is denied" asks.
+  run_bin -0 team-log T90 --from-message 'T90 BLOCKED git push denied by a deny rule'
+  logged_at 01:00
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .cause)" worker
+  echo '{"ts":"2026-10-24T02:00:00Z","task":"T90","event":"launch","role":"builder","session":"s2","worktree":"/w","toolkits":[]}' >>"$TEAM_HOME/ledger.jsonl"
+  # The manual's own block on another task, hand-logged with no on.
+  run_bin -0 team-log T90 blocked reason="waits for T31: its PR first"
+  logged_at 03:00
+  echo '{"ts":"2026-10-24T05:00:00Z","task":"T90","event":"launch","role":"builder","session":"s3","worktree":"/w","toolkits":[]}' >>"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-24T06:00:00Z --task T90)
+  assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" \
+    '{"building":3,"wait:task":2,"wait:denial":1}'
+  assert_equal "$(jq -c .denials <<<"$json")" 1
+}
+
 @test "a merge-approved ends an ask's wait whose text names no url of it, so the merge is merging" {
   assert_equal "$(t90_hours 04:00 '01:00 done {role: "builder", session: "s1"}' \
     '01:00 asked {id: "merge", text: "merge PR #30 at 0123456"}' \

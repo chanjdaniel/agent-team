@@ -16,10 +16,16 @@
 #   --since      with a rereview launch, a file of the coordinator's words, added after the derived
 #                since; refused for the first review and for verify
 #   --template   with a review launch after the first, rereview or verify instead of the rule's
-# First every check, each refusal changing nothing (no ledger line, no brief, no launch): the task
-# is open (team-open's opened, not closed) and not held (a held with no resumed since), has no ask
-# to Daniel that nothing settled yet, and the message reads as team-log --from-message --print
-# reads it (its refusal is team-log's, with its exit code).
+# First every check, each refusal changing nothing (no ledger line, no brief, no launch): the
+# message reads as team-log --from-message --print reads it (its refusal is team-log's, with its
+# exit code), and launch_refusal in bin/lib/ledger.jq, the one guard team-worker checks too, takes
+# a launch of the role the hand-off launches (a builder for a ticket, a findings round or a stow's
+# round, a reviewer for a review, none for a message that launches nothing): the task is open
+# ("T<n> is closed", "T<n> is not open: the ledger has no opened event for it"), not on Daniel's
+# hold ("T<n> is on Daniel's hold since <since> (<id>): <reason>; only Daniel's word lifts it:
+# ..."), and has no ask to Daniel that nothing settled and no launch went past ("T<n> has an
+# unanswered ask, <id>, since <ts>"); it takes no --past-ask, so a message refused for an ask is
+# logged with team-log --from-message, as the manual says.
 # Then it logs, through team-log, each of the message's events that the ledger does not already
 # hold since the sending worker's launch (the session its events name, else the task's latest
 # launch): a ticket-done of the same ticket, a done of the same session and report (an ops
@@ -184,19 +190,7 @@ sibling() {
   TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}"
 }
 
-# The task: open, not held, no ask unsettled.
 events=$(task_event_array "$task")
-open_status='' problems=''
-json_vars --ledger open_status=task_status problems='[
-    (lifecycle | lifecycle_park("held") | select(. != null) | "\($task) is held since \(.ts): \(.reason)"),
-    (pending_asks[] | "\($task) has an unanswered ask, \(.id), since \(.ts)")]
-  | join("; ")' -- --arg task "$task" <<<"$events"
-case $open_status in
-  open) ;;
-  closed) die "$task is closed" ;;
-  *) die "$task is not open: the ledger has no opened event for it" ;;
-esac
-[[ -z $problems ]] || die "$problems"
 
 # The message's events, as team-log reads them, nothing logged yet: one compact object a line,
 # joined into one array.
@@ -282,6 +276,18 @@ for opt in --checks --since --template; do
 done
 [[ $kind != "DONE findings" || -n ${given[--sent-back]:-} ]] ||
   die "a DONE findings needs --sent-back <list>, the numbers that go back to the builder (none for no fix round)"
+
+# The task takes a launch of the role the hand-off launches, or with none a message, by the one
+# guard team-worker checks (launch_refusal): open, not on Daniel's hold, no ask open.
+case $handoff in
+  ticket | round) launch_role=builder ;;
+  review) launch_role=reviewer ;;
+  verdict) if [[ $kind == "DONE findings" ]]; then launch_role=builder; else launch_role=''; fi ;;
+  *) launch_role='' ;;
+esac
+refusal=''
+json_vars --ledger refusal='[launch_refusal($task; $role; [])] | join("; ")' -- --arg task "$task" --arg role "$launch_role" <<<"$events"
+[[ -z $refusal ]] || die "$refusal"
 # A pass that counts a finding which goes back before the merge (a blocking, correctness, security
 # or real-data one, or a plain note on a changed line) takes --sent-back with them, never a merge.
 if [[ $kind == "DONE pass" ]]; then

@@ -52,9 +52,10 @@ def park_class:
 
 # A task's events up to $end as segments {from, to, class}, from its opened. The walk steps the
 # ledger's lifecycle fold (lifecycle_step) beside its own phase markers, and takes from it which
-# parks stand and which asks are open: a park stands until the fold ends it (a launch ends every
-# blocked, waiting and paused, never a held; a resumed with none of id, all and brief ends every
-# park; a merge-approved ends an old wait on Daniel), never at an answered, and the latest standing
+# parks stand and which asks are open: a park stands until the fold ends it (by its cause's rules,
+# an old line's as before: a launch ends every blocked, waiting and paused, never a held, a resumed
+# with none of id, all and brief every park; a merge-approved ends an old wait on Daniel; an
+# answered only a typed wait on its ask), and the latest standing
 # one sets the class (park_time_class); an asked with no park standing opens a wait on Daniel
 # (askwait) that ends once every ask it noted (that one and any asked while it stands) is settled,
 # or at a launch, a resumed, another park or a merge-approved, which answers what an old ask's
@@ -75,8 +76,19 @@ def park_class:
 # own ts. The task starts unattributed, and the walk stops at the first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 
-# The class of one of the fold's parks: park_class of its kind, on and reason.
-def park_time_class: {event: .kind, on, reason} | park_class;
+# What a park event waits on: a typed one's (a cause bin/lib/lifecycle.json's causes list) the
+# table's class of its cause, for a cause classed by its on (class_by_on, an outside wait) and an
+# on given, park_class of its kind and on alone, and for one classed by its words (class_by_words,
+# a worker's), park_class of the whole line; an old one's, with no cause, park_class's.
+def park_event_class:
+  (if .cause == null then null else lifecycle_table.causes[.cause | tostring] end) as $cause
+  | if $cause == null or $cause.class_by_words == true then park_class
+    elif $cause.class_by_on == true and (.on // "" | tostring) != "" then {event, on} | park_class
+    else $cause.class end;
+
+# The class of one of the fold's parks: park_event_class of its kind, on, reason, and cause when
+# the line carried its own (typed), never legacy_cause's, so an old park keeps park_class's.
+def park_time_class: {event: .kind, on, reason, cause: (if .typed then .cause else null end)} | park_event_class;
 
 # A walk state's standing parks: the fold's, less those the walk does not count (unparked).
 def walk_parks: .unparked as $unparked | [.fold.parks[] | select(IN(.id; $unparked[]) | not)];
@@ -238,7 +250,7 @@ def time_report($lo; $hi; $since; $until; $task):
        | map({task: .[0].task, pr: .[0].pr, reviews: length, findings: map(select(.verdict == "findings")) | length})),
      builders: map({task: .time.task, builders: ([.window[] | select(.event == "launch" and .role == "builder")] | length),
        tickets: ([.window[] | select(.event == "ticket-done") | .ticket] | unique | length)}),
-     denials: ([.[].window[] | select(.event == "denied" or (.event == "blocked" and park_class == "wait:denial"))] | length),
+     denials: ([.[].window[] | select(.event == "denied" or (.event == "blocked" and park_event_class == "wait:denial"))] | length),
      answers: {answered: ($asks | map(select(.answered)) | length), unanswered: ($asks | map(select(.answered | not)) | length),
        median_minutes: ([$asks[] | .minutes | numbers] | nearest_rank(0.5) | if . then tenths else . end),
        p90_minutes: ([$asks[] | .minutes | numbers] | nearest_rank(0.9) | if . then tenths else . end)},

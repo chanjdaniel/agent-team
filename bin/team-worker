@@ -3,23 +3,36 @@
 # settings and nothing else: no user-level MCP servers, no plugin MCP, no claude.ai connectors or
 # synced skills and plugins, and none of the tools and skills its role never uses (settings/).
 #
-# Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] -- <first prompt>
+# Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] [--past-ask <id>]... -- <first prompt>
 #   task       T<n>, e.g. T1
 #   role       planner | builder | reviewer | ops
-#   worktree   a linked git worktree of the task's repo (never a primary checkout); for a task
-#              opened by team-open, one of its open worktrees (opened or added, not returned)
+#   worktree   a linked git worktree of the task's repo (never a primary checkout), one of the
+#              task's open worktrees (opened or added, not returned)
 #   --model    not for ops: the model alias or name to launch on instead of the registry's, such
 #              as opus for a model trial's paired review (sops/model-trials.md)
 #   --request  ops only, and required for it: the link to Daniel's Discord message asking for
 #              this launch, https://discord.com/channels/<guild>/<channel>/<message>; any other
 #              value is a malformed command line (exit 2)
+#   --past-ask the id of an unanswered ask of the task that this launch goes past, repeatable;
+#              logged on the launch as past_ask, so the ask and its wait park nothing and the
+#              sweep watches the worker; on T0 a malformed command line (exit 2)
 #
-# Refuses a closed task, a task with no Discord thread, and a launch on a machine that does not
-# hold the lease (`team-lease check`, confirmed against origin) or cannot reach GitHub. Prints the
-# background session id and logs the launch to ledger.jsonl, with the worktree's project and
-# branch when the task was opened by team-open, the machine's team name
+# Refuses, before the lease, the toolkits' launch or anything else is started (exit 1, nothing
+# logged), the launches launch_refusal in bin/lib/ledger.jq refuses, each with its reason: a task
+# that is not open ("T<n> is closed", or "T<n> is not open: the ledger has no opened event for
+# it"); for every role but ops, a task on Daniel's hold ("T<n> is on Daniel's hold since <since>
+# (<id>): <reason>; only Daniel's word lifts it: team-log T<n> resumed id=<id>
+# discord_message=<their message id>"), a task with an unanswered ask no --past-ask and no earlier
+# launch's past_ask names ("T<n> has an unanswered ask, <id>, since <ts>; launch past it with
+# --past-ask <id>"), and a --past-ask naming none ("--past-ask <id> names no unanswered ask of
+# T<n>"); and a builder or reviewer of a feature task still planning ("T<n> is a feature task with
+# no approved plan (no plan-approved), so it takes no <role> yet"). It also refuses a task with no
+# Discord thread, a worktree not one of the task's open worktrees, and a launch on a machine that
+# does not hold the lease (`team-lease check`, confirmed against origin) or cannot reach GitHub.
+# Prints the background session id and logs the launch to ledger.jsonl, with the worktree's
+# project and branch, the machine's team name
 # (~/.config/agent-team/machine), and for ops the request's link and message id. T0, the load check, needs no thread and
-# no lease, and is not logged. Recorded worktrees are compared as paths on this machine: one
+# no lease, is asked none of the task's checks, and is not logged. Recorded worktrees are compared as paths on this machine: one
 # recorded under another machine's home is the same path under this HOME.
 # Before anything starts, it refuses a prompt naming a brief that is missing or unreadable, and a
 # prompt that says "your brief" but names no brief*.md file (the empty path of a failed pipe). A
@@ -32,7 +45,10 @@
 # fit the level's memory budget beside what the team's work reserves: `team-capacity admit --kind
 # session:<role> --task <task>`, with --freed for each session it stopped or saw end while it
 # waited on it, whose use the stored reading still holds (sops/resources.md). With no room, at
-# level none above all, it exits 75 with the reason, launching nothing else; a failure of the
+# level none above all, it exits 75 with the reason, launching nothing else, and logs the
+# refusal itself as the task's park, paused cause=room role=<role> reason=<the admission's line>,
+# with brief when the prompt named one, which the sweep's level-launch finding names once the
+# role fits (a log that fails is a warning, and the exit stays 75); a failure of the
 # admission itself stops the launch with its reason (exit 1). T0 and ops are never asked.
 # The launch logs the admission's id, admit's first line, as admission, which pairs the admission
 # with its session; until that launch event is logged, the exit handler releases the admission
@@ -68,7 +84,7 @@
 # When the worktree's project names a model for the role in the registry (team-project's models),
 # or --model names one, the session launches on it (claude --model) and the launch logs it as
 # model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
-# T0 and tasks from before team-open none from the registry.
+# T0 none from the registry.
 # The MCP config merges the chosen toolkits' .mcp.json servers, each but those a toolkit's
 # mcp-roles.json names for other roles only.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored), as
@@ -103,9 +119,8 @@
 # toolkits): after those refusals and the worktree's and task's checks, and before the lease is
 # checked, any other is refused (exit 1, nothing started or logged), naming the project, its list
 # and the fix, Daniel's yes and then the toolkit's name in that project's toolkits line in
-# projects.toml. The project is the one the task's open worktree names in the ledger, else (T0, a
-# task from before team-open) the registered project whose primary checkout is the worktree's main
-# checkout; a worktree of no registered project gets no toolkit. T0, the load check, measures a
+# projects.toml. The project is the one the task's open worktree names in the ledger, else (T0)
+# the registered project whose primary checkout is the worktree's main checkout; a worktree of no registered project gets no toolkit. T0, the load check, measures a
 # toolkit before any project lists it, so it takes any toolkit unlisted but a production one.
 # An ops launch runs on one message of Daniel's, the one --request links, and is refused (exit 1,
 # nothing started or logged, before the session list is read) unless that message is in
@@ -150,13 +165,13 @@ why=$(worker_refusal "" "launches no session") && die "$why"
 # Roles, settings, toolkits and hooks are code: they come from this checkout, beside bin/.
 code=$(dirname "$(dirname "$TEAM_LIB")")
 
-[[ $# -ge 3 ]] || usage_error "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] -- <first prompt>"
+[[ $# -ge 3 ]] || usage_error "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] [--past-ask <id>]... -- <first prompt>"
 task=$1 role=$2 worktree=$3
 shift 3
 [[ $task =~ ^T[0-9]+$ ]] || usage_error "task must look like T<n>, got '$task'"
 [[ -f $code/roles/$role.md && -f $code/settings/$role.json ]] || usage_error "unknown role '$role'"
 
-toolkits=() request='' model=''
+toolkits=() request='' model='' past=()
 while [[ $# -gt 0 && $1 != -- ]]; do
   case $1 in
     --toolkit)
@@ -177,6 +192,11 @@ while [[ $# -gt 0 && $1 != -- ]]; do
       request=$2
       shift 2
       ;;
+    --past-ask)
+      [[ $# -ge 2 && -n $2 ]] || usage_error "--past-ask needs the id of an unanswered ask"
+      [[ " ${past[*]} " == *" $2 "* ]] || past+=("$2")
+      shift 2
+      ;;
     *) usage_error "unexpected argument '$1'" ;;
   esac
 done
@@ -186,6 +206,7 @@ prompt="$*"
 [[ -n $prompt ]] || usage_error "missing first prompt"
 [[ -z $request || $role == ops ]] || usage_error "--request is for the ops role only"
 [[ -z $model || $role != ops ]] || usage_error "--model is not for the ops role, which runs on the default model"
+[[ $task != T0 || ${#past[@]} -eq 0 ]] || usage_error "--past-ask is not for T0, the load check, which has no asks"
 # How long a handed-on session still busy is waited on (the header's hand-off paragraph).
 IDLE_SECONDS=${TEAM_WORKER_IDLE_SECONDS:-60}
 [[ $IDLE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_WORKER_IDLE_SECONDS must be a whole number of seconds, not '$IDLE_SECONDS'"
@@ -252,33 +273,34 @@ done < <(tr -s '[:space:]' '\n' <<<"$prompt")
 worktree_event='' project=''
 if [[ $task != T0 ]]; then
   events=$(task_event_array "$task")
-  # In one jq run: the task's status, whether it has a thread, and its open worktrees, one a line
-  # as "<worktree>\x1f<worktree> (<project>, <branch>)\x1f<project>\x1f<its compact JSON>".
-  status='' thread='' worktrees=''
-  json_vars --ledger status=task_status thread='any(.[]; .event == "thread")' \
+  # In one jq run: why the launch is refused (launch_refusal in bin/lib/ledger.jq: not open,
+  # Daniel's hold, an open ask --past-ask does not name, a feature task's build before its plan),
+  # whether it has a thread, and its open worktrees, one a line as
+  # "<worktree>\x1f<worktree> (<project>, <branch>)\x1f<project>\x1f<its compact JSON>".
+  refusal='' thread='' worktrees=''
+  json_vars --ledger refusal='[launch_refusal($task; $role; $ARGS.positional; true)] | join("; ")' \
+    thread='any(.[]; .event == "thread")' \
     worktrees='[open_worktrees(.[]; $home) | [.worktree, "\(.worktree) (\(.project), \(.branch))", (.project // ""), tojson]
-      | map(tostring) | join("\u001f")] | join("\n")' <<<"$events"
-  [[ $status != closed ]] || die "$task is closed"
+      | map(tostring) | join("\u001f")] | join("\n")' \
+    -- --arg task "$task" --arg role "$role" --args ${past[@]+"${past[@]}"} <<<"$events"
   # Every task has its Discord thread before any worker starts (bin/team-thread).
   [[ $thread == true ]] || die "$task has no Discord thread; open one first with team-thread"
+  [[ -z $refusal ]] || die "$refusal"
 
-  # A task opened by team-open launches only in one of its open worktrees; tasks from before
-  # team-open (no opened event) launch in any linked worktree.
-  if [[ $status == open ]]; then
-    open=
-    while IFS=$'\x1f' read -r wt line wt_project wt_json; do
-      [[ -n $wt ]] || continue
-      if same_path "$wt" "$worktree"; then worktree_event=$wt_json project=$wt_project; fi
-      open+=$'\n'"  $line"
-    done <<<"$worktrees"
-    [[ -n $worktree_event ]] || die "$worktree is not one of $task's open worktrees:${open:- it has none}"
-  fi
+  # A task launches only in one of its open worktrees.
+  open=
+  while IFS=$'\x1f' read -r wt line wt_project wt_json; do
+    [[ -n $wt ]] || continue
+    if same_path "$wt" "$worktree"; then worktree_event=$wt_json project=$wt_project; fi
+    open+=$'\n'"  $line"
+  done <<<"$worktrees"
+  [[ -n $worktree_event ]] || die "$worktree is not one of $task's open worktrees:${open:- it has none}"
 fi
 
-# The launch's project: the one its open worktree names in the ledger, else (T0, a task from
-# before team-open) the registered project whose primary checkout is the worktree's main checkout,
-# or none. It is read for a launch with a toolkit and for every role but ops, and kept apart from
-# $project, so T0's and pre-open tasks' model and launch fields are unchanged.
+# The launch's project: the one its open worktree names in the ledger, else (T0) the registered
+# project whose primary checkout is the worktree's main checkout, or none. It is read for a launch
+# with a toolkit and for every role but ops, and kept apart from $project, so T0's model and
+# launch fields are unchanged.
 launch_project=$project main_checkout=''
 if [[ -z $launch_project ]] && { ((${#toolkits[@]})) || [[ $role != ops ]]; }; then
   main_checkout=$(git -C "$worktree" worktree list --porcelain | sed -n '1s/^worktree //p')
@@ -514,7 +536,14 @@ if [[ $task != T0 && $role != ops ]]; then
   admit_out=$(TEAM_HOME=$TEAM_HOME "$code/bin/team-capacity" admit --kind "session:$role" --task "$task" ${freed[@]+"${freed[@]}"} 2>"$admit_errors") || rc=$?
   admit_err=$(<"$admit_errors")
   if ((rc == 75)); then
-    echo "team-worker: $(grep . <<<"$admit_err" | tail -n 1)" >&2
+    room=$(grep . <<<"$admit_err" | tail -n 1) || room="no room for session:$role"
+    echo "team-worker: $room" >&2
+    # The refusal is the task's room park, logged here so the plan's launch list names its role
+    # (refused_launches); a log that fails is a warning, and the exit stays 75.
+    (ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg reason "$room" --arg brief "$brief" \
+      '{ts: (now | todate), task: $task, event: "paused", cause: "room", role: $role, reason: $reason}
+        + (if $brief == "" then {} else {brief: $brief} end)')") ||
+      echo "team-worker: warning: could not log $task's room refusal; log it with team-log $task paused cause=room role=$role reason=<the line above>" >&2
     exit 75
   fi
   ((rc == 0)) || die "team-capacity admit failed for $task-$role (exit $rc): $(grep . <<<"$admit_err" | tail -n 1 || echo "no reason given")"
@@ -733,7 +762,7 @@ fi
 
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
+    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --argjson at "${worktree_event:-null}" --argjson past "$(jq -cn '$ARGS.positional' --args ${past[@]+"${past[@]}"})" --args '{ts: (now | todate), task: $task,
       event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
       + ($at // {} | {project, branch} | with_entries(select(.value != null)))
       + {machine: $machine}
@@ -741,7 +770,8 @@ if [[ $task != T0 ]]; then
       + (if $model == "" then {} else {model: $model} end)
       + (if $request == "" then {} else {request: $request} end)
       + (if $discord_message == "" then {} else {discord_message: $discord_message} end)
-      + (if $brief == "" then {} else {brief: $brief} end)' "${toolkits[@]}")"
+      + (if $brief == "" then {} else {brief: $brief} end)
+      + (if $past == [] then {} else {past_ask: $past} end)' "${toolkits[@]}")"
   # Logged, the admission is its session's (paired by its id), and nothing releases it now.
   admission=''
 fi

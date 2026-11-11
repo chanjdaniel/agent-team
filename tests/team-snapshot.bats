@@ -665,7 +665,7 @@ $line"
   run_bin -0 team-snapshot
   # Its builder's launch put the feature task in building (the lifecycle's launch rule).
   assert_equal "$(section "Open tasks")" "Open tasks (1):
-  T5 proj feature building | no live worker | waiting on Daniel: restart the Docker daemons"
+  T5 proj feature building | no live worker | parks: waiting-1 daniel since 2026-10-22T02:00:00Z: restart the Docker daemons"
 }
 
 @test "a task with a worktree not re-homed says so until the worktree is made" {

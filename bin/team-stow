@@ -5,8 +5,13 @@
 # coordinator's T<n> STOW, or have not in time.
 #
 # Usage: team-stow (T<n>... | --all) [--down] [--cause level|handoff] [--json]
+#        team-stow (T<n>... | --all) --begin [--cause level|handoff]
 #        team-stow (T<n>... | --all) --stop-runs
 # --all is every open task; a named task that is not open is refused, and the others still stow.
+# A stow under way is a stowing in the ledger ({machine, cause, roles}: the run's cause, level by
+# default, and the task's unfinished roles then), which stands until the task's stowed or
+# stow-failed (or a launch): the plan never names a task with one to stow, resume or launch, and
+# team-sweep names one standing 30 minutes.
 # One line per step and task; each step is idempotent, so a run interrupted anywhere, run again,
 # finishes the stow. In order:
 #   lease       This machine holds the lease, confirmed against origin (team-lease check), or
@@ -14,6 +19,9 @@
 #   branches    Each task's branches checked against origin's, as step 4 does, before any of its
 #               sessions stops: a branch that has diverged from origin's, or is neither here nor
 #               there, refuses its task, naming it.
+#   stowing     "stowing: T<n> already since <ts>" for a task whose stowing stands (--begin's);
+#               else a stowing logged ("stowing: T<n> since <ts>"), but none for a task stowed
+#               from this machine already (a run again), before any of its sessions stops.
 #   sessions    claude stop, then claude rm, for each live session named T<n>-<role> of a task
 #               (its worktrees stay on disk). An ops session (T<n>-ops) is never carried:
 #               team-ops-end T<n> ends it, deleting its transcript and answer file. One that will
@@ -35,10 +43,22 @@
 #               work, sessions the roles of the sessions this run stopped, and those an earlier
 #               run of this lease stopped without stowing the task), with cause level (the
 #               default) or handoff. None when the task's latest machine event (stowed, launch,
-#               worktree-moved) is already a stowed from this machine with the same worktrees.
+#               worktree-moved) is already a stowed from this machine with the same worktrees and
+#               no stowing of it stands.
+#   stow-failed One per task refused after its stowing stood ("stow-failed: T<n>: <reason>"),
+#               reason the refusal. A run that stops on a step (exit 1 or 75: a checkpoint that
+#               failed, an origin it cannot read) logs, from its exit trap, one per task whose
+#               stowing stands and that it did not stow, reason "the run stopped: <its last error
+#               line>". The task then reads as stowed with its stowing's roles, so the plan's
+#               resume list relaunches them, until a launch; a run again logs a new stowing.
 # --json prints {tasks: [{task, worktrees, roles, sessions, cause}], refused: [{task, reason}]}
 # instead, tasks each stowed task's latest stowed from this machine (cause handoff when it has
 # none), and the step lines go to stderr.
+# --begin does only the stowing step, for each open task named (or every one), with no lock or
+# lease needed: a stowing with the cause given when none stands, "stowing: T<n> since <ts>", else
+# "stowing: T<n> already since <ts>"; a task not open is refused on stderr, exit 1, and the
+# others are still logged. The level and handoff skills run it before they send STOW, so a
+# compaction or restart before the run does not plan the same stow again.
 # --stop-runs does only this, for each task, with no lease needed, so a worker blocked in a
 # foreground test or gate returns and reads the STOW already sent: team-heavy stop --task T<n>
 # (the machine's heavy run, when it is the task's), then, in each of the task's worktrees whose
@@ -54,12 +74,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # Seconds: the most one call to an origin may take.
 NET_TIMEOUT=60
 
-usage="usage: team-stow (T<n>... | --all) [--down] [--cause level|handoff] [--json] | team-stow (T<n>... | --all) --stop-runs"
-tasks=() all='' down='' cause=level cause_given='' json='' stop_runs=''
+usage="usage: team-stow (T<n>... | --all) [--down] [--cause level|handoff] [--json] | team-stow (T<n>... | --all) --begin [--cause level|handoff] | team-stow (T<n>... | --all) --stop-runs"
+tasks=() all='' down='' cause=level cause_given='' json='' stop_runs='' begin=''
 while (($#)); do
   case $1 in
     T[1-9]*) [[ $1 =~ ^T[1-9][0-9]*$ ]] || usage_error "$usage"; tasks+=("$1") ;;
     --all) all=1 ;;
+    --begin) begin=1 ;;
     --down) down=1 ;;
     --cause)
       [[ ${2:-} == level || ${2:-} == handoff ]] || usage_error "$usage"
@@ -75,7 +96,8 @@ done
 if { [[ -n $all ]] && ((${#tasks[@]})); } || { [[ -z $all ]] && ((${#tasks[@]} == 0)); }; then
   usage_error "$usage"
 fi
-if [[ -n $stop_runs && -n $down$cause_given$json ]]; then usage_error "$usage"; fi
+if [[ -n $stop_runs && -n $down$cause_given$json$begin ]]; then usage_error "$usage"; fi
+if [[ -n $begin && -n $down$json ]]; then usage_error "$usage"; fi
 mapfile -t tasks < <(printf '%s\n' "${tasks[@]}" | awk 'NF && !seen[$0]++')
 
 machine=$(machine_name) || exit 1
@@ -83,9 +105,37 @@ bin=$(dirname "$TEAM_LIB")
 state=$HOME/.local/state/agent-team
 mkdir -p "$state"
 scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT
 NET_ERR=$scratch/net-err
 err=$scratch/err
+
+# The run's last error line, for the stow-failed its exit trap logs: die keeps it, and so does
+# stop_run.
+STOW_LAST_ERROR=''
+die() {
+  STOW_LAST_ERROR=$*
+  echo "${0##*/}: $*" >&2
+  exit 1
+}
+
+# Stop the run with <code>, saying <line> on stderr: stop_run <code> <line>
+stop_run() {
+  STOW_LAST_ERROR=$2
+  echo "${0##*/}: $2" >&2
+  exit "$1"
+}
+
+# On a run that stops (any exit but 0), a stow-failed for each task whose stowing stands and that
+# it did not stow (STOW_STOWING), with the run's last error line; then the scratch goes.
+on_exit() {
+  local rc=$? task
+  if ((rc)) && declare -p STOW_STOWING >/dev/null 2>&1; then
+    for task in "${!STOW_STOWING[@]}"; do
+      stow_fail "$task" "the run stopped: ${STOW_LAST_ERROR:-team-stow exited $rc}" || true
+    done
+  fi
+  rm -rf "$scratch"
+}
+trap on_exit EXIT
 
 # The first line of a sibling's stderr, without its "<script>: " prefix.
 first_error() {
@@ -107,6 +157,25 @@ team() {
 source "$TEAM_LIB/stow.sh"
 
 exec {lock_fd}>>"$state/stow.lock"
+
+# --begin: each named open task's stowing (or every open one's), nothing else, with no lock or
+# lease.
+if [[ -n $begin ]]; then
+  stow_open "${tasks[@]}"
+  [[ -z $all ]] || mapfile -t tasks < <(printf '%s\n' "${STOW_OPEN[@]}" | jq -r '.task // empty')
+  failed=0
+  for task in "${tasks[@]}"; do
+    if ! printf '%s\n' "${STOW_OPEN[@]}" | jq -e --arg t "$task" 'select(.task == $t)' >/dev/null; then
+      echo "team-stow: $task is not stowing: it is not an open task" >&2
+      failed=1
+      continue
+    fi
+    stow_begin "$task" "$cause"
+    # It stands for the run that follows, never for this one's exit trap to end.
+    unset 'STOW_STOWING[$task]'
+  done
+  exit "$failed"
+fi
 
 # --stop-runs: each task's heavy run and active gate runs, nothing else, with no lock or lease.
 if [[ -n $stop_runs ]]; then
@@ -182,6 +251,14 @@ for task in "${tasks[@]}"; do
     STOW_REFUSED[$task]="it is not an open task"
 done
 
+# The stows under way of the open tasks (team-stow --begin's), which this run ends with a stowed
+# or a stow-failed.
+for entry in "${STOW_OPEN[@]}"; do
+  task=$(jq -r .task <<<"$entry")
+  since=$(stow_stowing "$task")
+  [[ -z $since ]] || STOW_STOWING[$task]=$since
+done
+
 # The tasks not refused yet, from STOW_OPEN, back into STOW_OPEN.
 keep_unrefused() {
   local entry kept=()
@@ -202,6 +279,16 @@ stowed_here() {
 stow_branches 1
 keep_unrefused
 mapfile -t names < <(printf '%s\n' "${STOW_OPEN[@]}" | jq -r '.task // empty')
+
+# Each task's stowing, before any of its sessions stops: one stands already, or the run logs it,
+# unless the task is stowed from this machine already (a run again).
+for task in "${names[@]}"; do
+  if [[ -n ${STOW_STOWING[$task]:-} ]]; then
+    echo "stowing: $task already since ${STOW_STOWING[$task]}"
+  elif ! stowed_here "$task"; then
+    stow_begin "$task" "$cause"
+  fi
+done
 
 # 2. The sessions.
 workers='[]'
@@ -259,8 +346,7 @@ else
   if ((rc == 0)); then
     cat "$err" >&2
   elif ((rc == 75)); then
-    echo "team-stow: checkpoint: $(first_error); run team-stow again" >&2
-    exit 75
+    stop_run 75 "checkpoint: $(first_error); run team-stow again"
   elif grep -q . "$err"; then
     grep . "$err" | prefixed "team-stow: checkpoint" >&2
     die "checkpoint: failed; fix what each line above names and run team-stow again"
@@ -281,6 +367,11 @@ done
 stops=$(jq -c --argjson stowed "$(printf '%s\n' "${STOW_OPEN[@]}" | jq -sc 'map(.task)')" \
   'with_entries(select(.key | IN($stowed[]) | not))' <<<"$stops")
 save_stops
+
+# 7. One stow-failed per task refused after its stowing, naming the refusal.
+while read -r task; do
+  stow_fail "$task" "${STOW_REFUSED[$task]:-the run ended without stowing it}"
+done < <(printf '%s\n' "${!STOW_STOWING[@]}" | awk NF | sort -V)
 
 # The refusals, each with its reason, and the facts.
 for task in "${!STOW_REFUSED[@]}"; do
