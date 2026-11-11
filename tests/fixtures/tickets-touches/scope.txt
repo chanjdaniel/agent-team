@@ -1,0 +1,5 @@
+bin/team-a
+bin/lib/
+tests/team-a.bats
+tests/team-b.bats
+docs/manual.md
