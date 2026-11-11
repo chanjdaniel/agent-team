@@ -51,9 +51,9 @@
 #                   snapshot applied by team-open, and one more line: the machine, the checkpoint
 #                   it resumes from and the roles to relaunch. One last launched here is no crash
 #                   (this machine restarted), so its live worktree gets no crash's snapshot.
-#                   So does a worktree its latest stowed recorded with uncommitted changes (a
-#                   worker the handoff stopped before it stowed), whose snapshot team-open's line
-#                   reports.
+#                   A worktree its latest stowed recorded with uncommitted changes (a worker the
+#                   handoff stopped before it stowed) gets its snapshot applied too, which
+#                   team-open's line reports.
 #                   A task whose latest stowed is from this machine (the shutdown's, or a handoff
 #                   no other machine took) gets one more line, "T1: stowed here on home-pc: a
 #                   same-machine resume": team-open finds each of its worktrees where it was,
