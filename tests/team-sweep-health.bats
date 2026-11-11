@@ -74,13 +74,17 @@ fake_timers() {
 }
 
 @test "checkpoint-stale: a heartbeat with no run for 15 minutes on the holder is the same kind, saying when it last ran" {
-  health_record 'ago(20) as $t | .written = $t | .last_run.start = $t | .last_run.end = $t'
-  jq '.written_at = (now - 20 * 60 | floor | todate)' "$state/lease.json" >"$state/lease.json.new"
+  # One time for the run and the lease, since the text names the later of the two, and two reads
+  # of now may fall either side of a second.
+  local t
+  t=$(ago 20)
+  health_record ".written = \"$t\" | .last_run.start = \"$t\" | .last_run.end = \"$t\""
+  jq --arg t "$t" '.written_at = $t' "$state/lease.json" >"$state/lease.json.new"
   mv "$state/lease.json.new" "$state/lease.json"
   run_bin -1 team-sweep --json
   assert_equal "$(jq -c 'map(.kind)' <<<"$output")" '["checkpoint-stale"]'
   assert_equal "$(jq -r '.[0].text' <<<"$output")" \
-    "checkpoint: the heartbeat last ran $(jq -r .last_run.start "$record") (20 minutes ago); $NEXT_CHECKPOINT"
+    "checkpoint: the heartbeat last ran $t (20 minutes ago); $NEXT_CHECKPOINT"
 }
 
 @test "health: alerting ledger, login-refused and step problems are one finding listing them; a step short of its runs and offline raise nothing" {
