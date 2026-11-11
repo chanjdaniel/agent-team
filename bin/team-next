@@ -88,16 +88,18 @@
 # tested last, the HEAD of your worktree, <head8>; ...", "... the task branch moved: merge <task
 # branch> at <tip8> into your branch, ...". Then the task branch fast-forwards to that head in the
 # task worktree, "integrated ticket NN: <task branch> <old8>..<new8> in <task worktree>" ("already
-# integrated ..." when it is there); the ticket's file and its build notes NN.md and NN-* are
-# copied back from the ticket worktree's task directory into the task worktree's, "copied back
-# <path>" each; the message's events are logged, the ticket-done with head, the task branch's new
-# tip; and the ticket worktree is returned (below). Then the lock is released, and the hand-off is
-# read again: once the phase's tickets are all done, its deliverer as above, unless a builder launch
-# of a deliver brief follows the phase's last ticket-done, "already handed off: <that launch>",
-# exit 0; else --fill's, none ready being no refusal. A rerun once the ticket-done is logged skips
-# the checks and the logging ("already logged ..."), and goes on from the return; the "already
-# handed off" refusal above holds for a DONE from the task worktree only. Nothing is pushed: the
-# task branch reaches origin with the deliverer's push.
+# integrated ..." when it is there, or when the tip holds it, as after a run that ended past its
+# fast-forward with another ticket landed on top since, the fourth check then passing); the
+# ticket's file and its build notes NN.md and NN-* are copied back from the ticket worktree's task
+# directory into the task worktree's, "copied back <path>" each; the message's events are logged,
+# the ticket-done with head, the head the ticket landed as (the task branch's new tip but on such a
+# rerun); and the ticket worktree is returned (below). Then the lock is released, and the hand-off
+# is read again: once the phase's tickets are all done, its deliverer as above, unless a builder
+# launch of a deliver brief follows the phase's last ticket-done, "already handed off: <that
+# launch>", exit 0; else --fill's, none ready being no refusal. A rerun once the ticket-done is
+# logged skips the checks and the logging ("already logged ..."), and goes on from the return; the
+# "already handed off" refusal above holds for a DONE from the task worktree only. Nothing is
+# pushed: the task branch reaches origin with the deliverer's push.
 # Every run, before its hand-off (once its events are logged, or in --fill before it launches),
 # returns each open ticket worktree on this machine whose ticket is done (a ticket-done since the
 # worktree was given to it and its latest launch there) through team-close T<n> --ticket NN,
@@ -396,16 +398,26 @@ log_events() {
   return_done_tickets
 }
 
+# sibling_said <prefix> <script> <arg>...: run the sibling <script> with its stderr passed
+# through, setting out to its stdout, rc to its exit code and said to the last line of its stderr
+# that starts with <prefix> (with an empty prefix, its last line that is not blank), or nothing.
+sibling_said() {
+  local prefix=$1 err
+  err=$(mktemp)
+  rc=0
+  out=$(sibling "${@:2}" 2>"$err") || rc=$?
+  cat -- "$err" >&2
+  said=$(awk -v p="$prefix" 'NF && (p == "" || index($0, p) == 1) { l = $0 } END { print l }' "$err")
+  rm -f -- "$err"
+}
+
 # return_ticket <NN> <worktree>: ticket NN's worktree returned through team-close --ticket, its
 # stderr passed through; a 75 (its builder still busy) keeps it for the next run, any other failure
 # exits with its code.
 return_ticket() {
-  local rc=0 err said
-  err=$(mktemp)
-  sibling team-close "$task" --ticket "$1" >/dev/null 2>"$err" || rc=$?
-  cat -- "$err" >&2
-  said=$(grep '^team-close: ' -- "$err" | tail -n 1) || said="team-close: it gave no reason"
-  rm -f -- "$err"
+  local rc out said
+  sibling_said 'team-close: ' team-close "$task" --ticket "$1"
+  said=${said:-team-close: it gave no reason}
   if ((rc == 0)); then
     echo "returned $2 for ticket $1"
   elif ((rc == 75)); then
@@ -501,7 +513,7 @@ cap_of() {
 # (team-open --task T<n> --ticket NN, which a rerun reuses) on team-brief --ticket; a room refusal
 # (exit 75) of team-open or team-worker stops the fill, naming NN and the tickets after it.
 launch_ticket() {
-  local n=$1 project=$2 cap=$3 rest=$4 name=build-$1 force=() toolkits=() kit worktree opened brief id rc err said
+  local n=$1 project=$2 cap=$3 rest=$4 name=build-$1 force=() toolkits=() kit worktree opened brief id rc out said
   local session=$task-builder
   brief_force "$name"
   while IFS= read -r kit; do [[ -z $kit ]] || toolkits+=(--toolkit "$kit"); done <<<"$builder_kits"
@@ -509,12 +521,9 @@ launch_ticket() {
     worktree=$(project_worktree "$project") || exit
     brief=$(sibling team-brief "$task" builder-ticket --project "$project" --name "$name" --set "ticket=$n" "${force[@]}") || exit
   else
-    rc=0 err=$(mktemp)
-    opened=$(sibling team-open --task "$task" --ticket "$n" 2>"$err") || rc=$?
-    cat -- "$err" >&2
     # Its reason, the last line it starts with its name (a full pool's list of slots follows it).
-    said=$(grep '^team-open: ' -- "$err" | tail -n 1) || said="team-open: it gave no reason"
-    rm -f -- "$err"
+    sibling_said 'team-open: ' team-open --task "$task" --ticket "$n"
+    opened=$out said=${said:-team-open: it gave no reason}
     if ((rc == 75)); then
       echo "${0##*/}: no worktree for ticket $n: ${said%:}; ready and waiting for room: $n$rest; run team-next $task --fill once there is room" >&2
       exit 75
@@ -526,11 +535,8 @@ launch_ticket() {
     session+=-$n
   fi
   echo "brief $brief"
-  rc=0 err=$(mktemp)
-  id=$(sibling team-worker "$task" builder "$worktree" "${toolkits[@]}" -- "Read your brief at $brief" 2>"$err") || rc=$?
-  cat -- "$err" >&2
-  said=$(grep . -- "$err" | tail -n 1) || said="it printed nothing"
-  rm -f -- "$err"
+  sibling_said '' team-worker "$task" builder "$worktree" "${toolkits[@]}" -- "Read your brief at $brief"
+  id=$out said=${said:-it printed nothing}
   if ((rc == 75)); then
     echo "${0##*/}: no room for $name: the launch said $said; ready and waiting for room: $n$rest; run team-next $task --fill once there is room" >&2
     exit 75
@@ -1025,7 +1031,7 @@ changed_files() {
 # the ticket-done is logged skips to the return.
 integrate() {
   local wait=${TEAM_NEXT_LOCK_SECONDS:-60} lock lock_fd ticket_line tw branch task_wt task_branch name
-  local head last tip old dirty on rel src dst file
+  local head last tip old dirty on rel src dst file landed
   local -a copies
   [[ $wait =~ ^[0-9]+$ ]] || usage_error "TEAM_NEXT_LOCK_SECONDS takes a whole number of seconds, got '$wait'"
   lock=$HOME/.local/state/agent-team/integrate/$task.lock
@@ -1042,9 +1048,10 @@ integrate() {
   if ! jq -e 'any(.events[]; .event.event == "ticket-done" and .at != null)' <<<"$held" >/dev/null; then
     ticket_line=$(ledger_jq '[open_worktrees(.[]; $home) | select(.project == $p and (.ticket == $t or .ticket == null))]
       | [(map(select(.ticket == $t)) | last), (map(select(.ticket == null)) | last)]
-      | map(if . == null then "" else [.worktree, .branch] | join("\t") end) | join("\t")' \
+      | map(if . == null then "", "" else .worktree, .branch end) | .[]' \
       -r --arg p "$launch_project" --arg t "$ticket" <<<"$events")
-    IFS=$'\t' read -r tw branch task_wt task_branch <<<"$ticket_line"
+    # One per line, since a tab is IFS whitespace and an empty field between two would collapse.
+    { IFS= read -r tw; IFS= read -r branch; IFS= read -r task_wt; IFS= read -r task_branch; } <<<"$ticket_line"
     name="$task-builder-$ticket ($sender_session)"
     [[ -n $tw ]] || die "$task has no open worktree of ticket $ticket, so nothing is integrated"
     [[ -n $task_wt ]] || die "$task has no open worktree in $launch_project, so nothing is integrated"
@@ -1067,10 +1074,13 @@ integrate() {
       exit 0
     fi
     shas_held "$tw"
-    # 4. Its HEAD holds the task branch's tip.
+    # 4. Its HEAD holds the task branch's tip, unless the tip holds its HEAD: a run that ended
+    # after its fast-forward, with another ticket landed on top since, left it integrated.
     tip=$(git -C "$task_wt" rev-parse -q --verify "refs/heads/$task_branch") ||
       die "the task branch $task_branch is not in $task_wt, so nothing is integrated"
-    if ! git -C "$tw" merge-base --is-ancestor "$tip" HEAD; then
+    landed=''
+    [[ $tip == "$head" ]] || ! git -C "$tw" merge-base --is-ancestor HEAD "$tip" || landed=1
+    if [[ -z $landed ]] && ! git -C "$tw" merge-base --is-ancestor "$tip" HEAD; then
       echo "send to $name: $task the task branch moved: merge $task_branch at ${tip:0:8} into your branch, run your checks again on the merged head and send DONE $ticket again with that head last"
       exit 0
     fi
@@ -1083,6 +1093,8 @@ integrate() {
     old=$(git -C "$task_wt" rev-parse HEAD)
     if [[ $old == "$head" ]]; then
       echo "already integrated ticket $ticket: $task_branch is at ${head:0:8} in $task_wt"
+    elif [[ -n $landed ]]; then
+      echo "already integrated ticket $ticket: $task_branch at ${tip:0:8} holds ${head:0:8} in $task_wt"
     else
       git -C "$task_wt" merge -q --ff-only "$head" >&2 ||
         die "the task branch $task_branch in $task_wt cannot fast-forward to ${head:0:8}; its reason is above"

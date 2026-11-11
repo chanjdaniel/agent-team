@@ -1852,7 +1852,38 @@ already logged done role=builder session=c0000002"
   run_bin -0 team-log --check
 }
 
-@test "two integrations of one task take its lock in turn, and one held past the wait is exit 75 with nothing changed" {
+@test "a rerun after the fast-forward finishes the integration though another ticket landed on top since" {
+  local h2 h3 tw2 count
+  integrate_ready
+  h2=$(built 02 two.txt) tw2=$(ticket_wt 02)
+  # A run that ended after its fast-forward, then ticket 03 landing on top of it.
+  git -C "$wt" merge -q --ff-only "$h2"
+  built 03 three.txt >/dev/null
+  h3=$(tip_merged 03)
+  run_bin -0 team-next T7 -- "T7 DONE 03 $h3 three"
+  assert_contains "$output" "integrated ticket 03: feat/T7-toil ${h2:0:8}..${h3:0:8} in $wt"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 02 $h2 two"
+  assert_equal "$(sed -n 1,5p <<<"$output")" "already integrated ticket 02: feat/T7-toil at ${h3:0:8} holds ${h2:0:8} in $wt
+copied back $wt/.scratch/task/tickets/02-second.md
+copied back $wt/.scratch/task/build-notes/02.md
+logged ticket-done ticket=02 commits=[\"$h2\"] note=two head=$h2
+logged done role=builder session=c0000001"
+  assert_contains "$output" "returned $tw2 for ticket 02"
+  assert_contains "$output" "launched T7-builder-04 "
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$h3"
+  assert_equal "$(tail -n +$((count + 1)) "$TEAM_HOME/ledger.jsonl" | jq -r 'select(.event == "ticket-done") | .head')" "$h2"
+}
+
+@test "a DONE whose ticket worktree was returned is refused naming the ticket's worktree, not the task's" {
+  local h2 tw2
+  integrate_ready
+  h2=$(built 02 two.txt) tw2=$(ticket_wt 02)
+  event worktree-returned "$(jq -cn --arg wt "$tw2" '{project: "proj", worktree: $wt, ticket: "02"}')"
+  refused "T7 has no open worktree of ticket 02, so nothing is integrated" T7 -- "T7 DONE 02 $h2 two"
+}
+
+@test "an integration finding the task's lock held past its wait is exit 75 with nothing changed, and a malformed wait exit 2" {
   local h2 lock before pid
   integrate_ready
   h2=$(built 02 two.txt)
@@ -1867,10 +1898,39 @@ already logged done role=builder session=c0000002"
   assert_equal "$(state)"$'\n'"$(refs)" "$before"
   TEAM_NEXT_LOCK_SECONDS=soon run_bin -2 team-next T7 -- "T7 DONE 02 $h2 two"
   assert_contains "$output" "TEAM_NEXT_LOCK_SECONDS takes a whole number of seconds, got 'soon'"
-  # The default wait outlasts the holder, then the integration goes on.
-  run_bin -0 team-next T7 -- "T7 DONE 02 $h2 two"
-  assert_contains "$output" "integrated ticket 02"
   wait "$pid"
+}
+
+@test "two integrations of one DONE wait on the lock while it is held, then take it in turn, the second reading the first's ticket-done" {
+  local h2 lock before holder first second
+  integrate_ready
+  h2=$(built 02 two.txt)
+  lock=$HOME/.local/state/agent-team/integrate/T7.lock
+  mkdir -p "${lock%/*}"
+  # Held until the marker goes.
+  touch "$BATS_TEST_TMPDIR/hold"
+  flock "$lock" -c "touch '$BATS_TEST_TMPDIR/held'; while [[ -e '$BATS_TEST_TMPDIR/hold' ]]; do sleep 0.1; done" 3>&- &
+  holder=$!
+  until [[ -e $BATS_TEST_TMPDIR/held ]]; do sleep 0.1; done
+  before=$(state)$'\n'$(refs)
+  "$REPO_ROOT/bin/team-next" T7 -- "T7 DONE 02 $h2 two" >"$BATS_TEST_TMPDIR/first" 2>&1 3>&- &
+  first=$!
+  "$REPO_ROOT/bin/team-next" T7 -- "T7 DONE 02 $h2 two" >"$BATS_TEST_TMPDIR/second" 2>&1 3>&- &
+  second=$!
+  # Both wait while it is held: nothing integrated, nothing logged, both still running.
+  sleep 2
+  assert_equal "$(state)"$'\n'"$(refs)" "$before"
+  kill -0 "$first"
+  kill -0 "$second"
+  rm "$BATS_TEST_TMPDIR/hold"
+  wait "$holder"
+  wait "$first"
+  wait "$second"
+  # One integrated it; the other, taking the lock after, read its ticket-done and logged nothing twice.
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/first" "$BATS_TEST_TMPDIR/second" | grep -c '^integrated ticket 02: ')" 1
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/first" "$BATS_TEST_TMPDIR/second" | grep -c '^already logged ticket-done ')" 1
+  assert_equal "$(jq -c 'select(.event == "ticket-done" and .ticket == "02") | .head' "$TEAM_HOME/ledger.jsonl")" "\"$h2\""
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$h2"
 }
 
 @test "every run of team-next returns each open ticket worktree whose ticket is done before its hand-off" {
