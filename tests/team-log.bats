@@ -232,6 +232,7 @@ TABLE
   assert_contains "$output" "Usage: team-log T<n> <event> [key=value]...
        team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print]
        team-log --check [<file>]
+       team-log --check-lifecycle [<file>]
        team-log --fix-sent-back [<file>]"
   grep -Eq 'a comma list as a worker.s message writes it \(commits=a0017cce,9e0e3990' <<<"$output"
   grep -Eq 'none is the empty list' <<<"$output"
@@ -1230,6 +1231,7 @@ null
   assert_contains "$output" "usage: team-log T<n> <event> [key=value]..."
   run_bin -2 team-log T14
   run_bin -2 team-log --check a b
+  run_bin -2 team-log --check-lifecycle a b
   assert_ledger_empty
 }
 
@@ -1247,6 +1249,54 @@ null
 LEDGER
   run_bin -0 team-log --check
   assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 8 lines meet the ledger contract"
+}
+
+@test "--check-lifecycle names a closed task's event, and exits 1 only for one from lifecycle_from on" {
+  cat >"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
+{"ts":"2026-11-01T00:00:00Z","task":"T1","event":"thread","discord_thread":"1563"}
+{"ts":"2026-11-01T00:01:00Z","task":"T1","event":"opened","project":"proj","path":"small"}
+{"ts":"2026-11-01T00:02:00Z","task":"T1","event":"closed","archive":[],"returned":[],"kept":[]}
+{"ts":"2026-11-01T00:03:00Z","task":"T1","event":"held","reason":"on hold by Daniel"}
+LEDGER
+  local file=$TEAM_HOME/ledger.jsonl
+  local named="$file:4: T1 held: T1 is closed, and a closed task takes no held"
+  with_lifecycle_from null
+  run_bin -0 --separate-stderr team-log --check-lifecycle
+  assert_equal "$output" "$named
+$file: 1 of 4 lines break the lifecycle table, 0 of them from its lifecycle_from on"
+  assert_equal "$stderr" ""
+  # From a time before the event, it would be refused: exit 1, on stderr.
+  with_lifecycle_from 2026-01-01T00:00:00Z
+  run_bin -1 --separate-stderr team-log --check-lifecycle
+  assert_equal "$output" ""
+  assert_equal "$stderr" "$named
+$file: 1 of 4 lines break the lifecycle table, 1 of them from its lifecycle_from on"
+  # From a time after it, it is named and passes.
+  with_lifecycle_from 2026-11-01T00:03:01Z
+  run_bin -0 team-log --check-lifecycle "$file"
+  assert_contains "$output" "0 of them from its lifecycle_from on"
+  # A ledger the table takes whole.
+  head -3 "$file" >"$BATS_TEST_TMPDIR/clean.jsonl"
+  run_bin -0 team-log --check-lifecycle "$BATS_TEST_TMPDIR/clean.jsonl"
+  assert_equal "$output" "$BATS_TEST_TMPDIR/clean.jsonl: 3 lines meet the lifecycle table"
+  run_bin -1 team-log --check-lifecycle "$BATS_TEST_TMPDIR/none.jsonl"
+  assert_equal "$output" "team-log: no ledger at $BATS_TEST_TMPDIR/none.jsonl"
+}
+
+@test "--check-lifecycle runs over every fixture ledger and passes it while lifecycle_from is null" {
+  with_lifecycle_from null
+  local file count=0
+  while IFS= read -r file; do
+    run_bin -0 team-log --check-lifecycle "$file"
+    assert_contains "${lines[-1]}" "$file: "
+    count=$((count + 1))
+  done < <(find "$REPO_ROOT/tests/fixtures" -name 'ledger*.jsonl' | sort)
+  ((count >= 10))
+  # The early ledger, from before team-open: its tasks are legacy, opened by no event.
+  file=$REPO_ROOT/tests/fixtures/ledger-2026-10-23.jsonl
+  run_bin -0 team-log --check-lifecycle "$file"
+  assert_equal "${lines[0]}" "$file:1: T1 launch: T1 is not opened (no opened event), and it takes only thread and opened before its opened, not launch"
+  assert_equal "${lines[-1]}" "$file: 252 of 436 lines break the lifecycle table, 0 of them from its lifecycle_from on"
 }
 
 # T171 review note 2: the ledger's reviews before the scope split count plain notes as note.
@@ -1903,10 +1953,11 @@ assert_no_answer_logged() {
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 3
 }
 
-@test "refused in a worker session, whatever its role and form, --print and --check included; --help and the coordinator are not" {
+@test "refused in a worker session, whatever its role and form, --print, --check and --check-lifecycle included; --help and the coordinator are not" {
   worker_refused team-log "runs no team-log" T7 review verdict=pass
   worker_refused team-log "runs no team-log" T7 --from-message 'T7 DONE 01 abc1234 the ticket' --print
   worker_refused team-log "runs no team-log" --check
+  worker_refused team-log "runs no team-log" --check-lifecycle
   worker_refused team-log "runs no team-log" --fix-sent-back
   AGENT_TEAM_ROLE=builder run_bin -0 team-log --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-log")"

@@ -311,3 +311,101 @@ builder_launch() {
   assert_equal "$(tr '\n' ' ' <<<"$output")" \
     "stow room limit limit shutdown shutdown daniel-hold ask daniel daniel outside task denial worker machine worker limit "
 }
+
+# problems <kind> [<jq object of more fields>]: the problems transition_problems finds for a T1
+# event of <kind> a minute after the last event, over the events so far, one per line.
+problems() {
+  fold_read '(last.ts // "2026-11-01T00:00:00Z" | fromdate + 60 | todate) as $ts
+    | transition_problems({ts: $ts, task: "T1", event: "'"$1"'"} + ('"${2:-{\}}"'))'
+}
+
+@test "the table test: every contract kind, in every status and phase, is refused exactly where lifecycle.json does not take it" {
+  # Generated from lifecycle.json, so a new row is tested by being written: each case a state of
+  # that status and phase, and a T1 event of the kind, whose retro is T1 for closed-own-retro and
+  # T2 otherwise; taken when the kind's status (or default's) names the status, a closed task's
+  # own retro taken where it names closed too, and its phases (or default's) are null or name it.
+  run fold_read 'lifecycle_table as $t
+    | [$contract.kinds | keys[] as $kind | lifecycle_statuses[] as $status | $t.phases[] as $phase
+       | ($t.kinds[$kind] // {}) as $row
+       | ($row.status // $t.default.status) as $statuses
+       | ($row.phases // $t.default.phases) as $phases
+       | ((($statuses | index([$status])) or ($status == "closed-own-retro" and ($statuses | index(["closed"]))))
+          and ($phases == null or ($phases | index([$phase])))) as $taken
+       | (lifecycle_start | .status = (if $status == "closed-own-retro" then "closed" else $status end)
+          | .phase = $phase | .since = "2026-11-01T00:00:00Z" | .opened_at = "2026-11-01T00:00:00Z") as $state
+       | {ts: "2026-11-01T00:01:00Z", task: "T1", event: $kind, retro: (if $status == "closed-own-retro" then "T1" else "T2" end)} as $e
+       | [$state | lifecycle_problems($e)] as $problems
+       | {kind: $kind, status: $status, phase: $phase, taken: $taken, problems: $problems}] as $cases
+    | [$cases[] | select(.taken == (.problems != [])) | "\(.kind) \(.status) \(.phase): taken \(.taken), problems \(.problems)"],
+      ([$cases[] | select(.taken)] | length > 0), ([$cases[] | select(.taken | not)] | length > 0),
+      (($cases | length) == ($contract.kinds | length) * (lifecycle_statuses | length) * ($t.phases | length))'
+  assert_equal "$status" 0
+  assert_equal "$output" "$(printf '[]\ntrue\ntrue\ntrue')"
+}
+
+@test "a closed task takes no event but a team-wide word and a closed retro's own retro-change" {
+  opened retro
+  on closed '{archive: [], returned: [], kept: []}'
+  assert_equal "$(problems retro-change '{retro: "T1", proposals: "1, 2"}')" ""
+  assert_equal "$(problems retro-change '{retro: "T5", proposals: "1"}')" "T1 is closed, and a closed task takes no retro-change"
+  assert_equal "$(problems merge-standing '{project: "proj", discord_message: "1", discord_channel: "2"}')" ""
+  assert_equal "$(problems asked '{id: "a1", text: "which?"}')" "T1 is closed, and a closed task takes no asked"
+  # A closed task of another path takes no retro-change, even one naming it.
+  events=()
+  opened small
+  on closed '{archive: [], returned: [], kept: []}'
+  assert_equal "$(problems retro-change '{retro: "T7", proposals: "3"}')" "T1 is closed, and a closed task takes no retro-change"
+}
+
+@test "a new task takes a thread and then its opened, and an opened task no second opened" {
+  assert_equal "$(problems thread '{discord_thread: "1563"}')" ""
+  on thread '{discord_thread: "1563"}'
+  assert_equal "$(problems opened '{path: "feature"}')" ""
+  opened feature
+  assert_equal "$(problems opened '{path: "feature"}')" "T1 is opened already, at 2026-11-01T00:01:00Z"
+  assert_equal "$(problems thread '{discord_thread: "1564"}')" ""
+}
+
+@test "an event of a task not opened is refused, naming what its status takes, and review as T99's first event is refused" {
+  run fold_read 'transition_problems({ts: "2026-11-01T00:00:00Z", task: "T99", event: "review", verdict: "pass", head: "a1b2c3d"})'
+  assert_equal "$output" "T99 is not opened (no opened event), and it takes only thread and opened before its opened, not review"
+  # A legacy task (events, no opened) takes its closed too, as team-close of a half-opened task.
+  on launch '{role: "builder", session: "b1"}'
+  assert_equal "$(problems review '{verdict: "pass", head: "a1b2c3d"}')" \
+    "T1 is not opened (no opened event), and it takes only thread, opened and closed before its opened, not review"
+  assert_equal "$(problems closed)" ""
+  # A kind the table does not list takes default: an open task only.
+  assert_equal "$(problems image-posted)" \
+    "T1 is not opened (no opened event), and it takes only thread, opened and closed before its opened, not image-posted"
+}
+
+@test "a kind the table takes only in some phases is refused in the others, naming them" {
+  opened feature
+  on pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  assert_equal "$(problems plan-approved)" \
+    "T1 is in-review since 2026-11-01T00:01:00Z, and plan-approved is taken only while it is planning, building, merged-part or merged"
+  on review '{verdict: "pass", head: "a1b2c3d"}'
+  assert_equal "$(problems plan-approved)" \
+    "T1 is awaiting-merge since 2026-11-01T00:02:00Z, and plan-approved is taken only while it is planning, building, merged-part or merged"
+  on merged '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d", phases_left: [2]}'
+  assert_equal "$(problems plan-approved)" ""
+  # A held shows over the work phase, but the table reads the work phase.
+  on held '{reason: "on hold by Daniel"}'
+  assert_equal "$(problems plan-approved)" ""
+}
+
+@test "check_lifecycle replays raw lines in one pass, each task's event against the state before it" {
+  run jq -L "$REPO_ROOT/bin/lib" -nRc --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" \
+    'include "ledger"; $contract[0] as $contract | check_lifecycle' <<'LEDGER'
+{"ts":"2026-11-01T00:00:00Z","task":"T2","event":"thread","discord_thread":"1"}
+{"ts":"2026-11-01T00:01:00Z","task":"T2","event":"opened","path":"small"}
+not JSON
+
+{"ts":"2026-11-01T00:02:00Z","task":"T3","event":"asked","id":"a1","text":"which?"}
+{"ts":"2026-11-01T00:03:00Z","event":"asked"}
+{"ts":"2026-11-01T00:04:00Z","task":"T2","event":"closed"}
+{"ts":"2026-11-01T00:05:00Z","task":"T2","event":"answered","id":"a1","by":"Daniel"}
+LEDGER
+  assert_equal "$status" 0
+  assert_equal "$output" '{"total":8,"from":null,"bad":[{"line":5,"task":"T3","event":"asked","ts":"2026-11-01T00:02:00Z","problems":["T3 is not opened (no opened event), and it takes only thread and opened before its opened, not asked"]},{"line":8,"task":"T2","event":"answered","ts":"2026-11-01T00:05:00Z","problems":["T2 is closed, and a closed task takes no answered"]}]}'
+}

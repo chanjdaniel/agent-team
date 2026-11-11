@@ -394,6 +394,7 @@ def park_role:
 # than fold again:
 #   status  unknown (no event), legacy (events but no opened), open, closed.
 #   path    the opened's path, null before it.
+#   opened_at the opened's ts, null before it.
 #   phase   the work phase, one of the table's phases: planning before an opened, then the table's
 #           start for its path (planning for a path it lacks), moved by lifecycle_step's effects.
 #   since   the ts of the event that set the phase.
@@ -420,7 +421,7 @@ def park_role:
 #   counts  each park kind's events so far, for the next park's id.
 #   seen    the events folded so far, the next event's index.
 def lifecycle_start:
-  {status: "unknown", path: null, phase: "planning", since: null, prs: [], reviews: [], parks: [],
+  {status: "unknown", path: null, opened_at: null, phase: "planning", since: null, prs: [], reviews: [], parks: [],
    asks: [], stow: null, counts: {}, seen: 0};
 
 # Whether the merged event $e names the PR (the input, one of the state's or task_prs' PRs) among
@@ -472,7 +473,7 @@ def lifecycle_step($e):
   | if .status == "unknown" then .status = "legacy" else . end
   | if $effect == "open" then
       if IN(.status; "unknown", "legacy") then
-        .status = "open" | .path = $e.path
+        .status = "open" | .path = $e.path | .opened_at = $e.ts
         | lifecycle_move(lifecycle_table.start[$e.path // ""] // "planning"; $e.ts) | .since = $e.ts
       else . end
     elif $effect == "close" then .status = "closed"
@@ -528,6 +529,48 @@ def lifecycle_step($e):
 
 # The task's state: its events, in ledger order, folded from lifecycle_start.
 def lifecycle: reduce .[] as $e (lifecycle_start; lifecycle_step($e));
+
+# How the event $e breaks the table in the state (the input), one string each, nothing when the
+# table takes it: a status its kind does not take (closed, with closed-own-retro for a closed
+# task's own retro-change, its retro this task; not opened, unknown or legacy, naming the kinds
+# that status takes in the table's order; opened already), else a phase it does not take. A kind
+# the table does not list takes default.
+def lifecycle_problems($e):
+  lifecycle_table as $t
+  | ($t.kinds[$e.event] // {}) as $row
+  | ($row.status // $t.default.status) as $statuses
+  | ($row.phases // $t.default.phases) as $phases
+  | def kinds_taken($status): [$t.kinds | to_entries[] | select(.value.status // $t.default.status | index([$status])) | .key];
+    def listed($word): if length < 2 then join("") else "\(.[:-1] | join(", ")) \($word) \(.[-1])" end;
+  if (.status | IN($statuses[]))
+     or (.status == "closed" and $e.retro == $e.task and ("closed-own-retro" | IN($statuses[]))) then
+    if $phases == null or (.phase | IN($phases[])) then empty
+    else "\($e.task) is \(.phase) since \(.since), and \($e.event) is taken only while it is \($phases | listed("or"))" end
+  elif .status == "closed" then "\($e.task) is closed, and a closed task takes no \($e.event)"
+  elif IN(.status; "unknown", "legacy") then
+    "\($e.task) is not opened (no opened event), and it takes only \(kinds_taken(.status) | listed("and")) before its opened, not \($e.event)"
+  elif $e.event == "opened" then "\($e.task) is opened already, at \(.opened_at)"
+  else "\($e.task) is \(.status), and an \(.status) task takes no \($e.event)" end;
+
+# How the event $e breaks the table in the state the task's events (the input) reach
+# (lifecycle_problems), one string each.
+def transition_problems($e): lifecycle | lifecycle_problems($e);
+
+# The replay of a ledger read as raw lines (jq -nR) against the table, in one pass: each line that
+# is a JSON object with a task and an event checked against its task's state before it
+# (lifecycle_problems), then folded into it; any other line is check_ledger's to name. As
+# {total (the lines), from (the table's lifecycle_from), bad: [{line, task, event, ts, problems}]}.
+def check_lifecycle:
+  reduce inputs as $raw ({total: 0, tasks: {}, bad: []};
+    .total += 1
+    | (if $raw | test("^\\s*$") then null else (try ($raw | fromjson) catch null) end) as $e
+    | if ($e | type) == "object" and ($e.task | type) == "string" and ($e.event | type) == "string" then
+        (.tasks[$e.task] // lifecycle_start) as $state
+        | [$state | lifecycle_problems($e)] as $problems
+        | (if $problems == [] then . else .bad += [{line: .total, task: $e.task, event: $e.event, ts: $e.ts, problems: $problems}] end)
+        | .tasks[$e.task] = ($state | lifecycle_step($e))
+      else . end)
+  | {total, from: lifecycle_table.lifecycle_from, bad};
 
 # The task's status: open (opened by team-open, not closed), closed, legacy (from before
 # team-open: events but no opened, not closed) or unknown (no events).

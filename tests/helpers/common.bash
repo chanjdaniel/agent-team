@@ -262,6 +262,24 @@ code_checkout() {
   printf '/%s\n' bin roles settings templates plugins toolkits coordinator.settings.json >>"$exclude"
 }
 
+# with_lifecycle_from <time|null>: run_bin runs from a code checkout of the test's own whose
+# bin/lib/lifecycle.json is this checkout's with lifecycle_from set to <time> (refusing from it
+# on; 2026-01-01T00:00:00Z refuses every test event) or null (warning only), whatever the file
+# here says, so a test that asserts a mode holds through the cutover. It is CODE_CHECKOUT when a
+# test made one (code_checkout first, for a script that reads roles or settings), else a copy of
+# bin/ made here (copy_bin). The shared hard link is replaced, never written through.
+with_lifecycle_from() {
+  if [[ -z ${CODE_CHECKOUT:-} ]]; then
+    export CODE_CHECKOUT=$BATS_TEST_TMPDIR/lifecycle-code
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+  fi
+  local table=$CODE_CHECKOUT/bin/lib/lifecycle.json
+  jq --arg from "$1" '.lifecycle_from = (if $from == "null" then null else $from end)' \
+    "$REPO_ROOT/bin/lib/lifecycle.json" >"$table.new"
+  mv -f "$table.new" "$table"
+}
+
 # Push a commit touching <path> to <origin>'s dev from a clone of its own, as another machine's
 # merge would; prints the new commit: push_to_dev <origin> <path>
 push_to_dev() {

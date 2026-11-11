@@ -4,6 +4,7 @@
 # Usage: team-log T<n> <event> [key=value]...
 #        team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print]
 #        team-log --check [<file>]
+#        team-log --check-lifecycle [<file>]
 #        team-log --fix-sent-back [<file>]
 # Appends {ts (now, UTC), task, event, key: value...}, each value typed as the contract types its field.
 # A list field (array, or numbers (a list of whole numbers), as sent_back and before are) takes
@@ -98,13 +99,23 @@
 # line. A sent_back or before from strict_from on that holds whole numbers as strings, as
 # team-log stored them before, passes too, but each such line is named on stderr with
 # --fix-sent-back, and the last line counts them.
+# --check-lifecycle replays a ledger (default: the team home's) against the lifecycle table
+# (bin/lib/lifecycle.json, check_lifecycle in bin/lib/ledger.jq), in one pass: each task's events
+# in ledger order, each checked against the state the ones before it reach, and prints one line
+# per event that breaks the table, "<file>:<line>: <task> <kind>: <problem>" (several joined with
+# "; "), then "<file>: <n> of <total> lines break the lifecycle table, <m> of them from its
+# lifecycle_from on" or "<file>: <total> lines meet the lifecycle table". A line that is no JSON
+# object with a task and an event is --check's to name, and this one passes it. It exits 1, all on
+# stderr, when <m> is above 0 (lifecycle_from set and an event at or after it breaks the table),
+# else 0, all on stdout, so it names what the table would refuse before anything is refused.
 # --fix-sent-back is the one-time conversion of those strings (default: the team home's ledger), run under the ledger's lock:
 # on every line, legacy too, it stores the whole numbers that sent_back and before hold as
 # strings as numbers, leaves every other line byte for byte, and prints how many lines it changed;
 # a string there that is no whole number refuses the whole conversion, naming each line, and
 # changes nothing.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
-# coordinator; worker_refusal in bin/lib/team.sh), in every form, --print and --check included; --help still answers.
+# coordinator; worker_refusal in bin/lib/team.sh), in every form, --print, --check and
+# --check-lifecycle included; --help still answers.
 set -euo pipefail
 
 # Printed by --help after the header.
@@ -116,7 +127,7 @@ help_more() {
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "runs no team-log") && die "$why"
 
-usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print] | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
+usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print] | team-log --check [<file>] | team-log --check-lifecycle [<file>] | team-log --fix-sent-back [<file>]"
 
 if [[ ${1:-} == --check ]]; then
   [[ $# -le 2 ]] || usage_error "$usage"
@@ -138,6 +149,24 @@ if [[ ${1:-} == --check ]]; then
     exit 1
   fi
   if ((total == 1)); then echo "$file: 1 line meets the ledger contract$notes"; else echo "$file: $total lines meet the ledger contract$notes"; fi
+  exit 0
+fi
+
+if [[ ${1:-} == --check-lifecycle ]]; then
+  [[ $# -le 2 ]] || usage_error "$usage"
+  file=${2:-$TEAM_HOME/ledger.jsonl}
+  [[ -f $file ]] || die "no ledger at $file"
+  report=$(ledger_jq 'check_lifecycle' -nRc <"$file")
+  late=$(jq -r '.from as $from | [.bad[] | select($from != null and .ts >= $from)] | length' <<<"$report")
+  lines=$(jq -r --arg file "$file" '(.bad[] | "\($file):\(.line): \(.task) \(.event): \(.problems | join("; "))"),
+    if .bad == [] then "\($file): \(.total) \(if .total == 1 then "line meets" else "lines meet" end) the lifecycle table"
+    else "\($file): \(.bad | length) of \(.total) lines break the lifecycle table, \($late) of them from its lifecycle_from on" end' \
+    --argjson late "$late" <<<"$report")
+  if ((late > 0)); then
+    echo "$lines" >&2
+    exit 1
+  fi
+  echo "$lines"
   exit 0
 fi
 

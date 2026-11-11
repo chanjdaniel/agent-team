@@ -3,7 +3,7 @@
     "The task lifecycle's table: which ledger event kinds a task takes in each status and phase, and what each does to the task's state, read by the lifecycle fold in bin/lib/ledger.jq (import \"lifecycle\" as $lifecycle).",
     "status is the task's status before the event: unknown (no event yet), legacy (events but no opened), open (opened, not closed), closed; closed-own-retro is a closed retro taking its own retro-change (the event's retro is this task).",
     "phases is every work phase in order; start gives the phase an opened sets by its path, planning for a path it does not list.",
-    "kinds gives each kind the statuses it is taken in (status) and the phases (phases, null for any), each defaulting to default's, and its effect, the fold's step for it; a kind it does not list takes default, and no effect.",
+    "kinds gives each kind the statuses it is taken in (status) and the phases (phases, null for any), each defaulting to default's, and its effect, the fold's step for it; a kind it does not list takes default, and no effect. A refusal of a task not opened lists the kinds it takes in this order.",
     "causes gives each park cause its kinds and what ends it; empty until typed parks.",
     "refusing_writers are the scripts whose events are their own records, logged before anything else happens, whose events the table may refuse from lifecycle_from on (null: never, warn only); every other writer acts first and logs after."
   ],
@@ -13,8 +13,8 @@
   "phases": ["planning", "building", "in-review", "awaiting-merge", "merged-part", "merged"],
   "default": {"status": ["open"], "phases": null},
   "kinds": {
-    "opened": {"status": ["unknown", "legacy"], "effect": "open"},
     "thread": {"status": ["unknown", "legacy", "open"]},
+    "opened": {"status": ["unknown", "legacy"], "effect": "open"},
     "closed": {"status": ["legacy", "open"], "effect": "close"},
     "retro-change": {"status": ["open", "closed-own-retro"]},
     "merge-standing": {"status": ["open", "closed"]},
