@@ -754,14 +754,16 @@ EVENTS
   assert_equal "$(jq -c '.tasks[0].crashed.roles' "$report")" '[]'
 }
 
-@test "the coordinator and workers are denied typing team-resume --steal" {
-  local file command
-  for file in "$REPO_ROOT/coordinator.settings.json" "$REPO_ROOT/settings/worker.json"; do
-    for command in "team-resume --steal" "$REPO_ROOT/bin/team-resume --steal" "TEAM_LEASE_TTY=/tmp/x bin/team-resume --steal"; do
-      denied_in "$file" "$command" || { echo "${file##*/} allows: $command" >&2; return 1; }
-    done
-    if denied_in "$file" "team-resume --wait"; then echo "${file##*/} denies: team-resume --wait" >&2; return 1; fi
+# The coordinator's settings deny it; a worker's command-guard refuses it where a command starts.
+@test "the coordinator is denied typing team-resume --steal, and a worker's command-guard refuses it" {
+  local command
+  for command in "team-resume --steal" "$REPO_ROOT/bin/team-resume --steal" "TEAM_LEASE_TTY=/tmp/x bin/team-resume --steal"; do
+    denied_in "$REPO_ROOT/coordinator.settings.json" "$command" || { echo "coordinator.settings.json allows: $command" >&2; return 1; }
+    run_bin -2 --separate-stderr hooks/command-guard <<<"$(jq -cn --arg c "$command" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    assert_contains "$stderr" "Blocked by command-guard: a lease steal is Daniel's word, through the coordinator"
   done
+  if denied_in "$REPO_ROOT/coordinator.settings.json" "team-resume --wait"; then echo "coordinator.settings.json denies: team-resume --wait" >&2; return 1; fi
+  run_bin -0 --separate-stderr hooks/command-guard <<<'{"tool_name": "Bash", "tool_input": {"command": "team-resume --wait"}}'
 }
 
 @test "a malformed command line is a usage error, and a machine with no name is refused" {
