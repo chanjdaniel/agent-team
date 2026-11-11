@@ -34,6 +34,12 @@
 # waited on it, whose use the stored reading still holds (sops/resources.md). With no room, at
 # level none above all, it exits 75 with the reason, launching nothing else; a failure of the
 # admission itself stops the launch with its reason (exit 1). T0 and ops are never asked.
+# The launch logs the admission's id, admit's first line, as admission, which pairs the admission
+# with its session; until that launch event is logged, the exit handler releases the admission
+# (`team-capacity release <id>`) on every end of the launch, a failed step, die, TERM, HUP or INT,
+# so a launch that dies after its admission frees its room at once, and only a KILL leaves it to
+# end 10 minutes after it was made. A release that fails is a warning on stderr, and the launch's
+# exit status stays its own.
 # Once the session runs, `team-capacity place <id>` adopts it into its task's slice (on Linux;
 # nothing on macOS), but T0's, waiting up to TEAM_CAPACITY_PLACE_SECONDS (30) for the claude
 # daemon to list it with a running process and for a call that names a process gone to succeed;
@@ -483,14 +489,31 @@ fi
 # The session is admitted to the level's budget before anything else of the launch, leaving out the
 # finished sessions just stopped, which the stored reading still holds; T0, the load check, and
 # ops, Daniel's request, are never refused for room.
+# The admission is the launch's until its launch event is logged: the exit handler releases it on
+# every end before then (a failed step, die, TERM, HUP or INT), so a launch that dies after its
+# admission frees its room at once; only a KILL leaves it to its 10 minutes.
+admission='' admit_errors=''
+release_admission() {
+  local out
+  if [[ -n $admission ]] &&
+    ! out=$(TEAM_HOME=$TEAM_HOME "$code/bin/team-capacity" release "$admission" 2>&1 >/dev/null); then
+    echo "team-worker: warning: could not release admission $admission: $(grep . <<<"$out" | tail -n 1 || echo "team-capacity release failed"); it ends 10 minutes after it was made" >&2
+  fi
+  [[ -z $admit_errors ]] || rm -f -- "$admit_errors"
+}
+trap release_admission EXIT
 if [[ $task != T0 && $role != ops ]]; then
   rc=0
-  admit_err=$(TEAM_HOME=$TEAM_HOME "$code/bin/team-capacity" admit --kind "session:$role" --task "$task" ${freed[@]+"${freed[@]}"} 2>&1 >/dev/null) || rc=$?
+  admit_errors=$(mktemp)
+  admit_out=$(TEAM_HOME=$TEAM_HOME "$code/bin/team-capacity" admit --kind "session:$role" --task "$task" ${freed[@]+"${freed[@]}"} 2>"$admit_errors") || rc=$?
+  admit_err=$(<"$admit_errors")
   if ((rc == 75)); then
     echo "team-worker: $(grep . <<<"$admit_err" | tail -n 1)" >&2
     exit 75
   fi
   ((rc == 0)) || die "team-capacity admit failed for $task-$role (exit $rc): $(grep . <<<"$admit_err" | tail -n 1 || echo "no reason given")"
+  admission=${admit_out%%$'\n'*}
+  [[ $admission =~ ^[0-9a-f]{12}$ ]] || { admission=''; die "team-capacity admit gave no admission id for $task-$role: $(grep -m1 . <<<"$admit_out" || echo "it printed nothing")"; }
 fi
 
 # The registry's projects as the autoMode lines state them (the header says how).
@@ -704,14 +727,17 @@ fi
 
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --arg machine "$machine" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
+    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
       event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
       + ($at // {} | {project, branch} | with_entries(select(.value != null)))
       + {machine: $machine}
+      + (if $admission == "" then {} else {admission: $admission} end)
       + (if $model == "" then {} else {model: $model} end)
       + (if $request == "" then {} else {request: $request} end)
       + (if $discord_message == "" then {} else {discord_message: $discord_message} end)
       + (if $brief == "" then {} else {brief: $brief} end)' "${toolkits[@]}")"
+  # Logged, the admission is its session's (paired by its id), and nothing releases it now.
+  admission=''
 fi
 
 # The new session is the claude daemon's child, never this script's, so it is adopted into its
