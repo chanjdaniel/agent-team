@@ -565,15 +565,16 @@ real_chrome() (
   cp "$REPO_ROOT"/tests/fixtures/tickets-T257/*.md "$tickets/"
   local dir=$wt/.scratch/task
   run_bin --separate-stderr team-tickets T172 --graph
+  local probe=''
   if ((status != 0)); then
     # Chrome may have no usable sandbox (CI's Ubuntu refuses unprivileged namespaces); its whole
     # stderr says so where --graph's one line may not.
-    local probe
     probe=$(timeout 60 "$chrome" --headless=new --disable-gpu --user-data-dir="$BATS_TEST_TMPDIR/probe" \
       --screenshot="$BATS_TEST_TMPDIR/probe.png" about:blank 2>&1 </dev/null) || true
     [[ ${probe,,} != *sandbox* ]] || skip "Chrome has no usable sandbox here: $stderr"
   fi
-  assert_equal "$status" 0
+  # A failure names --graph's reason and what Chrome alone printed.
+  ((status == 0)) || { printf '%s\n' "--graph exited $status: $stderr" "Chrome alone on about:blank: $probe" >&2; false; }
   local size
   size=$(svg_size "$dir/tickets.html")
   run python3 -I "$REPO_ROOT/tests/helpers/png-bounds.py" "$dir/tickets.png"
