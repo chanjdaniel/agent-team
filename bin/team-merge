@@ -78,10 +78,13 @@
 # on, auto-merge is turned off and it is exit 1); then merged is appended with pr, merge, head,
 # by (naming the Discord message and its author), project, branch, discord_message,
 # discord_channel, url (the PR's), approval (head for the per-head word, plan for the plan-time
-# one, standing for the standing one), and local_checks (the commands that passed on head) when
-# there were any. Prints {task, pr, merge, head, by}, then commits the ledger and pushes it to the
-# team home's origin at once, before any later step (ledger_push in bin/lib/team.sh, which says
-# on stderr when it is not on origin yet, the exit staying 0).
+# one, standing for the standing one), local_checks (the commands that passed on head) when
+# there were any, and phases_left, the phases of the task with a ticket not done, as team-tickets
+# T<n> --json read them just before gh pr merge ([] when every ticket is done, so the task reads
+# merged, else merged-part); a task with no tickets logs none, and a team-tickets that fails logs
+# none and says so on stderr, the merge going on. Prints {task, pr, merge, head, by}, then commits
+# the ledger and pushes it to the team home's origin at once, before any later step (ledger_push
+# in bin/lib/team.sh, which says on stderr when it is not on origin yet, the exit staying 0).
 # Then, when the task's opened event names a story (team-open --story) and the PR is of the project
 # it opened in, that story's backlog file in the team home (story_file in bin/lib/team.sh) is
 # marked: its front matter's status becomes done and the PR's number joins its pr: list (in the
@@ -514,6 +517,16 @@ if ((${#local_checks[@]})); then
   refuse_on_problems
 fi
 
+# The task's phases with a ticket not done, read before the merge so the merged event says whether
+# a part of the task is still to build: a JSON list, or empty when the task has no tickets or they
+# cannot be read, which never stops the merge.
+phases_left=''
+if "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json >"$scratch/tickets" 2>"$scratch/tickets-error"; then
+  phases_left=$(jq -c 'if . == [] then empty else map(select(.state != "done") | .phase) | unique end' "$scratch/tickets")
+else
+  echo "team-merge: cannot read $task's tickets ($(grep -m 1 . "$scratch/tickets-error" || echo "team-tickets failed")), so its merged names no phases left" >&2
+fi
+
 gh pr merge "$number" --repo "$repo" "--$method" --match-head-commit "$head" >&2 ||
   die "gh pr merge did not merge PR #$number (exit $?); nothing was logged"
 
@@ -536,10 +549,12 @@ trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-merge: PR #$nu
 ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$merge" --arg head "$head" \
   --arg by "$by" --arg project "$project" --arg branch "$branch" --arg message "$message" --arg channel "$channel" \
   --arg url "$url" --arg approval "$word" --argjson checks "$(printf '%s\n' "${local_checks[@]}" | jq -R . | jq -cs 'map(select(. != ""))')" \
+  --argjson left "${phases_left:-null}" \
   '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
     project: $project, branch: $branch, discord_message: $message, discord_channel: $channel, url: $url,
     approval: $approval}
-    + if $checks == [] then {} else {local_checks: $checks} end')"
+    + if $checks == [] then {} else {local_checks: $checks} end
+    + if $left == null then {} else {phases_left: $left} end')"
 trap 'rm -rf "$scratch"' EXIT
 jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \
   '{task: $task, pr: $url, merge: $merge, head: $head, by: $by}'

@@ -20,7 +20,8 @@
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
 #                  ledger event since its launch, a denied aside, has handed the next step back);
-#                  merged is told to close
+#                  merged is told to close, and merged-part (a merged naming phases_left, phases
+#                  with a ticket not done) to launch the next phase's first ticket's builder
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
 #                  task after that session's latest launch but denied ones (one waiting for input
@@ -82,8 +83,9 @@
 #                  blocked logged after its stow standing, until a resumed): "level: T171 fits
 #                  again: relaunch its builder"
 #   level-launch   after it, with task and session null: the first task whose launches were
-#                  refused for room (a paused, after its latest launch, whose reason is
-#                  team-worker's "no room for session:<role>" line), oldest refusal first, whose
+#                  refused for room (a standing paused of cause room, as park_cause reads
+#                  team-worker's "no room for session:<role>" line, which the task's next launch
+#                  or a resumed ends), oldest refusal first, whose
 #                  roles fit again and that nothing holds (a held standing, or a waiting or
 #                  blocked logged after its latest refusal standing, until a resumed): "level: T5
 #                  has room again: launch its reviewer, refused for room at <time>"

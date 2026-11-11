@@ -232,9 +232,30 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   event T7 merged '{pr: 5, merge: "abcdef0", head: "1234567", by: "daniel"}'
   run_bin -1 team-sweep
   assert_equal "$output" "T7 no-worker: merged and not closed, with no live worker (latest T7-builder 22222222); next: close it with team-close T7"
-  # Blocked after the merge, a later part is still to come: the task is parked, not to be closed.
+  # Blocked after the merge, the task is parked, not to be closed.
   event T7 blocked '{reason: "the second half waits on T31"}'
   run_bin -0 team-sweep
+}
+
+@test "no-worker: a merged part is told to launch the next phase, and its last part to close" {
+  opened T7
+  launch T7 builder 22222222
+  event T7 merged '{pr: 5, merge: "abcdef0", head: "1234567", by: "daniel", phases_left: [2, 3]}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: a part merged, with phase 2, 3 still to build, with no live worker (latest T7-builder 22222222); next: launch the next phase's first ticket's builder (team-tickets T7 names it)"
+  sessions "$(session 22222222 T7-builder idle working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: a part merged, with phase 2, 3 still to build, with every live worker idle (latest T7-builder 22222222); next: launch the next phase's first ticket's builder (team-tickets T7 names it)"
+  # The next phase's builder at work is enough.
+  launch T7 builder 33333333
+  sessions "$(session 33333333 T7-builder busy working)"
+  run_bin -0 team-sweep
+  # Its part merged with every ticket done, the task is merged and told to close.
+  event T7 merged '{pr: 6, merge: "abcdef1", head: "2345678", by: "daniel", phases_left: []}'
+  sessions "$(session 33333333 T7-builder idle working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: merged and not closed, with every live worker idle (latest T7-builder 33333333); next: close it with team-close T7"
+  no_github
 }
 
 @test "no-worker: every live worker idle since a report leaves the next step to the coordinator" {
@@ -1700,9 +1721,15 @@ refused_t5() {
   run_bin team-sweep --json
   assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
   # A resumed lifts the hold.
-  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}'
+  refused_t5 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}' --
   run_bin team-sweep --json
   assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
+  # A resumed after the refusal ends the refusal too, since the refusal is a standing park and a
+  # resumed with no id, all or brief ends every park (T278's A4: parked and refused_launches
+  # agree), so nothing is named.
+  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
 }
 
 @test "level: a team-capacity plan that fails is one finding naming its reason, and the task findings still come" {

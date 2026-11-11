@@ -23,13 +23,20 @@
 # the latest one's verdict, head and sent_back, each null when there is none).
 # Recorded worktree paths under another machine's home (/home/<name>, /Users/<name>) show as the
 # same paths under this HOME.
-# Phase, first match wins: closed, merged (every PR merged, and no held or blocked standing that
-# was logged after the latest merged, a later part still to come), held (with no later resumed),
-# blocked (with no later resumed or launch), awaiting-merge (every PR not merged has a pass as the latest
-# review of its head), in-review (a pr event), building (plan-approved), planning. A task's PRs are the latest pr event
-# in each repo; a PR's head is that event's, moved by each later history-rewritten from it (or from
-# a head no PR has); a PR is merged by a merged event naming its URL (legacy: its number).
-# Heads compare by the shorter one's prefix, at least 7 characters.
+# Phase, from the ledger's lifecycle fold (bin/lib/ledger.jq, its table bin/lib/lifecycle.json),
+# first match wins: closed, held (a held with no later resumed, one naming only a brief not
+# counting), blocked (a blocked with no later such resumed or launch), each wherever it was logged,
+# else the work phase the task's events moved it to: planning, building, in-review, awaiting-merge,
+# merged-part or merged. An opened starts a small or bug task in building and any other in planning;
+# a plan-approved moves planning to building; a builder's launch or a ticket-done moves planning,
+# merged-part or merged to building; a builder's done reporting review-ready or merged moves
+# building to in-review; a pr, and while building, in review or awaiting merge a review or (with a
+# PR logged) a history-rewritten, makes it awaiting-merge when it has a PR not merged and each such
+# PR's latest review on its head is a pass, else in-review; a merged that leaves no PR open makes it
+# merged-part when it names phases_left (phases with a ticket not done), else merged. A task's PRs
+# are the latest pr event in each repo; a PR's head is that event's, moved by each later
+# history-rewritten from it (or from a head no PR has); a PR is merged by a merged event naming its
+# URL (legacy: its number). Heads compare by the shorter one's prefix, at least 7 characters.
 # pr is null without a pr event; otherwise it joins the latest pr event with GitHub (gh pr view,
 # gh pr checks, gh pr checks --required): number, repo and project (from the event's project in
 # projects.toml, else from the URL), state, base, branch (the PR's head branch), the live head, the

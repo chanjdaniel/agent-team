@@ -9,18 +9,25 @@ setup() {
   mkdir -p "$BATS_TEST_TMPDIR/bin"
 }
 
-# Run a script named <name> that sources this checkout's library and appends <event>.
+# Run a script named <name> that sources this checkout's library (CODE_CHECKOUT's, when
+# with_lifecycle_from made one) and appends <event>, waiting <seconds> for the ledger's lock when
+# given: append_as <name> <event> [<seconds>]
 append_as() {
   local script=$BATS_TEST_TMPDIR/bin/$1
   cat >"$script" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
-source "$REPO_ROOT/bin/lib/team.sh" "\$@"
-ledger_append "\$1"
+source "${CODE_CHECKOUT:-$REPO_ROOT}/bin/lib/team.sh" "\$@"
+ledger_append "\$1" \${2:+"\$2"}
 SCRIPT
   chmod +x "$script"
   guard_sandbox
-  run "$script" "$2"
+  run "$script" "${@:2}"
+}
+
+# The ledger's lines after the thread and opened of opened_task.
+after_opened() {
+  tail -n +3 "$TEAM_HOME/ledger.jsonl"
 }
 
 @test "an event that meets the contract is appended by its writer" {
@@ -69,11 +76,12 @@ SCRIPT
 }
 
 @test "a review whose sent_back holds whole numbers as strings is refused, a form only --check takes" {
+  opened_task T7
   local review='{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"review","verdict":"findings","head":"a1b2c3d","findings":{"blocking":1,"correctness":0,"security":0,"real-data":0,"note-change":0,"note-before":0},"guarded":[]'
   append_as team-log "$review,\"sent_back\":[\"5\"]}"
   assert_equal "$status" "1"
   assert_contains "$output" 'team-log: refusing a ledger event: sent_back must be a list of whole numbers, got "5"'
-  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+  assert_equal "$(after_opened)" ""
   append_as team-log "$review,\"sent_back\":[5]}"
   assert_equal "$status" "0"
 }
@@ -108,6 +116,7 @@ SCRIPT
 }
 
 @test "an ops done may carry its report's length and its relay, and a question its text or its length, one of them" {
+  opened_task T7
   local at='"ts":"2026-11-09T02:00:00Z","task":"T7"'
   append_as team-log "{$at,\"event\":\"done\",\"role\":\"ops\",\"session\":\"d0000001\",\"report_chars\":412,\"relay\":\"1564000000000000001\"}"
   assert_equal "$status" "0"
@@ -139,13 +148,13 @@ SCRIPT
   append_as team-log "{$at,\"event\":\"question\",\"role\":\"builder\",\"chars\":12}"
   assert_equal "$status" "1"
   assert_contains "$output" 'a question'"'"'s chars is only for role ops, not "builder"'
-  assert_equal "$(jq -c '{event, role}' "$TEAM_HOME/ledger.jsonl")" '{"event":"done","role":"ops"}
+  assert_equal "$(after_opened | jq -c '{event, role}')" '{"event":"done","role":"ops"}
 {"event":"question","role":"ops"}
 {"event":"question","role":"builder"}'
   # team-log --check holds the ledger's lines to the same, from strict_from on.
   echo "{$at,\"event\":\"question\",\"role\":\"ops\"}" >>"$TEAM_HOME/ledger.jsonl"
   run_bin -1 team-log --check
-  assert_contains "$output" "ledger.jsonl:4: a question needs text or chars"
+  assert_contains "$output" "ledger.jsonl:6: a question needs text or chars"
 }
 
 @test "an address at a public provider in a list's item is refused, naming the item and never the value" {
@@ -174,6 +183,7 @@ SCRIPT
 }
 
 @test "a plan-time merge approval, its withdrawal, a review's finding fields and a merge's approval meet the contract" {
+  opened_task T7
   local at='"ts":"2026-10-31T02:00:00Z","task":"T7"'
   append_as team-log "{$at,\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"1563\",\"scope\":[\"src/\"]}"
   assert_equal "$status" "0"
@@ -183,7 +193,7 @@ SCRIPT
   assert_equal "$status" "0"
   append_as team-merge "{$at,\"event\":\"merged\",\"pr\":5,\"merge\":\"b2c3d4e\",\"head\":\"a1b2c3d\",\"by\":\"m\",\"approval\":\"plan\"}"
   assert_equal "$status" "0"
-  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "merge-preapproved
+  assert_equal "$(after_opened | jq -r .event)" "merge-preapproved
 merge-preapproval-withdrawn
 review
 merged"
@@ -200,16 +210,17 @@ merged"
   assert_contains "$output" "findings must be an object, got a list; guarded must be a list, got an object"
   append_as team-merge "{$at,\"event\":\"merged\",\"pr\":5,\"merge\":\"b2c3d4e\",\"head\":\"a1b2c3d\",\"by\":\"m\",\"approval\":\"per-head\"}"
   assert_contains "$output" "approval must be one of head, plan"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
+  assert_equal "$(after_opened | wc -l)" "4"
 }
 
 @test "a standing merge word and its withdrawal meet the contract, each naming a project, a message and its channel" {
+  opened_task T7
   local at='"ts":"2026-11-01T02:00:00Z","task":"T7"' said='"discord_message":"1566","discord_channel":"1562"'
   append_as team-log "{$at,\"event\":\"merge-standing\",\"project\":\"all\",$said}"
   assert_equal "$status" "0"
   append_as team-log "{$at,\"event\":\"merge-standing-withdrawn\",\"project\":\"proj\",$said}"
   assert_equal "$status" "0"
-  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "merge-standing
+  assert_equal "$(after_opened | jq -r .event)" "merge-standing
 merge-standing-withdrawn"
 
   local kind
@@ -227,10 +238,11 @@ merge-standing-withdrawn"
     append_as team-merge "{$at,\"event\":\"$kind\",\"project\":\"proj\",$said}"
     assert_contains "$output" "$kind events are written by team-log, not team-merge"
   done
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+  assert_equal "$(after_opened | wc -l)" "2"
 }
 
 @test "a kind with several writers is appended by each of them, and refused from any other" {
+  opened_task T7
   append_as team-ask '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"asked","id":"q1","text":"Which?"}'
   assert_equal "$status" "0"
   append_as team-answer '{"ts":"2026-10-22T02:00:01Z","task":"T7","event":"answered","id":"q1","answer":"That one"}'
@@ -238,7 +250,7 @@ merge-standing-withdrawn"
   append_as team-ask '{"ts":"2026-10-22T02:00:02Z","task":"T7","event":"answered","id":"q1","answer":"That one"}'
   assert_equal "$status" "1"
   assert_contains "$output" "answered events are written by team-log or team-answer, not team-ask"
-  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "asked
+  assert_equal "$(after_opened | jq -r .event)" "asked
 answered"
 }
 
@@ -346,6 +358,7 @@ awaiting() {
 }
 
 @test "a branch-renamed meets the contract, written by team-log" {
+  opened_task T7
   local at='"ts":"2026-10-31T02:00:00Z","task":"T7"'
   append_as team-log "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\",\"branch\":\"feat/T7-x-fresh\"}"
   assert_equal "$status" "0"
@@ -353,10 +366,11 @@ awaiting() {
   assert_contains "$output" "branch-renamed needs branch"
   append_as team-open "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\",\"branch\":\"feat/T7-x-fresh\"}"
   assert_contains "$output" "branch-renamed events are written by team-log, not team-open"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "1"
+  assert_equal "$(after_opened | wc -l)" "1"
 }
 
 @test "a field its kind gives one writer is refused from the kind's other writers" {
+  opened_task T7
   assert_equal "$(jq -c '.kinds.asked.field_writers' "$REPO_ROOT/bin/lib/ledger-contract.json")" '{"script":"team-ask","sha256":"team-ask"}'
   local hash at='"ts":"2026-10-22T02:00:00Z","task":"T7","event":"asked","id":"fix","text":"Run it?"'
   hash=$(printf '%064d' 0 | tr 0 a)
@@ -367,7 +381,7 @@ awaiting() {
   assert_contains "$output" "an asked's script is written by team-ask, not team-log; an asked's sha256 is written by team-ask, not team-log"
   append_as team-log "{$at}"
   assert_equal "$status" "0"
-  assert_equal "$(jq -c '[.id, .script != null]' "$TEAM_HOME/ledger.jsonl")" '["fix",true]
+  assert_equal "$(after_opened | jq -c '[.id, .script != null]')" '["fix",true]
 ["fix",false]'
   # An answered's item, the waiting list's number, is team-answer's alone.
   assert_equal "$(jq -c '.kinds.answered.field_writers' "$REPO_ROOT/bin/lib/ledger-contract.json")" '{"item":"team-answer"}'
@@ -382,6 +396,7 @@ awaiting() {
 @test "ledger_push never fails its caller: a commit that fails with nothing on stderr is the one line with its fallback reason, and the script goes on" {
   git -C "$TEAM_HOME" init -q -b dev
   git -C "$TEAM_HOME" remote add origin "$BATS_TEST_TMPDIR/origin.git"
+  opened_task T7
   local script=$BATS_TEST_TMPDIR/bin/team-log
   cat >"$script" <<SCRIPT
 #!/usr/bin/env bash
@@ -398,4 +413,76 @@ SCRIPT
   assert_equal "$status" "0"
   assert_equal "$output" "went on"
   assert_equal "$stderr" "team-log: the ledger is not on origin yet (commit_records failed with no reason); the next checkpoint pushes it"
+}
+
+# A ledger whose T1 is closed: its thread, its opened and its closed.
+closed_t1() {
+  printf '%s\n' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T1","event":"thread","discord_thread":"1563"}' \
+    '{"ts":"2026-11-01T00:01:00Z","task":"T1","event":"opened","project":"p","path":"feature","type":"feat","title":"x","branch":"feat/T1-x","base":"dev","base_sha":"0000000","worktree":"/w"}' \
+    '{"ts":"2026-11-01T09:00:00Z","task":"T1","event":"closed","archive":[],"returned":[],"kept":[]}' \
+    >"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "a writer outside refusing_writers appends an event the lifecycle table refuses, saying nothing, in either mode" {
+  closed_t1
+  local stowed='{"ts":"2026-11-02T00:00:00Z","task":"T1","event":"stowed","machine":"home-pc","worktrees":[],"roles":[]}'
+  local thread='{"ts":"2026-11-02T00:00:00Z","task":"T1","event":"thread","discord_thread":"1564"}'
+  local from
+  for from in null 2026-01-01T00:00:00Z; do
+    with_lifecycle_from "$from"
+    append_as team-stow "$stowed"
+    assert_equal "$status" "0"
+    assert_equal "$output" ""
+    append_as team-thread "$thread"
+    assert_equal "$status" "0"
+    assert_equal "$output" ""
+  done
+  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl" | tail -n +4 | paste -sd ' ')" "stowed thread stowed thread"
+}
+
+@test "a refusing writer's event the table refuses is warned and logged before lifecycle_from, and refused from it on" {
+  closed_t1
+  local held='{"ts":"2026-11-02T00:00:00Z","task":"T1","event":"held","reason":"after close"}'
+  local problem="T1 is closed, and a closed task takes no held"
+  with_lifecycle_from null
+  append_as team-log "$held"
+  assert_equal "$status" "0"
+  assert_equal "$output" "team-log: lifecycle: $problem (logged anyway; bin/lib/lifecycle.json refuses it from its lifecycle_from, not set yet)"
+  # A time after the event's ts warns, naming it.
+  with_lifecycle_from 2026-11-02T00:00:01Z
+  append_as team-log "$held"
+  assert_equal "$status" "0"
+  assert_equal "$output" "team-log: lifecycle: $problem (logged anyway; bin/lib/lifecycle.json refuses it from its lifecycle_from, 2026-11-02T00:00:01Z)"
+  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl" | tail -n +4 | paste -sd ' ')" "held held"
+  # From the event's own ts on, it is refused, and nothing is appended.
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  with_lifecycle_from 2026-11-02T00:00:00Z
+  append_as team-log "$held"
+  assert_equal "$status" "1"
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $problem"
+  # Several problems are one refusal, joined; here the one rule of a task not opened.
+  append_as team-answer '{"ts":"2026-11-02T00:00:00Z","task":"T99","event":"resumed"}'
+  assert_equal "$status" "1"
+  assert_equal "$output" "team-answer: refusing a ledger event: lifecycle: T99 is not opened (no opened event), and it takes only thread and opened before its opened, not resumed"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  # An event the table takes is appended with nothing said, refusing or not.
+  append_as team-log '{"ts":"2026-11-02T00:00:00Z","task":"T1","event":"merge-standing","project":"p","discord_message":"1564000000000000001","discord_channel":"1562486564871995482"}'
+  assert_equal "$status" "0"
+  assert_equal "$output" ""
+}
+
+@test "the lifecycle check waits for the ledger's lock, which the seconds bound, and appends nothing without it" {
+  closed_t1
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  local held
+  exec {held}>>"$TEAM_HOME/ledger.jsonl.lock"
+  flock -x "$held"
+  with_lifecycle_from null
+  append_as team-log '{"ts":"2026-11-02T00:00:00Z","task":"T1","event":"held","reason":"after close"}' 1
+  exec {held}>&-
+  assert_equal "$status" "1"
+  # Refused for the lock, with no warning: the check runs only once the lock is taken.
+  assert_equal "$output" "team-log: could not take the ledger's lock within 1s"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
 }
