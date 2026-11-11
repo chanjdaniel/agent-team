@@ -90,8 +90,9 @@
 # review found no guarded area and no review of the task counted a security or real-data finding
 # or logged no counts); on a merge ask, each guarded area of the six bin/lib/guarded names and
 # each such review named, with ", so the default word does not hold" while the plan stands
-# approved on a project not the team's own, and the before notes to queue as follow-ups; for a PR behind its base,
-# "merge base: ..." instead, read with base_merge in the project's primary checkout once the PR's
+# approved on a project not the team's own, and the before notes to queue as follow-ups; for a PR
+# behind its base, "merge base: ..." instead, read with base_merge in the project's primary checkout
+# once the PR's
 # branch and the base are fetched there:
 # "run team-catch-up T<n>, which needs no rereview" when the reviewed head merges the base cleanly,
 # then "then, once the checks pass on its merge: " and the merge line above for the reviewed head
@@ -291,8 +292,9 @@ case $handoff in
   verdict) if [[ $kind == "DONE findings" ]]; then launch_role=builder; else launch_role=''; fi ;;
   *) launch_role='' ;;
 esac
-# A withdrawn plan approval stops the build until the plan is approved again, named before the
-# launch guard, which reads a feature task's withdrawn plan as no plan: plan_withdrawn_refusal
+# A withdrawn plan approval stops the build until the plan is approved again, named as a hand-off
+# before the launch guard, which refuses a builder's or reviewer's launch for it too:
+# plan_withdrawn_refusal
 plan_withdrawn_refusal() {
   local withdrawn
   withdrawn=$(ledger_jq 'plan_approval | select(.state == "withdrawn") | "\(.ts) in Discord message \(.discord_message)"' -r <<<"$events")

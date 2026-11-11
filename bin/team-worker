@@ -25,8 +25,11 @@
 # discord_message=<their message id>"), a task with an unanswered ask no --past-ask and no earlier
 # launch's past_ask names ("T<n> has an unanswered ask, <id>, since <ts>; launch past it with
 # --past-ask <id>"), and a --past-ask naming none ("--past-ask <id> names no unanswered ask of
-# T<n>"); and a builder or reviewer of a feature task still planning ("T<n> is a feature task with
-# no approved plan (no plan-approved), so it takes no <role> yet"). It also refuses a task with no
+# T<n>"); a builder or reviewer of a task on any path whose plan approval is withdrawn ("T<n>'s
+# plan approval was withdrawn at <ts> in Discord message <id>, so it takes no <role> until the plan
+# is approved again (plan-approved)"); and a builder or reviewer of a feature task still planning
+# ("T<n> is a feature task with no approved plan (no plan-approved), so it takes no <role> yet").
+# It also refuses a task with no
 # Discord thread, a worktree not one of the task's open worktrees, and a launch on a machine that
 # does not hold the lease (`team-lease check`, confirmed against origin) or cannot reach GitHub.
 # Prints the background session id and logs the launch to ledger.jsonl, with the worktree's

@@ -304,7 +304,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF 'the ask listing `scope.txt` and saying the approval is the merge word' <<<"$approve"
   grep -qF 'log their yes with `team-log T<n> plan-approved by=Daniel ask=<id> discord_message=<id>`, which records the plan'"'"'s files and scope itself' <<<"$approve"
   grep -qF 'for agent-team only Daniel'"'"'s is a merge word, yours starting the build alone' <<<"$approve"
-  grep -qF 'their withdrawal, `team-log T<n> plan-approval-withdrawn discord_message=<id>`, stops the build until the plan is approved again.' <<<"$approve"
+  grep -qF 'their withdrawal, `team-log T<n> plan-approval-withdrawn discord_message=<id>`, stops the build until they approve it again.' <<<"$approve"
   [[ $approve != *merge-preapproved* ]]
 }
 

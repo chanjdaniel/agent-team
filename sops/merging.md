@@ -53,7 +53,7 @@ For agent-team, the team's own project (`own_project` in `bin/lib/team.sh`: by n
 - `team-log` refuses a `by` but the two, Daniel's approval with no `ask` or `discord_message`, an ask the task never logged or a message sent before it, the coordinator's with either, a closed task, no `plan.md`, and a second approval whose `by` and `plan` equal the one standing.
 - Once any of the files changes after the approval, the default word lapses, and `team-merge` names each file, until the plan is approved again, which on a product project the coordinator may do itself once it has read the change.
   A worktree that is not on this machine reads as a changed plan, so the merge runs on the machine that holds it.
-- Daniel withdraws a task's plan approval with a message, logged `team-log T<n> plan-approval-withdrawn discord_message=<id>`, which `team-log` refuses when no approval stands: it stops the task's build, every hand-off of `team-next` refused naming it, and the default word with it, until the plan is approved again.
+- Daniel withdraws a task's plan approval with a message, logged `team-log T<n> plan-approval-withdrawn discord_message=<id>`, which `team-log` refuses when no approval stands: it stops the task's build, every hand-off of `team-next` and every builder or reviewer launch of `team-worker` refused naming it, and the default word with it, until Daniel approves the plan again, since `team-log` then refuses the coordinator's approval.
   It is a separate act from withdrawing the default word, which stops merges alone.
 
 ## The short list

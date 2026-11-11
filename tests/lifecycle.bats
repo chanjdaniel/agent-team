@@ -612,6 +612,42 @@ refusal() {
   assert_equal "$(refusal builder)" "T1 is closed"
 }
 
+@test "a withdrawn plan approval refuses a builder and a reviewer on every path and in every phase, until the plan is approved again" {
+  local withdrawn="T1's plan approval was withdrawn at 2026-11-01T00:05:00Z in Discord message 9, so it takes no"
+  # A feature task between phases: merged-part, where a later phase's builder is launched by hand.
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  on pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  on review '{verdict: "pass", head: "1111111"}'
+  on merged '{pr: 5, merge: "fedcba9", head: "1111111", by: "Daniel", url: "https://github.com/owner/proj/pull/5", phases_left: [2]}'
+  on plan-approval-withdrawn '{discord_message: "9"}'
+  assert_equal "$(fold_read phase)" merged-part
+  assert_equal "$(refusal builder)" "$withdrawn builder until the plan is approved again (plan-approved)"
+  assert_equal "$(refusal reviewer)" "$withdrawn reviewer until the plan is approved again (plan-approved)"
+  assert_equal "$(refusal planner)$(refusal ops)$(refusal '')" ""
+  on plan-approved '{by: "Daniel", plan: {}}'
+  assert_equal "$(refusal builder)$(refusal reviewer)" ""
+  # A feature task building, which the withdrawal moves back to planning, names the withdrawal alone.
+  events=()
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on ticket-done '{ticket: "01"}'
+  on plan-approval-withdrawn '{discord_message: "9"}'
+  assert_equal "$(fold_read phase)" planning
+  withdrawn=${withdrawn/00:05:00Z/00:04:00Z}
+  assert_equal "$(refusal builder)" "$withdrawn builder until the plan is approved again (plan-approved)"
+  # A small task, which needs no plan to start, is stopped by a withdrawn one too.
+  events=()
+  opened small
+  on plan-approved '{by: "coordinator"}'
+  on ticket-done '{ticket: "01"}'
+  on "done" '{role: "builder", session: "b1", report: "05"}'
+  on plan-approval-withdrawn '{discord_message: "9"}'
+  assert_equal "$(refusal builder)" "$withdrawn builder until the plan is approved again (plan-approved)"
+  assert_equal "$(refusal reviewer)" "$withdrawn reviewer until the plan is approved again (plan-approved)"
+}
+
 @test "a research or small task's builder and reviewer go from its open" {
   local both='[launch_refusal("T1"; "builder"; []), launch_refusal("T1"; "reviewer"; [])] | length'
   opened research

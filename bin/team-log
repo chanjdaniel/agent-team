@@ -13,8 +13,9 @@
 # line per problem on stderr while the table's lifecycle_from is not set or later than the event,
 # and refused, logging nothing, from it on.
 # A list field (array, or numbers (a list of whole numbers), as sent_back and before are) takes
-# a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990, sent_back=5,6, guarded=ci,secrets),
-# each item trimmed, an empty item refused, and none is the empty list (guarded=none).
+# a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990,
+# sent_back=5,6, guarded=ci,secrets), each item trimmed, an empty item refused, and none is the
+# empty list (guarded=none).
 # A list of whole numbers stores each item of a comma list, and each numeric string of a JSON list, as a number, and refuses one that is no whole number, naming it.
 # An object field takes a JSON object, or key:value pairs separated by commas (findings=blocking:0,correctness:1,security:0,real-data:0,note-change:2,note-before:0),
 # each trimmed, a value a number when it reads as one; a list or object value that starts with [ or { is read only as JSON.
@@ -37,9 +38,12 @@
 # in bin/lib/team.sh) to its sha256, and scope, scope.txt's non-blank lines, when it exists; it is
 # refused for a by but Daniel or coordinator; Daniel's with no ask or discord_message, an ask the
 # task never logged, or a message that is no Discord id or was sent before the latest asked of
-# that id; the coordinator's with either; a plan or scope given, which team-log records itself; a
-# closed task; no tasks/T<n>/plan.md; a scope.txt that lists no path or holds a line that is no
-# clean repository path (a string with no leading /, no . or .. segment, no empty segment, no glob
+# that id; the coordinator's with either, or while the approval standing is withdrawn, which
+# only Daniel's approval ends; a plan or scope given, which team-log records itself; a
+# closed task; no tasks/T<n>/plan.md; a task whose opened project has no open worktree that is a
+# directory on this machine, since its spec.md and scope.txt could not be hashed; a scope.txt that
+# lists no path or holds a line that is no clean repository path (a string with no leading /, no .
+# or .. segment, no empty segment, no glob
 # character *?[ and no whitespace; a directory ends in /); and a second approval whose by and
 # plan equal the one standing (plan_approval in bin/lib/ledger.jq). A plan-approval-withdrawn
 # (discord_message=<id>, Daniel's message, which team-log takes as named, since a withdrawal only
@@ -66,8 +70,9 @@
 # whose notes go back before the merge is not ready to merge. A review's findings, when given,
 # must count exactly blocking, correctness, security, real-data, note-change and note-before, each
 # a whole number, and its guarded list only ci, migrations, deploy, permissions, secrets and
-# guardrails, the areas of bin/lib/guarded (dependencies and settings are retired); its before, the numbers of its plain notes on code the PR did not
-# change, distinct whole numbers above 0, is required when findings counts a note-before, as many
+# guardrails, the areas of bin/lib/guarded (dependencies and settings are retired); its before, the
+# numbers of its plain notes on code the PR did not change, distinct whole numbers above 0, is
+# required when findings counts a note-before, as many
 # as it counts, and a sent_back naming one of them is refused, since such a note is queued, never
 # sent back; its widening, the numbers of a rereview's new findings in what the last fix added,
 # distinct whole numbers above 0 too, is refused naming any before lists, since a before note is
@@ -370,7 +375,8 @@ fi
 # A plan approval says who approved which plan: Daniel, answering an ask the task logged in a
 # message sent no earlier than it, or the coordinator, with neither; team-log records the plan's
 # files (plan_files in bin/lib/team.sh) and scope.txt's lines itself, refuses an approval of a
-# closed task or of no plan, and a second one by the same approver of the same files. A withdrawal
+# closed task or of no plan, a second one by the same approver of the same files, and the
+# coordinator's after Daniel's withdrawal, which only their approval ends. A withdrawal
 # needs an approval standing (plan_approval in bin/lib/ledger.jq).
 if [[ $event == plan-approved || $event == plan-approval-withdrawn ]]; then
   task_events_once
@@ -406,10 +412,22 @@ if [[ $event == plan-approved ]]; then
     for key in ask discord_message; do
       [[ -z ${seen[$key]:-} ]] || die "the coordinator's approval takes no $key, which only Daniel's names: team-log $task plan-approved by=coordinator"
     done
+    withdrawn=$(ledger_jq 'plan_approval | select(.state == "withdrawn") | "\(.ts) in Discord message \(.discord_message)"' -r <<<"$TASK_EVENTS")
+    [[ -z $withdrawn ]] ||
+      die "$task's plan approval was withdrawn at $withdrawn, so only Daniel approves it again: team-log $task plan-approved by=Daniel ask=<id> discord_message=<id>"
   fi
   [[ -f $TEAM_HOME/tasks/$task/plan.md ]] || die "$task has no plan at tasks/$task/plan.md, so there is no plan to approve"
   plan=$(plan_files "$task") || die "cannot read $task's plan files"
   found=$(plan_task_dir "$task") || die "cannot read $task's task directory"
+  if [[ -z $found ]]; then
+    plan_project=$(jq -r 'first(.[] | select(.event == "opened") | .project | strings) // empty' <<<"$TASK_EVENTS")
+    if [[ -n $plan_project ]]; then
+      plan_worktree=$(task_worktrees "$task" | jq -r --arg p "$plan_project" 'select(.project == $p) | .worktree | strings' | tail -n 1)
+      [[ -n $plan_worktree ]] ||
+        die "$task has no open worktree of $plan_project, so its spec.md and scope.txt cannot be hashed"
+      die "$task's worktree of $plan_project, $plan_worktree, is not a directory on this machine, so its spec.md and scope.txt cannot be hashed: approve the plan on the machine that holds it"
+    fi
+  fi
   scope=null
   if [[ -n $found && -f ${found%%$'\t'*}/scope.txt ]]; then
     scope=$(jq -Rnc '[inputs | select(test("\\S"))]' <"${found%%$'\t'*}/scope.txt")

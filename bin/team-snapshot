@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Show everything open across the team: every open task's state, the team's resource level,
-# Daniel's withdrawals of the default merge word, the production checks' last results, the live team sessions and
-# strays, the open PRs of every registered project, the asks waiting on Daniel, and the
+# Daniel's withdrawals of the default merge word, the production checks' last results, the live team
+# sessions and strays, the open PRs of every registered project, the asks waiting on Daniel, and the
 # coordinator's current items.
 #
 # Usage: team-snapshot [--json]
@@ -16,9 +16,11 @@
 # withdrawal of the default merge word that stands (it is still the latest merge-default-withdrawn
 # or merge-default-restored, of any task, covering some PR; default_withdrawals in
 # bin/lib/ledger.jq), in ledger order: "Default merge word withdrawn for <the task, project
-# <name> or every project> since <ts> (Discord message <id>, <the task it was logged under>)", and none
-# while no withdrawal stands. The Production line follows them, team-uptime status --json's line (it makes no request): "Production: all 2 checks
-# up, last checked 14:05", or each check not up, such as "Production: conventioner api down since
+# <name> or every project> since <ts> (Discord message <id>, <the task it was logged under>)", and
+# none while no withdrawal stands. The Production line follows them, team-uptime status --json's
+# line (it
+# makes no request): "Production: all 2 checks up, last checked 14:05", or each check not up, such
+# as "Production: conventioner api down since
 # 13:40: HTTP 503; 1 more up, last checked 14:05", "Production unreadable: <error>" when
 # team-uptime fails, and no line when no project has a check. Live team sessions are
 # the sessions claude agents --json lists named like a team worker (T<n>-<role>) whose task is
@@ -35,8 +37,9 @@
 # when it fails, which the text says as "Resources unreadable: <error>"), awaiting_resume (the open
 # tasks stowed, waiting to resume, in task number order), resources (the resources line, null when
 # level is {error}), default_withdrawn (each withdrawal of the default merge word that stands, as
-# its merge-default-withdrawn event, in ledger order), production (team-uptime status --json's object, its line
-# null with no check, or {error} with the last line team-uptime said when it fails), sessions
+# its merge-default-withdrawn event, in ledger order), production (team-uptime status --json's
+# object, its line null with no check, or {error} with the last line team-uptime said when it
+# fails), sessions
 # ({task, role, name, session, status, state, logged}), strays (the same with task_state closed,
 # unknown or load-check instead of logged), prs ({project, repo, prs: [{number, title, url,
 # branch, base, draft, task}]}, or {project, repo, error}), pending_asks ({task, id, text, ts}),

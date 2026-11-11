@@ -50,11 +50,13 @@ plan_registry() {
   } >"$TEAM_HOME/projects.toml"
 }
 
-# A project of the task, as team-open logs it: opened <task> <project> [worktree-added]
+# A project of the task, as team-open logs it, its worktree a directory, as a plan approval reads
+# it: opened <task> <project> [worktree-added]
 opened() {
-  jq -cn --arg task "$1" --arg project "$2" --arg event "${3:-opened}" \
+  mkdir -p "$BATS_TEST_TMPDIR/w/$2"
+  jq -cn --arg task "$1" --arg project "$2" --arg event "${3:-opened}" --arg w "$BATS_TEST_TMPDIR/w" \
     '{ts: (now | todate), task: $task, event: $event, project: $project, branch: "feat/\($task)-x", base: "dev",
-      base_sha: "0123456", worktree: "/w/\($project)"}
+      base_sha: "0123456", worktree: "\($w)/\($project)"}
      + if $event == "opened" then {path: "feature", type: "feat", title: "X"} else {} end' >>"$TEAM_HOME/ledger.jsonl"
 }
 
@@ -857,6 +859,23 @@ sha() {
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
 
+@test "plan-approved refuses a task whose worktree is not on this machine, since its spec and scope.txt cannot be hashed" {
+  plan_task
+  local before
+  mkdir "$BATS_TEST_TMPDIR/away"
+  echo "src/" >"$BATS_TEST_TMPDIR/wt/.scratch/task/scope.txt"
+  mv "$BATS_TEST_TMPDIR/wt" "$BATS_TEST_TMPDIR/away/"
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: T14's worktree of proj, $BATS_TEST_TMPDIR/wt, is not a directory on this machine, so its spec.md and scope.txt cannot be hashed: approve the plan on the machine that holds it"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # Back in place, the approval records the plan in full.
+  mv "$BATS_TEST_TMPDIR/away/wt" "$BATS_TEST_TMPDIR/"
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c '[(.plan | keys), .scope]')" \
+    '[[".scratch/task/scope.txt","tasks/T14/plan.md"],["src/"]]'
+}
+
 @test "plan-approved refuses a scope.txt that lists no path or holds one that is no clean path, and a second approval of the same files by the same approver" {
   plan_task
   local scope=$BATS_TEST_TMPDIR/wt/.scratch/task/scope.txt before
@@ -890,7 +909,7 @@ sha() {
   run_bin -0 team-log T14 plan-approved by=coordinator
 }
 
-@test "plan-approval-withdrawn withdraws the approval standing, and a new approval may follow it" {
+@test "plan-approval-withdrawn withdraws the approval standing, and only Daniel's approval may follow it" {
   plan_task
   run_bin -1 team-log T14 plan-approval-withdrawn discord_message="$(soon)"
   assert_equal "$output" "team-log: T14 has no plan approval standing, so plan-approval-withdrawn withdraws nothing"
@@ -906,9 +925,21 @@ sha() {
     "{\"task\":\"T14\",\"event\":\"plan-approval-withdrawn\",\"discord_message\":\"$message\"}"
   run_bin -1 team-log T14 plan-approval-withdrawn discord_message="$(soon)"
   assert_equal "$output" "team-log: T14 has no plan approval standing, so plan-approval-withdrawn withdraws nothing"
-  # The same files approved again, after the withdrawal, are a new approval.
-  run_bin -0 team-log T14 plan-approved by=coordinator
+  # Only Daniel approves again after their withdrawal: the coordinator alone never undoes it.
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: T14's plan approval was withdrawn at $(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts) in Discord message $message, so only Daniel approves it again: team-log T14 plan-approved by=Daniel ask=<id> discord_message=<id>"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # The same files approved again by Daniel, after the withdrawal, are a new approval, and the
+  # coordinator may approve a changed plan once Daniel's stands.
+  run_bin -0 team-log T14 asked id=again 'text=Approve the plan again?'
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=again discord_message="$(soon)"
   run_bin -0 team-log T14 plan-approval-withdrawn discord_message="$(soon)"
+  run_bin -0 team-log T14 asked id=third 'text=Approve it once more?'
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=third discord_message="$(soon)"
+  echo "# the spec, changed" >"$BATS_TEST_TMPDIR/wt/.scratch/task/spec.md"
+  run_bin -0 team-log T14 plan-approved by=coordinator
   run_bin -0 team-log --check
 }
 
@@ -2234,7 +2265,8 @@ origin_subject() {
 
 @test "a push that fails leaves the exit and stdout as they were, says why in one line, and the next checkpoint pushes the commit" {
   push_home
-  opened_task T14
+  plan_registry
+  opened T14 proj
   plan_md T14
   git -C "$TEAM_HOME" remote set-url origin "$BATS_TEST_TMPDIR/gone.git"
   local tip
@@ -2256,7 +2288,8 @@ origin_subject() {
   git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
   # A line written before the ledger's check, holding an address at a public provider.
   local provider=gmail.com head tip
-  opened_task T14
+  plan_registry
+  opened T14 proj
   plan_md T14
   jq -cn --arg a "someone@$provider" '{ts: "2026-10-22T02:00:00Z", task: "T14", event: "paused", reason: "mail \($a)"}' \
     >>"$TEAM_HOME/ledger.jsonl"
@@ -2273,7 +2306,8 @@ origin_subject() {
 
 @test "a fenced machine, and one that lost the lease, commits and pushes no ledger, saying why" {
   push_home
-  opened_task T14
+  plan_registry
+  opened T14 proj
   plan_md T14
   local head tip
   head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
@@ -2294,13 +2328,14 @@ origin_subject() {
   [[ $stderr == "team-log: the ledger is not on origin yet (home-pc no longer holds the lease: origin names laptop ("*"): a machine that lost the lease commits and pushes no ledger)" ]]
   assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
   assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
-  assert_equal "$(logged_after 2 | jq -r .event)" "plan-approved
+  assert_equal "$(logged_after 1 | jq -r .event)" "plan-approved
 plan-approved"
 }
 
 @test "while the team holds offline, the push is skipped at once with no network call, saying the next checkpoint pushes it" {
   push_home
-  opened_task T14
+  plan_registry
+  opened T14 proj
   plan_md T14
   local head tip
   head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
@@ -2323,7 +2358,8 @@ plan-approved"
 }
 
 @test "a team home with no origin, or that is no git checkout, prints nothing and fails nothing" {
-  opened_task T14
+  plan_registry
+  opened T14 proj
   plan_md T14
   run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
   assert_equal "$output" ""
@@ -2333,7 +2369,7 @@ plan-approved"
   assert_equal "$output" ""
   assert_equal "$stderr" ""
   assert_equal "$(git -C "$TEAM_HOME" rev-list --all | wc -l)" 0
-  assert_equal "$(logged_after 2 | jq -r .event)" "plan-approved
+  assert_equal "$(logged_after 1 | jq -r .event)" "plan-approved
 retro-schedule"
 }
 

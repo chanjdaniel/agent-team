@@ -35,8 +35,9 @@
 #   task; the PR's project; or all) is not a withdrawal, which is refused naming its scope, time and
 #   message, never read, and one that is a giving back holds only when Discord shows its message
 #   from an allowFrom author in #coordinator or the thread of the task it was logged under, else it
-#   is refused naming why; the plan's files now (plan_files in bin/lib/team.sh: tasks/T<n>/plan.md, and spec.md and
-#   scope.txt in the task directory of its first project's worktree) hash as the approval recorded,
+#   is refused naming why; the plan's files now (plan_files in bin/lib/team.sh: tasks/T<n>/plan.md,
+#   and spec.md and scope.txt in the task directory of its first project's worktree) hash as the
+#   approval recorded,
 #   each one that differs, is new or is gone named, to approve it again, and files that cannot be
 #   read are refused (a legacy approval, logged before T276 with no plan, has none to compare and no
 #   scope, and reads as the coordinator's); an approval of Daniel's has its discord_message sent no
@@ -342,8 +343,9 @@ fi
 # word does not hold for a reason of its own (never one of the checks every merge gets): the
 # ledger's reasons, then, while the approval stands on a project that is not the team's own, the
 # plan's files now against the approval's, a giving back of the default read back, Daniel's
-# message read back for an approval of theirs, and on a head GitHub showed, the PR's branch, a caught-up head against git, and the PR's files
-# read in full, each within the approval's scope when it has one and none on the short list.
+# message read back for an approval of theirs, and on a head GitHub showed, the PR's branch, a
+# caught-up head against git, and the PR's files read in full, each within the approval's scope when
+# it has one and none on the short list.
 # files_read is set once GitHub's list of the PR's files is read in full, PR_CHANGED then holding
 # its paths.
 files_read=''
@@ -361,7 +363,8 @@ if ! jq -e .applies <<<"$head_word" >/dev/null || ((${#head_reasons[@]})); then
       default_reasons+=("the plan's files cannot be read ($(grep -m 1 . "$scratch/plan" || echo "plan_files failed")), so whether the plan changed since its approval at $(jq -r .facts.ts <<<"$default_word") is not known")
     fi
     # A giving back of the default word holds only when Discord shows its message, from an allowFrom
-    # author, in #coordinator or the thread of the task it was logged under; a withdrawal is never read.
+    # author, in #coordinator or the thread of the task it was logged under; a withdrawal is never
+    # read.
     restored=$(jq -c '.facts.restored // empty' <<<"$default_word")
     if [[ -n $restored ]]; then
       given=$(ledger_jq '"the default word was given back for \(default_scope_text) at \(.ts) in Discord message \(.discord_message)"' -r <<<"$restored")

@@ -330,8 +330,8 @@ def head_logged($url; $head): first(pr_heads($url)[] | select(same_head(.head; $
 
 # Whether this event, logged after the ask $ask (an asked event), settles it: the answered with its
 # id, or for history a merge-preapproved with it (a kind retired by T276), or a merge-approved
-# whose url (a trailing slash aside) the ask's text names, not followed by a digit, since the coordinator logs a merge answer as merge-approved
-# alone as often as not.
+# whose url (a trailing slash aside) the ask's text names, not followed by a digit, since the
+# coordinator logs a merge answer as merge-approved alone as often as not.
 def settles($ask):
   (.event == "answered" and .id == $ask.id)
   or (.event == "merge-preapproved" and .ask == $ask.id)
@@ -401,8 +401,11 @@ def park_role:
 #   phase   the work phase, one of the table's phases: planning before an opened, then the table's
 #           start for its path (planning for a path it lacks), moved by lifecycle_step's effects.
 #   since   the ts of the event that set the phase.
-#   approval null before a plan-approved, then approved, or withdrawn after a plan-approval-withdrawn
-#           until the next plan-approved: while it is withdrawn nothing moves the phase to building.
+#   approval null before a plan-approved, then approved, or withdrawn after a
+#           plan-approval-withdrawn until the next plan-approved: while it is withdrawn nothing
+#           moves the phase to building.
+#   withdrawal the plan-approval-withdrawn's {ts, discord_message} while approval is
+#           withdrawn, else null.
 #   prs     the task's PRs, one per repo, in the order of their latest pr events, as {url, repo,
 #           head, number, merged, verdict}: a later pr in the repo replaces its PR (keeping merged
 #           for the same url), a history-rewritten moves heads (from its old_head, or every PR's
@@ -434,7 +437,7 @@ def park_role:
 #   counts  each park kind's events so far, for the next park's id.
 #   seen    the events folded so far, the next event's index.
 def lifecycle_start:
-  {status: "unknown", path: null, opened_at: null, phase: "planning", since: null, approval: null, prs: [], reviews: [], parks: [],
+  {status: "unknown", path: null, opened_at: null, phase: "planning", since: null, approval: null, withdrawal: null, prs: [], reviews: [], parks: [],
    asks: [], stow: null, counts: {}, seen: 0};
 
 # Whether the merged event $e names the PR (the input, one of the state's or task_prs' PRs) among
@@ -523,10 +526,10 @@ def lifecycle_step($e):
       else . end
     elif $effect == "close" then .status = "closed"
     elif $effect == "approve" then
-      .approval = "approved"
+      .approval = "approved" | .withdrawal = null
       | if .phase == "planning" then lifecycle_move("building"; $e.ts) else . end
     elif $effect == "withdraw" then
-      .approval = "withdrawn"
+      .approval = "withdrawn" | .withdrawal = {ts: $e.ts, discord_message: $e.discord_message}
       | if .phase == "building" then lifecycle_move("planning"; $e.ts) else . end
     elif $effect == "launch" then
       ($e.past_ask // []) as $past
@@ -597,8 +600,9 @@ def lifecycle: reduce .[] as $e (lifecycle_start; lifecycle_step($e));
 #      legacy_cause), naming the resumed that lifts it;
 #   3. for every role but ops, an open ask neither $past nor an earlier launch's past_ask names,
 #      and each $past id that is no open ask;
-#   4. a builder or reviewer of a feature task still planning (its work phase planning: no
-#      plan-approved, builder launch or ticket-done yet, or its plan approval withdrawn).
+#   4. a builder or reviewer of a task, on any path and in any phase, whose plan approval is
+#      withdrawn, naming the withdrawal; else of a feature task still planning (its work phase
+#      planning: no plan-approved, builder launch or ticket-done yet).
 def lifecycle_launch_refusal($task; $role; $past; $hint):
   if .status == "closed" then "\($task) is closed"
   elif .status != "open" then "\($task) is not open: the ledger has no opened event for it"
@@ -611,7 +615,9 @@ def lifecycle_launch_refusal($task; $role; $past; $hint):
         | "\($task) has an unanswered ask, \(.id), since \(.ts)" + (if $hint then "; launch past it with --past-ask \(.id)" else "" end)),
        (.asks as $asks | $past[] | select(IN($asks[].id) | not) | "--past-ask \(.) names no unanswered ask of \($task)")
      end),
-    (if IN($role; "builder", "reviewer") and .path == "feature" and .phase == "planning" then
+    (if IN($role; "builder", "reviewer") and .approval == "withdrawn" then
+       "\($task)'s plan approval was withdrawn at \(.withdrawal.ts) in Discord message \(.withdrawal.discord_message), so it takes no \($role) until the plan is approved again (plan-approved)"
+     elif IN($role; "builder", "reviewer") and .path == "feature" and .phase == "planning" then
        "\($task) is a feature task with no approved plan (no plan-approved), so it takes no \($role) yet"
      else empty end)
   end;
@@ -1592,12 +1598,13 @@ def coordinator_twin_findings($self):
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
 # takes it): each open task's stowing finding, then its merge-due (on the default word, judged with
-# every task's withdrawals), else its findings unless it is parked, then the stray sessions (named like a team worker whose
-# task is closed or not in the ledger, never the load check's T0, whose session the coordinator
+# every task's withdrawals), else its findings unless it is parked, then the stray sessions (named
+# like a team worker whose task is closed or not in the ledger, never the load check's T0, whose
+# session the coordinator
 # waits on for up to 30 minutes), in task number order; then the coordinator-twin, activity,
 # level, retro-due and health findings. $own is the registered projects that are the team's own,
-# or null, as merge_due_finding takes it, $health the health view, as health_findings takes it, and $self the
-# sweep's own session id, as coordinator_twin_findings takes it.
+# or null, as merge_due_finding takes it, $health the health view, as health_findings takes it, and
+# $self the sweep's own session id, as coordinator_twin_findings takes it.
 def sweep($sessions; $plan; $activity; $own; $health; $self):
   . as $events
   | by_task as $tasks
@@ -1662,8 +1669,9 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON in
 # task number order ($states; {task, error} for a task whose state could not be told), the team's
 # resource level ($level, team-level status --json's object or {error}), the withdrawals of the
-# default merge word that stand ($withdrawn, default_withdrawals' list), the session list, each registered project's open PRs ($prs), the current items ($items) and the
-# production checks' last results ($production, team-uptime status --json's object or {error}). It
+# default merge word that stand ($withdrawn, default_withdrawals' list), the session list, each
+# registered project's open PRs ($prs), the current items ($items) and the production checks' last
+# results ($production, team-uptime status --json's object or {error}). It
 # carries $level as level, the open tasks stowed, waiting to resume, as awaiting_resume, the
 # resources_line as resources (null when $level is {error}), and $production as production.
 def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production):
@@ -1696,7 +1704,8 @@ def session_text:
 # ten open tasks fit one screen, but an open task's state, the resources line, the Production line
 # and a current item at 200, each being a whole thought (a task's progress and its PR part come
 # last on its line). After the resources line, one line per withdrawal of the default merge word
-# that stands. The Production line, after them, is team-uptime's status line, or "Production unreadable: <error>", and there is none when no project has a check.
+# that stands. The Production line, after them, is team-uptime's status line, or "Production
+# unreadable: <error>", and there is none when no project has a check.
 def snapshot_text:
   def section($title; $lines; $columns):
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
