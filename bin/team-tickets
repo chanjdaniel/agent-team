@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # List a task's tickets with each one's state, or check their Blocked by:, Waits for: and Phase: lines.
 #
-# Usage: team-tickets T<n> [--check] [--json] [--html <file> | --graph]
+# Usage: team-tickets T<n> [--check | --json | --html <file> | --graph]
 # The tickets are the files tickets/NN-<slug>.md in the task directory (the project's task_dir) of
 # each open worktree of the task, one set whose numbers are the task's: NN is the ticket's
 # two-digit number, which no two files share.
@@ -60,7 +60,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-tickets T<n> [--check] [--json] [--html <file> | --graph]"
+usage="usage: team-tickets T<n> [--check | --json | --html <file> | --graph]"
 task='' check='' json='' html='' html_set='' graph=''
 while (($#)); do
   case $1 in

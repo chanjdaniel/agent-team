@@ -377,7 +377,7 @@ No tickets in T172&#x27;s open worktrees."
 
 @test "--help documents --html and --graph, when to make the graph and how to attach it, and no longer says it never writes" {
   run_bin -0 team-tickets --help
-  assert_contains "$output" "Usage: team-tickets T<n> [--check] [--json] [--html <file> | --graph]"
+  assert_contains "$output" "Usage: team-tickets T<n> [--check | --json | --html <file> | --graph]"
   assert_contains "$output" "--html <file> writes the tickets as one self-contained HTML page"
   assert_contains "$output" "--graph writes that page as tickets.html and a PNG of it as tickets.png"
   assert_contains "$output" "The PNG is headless Chrome's screenshot of the page"

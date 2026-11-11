@@ -273,7 +273,7 @@ team-tickets: $tickets/05-fifth.md:3: a cycle of blockers: 05 -> 05"
 
 @test "--help prints the header with both line formats" {
   run_bin -0 team-tickets --help
-  assert_contains "$output" "Usage: team-tickets T<n> [--check] [--json]"
+  assert_contains "$output" "Usage: team-tickets T<n> [--check | --json"
   assert_contains "$output" "Blocked by: None"
   assert_contains "$output" "Waits for:"
 }
