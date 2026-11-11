@@ -720,7 +720,9 @@ lease_refusal() {
 # settings' AGENT_TEAM_ROLE names a role other than the coordinator; Daniel's own shell and the
 # heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
 # when the caller passes --interview, for the interview thread's post and wait. Worker settings
-# deny most of the same commands; this holds where a deny pattern misses a spelling:
+# deny most of the same commands by their bare name, and command-guard refuses team-ask,
+# team-answer, team-inbox, team-thread T<n> and team-run-approved by any path where a command
+# starts; this holds where both miss a spelling:
 # worker_refusal <task or ""> <does> [--interview]
 worker_refusal() {
   local role=${AGENT_TEAM_ROLE:-} own=${AGENT_TEAM_TASK:-}

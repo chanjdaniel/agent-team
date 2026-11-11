@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
 # hooks/command-guard: the PreToolUse hook on a worker's Bash that refuses an ops launch, the
-# frontend toolkit's capture script and a change of the session's role or task where a command
-# starts, in place of the deny rules that matched their names anywhere in a call's text, and a
-# curl or wget upload of a file or body to a host outside the team's own. Every command those
-# rules refused when run is still refused (a test per rule), and the reads, searches, diffs,
-# commits and file writes that only name them pass, the hook and the worker deny list both.
+# frontend toolkit's capture script, a change of the session's role or task, a lease steal and the
+# coordinator's commands where a command starts, in place of the deny rules that matched their
+# names anywhere in a call's text, and a curl or wget upload of a file or body to a host outside
+# the team's own. Every command those rules refused when run is still refused (a test per rule),
+# and the reads, searches, diffs, commits and file writes that only name them pass, the hook and
+# the worker deny list both.
 
 load helpers/common
 
@@ -18,6 +19,8 @@ SET="a worker's role and task are its settings' (an assignment of AGENT_TEAM_ROL
 UNSET="a worker's role and task are its settings' (an unset of AGENT_TEAM_ROLE or AGENT_TEAM_TASK)"
 UPLOAD="an upload to a host outside the team's own; a file's contents never go to an outside host"
 EMPTIED="a worker's role and task are its settings' (a team script run with its environment emptied, by env -i, env --ignore-environment, env - or exec -c)"
+STEAL="a lease steal is Daniel's word, through the coordinator (team-lease or team-resume with --steal)"
+COORDINATOR="the coordinator's commands (team-ask, team-answer, team-inbox, team-thread T<n> and team-run-approved)"
 
 # The hook on a Bash call of <command>, as Claude Code sends it: guard <status> <command>
 guard() {
@@ -50,8 +53,12 @@ passes() {
   assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$REPO_ROOT/settings/worker.json")" \
     "@TEAM_CODE@/bin/hooks/lease-fence
 @TEAM_CODE@/bin/hooks/command-guard"
-  assert_equal "$(jq -c '[.permissions.deny[] | select(test("team-worker|team-load-check|AGENT_TEAM_|ui-capture"))]' \
+  assert_equal "$(jq -c '[.permissions.deny[] | select(test("team-worker|team-load-check|AGENT_TEAM_|ui-capture|--steal|/bin/team-"))]' \
     "$REPO_ROOT/settings/worker.json")" '[]'
+  # The bare-name prefix rules stay, a second layer on the coordinator's commands.
+  assert_equal "$(jq -c '[.permissions.deny[] | select(test("team-(ask|answer|inbox|thread|run-approved)"))]' \
+    "$REPO_ROOT/settings/worker.json")" \
+    '["Bash(team-ask *)","Bash(team-answer *)","Bash(team-inbox)","Bash(team-inbox *)","Bash(team-thread T*)","Bash(team-run-approved *)"]'
 }
 
 # The commands below are reads, searches, diffs, commits and file writes of the kind the old deny
@@ -333,12 +340,48 @@ passes() {
   refuses "$UNSET" 'env -uAGENT_TEAM_TASK team-post T7 --file f' 'env -iuAGENT_TEAM_ROLE cmd'
 }
 
+# Rules Bash(*team-lease*--steal*) and Bash(*team-resume*--steal*).
+@test "team-lease or team-resume with --steal is refused where a command starts, by path, behind a wrapper or in a shell's string" {
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  refuses "$STEAL" 'team-lease --steal' 'team-lease take --steal' 'cd x && bin/team-resume --steal' \
+    '~/agent-team/bin/team-lease take --steal' "team-lease take '--steal'" '"team-resume" --steal' \
+    'nohup team-resume --steal &' 'timeout 60 team-lease take --steal' "bash -c 'team-resume --steal'" \
+    'team-lease --help --steal' $'git status\nteam-lease take --steal' 'source bin/team-lease take --steal'
+}
+
+# Rules Bash(*/bin/team-ask *), Bash(*/bin/team-answer *), Bash(*/bin/team-inbox),
+# Bash(*/bin/team-inbox *), Bash(*/bin/team-thread T*) and Bash(*/bin/team-run-approved *), and
+# the bare names their prefix rules deny too.
+@test "the coordinator's commands are refused where a command starts, by path, behind a wrapper or in a shell's string" {
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  refuses "$COORDINATOR" '~/agent-team/bin/team-ask T1 q --file f' 'bash bin/team-run-approved x' \
+    'team-thread T1 agent-team title' 'team-thread T1 --interview' 'env FOO=1 team-answer T1 x' 'team-inbox' \
+    "bash -c 'team-inbox --post'" 'bin/team-ask --help' 'team-ask --help' '/home/me/agent-team/bin/team-inbox' \
+    'cd x && team-answer T1 "yes"' "team-thread 'T12' x y" 'echo "$(team-inbox)"' \
+    'nohup ~/agent-team/bin/team-run-approved T1 &' $'bash <<\'EOF\'\nteam-ask T1 q --file f\nEOF' \
+    'source ~/agent-team/bin/team-ask T1 q --file f' '. bin/team-inbox'
+}
+
+@test "a read, search or file write naming a steal or the coordinator's commands, team-thread wait and team-lease with no --steal pass" {
+  passes "grep -rn 'team-lease.*--steal' bin/" 'team-resume --help' 'sed -n 1,40p bin/team-run-approved' \
+    'git grep -n team-ask' 'team-thread wait T1' 'team-thread wait T1 --after 123' 'team-lease take' 'team-lease status --json' \
+    "git log -S'team-run-approved' --oneline" 'git diff origin/dev -- bin/team-inbox bin/team-answer' \
+    'git commit -m "fix: team-ask refuses a worker"' "grep -rn 'team-thread T' tests/" 'wc -l bin/team-thread' \
+    'tests/vendor/bats-core/bin/bats tests/team-ask.bats -f "a worker"' "sed -n '/--steal/p' bin/team-lease" \
+    $'cat >>tests/team-inbox.bats <<\'EOF\'\n  run_bin -0 team-inbox\n  team-lease take --steal\nEOF'
+}
+
 @test "a command naming no guarded thing passes without Python, and a guarded one fails closed when Python fails" {
   printf '#!/bin/sh\nexit 3\n' >"$BATS_TEST_TMPDIR/stubs/python3"
   chmod +x "$BATS_TEST_TMPDIR/stubs/python3"
   guard -0 'git status && tests/run bats --changed'
   guard -0 'env -i ls' && guard -0 'env -i PATH="$PATH" HOME="$HOME" tests/run' && guard -0 'exec -c bash'
-  guard -0 'team-log T7 review' && guard -0 'env A=1 team-state T7'
+  guard -0 'team-log T7 review' && guard -0 'env A=1 team-state T7' && guard -0 'team-lease take'
+  local word
+  for word in --steal team-ask team-answer team-inbox team-thread team-run-approved; do
+    guard -2 "git grep -n -- $word"
+    [[ $stderr == "Blocked by command-guard: it could not read the command"* ]]
+  done
   guard -2 'env -i team-log T7 review'
   [[ $stderr == "Blocked by command-guard: it could not read the command"* ]]
   guard -2 'grep -rn AGENT_TEAM_ROLE bin/'

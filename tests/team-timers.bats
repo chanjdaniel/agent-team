@@ -7,6 +7,7 @@
 load helpers/common
 load helpers/docker
 load helpers/inbox
+load helpers/uptime
 
 # The live session list with only the coordinator in it, which the coordinator step looks for.
 COORDINATOR='[{"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
@@ -25,6 +26,7 @@ setup() {
   units=$HOME/.config/systemd/user agents=$HOME/Library/LaunchAgents
   log=$HOME/.local/state/agent-team/heartbeat.log
   failures=$HOME/.local/state/agent-team/heartbeat-failures.log
+  notices=$HOME/.local/state/agent-team/notices.json
   inbox_discord alerts
   inbox_guild_kept
 }
@@ -973,7 +975,7 @@ inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"
   run_bin -75 team-timers run
   run_bin -75 team-timers run
   assert_equal "$(inbox_calls)" ""
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "back checkpoint inbox"
   assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
@@ -984,6 +986,175 @@ inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"
   run_bin -0 team-timers run
   assert_contains "$output" "home-pc is fenced since "
   assert_equal "$(inbox_calls | wc -l)" 1
+}
+
+# Conventioner's API as a production check on the stub production, answering <status> with <body>,
+# the known-good site on the stub too, and curl as the fake Discord or the machine's own:
+# production <status> <body>
+production() {
+  uptime_curl
+  base=$(uptime_server)
+  export TEAM_UPTIME_SECONDS=1 TEAM_UPTIME_KNOWN_GOOD=$base/known-good
+  uptime_answer known-good 200 ''
+  uptime_check conventioner api "$base/api" '"status":"ok"'
+  uptime_answer api "$1" "$2"
+}
+
+# The production posts that reached the fake Discord, in order.
+production_posts() {
+  uptime_posts | grep '^Production' || true
+}
+
+# The uptime step's lines of <output>, each without its time.
+uptime_lines() {
+  sed -n 's/^[^ ]* uptime: //p' <<<"$1"
+}
+
+@test "the uptime step makes no fetch and logs nothing with no production check in the registry" {
+  uptime_curl
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(uptime_lines "$output")" ""
+  assert_equal "$(stub_calls curl | jq -r '.[-1]' | grep -v '^https://discord\.com/' || true)" ""
+  [[ ! -e $HOME/.local/state/agent-team/uptime.json ]]
+}
+
+@test "the uptime step posts one Production down on the second failing run, none on the third, and one Production back once it answers" {
+  production 503 'Service Unavailable'
+  local since at url
+  run_bin -0 team-timers run
+  since=$(jq -r '.checks["conventioner/api"].since' "$HOME/.local/state/agent-team/uptime.json")
+  at=$(date -d "$since" +%H:%M) url=$base/api
+  assert_equal "$(uptime_lines "$output")" "conventioner/api: failed: HTTP 503 (1 in a row, since $since)"
+  assert_equal "$(production_posts)" ""
+
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" "conventioner/api: failed: HTTP 503 (2 in a row, since $since)
+posted to #coordinator (message 1569000000000000001): down: conventioner/api"
+  assert_equal "$(production_posts)" "Production down: conventioner api (<$url>) since $at, 2 checks in a row from home-pc: HTTP 503."
+  # Production down is not a failure of the step.
+  jq -e '(.steps | has("uptime") | not) and .last_run.ended == "ok"' "$HOME/.local/state/agent-team/health.json"
+
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" "conventioner/api: failed: HTTP 503 (3 in a row, since $since)"
+  assert_equal "$(production_posts | wc -l)" 1
+
+  uptime_answer api 200 '{"status":"ok"}'
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" "posted to #coordinator (message 1569000000000000002): back: conventioner/api"
+  assert_equal "$(production_posts | wc -l)" 2
+  [[ $(production_posts | tail -n 1) =~ ^"Production back: conventioner api (<$url>) answers again at "[0-9]{2}:[0-9]{2}", down since $at (" ]]
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" ""
+  assert_equal "$(production_posts | wc -l)" 2
+}
+
+@test "with the known-good site unreachable the uptime step fails the run and counts nothing, posting no production post" {
+  production 503 'Service Unavailable'
+  export TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/
+  run_bin -1 team-timers run
+  run_bin -1 team-timers run
+  [[ $(uptime_lines "$output") =~ ^"cannot reach the internet: http://127.0.0.1:9/: "[^$'\n']+"; 1 failing check(s) not counted"$'\n'"failed: this machine cannot reach the internet (http://127.0.0.1:9/: "[^$'\n']+"), so 1 failing check(s) were not counted"$ ]]
+  # Both runs' failures, curl's reason aside, which may name how many ms its connect took.
+  assert_equal "$(problems | grep -c -xE '^uptime: failed: this machine cannot reach the internet \(http://127\.0\.0\.1:9/: .+\), so 1 failing check\(s\) were not counted$')" 2
+  assert_equal "$(production_posts)" ""
+  jq -e '.steps.uptime.runs == 2 and (.steps.uptime.reason | startswith("this machine cannot reach the internet (http://127.0.0.1:9/: "))' \
+    "$HOME/.local/state/agent-team/health.json"
+  jq -e '.checks["conventioner/api"] == null' "$HOME/.local/state/agent-team/uptime.json"
+}
+
+@test "two unreachable runs whose curl names another connect time each are both counted in the failures log" {
+  production 503 'Service Unavailable'
+  # The known-good fetch refused as curl 8 says it, after 0 ms and then after 1 ms.
+  { cat <<'EOF'
+if [[ ${*: -1} == http://127.0.0.1:9/ ]]; then
+  ms=$(cat "$STUB_FIXTURES/connect-ms" 2>/dev/null || echo 0)
+  echo $((ms + 1)) >"$STUB_FIXTURES/connect-ms"
+  printf 000
+  echo "curl: (7) Failed to connect to 127.0.0.1 port 9 after $ms ms: Couldn't connect to server" >&2
+  exit 7
+fi
+EOF
+    cat "$STUB_FIXTURES/curl.sh"; } >"$STUB_FIXTURES/curl.sh.new"
+  mv "$STUB_FIXTURES/curl.sh.new" "$STUB_FIXTURES/curl.sh"
+  TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/ run_bin -1 team-timers run
+  TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/ run_bin -1 team-timers run
+  local fixed='uptime: failed: this machine cannot reach the internet (http://127.0.0.1:9/: Failed to connect to 127.0.0.1 port 9 after'
+  assert_equal "$(problems | grep -F "$fixed")" "$fixed 0 ms: Couldn't connect to server), so 1 failing check(s) were not counted
+$fixed 1 ms: Couldn't connect to server), so 1 failing check(s) were not counted"
+  # So the second run's whole line is in the log once, and the line's fixed part twice.
+  assert_equal "$(problems | grep -c -xF "$(grep ' uptime: failed: ' <<<"$output" | cut -d' ' -f2-)")" 1
+  assert_equal "$(problems | grep -c -xE '^uptime: failed: this machine cannot reach the internet \(http://127\.0\.0\.1:9/: .+\), so 1 failing check\(s\) were not counted$')" 2
+}
+
+@test "the uptime step logs after the alert step's lines and before the inbox step's" {
+  production 503 'Service Unavailable'
+  # ledger: a line no reader can parse, alerted at once; inbox: the old Waiting on you message,
+  # retired.
+  echo 'not json' >>"$TEAM_HOME/ledger.jsonl"
+  inbox_kept
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint ledger alert uptime inbox"
+}
+
+@test "the uptime step never runs off the lease, offline or on a fenced machine, and runs after the back step" {
+  production 503 'Service Unavailable'
+  make_machine laptop
+  TEAM_HOME=$BATS_TEST_TMPDIR/machines/laptop/team uptime_check conventioner api "$base/api" '"status":"ok"'
+  on_machine laptop run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" ""
+
+  stub_sleep </dev/null
+  cut_origin
+  run_bin -75 team-timers run
+  run_bin -75 team-timers run
+  assert_equal "$(uptime_lines "$output")" ""
+  assert_equal "$(uptime_requests)" ""
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "back checkpoint uptime"
+  assert_equal "$(uptime_requests | jq -r .path | paste -sd ' ')" "/api /known-good"
+
+  steal_lease laptop home-pc
+  run_bin -0 team-timers run
+  assert_contains "$output" "fenced home-pc"
+  run_bin -0 team-timers run
+  assert_contains "$output" "home-pc is fenced since "
+  assert_equal "$(uptime_lines "$output")" ""
+  assert_equal "$(uptime_requests | wc -l)" 2
+}
+
+@test "TEAM_TIMERS_UPTIME_SECONDS replaces the uptime step's 180 s, after which it is stopped and fails the run" {
+  production 503 'Service Unavailable'
+  uptime_hang api
+  export TEAM_TIMERS_UPTIME_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 TEAM_UPTIME_SECONDS=30
+  local start=$SECONDS
+  run_bin -1 team-timers run
+  ((SECONDS - start < 20))
+  assert_equal "$(uptime_lines "$output")" "failed: timed out after 1 s"
+  assert_contains "$(problems)" "uptime: failed: timed out after 1 s"
+  grep -q '^UPTIME_TIMEOUT=${TEAM_TIMERS_UPTIME_SECONDS:-180}$' "$REPO_ROOT/bin/team-timers"
+}
+
+@test "at the registry's 10 checks, every one hanging, the uptime step's limit fits the fetches, the probe and the down post" {
+  # The defaults' ratio, read from the scripts: the step's seconds over a fetch's, with a fetch of 1 s.
+  local step fetch i
+  step=$(sed -n 's/^UPTIME_TIMEOUT=${TEAM_TIMERS_UPTIME_SECONDS:-\([0-9]*\)}$/\1/p' "$REPO_ROOT/bin/team-timers")
+  fetch=$(sed -n 's/^FETCH_SECONDS=${TEAM_UPTIME_SECONDS:-\([0-9]*\)}$/\1/p' "$REPO_ROOT/bin/team-uptime")
+  production 200 ''
+  uptime_hang api
+  for i in 1 2 3 4 5 6 7 8 9; do
+    uptime_check conventioner "check-$i" "$base/check-$i" '"status":"ok"'
+    uptime_hang "check-$i"
+  done
+  local limit=$((step / fetch))
+  TEAM_TIMERS_UPTIME_SECONDS=$limit TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
+  assert_equal "$(production_posts)" ""
+  TEAM_TIMERS_UPTIME_SECONDS=$limit TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output" | grep -c "^failed: timed out" || true)" 0
+  assert_equal "$(grep -c " uptime: posted to #coordinator (message [0-9]*): down: " <<<"$output")" 1
+  assert_equal "$(uptime_posts | grep -c '^Production down: conventioner .*: no answer in 1 s\.$')" 10
+  assert_equal "$(production_posts | wc -l)" 10
 }
 
 # One ledger line per line on stdin, in order: "launch <task> <role> <session> <worktree>" or
@@ -1187,7 +1358,7 @@ finished: stopped T9-builder 44444444: its work is handed on"
 
 # Origin unreachable for the team home: a closed local port.
 cut_origin() {
-  git -C "${1:-$TEAM_HOME}" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${1:-${TEAM_HOME:?}}" remote set-url origin https://127.0.0.1:9/agent-team.git
 }
 
 # git's reason for a cut origin, whose wording after "Failed to connect to 127.0.0.1" changes
@@ -1256,7 +1427,7 @@ teardown() {
 @test "a probe that fails once and then answers sets no flag, posts nothing and goes on to the lease" {
   age_lease 20
   stub_sleep <<EOF
-git -C "$TEAM_HOME" remote set-url origin "$origin"
+git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
 EOF
   cut_origin
   run_bin -0 team-timers run
@@ -1283,7 +1454,9 @@ EOF
   local flag=$HOME/.local/state/agent-team/offline since
   since=$(jq -r .since "$flag")
   (($(date -d "$since" +%s) >= before && $(date -d "$since" +%s) <= $(date -u +%s)))
-  jq -e '.posted == true' "$flag"
+  # The flag is the hold alone; that #coordinator was told is the offline notice's.
+  jq -e 'keys == ["since"]' "$flag"
+  jq -e --arg since "$since" '.notices.offline | .state == "posted" and .since == $since' "$notices"
   assert_contains "$(sed -n 2p <<<"$output")" " probe: GitHub unreachable since $since (unable to access 'https://127.0.0.1:9/agent-team.git/': Failed to connect"
   assert_contains "$(sed -n 2p <<<"$output")" "); the team is holding; #coordinator is told"
   assert_equal "$(posts)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team" '$t')"
@@ -1318,7 +1491,7 @@ EOF
   # Renewed 5 minutes ago, so no renewal would be due but for the outage.
   age_lease 5
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   [[ $(lease_tip) != "$tip" ]]
   lease_json | jq -e '.holder == "home-pc" and .epoch == 1 and (.renewed_at | fromdateiso8601) > now - 120'
@@ -1341,17 +1514,19 @@ EOF
   cut_origin
   run_bin -75 team-timers run
   assert_contains "$output" "the team is holding; the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it goes with the back message"
-  jq -e '.posted == false' "$HOME/.local/state/agent-team/offline"
+  jq -e '.notices.offline | .state == "open" and (.tried | type) == "string" and .posted == null' "$notices"
   local since
   since=$(jq -r .since "$HOME/.local/state/agent-team/offline")
 
   discord_answers
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   local back
   back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
   assert_equal "$(posts | sed -n 2p)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team
 GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  [[ ! -e $HOME/.local/state/agent-team/offline ]]
+  jq -e '.notices.offline == null' "$notices"
 }
 
 @test "with a session list that never answers, the back post is still made, saying the list could not be read" {
@@ -1371,7 +1546,7 @@ if [[ ! -e '$BATS_TEST_TMPDIR/hung' ]]; then
 fi
 echo '$COORDINATOR'
 SH
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   local start=$SECONDS
   TEAM_TIMERS_FINISHED_CALL_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
   ((SECONDS - start < 20))
@@ -1385,7 +1560,7 @@ SH
 @test "GitHub refusing the login (HTTP 403 or 401) is not offline: logged each run, posted once, no second try" {
   local tip
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 403)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
   stub_sleep </dev/null
   discord_answers
   run_bin -1 team-timers run
@@ -1396,7 +1571,7 @@ SH
   [[ $(posts | jq -r .) =~ $pattern ]]
 
   # A credential git cannot ask for (HTTP 401) is the same refusal, and is not posted again.
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 401)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 401)"
   run_bin -1 team-timers run
   [[ $output =~ ^[0-9T:Z-]+" probe: GitHub refuses home-pc's login (could not read Username for 'http://127.0.0.1:"[0-9]+"': terminal prompts disabled); not offline"$ ]]
   assert_equal "$(posts | wc -l)" 1
@@ -1404,15 +1579,100 @@ SH
   assert_equal "$(wc -l <"$failures")" 2
 
   # Answering again clears it, so a later refusal is posted again.
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_contains "$(sed -n 1p <<<"$output")" " probe: GitHub accepts home-pc's login again"
+  jq -e '.notices["login-refused"] == null' "$notices"
   [[ ! -e $HOME/.local/state/agent-team/login-refused ]]
   assert_equal "$(lease_tip)" "$tip"
 }
 
+@test "a login refusal whose post Discord refused is posted at the next refused run, once" {
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
+  stub_sleep </dev/null
+  discord_answers 503
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline; the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run" ]]
+  jq -e '.notices["login-refused"] | .state == "open" and (.tried | type) == "string"' "$notices"
+
+  discord_answers
+  : >"$STUB_CALLS/curl.log"
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline; #coordinator is told" ]]
+  assert_equal "$(posts | wc -l)" 1
+  [[ $(posts | jq -r .) == "GitHub refuses home-pc's login ("*"); the heartbeat cannot renew the lease until it is fixed there (team-doctor)" ]]
+  jq -e '.notices["login-refused"].state == "posted"' "$notices"
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline" ]]
+  assert_equal "$(posts | wc -l)" 1
+}
+
+@test "a login-refused file from before the notice record is moved without a second post while the refusal lasts, and closed silently when GitHub accepts the login" {
+  local file=$HOME/.local/state/agent-team/login-refused since
+  since=$(date -u +%FT%TZ)
+  mkdir -p "${file%/*}"
+  jq -n --arg since "$since" '{since: $since, reason: "The requested URL returned error: 403"}' >"$file"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
+  stub_sleep </dev/null
+  discord_answers
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline" ]]
+  assert_equal "$(posts)" ""
+  [[ ! -e $file ]]
+  jq -e --arg since "$since" '(.upgraded | index("login-refused") != null)
+    and (.notices["login-refused"] | .state == "posted" and .since == $since)' "$notices"
+  # The health view reads the refusal from the notice record, dated from the old file.
+  run_bin -1 team-timers health --json
+  jq -e --arg since "$since" '[.problems[] | select(.key == "login-refused") | .since] == [$since]' <<<"$output"
+
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  run_bin -0 team-timers run
+  assert_contains "$(sed -n 1p <<<"$output")" " probe: GitHub accepts home-pc's login again"
+  assert_equal "$(posts)" ""
+  jq -e '.notices["login-refused"] == null' "$notices"
+  [[ ! -e $file ]]
+}
+
+@test "an offline flag from before the notice record is moved by the back step: told, the back post has no outage line; not told, it carries it; the flag goes either way" {
+  local flag=$HOME/.local/state/agent-team/offline since back
+  since=$(date -u +%FT%TZ)
+  discord_answers
+  mkdir -p "${flag%/*}"
+  jq -n --arg since "$since" '{since: $since, posted: true}' >"$flag"
+  run_bin -0 team-timers run
+  [[ ! -e $flag ]]
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_equal "$(posts)" "$(jq -n --arg t "GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  jq -e '(.upgraded | index("offline") != null) and .notices.offline == null' "$notices"
+
+  # The same from a machine with no notice record yet, whose outage post failed.
+  rm "$notices"
+  : >"$STUB_CALLS/curl.log"
+  jq -n --arg since "$since" '{since: $since, posted: false}' >"$flag"
+  run_bin -0 team-timers run
+  [[ ! -e $flag ]]
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_equal "$(posts)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team
+GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  jq -e '.notices.offline == null' "$notices"
+}
+
+@test "an offline flag from before the notice record is rewritten as the hold alone, and a run still offline posts nothing" {
+  local flag=$HOME/.local/state/agent-team/offline since
+  since=$(date -u +%FT%TZ)
+  stub_sleep </dev/null
+  discord_answers
+  mkdir -p "${flag%/*}"
+  jq -n --arg since "$since" '{since: $since, posted: false}' >"$flag"
+  cut_origin
+  run_bin -75 team-timers run
+  assert_equal "$(posts)" ""
+  jq -e --arg since "$since" '. == {since: $since}' "$flag"
+  jq -e --arg since "$since" '.notices.offline | .state == "open" and .tried == $since' "$notices"
+}
+
 @test "GitHub answering 5xx is a network failure, tried again and then offline" {
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 503)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 503)"
   stub_sleep </dev/null
   discord_answers
   run_bin -75 team-timers run
@@ -1450,12 +1710,36 @@ EOF
   steal_lease laptop home-pc
   local tip
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   [[ $output =~ ^[0-9T:Z-]+" back: home-pc no longer holds the lease: laptop holds it (epoch 2); fenced home-pc: stopped coordinator (3169fcbd), T5-builder (81f08540); the heartbeat is disabled: agent-team-heartbeat.timer stopped and removed; team-lease take clears the fence"$ ]]
   [[ -e $HOME/.local/state/agent-team/fenced && ! -e $HOME/.local/state/agent-team/offline ]]
   assert_equal "$(posts | wc -l)" 1
   assert_equal "$(lease_tip)" "$tip"
+}
+
+@test "a machine the back step's renew fences posts nothing and leaves no offline notice" {
+  stub_sleep </dev/null
+  discord_answers
+  stub_script claude <<'SH'
+case $1 in
+  agents) echo '[{"id": "3169fcbd", "name": "coordinator"}]' ;;
+  stop) echo "Stopped $2" ;;
+  *) exit 127 ;;
+esac
+SH
+  run_bin -0 team-timers enable
+  cut_origin
+  run_bin -75 team-timers run
+  jq -e '.notices.offline.state == "posted"' "$notices"
+  make_machine laptop
+  steal_lease laptop home-pc
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  : >"$STUB_CALLS/curl.log"
+  run_bin -0 team-timers run
+  [[ -e $HOME/.local/state/agent-team/fenced && ! -e $HOME/.local/state/agent-team/offline ]]
+  assert_equal "$(posts)" ""
+  jq -e '.notices | has("offline") | not' "$notices"
 }
 
 @test "A holds, B steals: A's next run fences A, stops only its team sessions, disables the heartbeat and posts nothing" {
@@ -1607,7 +1891,9 @@ day_report() {
 
 @test "every step that logs on the holder logs in one run, in the heartbeat's order" {
   docker_machine
-  discord_answers
+  # uptime: a production check failing once.
+  production 503 'Service Unavailable'
+  uptime_curl answers
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
   # inbox: the old Waiting on you message, retired.
   inbox_kept
@@ -1635,7 +1921,7 @@ LINES
   add_loose 200
   run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease checkpoint coordinator inbox finished capacity level stacks pack janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint coordinator uptime inbox finished capacity level stacks pack janitor"
 }
 
 @test "the stacks and janitor steps are off without stack.json, without their keys and while they are false: no line, no call" {
@@ -1888,7 +2174,7 @@ EOF
   assert_equal "$(docker_calls)" ""
   assert_equal "$(readings)" ""
 
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "back checkpoint stacks janitor"
   assert_equal "$(readings | wc -l)" 1

@@ -395,6 +395,204 @@ TOML
   assert_contains "$stderr" "beta.local_checks: each command must be one line, not empty"
 }
 
+# The problem lines of a --check's stderr on stdin, each without its "team-project: <registry>: "
+# prefix and with the count line left out, so a test compares them whole: problems <<<"$stderr"
+problems() {
+  sed -n "s|^team-project: $TEAM_HOME/projects.toml: ||p" | grep -Ev '^[0-9]+ problems?$'
+}
+
+@test "uptime is optional, defaults to none, and reads back as the project's production checks" {
+  run_bin -0 team-project alpha uptime
+  assert_equal "$(jq -c . <<<"$output")" '[]'
+  run_bin -0 team-project alpha
+  assert_equal "$(jq -c .uptime <<<"$output")" '[]'
+
+  # Conventioner's two checks, as the coordinator adds them, and the tests' stub server on each
+  # loopback name; an expect of 200 characters is the longest that fits.
+  local long
+  long=$(printf 'x%.0s' {1..200})
+  cat >>"$TEAM_HOME/projects.toml" <<TOML
+
+[[alpha.uptime]]
+name = "api"
+url = "https://api.conventioner.io/healthz"
+expect = '"status":"ok"'
+
+[[alpha.uptime]]
+name = "front-end"
+url = "https://conventioner.io/markets"
+expect = '<div id="app">'
+
+[[beta.uptime]]
+name = "stub-1"
+url = "http://127.0.0.1:43210/x"
+expect = "ok"
+
+[[beta.uptime]]
+name = "stub-2"
+url = "http://localhost:43210/x"
+expect = "ok"
+
+[[beta.uptime]]
+name = "api"
+url = "http://[::1]:43210/x"
+expect = "$long"
+TOML
+  run_bin -0 team-project --check
+  run_bin -0 team-project alpha uptime
+  assert_equal "$(jq -c . <<<"$output")" \
+    '[{"name":"api","url":"https://api.conventioner.io/healthz","expect":"\"status\":\"ok\""},{"name":"front-end","url":"https://conventioner.io/markets","expect":"<div id=\"app\">"}]'
+  run_bin -0 team-project beta
+  assert_equal "$(jq -r '.uptime | map(.name) | join(" ")' <<<"$output")" "stub-1 stub-2 api"
+  # A list of tables holds no string, so --find finds nothing in it.
+  run_bin -0 team-project --find uptime api
+  assert_equal "$output" ""
+}
+
+@test "--check refuses a malformed uptime check with a line naming the project, the check and the rule" {
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+
+[[alpha.uptime]]
+name = "api"
+url = "https://a.example.com/"
+expect = "ok"
+method = "HEAD"
+
+[[alpha.uptime]]
+name = "web"
+url = "https://b.example.com/"
+
+[[alpha.uptime]]
+name = 1
+url = "https://c.example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "Api_1"
+url = "https://d.example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "api"
+url = "https://e.example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "plain"
+url = "http://example.com/x"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "ftp"
+url = "ftp://example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "secret"
+url = "https://user:pw@example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "spaced"
+url = "https://example.com/a b"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "empty"
+url = "https://example.com/"
+expect = ""
+TOML
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$(problems <<<"$stderr")" "alpha.uptime[0]: unknown key 'method'
+alpha.uptime[1]: missing required key 'expect'
+alpha.uptime[2].name: must be a string
+alpha.uptime[3].name: 'Api_1' is lowercase letters, digits and dashes
+alpha.uptime[4].name: 'api' is listed twice
+alpha.uptime[5].url: 'http://example.com/x' must be https://, or http:// to this machine's loopback
+alpha.uptime[6].url: 'ftp://example.com/' must be https://, or http:// to this machine's loopback
+alpha.uptime[7].url: must carry no user name or password
+alpha.uptime[8].url: must be one line with no spaces
+alpha.uptime[9].expect: must be one line, 1 to 200 characters"
+
+  # A long or multi-line expect, a user name alone, an https URL with no host, a control
+  # character, and a non-string url and expect.
+  local long
+  long=$(printf 'x%.0s' {1..201})
+  cat >"$TEAM_HOME/extra.toml" <<TOML
+
+[[beta.uptime]]
+name = "long"
+url = "https://example.com/"
+expect = "$long"
+
+[[beta.uptime]]
+name = "lines"
+url = "https://example.com/"
+expect = "a\nb"
+
+[[beta.uptime]]
+name = "user"
+url = "https://user@example.com/"
+expect = "ok"
+
+[[beta.uptime]]
+name = "nohost"
+url = "https:///healthz"
+expect = "ok"
+
+[[beta.uptime]]
+name = "tab"
+url = "https://example.com/\t"
+expect = "ok"
+
+[[beta.uptime]]
+name = "types"
+url = ["https://example.com/"]
+expect = 200
+TOML
+  sed -i '/^\[\[alpha.uptime\]\]$/,$d' "$TEAM_HOME/projects.toml"
+  cat "$TEAM_HOME/extra.toml" >>"$TEAM_HOME/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$(problems <<<"$stderr")" "beta.uptime[0].expect: must be one line, 1 to 200 characters
+beta.uptime[1].expect: must be one line, 1 to 200 characters
+beta.uptime[2].url: must carry no user name or password
+beta.uptime[3].url: 'https:///healthz' must be https://, or http:// to this machine's loopback
+beta.uptime[4].url: must be one line with no spaces
+beta.uptime[5].url: must be a string
+beta.uptime[5].expect: must be a string"
+}
+
+@test "--check refuses an uptime that is not a list of tables" {
+  sed -i 's|^toolkits = \[\]$|toolkits = []\nuptime = "https://example.com/"|' "$TEAM_HOME/projects.toml"
+  sed -i '0,/^uptime = .*$/s||uptime = [1, { name = "api", url = "https://example.com/", expect = "ok" }]|' "$TEAM_HOME/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$(problems <<<"$stderr")" "alpha.uptime: must be a list of tables
+beta.uptime: must be a list of tables"
+}
+
+@test "--check refuses more than 10 uptime checks across the registry, the heartbeat step's limit" {
+  local n project
+  for n in $(seq 1 11); do
+    project=alpha
+    ((n > 6)) && project=beta
+    cat >>"$TEAM_HOME/projects.toml" <<TOML
+
+[[$project.uptime]]
+name = "check-$n"
+url = "https://example.com/$n"
+expect = "ok"
+TOML
+  done
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$(problems <<<"$stderr")" "uptime: 11 checks in all; at most 10 fit the heartbeat's uptime step"
+  # Ten fit: the last check's five lines go.
+  head -n -5 "$TEAM_HOME/projects.toml" >"$TEAM_HOME/ten.toml"
+  mv "$TEAM_HOME/ten.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project beta uptime
+  assert_equal "$(jq length <<<"$output")" 4
+}
+
 @test "models is optional, defaults to none, and maps a worker role to a model alias" {
   run_bin -0 team-project alpha models
   assert_equal "$(jq -c . <<<"$output")" '{}'

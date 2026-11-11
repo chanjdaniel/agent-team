@@ -475,10 +475,16 @@ if deriving instruction_files; then
     die "cannot list the instruction files $shown changes in $(tilde "$wt")${why_not:+ ($(head -n 1 <<<"$why_not"))}"
   fi
   # NUL-separated, so no path's bytes are read as a separator: a status, then its path, or a
-  # rename's or copy's old path and new one.
-  fields=()
-  mapfile -d '' -t fields < <("${diff[@]}" -z "$range")
-  wait "$!" || die "cannot list the instruction files $shown changes in $(tilde "$wt"): git diff failed"
+  # rename's or copy's old path and new one. Read from a file, not a process substitution, whose
+  # status a wait on it may miss once bash has reaped it under load ("pid ... is not a child of
+  # this shell").
+  fields=() listing=$(mktemp)
+  if ! "${diff[@]}" -z "$range" >"$listing"; then
+    rm -f "$listing"
+    die "cannot list the instruction files $shown changes in $(tilde "$wt"): git diff failed"
+  fi
+  mapfile -d '' -t fields <"$listing"
+  rm -f "$listing"
   instruction='(^|/)(claude\.md|claude\.local\.md|agents\.md)$|(^|/)\.claude/'
   unsafe='[[:cntrl:]`]'
   # A path as a code span: as written, or as a JSON string when a backtick or a control character
