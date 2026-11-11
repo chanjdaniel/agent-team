@@ -154,11 +154,12 @@ section() {
   launch T20 planner 3ed2d1f2
   sessions "$(session 59709d99 T12-builder idle blocked)"
   run_bin -0 team-snapshot
+  # T12's builder launch put it in building (the lifecycle's launch rule).
   local tasks
   tasks=$(section "Open tasks")
   assert_equal "$tasks" "Open tasks (3):
   T3 proj feature planning | no live worker
-  T12 proj feature planning | T12-builder idle blocked
+  T12 proj feature building | T12-builder idle blocked
   T20 planning | no live worker"
   run_bin -0 team-state T12
   assert_contains "$tasks" "  $output"
@@ -565,8 +566,9 @@ $line"
   launch T5 builder 59709d99
   event T5 waiting '{on: "Daniel", reason: "restart the Docker daemons"}'
   run_bin -0 team-snapshot
+  # Its builder's launch put the feature task in building (the lifecycle's launch rule).
   assert_equal "$(section "Open tasks")" "Open tasks (1):
-  T5 proj feature planning | no live worker | waiting on Daniel: restart the Docker daemons"
+  T5 proj feature building | no live worker | waiting on Daniel: restart the Docker daemons"
 }
 
 @test "a task with a worktree not re-homed says so until the worktree is made" {

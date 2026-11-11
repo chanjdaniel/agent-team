@@ -25,6 +25,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time or standing merge back to Daniel, read by `team-merge`.
     - `health.jq`: the health module, the one place that says what unhealthy means: the fold of each heartbeat run into the health record, the ledger's one-pass scan, every health threshold, and the view `team-timers health` prints, its problems and its line in markup and plain text.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
+    - `lifecycle.json`: the task lifecycle's table, its statuses, phases, start states, what each kind may follow and does, the park causes and what ends each, and the `lifecycle_from` cutover, which `ledger.jq` imports.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
     - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names on an opencode gate.
     - `outbound.py`: whether a Bash command's `curl` or `wget` sends a request body or a file to a literal host outside the team's own local ones, directly or through a proxy, read by `command_text.py`'s `simple_commands`, for `bin/hooks/command-guard`.

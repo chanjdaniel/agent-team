@@ -251,7 +251,7 @@ TABLE
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\); pushed at once  \(.*withdr.*\)$' <<<"$output"
   grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
   grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
-  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\|standing\); pushed at once  \(approval: .*\)$' <<<"$output"
+  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\|standing\), phases_left \(list of whole numbers\); pushed at once  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\); pushed at once  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  walk +team-ui +state \(on\|off\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"

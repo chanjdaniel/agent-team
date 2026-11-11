@@ -2,6 +2,8 @@
 # and reading state from them. Used through ledger_jq in team.sh. Each *_problems def yields one
 # string per problem found.
 
+import "lifecycle" as $lifecycle;
+
 # A jq type, or a field type of the contract, as a noun: "a list", "a number", "null".
 def noun:
   {array: "a list", numbers: "a list of whole numbers", object: "an object", boolean: "a boolean", number: "a number",
@@ -323,44 +325,189 @@ def pr_heads($url):
 # $head may be sent.
 def head_logged($url; $head): first(pr_heads($url)[] | select(same_head(.head; $head))) // null;
 
+# Whether this event, logged after the ask $ask (an asked event), settles it: the answered or the
+# merge-preapproved with its id, or a merge-approved whose url (a trailing slash aside) the ask's
+# text names, not followed by a digit, since the coordinator logs a merge answer as merge-approved
+# alone as often as not.
+def settles($ask):
+  (.event == "answered" and .id == $ask.id)
+  or (.event == "merge-preapproved" and .ask == $ask.id)
+  or (.event == "merge-approved" and (.url | type) == "string" and (.url | test("^https?://"))
+    and ((.url | rtrimstr("/")) as $url | ($ask.text // "" | tostring) as $text
+      | any($text | indices($url)[]; $text[. + ($url | length):] | test("^[0-9]") | not)));
+
+# The lifecycle: one fold of a task's events into its state, read by every def that asks where
+# the task stands. The table is bin/lib/lifecycle.json, imported as data: which kinds a task takes
+# in each status and phase, and the effect each kind has here.
+
+# The lifecycle table, lifecycle.json.
+def lifecycle_table: $lifecycle::lifecycle[0];
+
+# The statuses the table names: a task's status, and closed-own-retro, a closed retro taking its own
+# retro-change.
+def lifecycle_statuses: ["unknown", "legacy", "open", "closed", "closed-own-retro"];
+
+# The effects lifecycle_step implements, each named by a kind of the table.
+def lifecycle_effects:
+  ["open", "close", "approve", "launch", "build", "done", "pr", "review", "rewrite", "merge", "ask",
+   "settle", "park", "resume", "stowed"];
+
+# The state before a task's first event. The state's fields, which later readers add to rather
+# than fold again:
+#   status  unknown (no event), legacy (events but no opened), open, closed.
+#   path    the opened's path, null before it.
+#   phase   the work phase, one of the table's phases: planning before an opened, then the table's
+#           start for its path (planning for a path it lacks), moved by lifecycle_step's effects.
+#   since   the ts of the event that set the phase.
+#   prs     the task's PRs, one per repo, in the order of their latest pr events, as {url, repo,
+#           head, number, merged, verdict}: a later pr in the repo replaces its PR (keeping merged
+#           for the same url), a history-rewritten moves heads (from its old_head, or every PR's
+#           when no PR has that head); merged by a merged event naming it (merged_names); verdict
+#           the latest review's on its current head, or null, whenever that review was logged (a
+#           fix's head is reviewed before a pr event logs it).
+#   reviews each review's head and verdict, in the order logged, for a PR's verdict when its head
+#           moves.
+#   parks   the standing parks (held, blocked, waiting, paused) in the order logged, as {id, kind,
+#           cause, on, reason, role, session, since, ts, i, passed}: id <kind>-<n>, n the park's
+#           ordinal among the task's events of its kind; cause, on, reason, role and session its
+#           fields, or null; since its since field or its ts; i its index among the task's events;
+#           passed false. A launch ends every standing blocked, waiting and paused, never a held; a
+#           resumed with none of id, all and brief ends every park, and any other ends none (one
+#           with only brief is a merge-base round's holder brief).
+#   asks    the asks no later event settles (settles), as {id, text, ts, i, passed}, passed false.
+#   stow    null, or {state: "stowed", cause, roles, since, i} from the latest stowed with no
+#           launch after it.
+#   counts  each park kind's events so far, for the next park's id.
+#   seen    the events folded so far, the next event's index.
+def lifecycle_start:
+  {status: "unknown", path: null, phase: "planning", since: null, prs: [], reviews: [], parks: [],
+   asks: [], stow: null, counts: {}, seen: 0};
+
+# Whether the merged event $e names the PR (the input, one of the state's or task_prs' PRs) among
+# $prs: by its URL when the event names one; a legacy event names only the number, and then, when
+# another of $prs has the same number in another repo, its head must be the PR's.
+def merged_names($e; $prs):
+  . as $pr
+  | $e.event == "merged"
+    and if $e.url != null then $e.url == $pr.url
+      else $pr.number != null and ($e.pr | tostring) == ($pr.number | tostring)
+        and (([$prs[] | select(.number == $pr.number)] | length) == 1 or same_head($e.head; $pr.head)) end;
+
+# The state with its work phase moved to $phase at $ts; since stays when the phase does not move.
+def lifecycle_move($phase; $ts): if .phase == $phase then . else .phase = $phase | .since = $ts end;
+
+# The verdict of the state's latest review of $head, or null.
+def lifecycle_verdict($head): first(.reviews | reverse[] | select(same_head(.head; $head)) | .verdict) // null;
+
+# The state's PRs not merged.
+def lifecycle_open_prs: [.prs[] | select(.merged | not)];
+
+# The review phase at $ts: awaiting-merge when the task has an open PR and every open PR's verdict
+# is pass, else in-review; applied only while the phase is one of $from.
+def lifecycle_review_phase($ts; $from):
+  if IN(.phase; $from[]) then
+    lifecycle_open_prs as $open
+    | lifecycle_move(if $open != [] and all($open[]; .verdict == "pass") then "awaiting-merge" else "in-review" end; $ts)
+  else . end;
+def lifecycle_review_phase($ts): lifecycle_review_phase($ts; ["building", "in-review", "awaiting-merge"]);
+
+# The state after the event $e: its status (legacy once it has an event), then the effect the
+# table gives its kind: open (an opened of an unknown or legacy task: open, its path, the start
+# phase), close, approve (planning to building), launch (a builder's moves planning, merged-part
+# or merged to building; every launch ends the parks a launch ends, and the stow), build (a
+# ticket-done: the same moves), done (a builder's whose report starts review-ready or merged moves
+# building to in-review), pr, review and rewrite (the PRs, then the review phase: a pr's from any
+# phase, a review's or a rewrite's from building, in-review or awaiting-merge, a rewrite's only
+# when the task has a PR, since no review is under way without one), merge (its PR
+# merged; with none open, merged-part when it names a non-empty phases_left, else merged; else the
+# review phase), ask, settle, park, resume and stowed (as the state's fields say).
+def lifecycle_step($e):
+  (lifecycle_table.kinds[$e.event // ""].effect // null) as $effect
+  | .seen as $i
+  | .seen += 1
+  | if .status == "unknown" then .status = "legacy" else . end
+  | if $effect == "open" then
+      if IN(.status; "unknown", "legacy") then
+        .status = "open" | .path = $e.path
+        | lifecycle_move(lifecycle_table.start[$e.path // ""] // "planning"; $e.ts) | .since = $e.ts
+      else . end
+    elif $effect == "close" then .status = "closed"
+    elif $effect == "approve" then
+      if .phase == "planning" then lifecycle_move("building"; $e.ts) else . end
+    elif $effect == "launch" then
+      (if $e.role == "builder" and IN(.phase; "planning", "merged-part", "merged") then lifecycle_move("building"; $e.ts) else . end)
+      | .parks |= map(select(.kind == "held"))
+      | .stow = null
+    elif $effect == "build" then
+      if IN(.phase; "planning", "merged-part", "merged") then lifecycle_move("building"; $e.ts) else . end
+    elif $effect == "done" then
+      if $e.role == "builder" and .phase == "building" and ($e.report // "" | tostring | test("^(review-ready|merged) "))
+      then lifecycle_move("in-review"; $e.ts) else . end
+    elif $effect == "pr" then
+      (first($e.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // $e.url) as $repo
+      | (.prs | map(select(.repo == $repo)) | first) as $old
+      | .prs = (.prs | map(select(.repo != $repo)))
+        + [{url: $e.url, repo: $repo, head: $e.head,
+            number: (first($e.url | strings | capture("/pull/(?<n>[0-9]+)/?$") | .n | tonumber) // null),
+            merged: ($old != null and $old.url == $e.url and $old.merged), verdict: lifecycle_verdict($e.head)}]
+      | lifecycle_review_phase($e.ts; lifecycle_table.phases)
+    elif $effect == "review" then
+      .reviews += [{head: $e.head, verdict: $e.verdict}]
+      | .prs |= map(if same_head(.head; $e.head) then .verdict = $e.verdict else . end)
+      | lifecycle_review_phase($e.ts)
+    elif $effect == "rewrite" then
+      any(.prs[]; same_head($e.old_head; .head)) as $named
+      | . as $state
+      | .prs |= map(if ($named | not) or same_head($e.old_head; .head) then .head = $e.head | .verdict = ($state | lifecycle_verdict($e.head)) else . end)
+      | if .prs == [] then . else lifecycle_review_phase($e.ts) end
+    elif $effect == "merge" then
+      .prs as $prs
+      | .prs |= map(if merged_names($e; $prs) then .merged = true else . end)
+      | if lifecycle_open_prs == [] then
+          lifecycle_move(if ($e.phases_left | type) == "array" and $e.phases_left != [] then "merged-part" else "merged" end; $e.ts)
+        else lifecycle_review_phase($e.ts) end
+    elif $effect == "ask" then
+      .asks += [{id: $e.id, text: $e.text, ts: $e.ts, i: $i, passed: false}]
+    elif $effect == "settle" then
+      .asks |= map(. as $ask | select($e | settles($ask) | not))
+    elif $effect == "park" then
+      .counts[$e.event] = ((.counts[$e.event] // 0) + 1)
+      | .parks += [{id: "\($e.event)-\(.counts[$e.event])", kind: $e.event, cause: ($e.cause // null),
+          on: ($e.on // null), reason: ($e.reason // null), role: ($e.role // null),
+          session: ($e.session // null), since: ($e.since // $e.ts), ts: $e.ts, i: $i, passed: false}]
+    elif $effect == "resume" then
+      if $e.id == null and $e.all == null and $e.brief == null then .parks = [] else . end
+    elif $effect == "stowed" then
+      .stow = {state: "stowed", cause: ($e.cause // null), roles: ($e.roles // []), since: $e.ts, i: $i}
+    else . end;
+
+# The task's state: its events, in ledger order, folded from lifecycle_start.
+def lifecycle: reduce .[] as $e (lifecycle_start; lifecycle_step($e));
+
 # The task's status: open (opened by team-open, not closed), closed, legacy (from before
 # team-open: events but no opened, not closed) or unknown (no events).
-def task_status:
-  if length == 0 then "unknown"
-  elif any(.[]; .event == "closed") then "closed"
-  elif any(.[]; .event == "opened") then "open"
-  else "legacy" end;
+def task_status: lifecycle.status;
 
-# The task's PRs, one per repo, as {url, number, head}, in the order of their latest pr events. A
-# task has one branch per repo, so a later pr event in the same repo is that branch's new PR and
-# replaces the earlier one. A PR's head is its pr event's, moved by each later history-rewritten
-# whose old_head is that head; one whose old_head is no PR's head (fixes pushed with no pr event
-# since, or a legacy one with no old_head) moves every PR's head.
-def task_prs:
-  reduce .[] as $e ([];
-    if $e.event == "pr" then
-      (first($e.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // $e.url) as $repo
-      | map(select(.repo != $repo))
-        + [{url: $e.url, repo: $repo, head: $e.head,
-            number: (first($e.url | strings | capture("/pull/(?<n>[0-9]+)/?$") | .n | tonumber) // null)}]
-    elif $e.event == "history-rewritten" then
-      any(.[]; same_head($e.old_head; .head)) as $named
-      | map(if ($named | not) or same_head($e.old_head; .head) then .head = $e.head else . end)
-    else . end)
-  | map(del(.repo));
+# The task's PRs, one per repo, as {url, head, number}, in the order of their latest pr events
+# (the fold's prs).
+def task_prs: lifecycle.prs | map({url, head, number});
 
 # The head the ledger knows for the PR at $url, from task_prs.
 def pr_head($url): task_prs | map(select(.url == $url)) | last | .head;
 
-# Whether a PR of task_prs (the input) has a merged event among $events: by its URL when the
-# event names one; a legacy event names only the number, and then, when another of the task's
-# PRs ($prs) has the same number in another repo, its head must be the PR's.
-def pr_merged($events; $prs):
-  . as $pr
-  | any($events[]; .event == "merged"
-      and if .url != null then .url == $pr.url
-        else $pr.number != null and (.pr | tostring) == ($pr.number | tostring)
-          and (([$prs[] | select(.number == $pr.number)] | length) == 1 or same_head(.head; $pr.head)) end);
+# Whether a PR of task_prs (the input) has a merged event among $events naming it (merged_names
+# among $prs, the task's PRs).
+def pr_merged($events; $prs): . as $pr | any($events[]; . as $e | $pr | merged_names($e; $prs));
+
+# The task's phase: closed when it is closed, else held while a held stands, else blocked while
+# a blocked stands, wherever either was logged, else the fold's work phase (planning, building,
+# in-review, awaiting-merge, merged-part or merged).
+def phase:
+  lifecycle
+  | if .status == "closed" then "closed"
+    elif any(.parks[]; .kind == "held") then "held"
+    elif any(.parks[]; .kind == "blocked") then "blocked"
+    else .phase end;
 
 # Whether the latest event of $kind stands: none of the kinds $clears after it.
 def standing($kind; $clears):
@@ -399,27 +546,6 @@ def rehome_failures:
 
 # The index of the task's latest event of $kind, or -1 when it has none.
 def latest_index($kind): [to_entries[] | select(.value.event == $kind) | .key] | last // -1;
-
-# The task's phase, first match wins. Merged needs every PR of task_prs merged, and no held or
-# blocked standing that was logged after the latest merged (a later part of the task still to
-# come); awaiting-merge needs each PR not merged yet to have, as the latest review of its head, a
-# pass.
-def phase:
-  . as $events
-  | task_prs as $prs
-  | [$prs[] | select(pr_merged($events; $prs) | not)] as $open
-  | latest_index("merged") as $merged
-  | ((standing("held") and latest_index("held") > $merged)
-     or (standing_until_launch("blocked") and latest_index("blocked") > $merged)) as $parked_since_merge
-  | if any(.[]; .event == "closed") then "closed"
-    elif $merged >= 0 and $open == [] and ($parked_since_merge | not) then "merged"
-    elif standing("held") then "held"
-    elif standing_until_launch("blocked") then "blocked"
-    elif $open != [] and all($open[]; . as $pr
-      | ($events | map(select(.event == "review" and same_head(.head; $pr.head))) | last | .verdict) == "pass") then "awaiting-merge"
-    elif any(.[]; .event == "pr") then "in-review"
-    elif any(.[]; .event == "plan-approved") then "building"
-    else "planning" end;
 
 # The index of the task's latest stowed, or -1 when it has none.
 def latest_stowed: latest_index("stowed");
@@ -601,17 +727,6 @@ def progress($workers):
 # The full session ids of the task's launches the session list has.
 def live_session_ids($sessions):
   [.[] | select(.event == "launch") | live_session(.session; $sessions) | .sessionId // empty | strings] | unique;
-
-# Whether this event, logged after the ask $ask (an asked event), settles it: the answered or the
-# merge-preapproved with its id, or a merge-approved whose url (a trailing slash aside) the ask's
-# text names, not followed by a digit, since the coordinator logs a merge answer as merge-approved
-# alone as often as not.
-def settles($ask):
-  (.event == "answered" and .id == $ask.id)
-  or (.event == "merge-preapproved" and .ask == $ask.id)
-  or (.event == "merge-approved" and (.url | type) == "string" and (.url | test("^https?://"))
-    and ((.url | rtrimstr("/")) as $url | ($ask.text // "" | tostring) as $text
-      | any($text | indices($url)[]; $text[. + ($url | length):] | test("^[0-9]") | not)));
 
 # The latest asked of id $id among the task's events, or null: the ask a merge-preapproved of
 # that id answers.
