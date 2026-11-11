@@ -325,7 +325,7 @@ EOF
     done < <(templates)
   done
   # The delivery partial follows the project's delivery.
-  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-builder-fix.md")" 'Run `/no-mistakes` with an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, this phase'"'"'s part of it alone), under a Disclosure section put in its terms'
+  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-builder-fix.md")" 'Give it an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, this phase'"'"'s part of it alone), under a Disclosure section put in its terms'
   assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-builder-deliver.md")" \
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
   # The PR body and the gate's intent open with what the PR changes, never the task's id and goal.
