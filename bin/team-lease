@@ -29,7 +29,8 @@
 #            its age. With --steal it prints the holder, epoch and last renewal on the
 #            controlling terminal, reads the holder's name typed there, and takes the lease with
 #            epoch + 1 and stolen_from; no terminal, no steal. Only Daniel's own terminal
-#            steals: deny rules stop the team's sessions typing one. Clears this machine's fence.
+#            steals: the coordinator's deny rules and the workers' command-guard stop the team's
+#            sessions typing one. Clears this machine's fence.
 #   renew    The holder only: a new renewed_at. On a machine that lost the lease it fences
 #            this machine instead, and exits 1: writes fenced (since, the holder seen and its
 #            epoch), stops every live session named coordinator or T<n>-<role> (claude agents

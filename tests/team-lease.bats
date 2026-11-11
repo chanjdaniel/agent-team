@@ -415,12 +415,18 @@ stop aaaaaaaa"
   assert_contains "$stderr" "team-lease: this machine has no team name"
 }
 
-@test "the coordinator and workers are denied typing a steal or a push to the lease ref" {
+# The coordinator's settings deny a steal; a worker's command-guard refuses one where a command
+# starts, so its settings deny none.
+@test "the coordinator is denied typing a steal and a worker's command-guard refuses one, and both are denied a push to the lease ref" {
   local file command
+  for command in "team-lease take --steal" "$REPO_ROOT/bin/team-lease take --steal" \
+    "TEAM_LEASE_TTY=/tmp/x team-lease take --steal" "cd ~/agent-team && bin/team-lease take --steal"; do
+    denied_in "$REPO_ROOT/coordinator.settings.json" "$command" || { echo "coordinator.settings.json allows: $command" >&2; return 1; }
+    run_bin -2 --separate-stderr hooks/command-guard <<<"$(jq -cn --arg c "$command" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    assert_contains "$stderr" "Blocked by command-guard: a lease steal is Daniel's word, through the coordinator"
+  done
   for file in "$REPO_ROOT/coordinator.settings.json" "$REPO_ROOT/settings/worker.json"; do
-    for command in "team-lease take --steal" "$REPO_ROOT/bin/team-lease take --steal" \
-      "TEAM_LEASE_TTY=/tmp/x team-lease take --steal" "cd ~/agent-team && bin/team-lease take --steal" \
-      "git push origin lease" "git push -u origin lease" "git push origin HEAD:lease" \
+    for command in "git push origin lease" "git push -u origin lease" "git push origin HEAD:lease" \
       "git push origin abc123:refs/heads/lease" "git push origin :lease" "git push origin --delete lease" \
       "git push origin lease --force-with-lease"; do
       denied_in "$file" "$command" || { echo "${file##*/} allows: $command" >&2; return 1; }

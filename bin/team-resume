@@ -75,8 +75,9 @@
 #                   the resume skill deletes the day's reports.
 #  11. coordinator  claude-coordinator, with a first prompt naming the report and the resume skill;
 #                   then "Pin the coordinator in `claude agents` (Ctrl+T)."
-# Only Daniel steals: --steal needs this terminal, and deny rules stop the team's sessions typing
-# it. In ~/.local/state/agent-team/: resume.lock, one resume at a time.
+# Only Daniel steals: --steal needs this terminal, and the coordinator's deny rules and the
+# workers' command-guard stop the team's sessions typing it. In ~/.local/state/agent-team/:
+# resume.lock, one resume at a time.
 # TEAM_DOCTOR names the doctor to run instead of this checkout's team-doctor, and
 # TEAM_RESUME_POLL_SECONDS the seconds between --wait's reads (the tests' seams).
 # Exit 0 done, 1 refused or a step failed (a worktree that could not be re-homed included, after
