@@ -170,6 +170,7 @@ The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object 
 | `disk_floor_gb` | 30 | the GB left free on Docker's file system |
 | `wait_minutes` | 15 | how long `up` waits for room; 0 does not wait |
 | `idle_minutes` | 30 | how long a team stack may go without a busy session before the sweep stops it |
+| `gate_idle_minutes` | 30 | how long the stored readings must show a running gate stack with no process in use before the sweep removes it |
 | `heartbeat_sweep` | false | whether the heartbeat runs the sweep |
 | `heartbeat_janitor` | false | whether the heartbeat runs the janitor |
 
@@ -181,8 +182,20 @@ On macOS, Docker runs in Docker Desktop's VM, whose disk image lives on the file
 
 ## Stopping idle stacks
 
-`team-stack sweep` stops the team stacks nobody is using, so a crashed or finished worker's stack does not hold memory for hours.
+`team-stack sweep` removes the gate stacks no gate run is using and stops the team stacks nobody is using, so a finished gate run's stack, or a crashed or finished worker's, does not hold memory for hours.
 The heartbeat runs it once Daniel turns `heartbeat_sweep` on ("The heartbeat's steps"); anyone may run it by hand.
+
+First, whether or not a team stack runs and before it reads the session list, it removes each idle gate stack:
+
+- It looks only at running gate stacks: every container of the Compose project of class gate, one running.
+- It judges one by the stored readings of the machine (`~/.local/state/agent-team/capacity/readings.jsonl`, which the heartbeat's capacity step writes each run, right before its level and stacks steps), each of which says whether a process works in each running gate stack (`in_use`, "Readings" in `sops/resources.md`).
+  A missing or unreadable file is no readings.
+- A gate stack is idle since the earliest reading of the unbroken run of latest readings that each hold it with `in_use` false, so a reading that lacks it (Docker did not answer, the stack was stopped) or shows it in use restarts the count, and one the newest reading shows in use is never removed.
+- When no reading is from the last 10 minutes, it removes nothing and says nothing, so a heartbeat that has not read the machine for a while never acts on old evidence.
+- Idle for at least `gate_idle_minutes` ("Admission" has the settings), it is removed as the reaper removes a gate stack (`docker compose -p <project> down -v --remove-orphans`, then its anonymous volumes, no logs), and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-11-11T10:00:00Z removed gate stack nmtest-1895520: no process in use in it since 2026-11-11T09:30:00Z (gate_idle_minutes 30), its test data removed`.
+- The daily reap's gate rule ("Removing what is left behind") still removes the gate stacks the readings never saw idle: a machine whose sweep is off, a stopped gate stack.
+
+Then it stops each idle team stack:
 
 - It looks only at running team stacks: every container of the Compose project of class team, so gate and unowned stacks, and a project whose containers mix them with team ones, are never stopped; only containers count, so a team project holding an unowned volume is stopped, which keeps every object.
 - A stack is busy while a live session (`claude agents --json`, interactive sessions included) with `status` `busy` has its `cwd` in the stack's `worktree` label or below it: the `cwd` or one of its parents names the same directory as the label, however either is spelled (a symlink, or another case on a case-insensitive filesystem), so a sibling path sharing the prefix (`shop-1-2` for `shop-1`) is not inside it.
@@ -190,7 +203,8 @@ The heartbeat runs it once Daniel turns `heartbeat_sweep` on ("The heartbeat's s
 - A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable record is never seen busy.
 - Idle for more than `idle_minutes` ("Admission" has the settings), it is stopped with `docker compose -p <project> stop`, its data kept, and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-10-25T10:00:00Z stopped conventioner-2 of T7 in /home/daniel/.treehouse/Conventioner-d4c77a/2/Conventioner: last busy at 2026-10-25T09:20:00Z (idle_minutes 30), its data kept`.
   `~/agent-team/bin/team-stack up` starts it again with its data, without seeding unless its seed is owed.
-- Docker not answering means no stack runs: it says so on stderr and exits 0, so the heartbeat logs nothing for it; a session list that cannot be read exits 1 and stops nothing; a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
+- Docker not answering means no stack runs: it says so on stderr and exits 0, so the heartbeat logs nothing for it; a session list that cannot be read exits 1 and stops nothing; a gate stack's removal or a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
+- Unowned stacks are never touched.
 - `down` removes the stack's record with the stack.
 - Instances (`--instance`) are team stacks labelled with their worktree, so they are swept the same way.
 
@@ -308,7 +322,7 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 - The bats tests never reach the machine's Docker: `tests/helpers/docker.bash` installs a stub `docker` that answers from fixtures recorded on this machine (`tests/fixtures/docker/`) and logs every call.
 - The stub also models the fixture project's stack (`tests/fixtures/stack/`), so `up`, `env`, `seed`, `stop` and `down` are tested through the wrapper contract rather than Conventioner.
 - The stub also stands in for the machine's memory and disk: `TEAM_MEMINFO` names a file read in place of `/proc/meminfo`, a stub `df` answers from the test's numbers, and `TEAM_STACK_RECHECK_SECONDS` shortens the 30 seconds between admission checks.
-- The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree.
+- The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree, and write the stored readings its gate rule reads.
 - The reaper's tests age the stub's objects with `docker_created` and refuse one removal with `docker_refuse`, and every test of `tests/team-stack.bats` and `tests/team-janitor.bats` fails when a Docker call it made pruned.
 - The janitor's tests add `oom` events with `docker_event`, set the free disk through the stub `df`, and stub Discord's answers to its posts (the sandbox's `curl` stub).
 - `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last room in the budget (a stored reading leaving room for one), has the sweep stop an idle stack that `up` then brings back with its data, runs the worktree's stack and two instances at once on ports of their own, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.

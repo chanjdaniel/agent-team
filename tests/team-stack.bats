@@ -996,7 +996,7 @@ free"
   assert_equal "$stderr" "team-stack: $file is not one JSON object"
   stack_settings '{"stack_cap": "6", "wait_minutes": -1, "heartbeat_sweep": "yes", "stack_caps": 4}'
   run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: $file: stack_cap must be a whole number of 1 or more, not \"6\"; wait_minutes must be a number of 0 or more, not -1; heartbeat_sweep must be true or false, not \"yes\"; stack_caps is not a setting (they are: stack_cap, memory_floor_gib, disk_floor_gb, wait_minutes, idle_minutes, heartbeat_sweep, heartbeat_janitor)"
+  assert_equal "$stderr" "team-stack: $file: stack_cap must be a whole number of 1 or more, not \"6\"; wait_minutes must be a number of 0 or more, not -1; heartbeat_sweep must be true or false, not \"yes\"; stack_caps is not a setting (they are: stack_cap, memory_floor_gib, disk_floor_gb, wait_minutes, idle_minutes, gate_idle_minutes, heartbeat_sweep, heartbeat_janitor)"
   stack_settings '{"stack_cap": 2.5}'
   run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
   assert_equal "$stderr" "team-stack: $file: stack_cap must be a whole number of 1 or more, not 2.5"
@@ -1259,16 +1259,18 @@ records.lock"
   assert_equal "$(stopped)" conventioner-2
 }
 
-@test "sweep never stops a gate or unowned stack, a gate run from a task's shell included, however long idle" {
+@test "sweep never stops an unowned stack, nor a gate stack no reading judges idle, a gate run from a task's shell included, however long idle" {
   sessions
+  rm "$HOME/.local/state/agent-team/capacity/readings.jsonl"
   # The gate run labelled from a shell with team-stack env's exports: owner agent-team, kind gate.
   docker_state containers '(.[] | select(.Name == "/nmtest-1895520-frontend-1") | .Config.Labels)
     |= . + {"io.github.chanjdaniel.team.owner": "agent-team", "io.github.chanjdaniel.team.task": "T7"}'
   started nmtest-1895520 86400
   started conventioner-3 86400
   run_bin -0 team-stack sweep
-  # Only the idle team stack.
+  # Only the idle team stack, and no gate stack removed.
   assert_equal "$(stopped)" conventioner-2
+  assert_equal "$(docker_calls | grep -E '^compose -p [^ ]+ (down|rm)' || true)" ""
   [[ ! -e $HOME/.local/state/agent-team/stacks/nmtest-1895520.json ]]
   [[ ! -e $HOME/.local/state/agent-team/stacks/conventioner-3.json ]]
   # A team project holding any object of another class is not the team's to stop either.
@@ -1358,6 +1360,156 @@ team-stack: docker compose stop of conventioner-3 failed: Error response from da
   run_bin -1 --separate-stderr team-stack sweep
   assert_equal "$stderr" "team-stack: $HOME/.config/agent-team/stack.json: idle_minutes must be a number of 0 or more, not \"30\""
   assert_equal "$(docker_calls)" ""
+}
+
+# Idle gate stacks: the sweep removes a running gate stack the stored readings have shown with no
+# process in use for gate_idle_minutes, by the reaper's gate removal.
+
+# The machine's stored readings, written anew: one per <minutes ago>:<state>, the fixture's running
+# gate stack nmtest-1895520 in it idle (in_use false), busy (in_use true) or absent:
+# gate_readings <minutes>:<idle|busy|absent>...
+gate_readings() {
+  local dir=$HOME/.local/state/agent-team/capacity entry
+  mkdir -p "$dir"
+  : >"$dir/readings.jsonl"
+  for entry in "$@"; do
+    jq -cn --argjson ago "${entry%%:*}" --arg state "${entry#*:}" --arg wt "$HOME/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner" '
+      (32 * 1073741824) as $total
+      | {at: (now - $ago * 60 | floor | todate), os: "linux", docker: true,
+         memory: {total: $total, available: (16 * 1073741824), team: 0, others: (12 * 1073741824)}, cpu: null,
+         systemd: true, sessions: true, tasks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0},
+         stacks: (if $state == "absent" then [] else
+           [{name: "nmtest-1895520", class: "gate", task: null, project: null, worktree: $wt, kind: "gate",
+             memory: 315621376, cpu: 0.0012, limits: 536870912, in_use: ($state == "busy")}] end)}' >>"$dir/readings.jsonl"
+  done
+}
+
+# The at of the stored reading taken <minutes> ago, as gate_readings wrote it.
+reading_at() {
+  jq -r --argjson ago "$1" 'select(((now - (.at | fromdate)) / 60 | round) == $ago) | .at' \
+    "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+}
+
+# The gate stacks the sweep took down, one per line.
+gate_downs() {
+  docker_calls | sed -n 's/^compose -p \(nmtest-[^ ]*\) down -v --remove-orphans$/\1/p'
+}
+
+@test "sweep removes a running gate stack idle in every reading of the last gate_idle_minutes, without its logs, and logs the line" {
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  gate_readings 35:idle 30:idle 25:idle 20:idle 15:idle 10:idle 5:idle 0:idle
+  local since
+  since=$(reading_at 35)
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  [[ $output =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\ removed\ gate\ stack\ nmtest-1895520:\ no\ process\ in\ use\ in\ it\ since\ $since\ \(gate_idle_minutes\ 30\),\ its\ test\ data\ removed$ ]]
+  assert_equal "$(cat "$HOME/.local/state/agent-team/stacks/sweep.log")" "$output"
+  assert_equal "$(gate_downs)" nmtest-1895520
+  # Its volumes gone, its logs never read or saved, and the busy team stack kept.
+  assert_equal "$(jq -r '.[] | select(.Name | startswith("nmtest-1895520")) | .Name' "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/containers.json")" ""
+  assert_equal "$(docker_calls | grep -E '^compose -p nmtest-1895520 logs' || true)" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/logs ]]
+  assert_equal "$(stopped)" ""
+  # A second sweep finds no gate stack running, and adds no line.
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(wc -l <"$HOME/.local/state/agent-team/stacks/sweep.log")" 1
+}
+
+@test "sweep keeps a gate stack idle for less than gate_idle_minutes, one the newest reading shows in use, and any on readings over 10 minutes old" {
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  gate_readings 20:idle 15:idle 10:idle 5:idle 0:idle
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  # In use in the newest reading, however long idle before.
+  gate_readings 120:idle 90:idle 60:idle 35:idle 30:idle 5:idle 0:busy
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  # Idle 35 minutes, but the newest reading is 11 minutes old.
+  gate_readings 46:idle 40:idle 35:idle 30:idle 25:idle 20:idle 15:idle 11:idle
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output$stderr" ""
+  assert_equal "$(gate_downs)" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/sweep.log ]]
+  # Just inside 10 minutes, the same run removes it.
+  gate_readings 45:idle 40:idle 35:idle 30:idle 25:idle 20:idle 15:idle 9:idle
+  run_bin -0 team-stack sweep
+  assert_equal "$(gate_downs)" nmtest-1895520
+}
+
+@test "sweep counts a gate stack's idleness only from the reading after the last that lacked it or saw it in use, by gate_idle_minutes from stack.json" {
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  gate_readings 40:idle 35:idle 30:idle 25:absent 20:idle 15:idle 10:idle 5:idle 0:idle
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  gate_readings 40:idle 35:idle 30:idle 25:busy 20:idle 15:idle 10:idle 5:idle 0:idle
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(gate_downs)" ""
+  stack_settings '{"gate_idle_minutes": 15}'
+  local since
+  since=$(reading_at 20)
+  run_bin -0 team-stack sweep
+  [[ $output == *" removed gate stack nmtest-1895520: no process in use in it since $since (gate_idle_minutes 15), its test data removed" ]]
+  assert_equal "$(gate_downs)" nmtest-1895520
+}
+
+@test "sweep's gate rule runs with no team stack running and reads no session list; with no readings it removes nothing and says nothing" {
+  docker_state containers 'map(select(.Config.Labels["com.docker.compose.project"] != "conventioner-2"))'
+  rm "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output$stderr" ""
+  assert_equal "$(gate_downs)" ""
+  # An unreadable file is no readings too.
+  gate_readings 35:idle 30:idle 25:idle 20:idle 15:idle 10:idle 5:idle 0:idle
+  chmod 000 "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  run_bin -0 --separate-stderr team-stack sweep
+  chmod 644 "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  assert_equal "$output$stderr" ""
+  assert_equal "$(gate_downs)" ""
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  [[ $output == *" removed gate stack nmtest-1895520: "* ]]
+  assert_equal "$(gate_downs)" nmtest-1895520
+  assert_equal "$(stub_calls claude)" ""
+}
+
+@test "sweep never removes an unowned stack the readings show idle, nor a gate stack that is not running" {
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  gate_readings 35:idle 30:idle 25:idle 20:idle 15:idle 10:idle 5:idle 0:idle
+  # The readings name an unowned stack as a gate one; Docker says it is not the gate's.
+  sed -i 's/nmtest-1895520/conventioner-3/' "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  # The gate stack stopped since the newest reading.
+  gate_readings 35:idle 30:idle 25:idle 20:idle 15:idle 10:idle 5:idle 0:idle
+  docker_state containers '(.[] | select(.Config.Labels["com.docker.compose.project"] == "nmtest-1895520") | .State) |= . + {Running: false, Status: "exited"}'
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(docker_calls | grep -E '^compose -p [^ ]+ (down|rm)' || true)" ""
+}
+
+@test "a gate stack's removal that fails is named on stderr, the other stacks are still swept, and the sweep exits 1" {
+  sessions
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '31 minutes ago' +%FT%TZ)\"}"
+  gate_readings 35:idle 30:idle 25:idle 20:idle 15:idle 10:idle 5:idle 0:idle
+  docker_fail 'compose down' 'Error response from daemon: cannot remove container: permission denied'
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: could not remove gate stack nmtest-1895520: docker compose down of nmtest-1895520 failed: Error response from daemon: cannot remove container: permission denied"
+  [[ $output == *" stopped conventioner-2 of T7 in $STACK_WORKTREE: "* ]]
+  [[ $output != *"removed gate stack"* ]]
+  assert_equal "$(stopped)" conventioner-2
+  assert_equal "$(cat "$HOME/.local/state/agent-team/stacks/sweep.log")" "$output"
+}
+
+@test "sweep reads gate_idle_minutes through the checked settings" {
+  stack_settings '{"gate_idle_minutes": -1}'
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: $HOME/.config/agent-team/stack.json: gate_idle_minutes must be a number of 0 or more, not -1"
+  assert_equal "$(docker_calls)" ""
+  stack_settings '{"gate_idle_minutes": "30"}'
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: $HOME/.config/agent-team/stack.json: gate_idle_minutes must be a number of 0 or more, not \"30\""
 }
 
 @test "down removes the sweep's state file of the stack" {

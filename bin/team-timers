@@ -218,7 +218,8 @@
 #                     stop.
 #              stacks On the holder, after the level step, when heartbeat_sweep is true in
 #                     ~/.config/agent-team/stack.json (team-stack's settings, off by default):
-#                     team-stack sweep, which stops the team's idle stacks.
+#                     team-stack sweep, which removes each gate stack the stored readings have
+#                     shown idle for gate_idle_minutes (30) and stops the team's idle stacks.
 #              pack   On the holder, after the stacks step, once the team home has PACK_LOOSE (200,
 #                     bin/lib/team.sh) loose objects: git gc in it, then one line, "packed 213
 #                     loose objects; 0 left loose, 38.40 MiB in packs". So the team home stays

@@ -114,21 +114,33 @@
 #           label names the worktree, another spelling of it included (team-close's down
 #           therefore takes them too).
 #
-# sweep     Stops each running team stack (every container of its Compose project of class team)
-#           whose worktree has had no busy session for idle_minutes. A live session (claude agents
-#           --json, interactive ones included) with status busy whose cwd is the stack's worktree
-#           label or below it, another spelling of it included, makes it busy: the time is
-#           written to its record as last_busy, the rest kept. Otherwise it is idle since the
+# sweep     Removes each running gate stack (every container of its Compose project of class gate,
+#           one running) whose stored readings (~/.local/state/agent-team/capacity/readings.jsonl,
+#           team-capacity's) have shown no process in use in it (in_use false) since at least
+#           gate_idle_minutes ago, counted from the earliest reading of the unbroken run of latest
+#           readings that each hold it so, by the reaper's gate removal (down -v --remove-orphans,
+#           without logs), and prints one line and adds it to
+#           ~/.local/state/agent-team/stacks/sweep.log: "<time> removed gate stack <project>: no
+#           process in use in it since <time> (gate_idle_minutes <n>), its test data removed". A
+#           reading that lacks the stack or shows it in use breaks the run; with no reading of the
+#           last 10 minutes (a missing or unreadable file included) it removes none. This runs
+#           whether or not a team stack runs, before the session list is read.
+#           Then it stops each running team stack (every container of its Compose project of class
+#           team) whose worktree has had no busy session for idle_minutes. A live session (claude
+#           agents --json, interactive ones included) with status busy whose cwd is the stack's
+#           worktree label or below it, another spelling of it included, makes it busy: the time
+#           is written to its record as last_busy, the rest kept. Otherwise it is idle since the
 #           later of that last_busy (a missing or unreadable record has none) and its running
 #           containers' latest start; idle more than idle_minutes, it is stopped with
 #           docker compose -p <project> stop, its data kept, and one line is printed and added to
-#           ~/.local/state/agent-team/stacks/sweep.log ("<time> stopped <project> of <task> in
-#           <worktree>: last busy at <time> (idle_minutes <n>), its data kept", or "not seen busy
-#           since its start at <time>"). Gate and unowned stacks are never stopped. Docker not
-#           answering means no stack runs: it says so on stderr, exit 0, so the heartbeat logs
-#           nothing for it (stdout is only what was stopped). The session list is read only when a
-#           team stack runs; one that cannot be read is exit 1, nothing stopped. A stop that fails
-#           is named on stderr, the others still swept, exit 1.
+#           the sweep's log ("<time> stopped <project> of <task> in <worktree>: last busy at
+#           <time> (idle_minutes <n>), its data kept", or "not seen busy since its start at
+#           <time>"). Gate stacks are only removed as above, and unowned stacks
+#           never touched. Docker not answering means no stack runs: it says so on stderr, exit 0,
+#           so the heartbeat logs nothing for it (stdout is only what was removed or stopped). The
+#           session list is read only when a team stack runs; one that cannot be read is exit 1,
+#           nothing stopped. A removal or stop that fails is named on stderr, the others still
+#           swept, exit 1.
 #
 # reap      Removes what is left behind, by these rules in this order, and nothing else (it never
 #           prunes: every removal names its object):
@@ -193,8 +205,9 @@
 # when it matches a legacy_images pattern, else unowned.
 #
 # The machine's settings, ~/.config/agent-team/stack.json, a JSON object whose keys are all
-# optional: disk_floor_gb (30), wait_minutes (15), idle_minutes (30), each a number of 0 or more,
-# heartbeat_sweep and heartbeat_janitor (true or false, default false, read by team-timers run);
+# optional: disk_floor_gb (30), wait_minutes (15), idle_minutes (30) and gate_idle_minutes (30, the
+# sweep's for a gate stack), each a number of 0 or more; heartbeat_sweep and heartbeat_janitor
+# (true or false, default false, read by team-timers run);
 # stack_cap (a whole number of 1 or more) and memory_floor_gib (a number of 0 or more) are still
 # accepted and no longer read, since the level's budget admits a stack (team-doctor warns of them).
 # up, sweep and the heartbeat refuse a file that is not one JSON object, a key of the wrong type
@@ -985,12 +998,14 @@ cmd_up() {
   echo "${0##*/}: $STACK_NAME is up for $TASK, $note"
 }
 
-# Stop each running team stack whose worktree has had no busy session for idle_minutes, its last
-# busy time kept in its state file, since the session list has none.
+# Remove each running gate stack the stored readings have shown idle for gate_idle_minutes, then
+# stop each running team stack whose worktree has had no busy session for idle_minutes, its last
+# busy time kept in its record, since the session list has none.
 cmd_sweep() {
   (($# == 0)) || usage_error "usage: team-stack sweep"
   stack_settings
   local -a ids
+  local failed=''
   if ! docker compose ls --format json >/dev/null 2>"$DOCKER_ERR"; then
     echo "${0##*/}: Docker does not answer ($(last_reason "$DOCKER_ERR" "docker compose ls failed")), so no stack runs and there is nothing to sweep" >&2
     return 0
@@ -999,6 +1014,8 @@ cmd_sweep() {
   mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
   docker_inspect container "$WORK/containers.json" "${ids[@]}"
   stack_blocks >"$WORK/stacks.json" || exit 1
+  mkdir -p "$STATE/stacks"
+  sweep_gates || failed=1
 
   # The running team stacks, one compact {project, task, worktrees, started} per line: every
   # container of the project of class team, one running, started its running containers' latest start.
@@ -1011,7 +1028,10 @@ cmd_sweep() {
        worktrees: ([.[] | team_label(.Config.Labels; "worktree") // empty] | unique),
        started: ([.[] | select(.State.Running) | .State.StartedAt | utc_time | fromdate] | max)}' \
     --slurpfile stacks "$WORK/stacks.json" --arg gate_root "$GATE_WORKTREES" "$WORK/containers.json" >"$WORK/running.jsonl"
-  [[ -s $WORK/running.jsonl ]] || return 0
+  if [[ ! -s $WORK/running.jsonl ]]; then
+    [[ -z $failed ]]
+    return
+  fi
 
   # The working directories of the busy sessions, interactive ones included, each made absolute
   # and normal, so sweep_busy can walk up its parents.
@@ -1022,9 +1042,8 @@ cmd_sweep() {
     busy+=("$(realpath -m -- "$cwd")")
   done < <(jq -r '.[] | select(.status == "busy") | .cwd // empty | select(. != "")' <<<"$LIVE_SESSIONS")
 
-  local stack project worktree file now last line failed=''
+  local stack project worktree file now last line
   local -a worktrees
-  mkdir -p "$STATE/stacks"
   while IFS= read -r stack; do
     project=$(jq -r .project <<<"$stack")
     mapfile -t worktrees < <(jq -r '.worktrees[]' <<<"$stack")
@@ -1055,6 +1074,48 @@ cmd_sweep() {
     printf '%s\n' "$line" >>"$STATE/stacks/sweep.log"
     printf '%s\n' "$line"
   done <"$WORK/running.jsonl"
+  [[ -z $failed ]]
+}
+
+# The sweep's gate rule: each gate stack running now in Docker (every container of its Compose
+# project of class gate, one running) that the stored readings (gate_stacks_idle in
+# bin/lib/capacity.jq) show idle since at least gate_idle_minutes ago is removed by the reaper's
+# gate removal (reap_one), its line printed and added to the sweep's log. Missing or unreadable
+# readings are none. Returns 1 when a removal failed, each named on stderr.
+sweep_gates() {
+  local readings=$STATE/capacity/readings.jsonl gate line rc reason failed=''
+  jq -Rs -L "$TEAM_LIB" 'include "capacity"; include "stack";
+    split("\n") | stored_readings | gate_stacks_idle(.readings; now)' "$readings" >"$WORK/gates-idle.json" 2>/dev/null ||
+    echo '[]' >"$WORK/gates-idle.json"
+  # One compact {line, action} per gate stack to remove, the action as reap_plan gives one.
+  jq -c -L "$TEAM_LIB" 'include "stack";
+    $stacks[0] as $stacks | gate_worktree_projects(.; $gate_root) as $gated
+    | [map(. + {project: compose_project(.Config.Labels)} | select(.project != null))
+      | group_by(.project)[]
+      | select(all(.[]; owner_class(.Config.Labels; .project; $stacks; $gated) == "gate") and any(.[]; .State.Running))
+      | .[0].project] as $running
+    | (now | floor) as $now
+    | $idle[0][] | select(.name | IN($running[]))
+    | select($now - (.since | fromdateiso8601) >= $minutes * 60)
+    | {line: "\($now | todate) removed gate stack \(.name): no process in use in it since \(.since)"
+         + " (gate_idle_minutes \($minutes)), its test data removed",
+       action: {rule: "gate stack", type: "stack", name, ref: .name, class: "gate", tasks: [], worktrees: []}}' \
+    --slurpfile stacks "$WORK/stacks.json" --slurpfile idle "$WORK/gates-idle.json" --arg gate_root "$GATE_WORKTREES" \
+    --argjson minutes "$(setting gate_idle_minutes)" "$WORK/containers.json" >"$WORK/gates.jsonl"
+  while IFS= read -r gate; do
+    rc=0
+    (reap_one "$(jq -c .action <<<"$gate")" >/dev/null) 2>"$WORK/reap.err" || rc=$?
+    if ((rc == 0)); then
+      grep . "$WORK/reap.err" >&2 || true
+      line=$(jq -r .line <<<"$gate")
+      printf '%s\n' "$line" >>"$STATE/stacks/sweep.log"
+      printf '%s\n' "$line"
+    elif ((rc != 3)); then
+      reason=$(last_reason "$WORK/reap.err" "no reason given")
+      echo "${0##*/}: could not remove gate stack $(jq -r .action.name <<<"$gate"): ${reason#"${0##*/}: "}" >&2
+      failed=1
+    fi
+  done <"$WORK/gates.jsonl"
   [[ -z $failed ]]
 }
 
