@@ -244,11 +244,12 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
 6. When the gate's run ends `passed`, repeat step 1; if it merged anything, push, noting each file that conflicted.
    The gate runs again only for a commit of yours that changes behaviour, such as the fix to a red check, and never for a merge of the base, however its conflicts were resolved (clean, in docs alone or in code), or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI.
+   Then read the PR's title and body, which the gate drafted from your intent, with `gh pr view <full url> --json title,body`, as Daniel will on GitHub and the review will: a title that is a Conventional Commit; a body that opens with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number, true to the change at the head the run pushed, with no internal name a reader cannot follow and no value but a fixture's, and under a Disclosure section in its terms; fix each that falls short on the PR with `gh pr edit <full url> --title <title>` or `gh pr edit <full url> --body-file <file>` before you send `PR`: an edit of the PR is no commit, so it runs no gate.
 7. Start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait --no-agent-review <full url> <the full sha the gate or step 6 pushed>`, run with Bash `run_in_background`, then send `T12 PR <full url>` to `coordinator` at once, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged, so the review reads while CI runs, and keep the wait going.
    `--no-agent-review` leaves out the reviewer's `agent-review` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round.
    Act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push the fix as step 8 says, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
    The gate leaves Playwright to CI, so a red `e2e` check is a failed check like any other.
-8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new `PR`: the review in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
+8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, and read the PR's title and body again as step 6 says, else push it yourself; then start step 7's wait on the head pushed, but send no new `PR`: the review in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
 9. Once the wait on the head you last pushed ends with exit 0, the delivery is done: send nothing more, since a review's findings come back to you from the coordinator as a fix round.
 
 At each gate run's end (it pushed, went red, or was aborted), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, a run whose gate outcome is `passed` reported as `outcome=pushed`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR, and `approved=<ids>` when you approved a park of it yourself, as step 4 says.
@@ -689,7 +690,7 @@ EOF
   [[ $(grep -c 'PR <full url>` to `coordinator`' "$output") -eq 1 ]]
   # A failed check's fix is the builder's, pushed with no new report.
   # It re-gates only a fix that changes behaviour, as step 6 says: a docs-only fix is pushed as it is.
-  grep -qF "8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new \`PR\`" "$output"
+  grep -qF "8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, and read the PR's title and body again as step 6 says, else push it yourself; then start step 7's wait on the head pushed, but send no new \`PR\`" "$output"
   # No line has the builder wait for checks-passed, stop a green run or report stopped-green.
   [[ $(grep -c 'checks-passed' "$output") -eq 1 ]]
   assert_contains "$brief" 'never wait for `checks-passed`, and never abort a run to end it.'
@@ -708,6 +709,26 @@ EOF
   # No role, procedure or other template names a step the delivery dropped.
   if git -C "$REPO_ROOT" grep -nE 'stopped-green|returns checks-passed|stop the gate run|CI included' \
     -- roles sops templates plugins; then return 1; fi
+}
+
+@test "a gated builder reads and fixes the PR title and body the gate drafted before it sends PR; a direct-PR one writes its own" {
+  open_t12
+  run_bin -0 team-brief T12 builder-deliver --set "goal=the goal"
+  local brief check pr
+  brief=$(<"$output")
+  # Once the run ends passed, the builder reads what the gate drafted against the rules its intent
+  # was given by and the review reads it by, and fixes it on the PR, which runs no gate.
+  check=$(grep -n -F "   Then read the PR's title and body, which the gate drafted from your intent, with \`gh pr view <full url> --json title,body\`" "$output" | cut -d: -f1)
+  pr=$(grep -n 'send `T12 PR <full url>`' "$output" | cut -d: -f1)
+  [[ -n $check && $check -lt $pr ]] || { cat "$output" >&2; return 1; }
+  assert_contains "$brief" "a title that is a Conventional Commit; a body that opens with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number, true to the change at the head the run pushed, with no internal name a reader cannot follow and no value but a fixture's, and under a Disclosure section in its terms"
+  assert_contains "$brief" "fix each that falls short on the PR with \`gh pr edit <full url> --title <title>\` or \`gh pr edit <full url> --body-file <file>\` before you send \`PR\`: an edit of the PR is no commit, so it runs no gate."
+  # A re-gated fix's run may draft them again, so they are read again.
+  assert_contains "$brief" "run the gate on it as step 4 says, whose push and pr steps update the PR, and read the PR's title and body again as step 6 says, else push it yourself"
+  # A direct-PR builder writes the body itself, so its delivery has no such read.
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
+  refute_grep -e 'gh pr view' -e 'the gate drafted' -e 'gate' "$output"
 }
 
 @test "a gated project's re-review of its PR starts the wait on its checks before it reads, as a direct-PR one does" {
