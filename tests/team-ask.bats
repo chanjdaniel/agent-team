@@ -193,7 +193,7 @@ https://discord.com/api/v10/channels/1562486564871995482/messages"
   assert_equal "$(posted)" '"<@757> T7 has a question for you in <#2222>: Which of the two sign-in limits stays?"'
   [[ $(tail -n 1 <<<"$posts") != *'"-F"'* ]]
   assert_equal "$(logged | jq -c 'select(.event != "image-posted")')" '{"task":"T7","event":"asked","id":"plan","text":"Which of the two sign-in limits stays?","discord_message":"1564000000000000001"}
-{"task":"T7","event":"waiting","on":"Daniel","reason":"ask plan"}'
+{"task":"T7","event":"waiting","on":"Daniel","cause":"ask","ask":"plan","reason":"ask plan"}'
   assert_equal "$(logged | jq -c 'select(.event == "image-posted") | [.thread, .discord_thread, .discord_message, .file]')" \
     '["task","2222","1564000000000000001","tickets.png"]
 ["task","2222","1564000000000000001","second.png"]'

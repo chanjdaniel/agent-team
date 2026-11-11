@@ -1300,7 +1300,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
 # sender's message for an approval nobody gives unless crossSessionInbound accepts it: the
 # workers' own settings carry it, so no machine's user settings need to.
 @test "every role's generated settings accept the coordinator's messages" {
-  thread T7
+  open_task T7
   local role
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
