@@ -864,6 +864,37 @@ EOF
   assert_contains "$(<"$output")" "PR: https://github.com/chanjdaniel/Conventioner/pull/9 against \`dev\`, reviewed at \`$r\`, now at head \`$h\`."
 }
 
+@test "a direct-PR project's review briefs never name the gate, before its PR or on it; a gated project's do" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  reviewed_branch T14 main
+  printf '%s\n' "# T14 plan" "" "## Goal" "" "The team has its tooling." "" "## Disclosure" "" \
+    "- Describe it as hardening the hooks." >"$TEAM_HOME/tasks/T14/plan.md"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 template prs brief
+  # Under a Disclosure section there is no PR yet, so each brief is its before-pr one; with a PR
+  # given, each is the PR's.
+  for prs in none "$pr"; do
+    for template in reviewer rereview verify; do
+      local -a sets=(--set head="$head")
+      [[ $prs == none ]] || sets+=(--set pr="$prs")
+      case $template in
+        reviewer) sets+=(--set "checks=the checks") ;;
+        rereview) sets+=(--set "since=the fix") ;;
+        verify) sets+=(--set findings=5) ;;
+      esac
+      run_bin -0 --separate-stderr team-brief T14 "$template" --name "$template-${prs##*/}" "${sets[@]}"
+      brief=$output
+      if [[ $prs == none ]]; then refute_grep -e '/pull/' "$brief"; else grep -qF "$pr" "$brief"; fi
+      refute_grep -i -E '(^|[^a-z])gate' "$brief"
+    done
+  done
+  # A gated project's verify of its PR still reads the gate's own commits.
+  open_t12
+  reviewed_branch T12 dev
+  run_bin -0 team-brief T12 verify --name verify-gated --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
+    --set head="$head" --set findings=5
+  grep -qF "That diff holds the gate's own commits" "$output"
+}
+
 @test "a gated project's re-review reads the gate's own commits from the reviewed local head" {
   open_t12
   reviewed_branch T12 dev
@@ -922,8 +953,8 @@ A change to one touches the `settings` guarded area, so name `settings` among th
 2. Review what changed since the last review, `git diff abc1234 def5678`, and the commit messages of `origin/main..def5678`.
    Read nothing else: not the rest of the PR, the spec's or the story's acceptance list, or the knowledge graph; run the UI check only when that diff touches a UI file and your session lists `ui-check`, on the states it touched and their siblings.
    A round with no new commit (`abc1234` is `def5678`) edited only the PR body: read the body against the notes.
-3. Every note sent back (3 and 5) is fixed at `def5678`, and the diff holds nothing but those fixes, their tests and, on a gated project, the gate's own commits.
-   When it changes more than the notes asked, this brief does not fit: send `T14 BLOCKED not a notes-only fix: <what else changed>` to `coordinator`, and write nothing to GitHub.
+3. Every note sent back (3 and 5) is fixed at `def5678`, and the builder's commits in that diff hold nothing but those fixes and their tests.
+   When they change more than the notes asked, this brief does not fit: send `T14 BLOCKED not a notes-only fix: <what else changed>` to `coordinator`, and write nothing to GitHub.
    Raise a new finding only on a line this diff adds or changes, so each new one's scope is `change`.
 
 ## Deliver
