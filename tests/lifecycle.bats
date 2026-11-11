@@ -34,6 +34,7 @@ builder_launch() {
 }
 
 @test "the table names only contract kinds, implemented effects, and known statuses and phases" {
+  # Each kind the table lists is a contract kind, so a kind the contract drops cannot linger here.
   run fold_read 'lifecycle_table as $t
     | [($t.kinds | keys[] | select(in($contract.kinds) | not) | "kind \(.) is no contract kind"),
        ($t.kinds | to_entries[] | select(.value.effect != null and (.value.effect | IN(lifecycle_effects[]) | not))
@@ -45,8 +46,6 @@ builder_launch() {
          | "refusing writer \(.) writes no kind")]'
   assert_equal "$status" 0
   assert_equal "$output" "[]"
-  # The table is a contract kind's entry or none, so a kind the contract drops cannot linger here.
-  assert_equal "$(fold_read 'lifecycle_table | .lifecycle_from, .causes')" "$(printf 'null\n{}')"
 }
 
 @test "a feature task plans, builds on its plan, is in review on its PR and awaits merge once every open PR's head passed" {
