@@ -19,7 +19,14 @@
 # background session id and logs the launch to ledger.jsonl, with the worktree's project and
 # branch when the task was opened by team-open, the machine's team name
 # (~/.config/agent-team/machine), and for ops the request's link and message id. T0, the load check, needs no thread and
-# no lease, and is not logged. Recorded worktrees are compared as paths on this machine: one
+# no lease, and is not logged. The session is named T<n>-<role>.
+# A ticket worktree (team-open --ticket's, an open worktree whose event names a ticket) takes
+# only its ticket's builder: any other role is refused, "<worktree> is ticket NN's worktree of
+# T<n>, which takes only that ticket's builder", and so is a prompt naming a brief-build-MM brief
+# of another ticket, "<worktree> is ticket NN's worktree, but the brief is ticket MM's", each
+# before anything is started or logged. Its builder is the session T<n>-builder-NN, its launch
+# logs ticket (NN) and the ticket branch as branch, and its generated files take the stem
+# builder.<project>--NN, below. Recorded worktrees are compared as paths on this machine: one
 # recorded under another machine's home is the same path under this HOME.
 # Before anything starts, it refuses a prompt naming a brief that is missing or unreadable, and a
 # prompt that says "your brief" but names no brief*.md file (the empty path of a failed pipe). A
@@ -46,7 +53,8 @@
 # a session it still cannot place is a warning on stderr, and the launch stands.
 # Before it asks for room, it stops each idle live session of the task's earlier launches whose
 # work is handed on (every planner and reviewer, and every builder of the same worktree when the
-# new worker is a builder: one builder holds a worktree's work at a time) once the ledger follows
+# new worker is a builder: one builder holds a worktree's work at a time, so a ticket builder's
+# launch stops only an earlier builder of its own ticket worktree) once the ledger follows
 # its launch with a done of its session, or for a builder a pr or ticket-done, or with a paused
 # reason=stowed and then a launch of its role and worktree (this one or a later logged one: the
 # fresh worker that resumes the work); so a reviewer is handed on by the done the coordinator logs
@@ -73,7 +81,8 @@
 # mcp-roles.json names for other roles only.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored), as
 # settings.<role>.<project>.json and mcp.<role>.<project>.json for a planner, builder or reviewer
-# with a project (so a task's sessions on two projects' worktrees never share one), and
+# with a project (so a task's sessions on two projects' worktrees never share one), with --NN
+# after the project for ticket NN's builder (settings.builder.<project>--NN.json), and
 # settings.<role>.json and mcp.<role>.json otherwise; @TEAM_CODE@ in either names this checkout,
 # @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, @WORKTREE@ the worktree by its real
 # path (the effect toolkit's Foldkit DevTools server's project root), and @ROLE@ the role (the
@@ -123,7 +132,8 @@
 # "none" (for every role, ops included), so the session works in the worktree it starts in, and
 # autoMemoryDirectory, the project's memory folder in the team home by the one definition
 # team-config writes (memory_setting in bin/lib/team.sh); its system prompt file, generated under
-# ~/.local/state/agent-team/prompts/<task>/ as <role>.<project>.md (never the team home, so no
+# ~/.local/state/agent-team/prompts/<task>/ as <role>.<project>.md, or builder.<project>--NN.md
+# for ticket NN's builder (never the team home, so no
 # checkpoint commits it, and team-close removes the task's), is the role's prompt, then a section
 # headed with the project, origin/<base> and its commit holding the root CLAUDE.md and the root
 # AGENTS.md as that ref has them in the worktree's repository, read as it stands (nothing is
@@ -222,7 +232,7 @@ common_dir=$(realpath -- "$(git -C "$worktree" rev-parse --path-format=absolute 
 # brief*.md, its quotes, brackets and trailing punctuation dropped, ~/, $HOME/ and ${HOME}/
 # expanded, a relative path taken from the worktree, must be a readable file; a prompt saying
 # "your brief" must name one. The first directly under the task's directory is the launch's brief.
-brief='' named=''
+brief='' named='' briefs=()
 while IFS= read -r word; do
   [[ $word =~ ^[^[:alnum:]~/\$.]*(.*[[:alnum:]])[^[:alnum:]]*$ ]] || continue
   word=${BASH_REMATCH[1]}
@@ -235,6 +245,7 @@ while IFS= read -r word; do
   [[ $word == /* ]] || word=$worktree/$word
   [[ -f $word && -r $word ]] || die "the prompt's brief $word does not exist or cannot be read"
   named=1
+  briefs+=("$(basename "$word" .md)")
   if [[ -z $brief ]] && same_path "$(dirname "$word")" "$TEAM_HOME/tasks/$task"; then
     brief=$(basename "$word" .md)
   fi
@@ -243,7 +254,7 @@ done < <(tr -s '[:space:]' '\n' <<<"$prompt")
   die "the prompt says 'your brief' but names no brief*.md file"
 
 # T0 is the load check, not a task: it has no ledger entry and stays out of the ledger.
-worktree_event='' project=''
+worktree_event='' project='' ticket=''
 if [[ $task != T0 ]]; then
   events=$(task_event_array "$task")
   # In one jq run: the task's status, whether it has a thread, and its open worktrees, one a line
@@ -266,6 +277,15 @@ if [[ $task != T0 ]]; then
       open+=$'\n'"  $line"
     done <<<"$worktrees"
     [[ -n $worktree_event ]] || die "$worktree is not one of $task's open worktrees:${open:- it has none}"
+    # A ticket worktree (team-open --ticket's) takes only its own ticket's builder.
+    ticket=$(jq -r '.ticket // empty' <<<"$worktree_event")
+    if [[ -n $ticket ]]; then
+      [[ $role == builder ]] || die "$worktree is ticket $ticket's worktree of $task, which takes only that ticket's builder"
+      for named_brief in ${briefs[@]+"${briefs[@]}"}; do
+        [[ ! $named_brief =~ ^brief-build-([0-9]{2})$ || ${BASH_REMATCH[1]} == "$ticket" ]] ||
+          die "$worktree is ticket $ticket's worktree, but the brief is ticket ${BASH_REMATCH[1]}'s"
+      done
+    fi
   fi
 fi
 
@@ -357,9 +377,11 @@ fi
 
 # The stem of the launch's generated files: its role, and for a planner, builder or reviewer its
 # project too, so a task's sessions on worktrees of two projects never share a settings file, an
-# MCP config or a prompt file, each naming its own project's memory and instructions.
+# MCP config or a prompt file, each naming its own project's memory and instructions; a ticket
+# builder's ends in --NN, so two tickets' builders of one task never share one either.
 stem=$role
 [[ $role == ops || -z $launch_project ]] || stem=$role.$launch_project
+[[ -z $ticket ]] || stem+=--$ticket
 
 # The project's model for the role, from the registry, unless --model named one; ops stays on the
 # default model.
@@ -705,7 +727,7 @@ else
   mv -f -- "$tmp" "$system_prompt"
 fi
 
-name=$task-$role
+name=$task-$role${ticket:+-$ticket}
 # --mcp-config and --tools take several values, so neither may come right before the prompt.
 out=$(cd "$worktree" && claude --bg "${restricted[@]}" "${sources[@]}" \
   --strict-mcp-config --mcp-config "$mcp" \
@@ -727,7 +749,7 @@ fi
 
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
+    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --arg ticket "$ticket" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
       event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
       + ($at // {} | {project, branch} | with_entries(select(.value != null)))
       + {machine: $machine}
@@ -735,7 +757,8 @@ if [[ $task != T0 ]]; then
       + (if $model == "" then {} else {model: $model} end)
       + (if $request == "" then {} else {request: $request} end)
       + (if $discord_message == "" then {} else {discord_message: $discord_message} end)
-      + (if $brief == "" then {} else {brief: $brief} end)' "${toolkits[@]}")"
+      + (if $brief == "" then {} else {brief: $brief} end)
+      + (if $ticket == "" then {} else {ticket: $ticket} end)' "${toolkits[@]}")"
   # Logged, the admission is its session's (paired by its id), and nothing releases it now.
   admission=''
 fi

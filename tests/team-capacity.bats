@@ -213,6 +213,17 @@ left T8-reviewer 4f2a9c1e: already in agent-team-T8-4f2a9c1e.scope"
   assert_equal "$output$stderr" ""
 }
 
+@test "place adopts a ticket builder T<n>-builder-NN into its task's scope, and a name with another suffix is no team session" {
+  session_tree 100
+  session_tree 200
+  sessions "a1b2c3d4 T7-builder-03 100" "b1b2c3d4 T7-builder-003 200"
+  run_bin -0 team-capacity place
+  assert_equal "$output" "placed T7-builder-03 a1b2c3d4 in agent-team-T7-a1b2c3d4.scope (4 processes)"
+  assert_equal "$(placements)" "agent-team-T7-a1b2c3d4.scope agent-team-T7.slice 100 99 101 102"
+  TEAM_CAPACITY_PLACE_SECONDS=0 run_bin -1 --separate-stderr team-capacity place b1b2c3d4
+  assert_equal "$stderr" "team-capacity: could not place b1b2c3d4: it is no team session (named T7-builder-003, not T<n>-<role> or T<n>-<role>-<NN>)"
+}
+
 @test "place leaves out a parent that is no pty host and a descendant the team's slice already holds" {
   fake_process 50 1 - bash
   fake_process 100 50 - claude --bg
@@ -252,7 +263,7 @@ agent-team-T10-c1b2c3d4.scope agent-team-T10.slice 300 299 301 302"
   TEAM_CAPACITY_PLACE_SECONDS=1 run_bin -1 --separate-stderr team-capacity place b1b2c3d4 99999999 c0ffee00 d1b2c3d4
   assert_equal "$output" "placed T9-planner b1b2c3d4 in agent-team-T9-b1b2c3d4.scope (4 processes)"
   assert_equal "$stderr" "team-capacity: could not place 99999999: no live session has that id
-team-capacity: could not place c0ffee00: it is no team session (named coordinator, not T<n>-<role>)
+team-capacity: could not place c0ffee00: it is no team session (named coordinator, not T<n>-<role> or T<n>-<role>-<NN>)
 team-capacity: could not place T11-builder d1b2c3d4: its process 500 is gone"
   assert_contains "$(cgroup_of 100)" "konsole"
   run_bin -2 team-capacity place 'T7 builder'
@@ -670,6 +681,18 @@ team_reading() {
   run_bin -0 team-capacity sample
   assert_equal "$(jq -c --argjson mib "$MIB" '.tasks | map([.task, ((.memory - ([.stacks[].memory] | add // 0)) / $mib)])' \
     "$STATE_DIR/readings.jsonl")" '[["T7",0],["T9",400]]'
+}
+
+@test "sample: a ticket builder T<n>-builder-NN is a session of its task with the role builder" {
+  sample_machine
+  as_macos
+  proc 100 99 512 60 "$T7_WT"
+  proc 200 1 300 40 "$T9_WT"
+  sessions "a1b2c3d4 T7-builder-03 100" "b1b2c3d4 T9-reviewer-01 200"
+  run_bin -0 --separate-stderr team-capacity sample
+  assert_equal "$output$stderr" ""
+  assert_equal "$(jq -c '.tasks | map([.task, (.sessions | map([.id, .role]))])' "$STATE_DIR/readings.jsonl")" \
+    '[["T7",[["a1b2c3d4","builder"]]],["T9",[["b1b2c3d4","reviewer"]]]]'
 }
 
 @test "sample: a user manager or a session list that does not answer is said in the reading, and the processes count by directory" {
@@ -1973,6 +1996,16 @@ Refused for room, waiting to launch, oldest refusal first:
   assert_equal "$(plan_steps)" '["stop","T1","builder","aaaa0010",1]
 ["stow","T2",1]
 ["stow","T1",1]'
+}
+
+@test "plan: a ticket builder T<n>-builder-NN is a live worker of its task, which stows at none" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # T1's only live session is ticket 02's builder, which no reading holds yet.
+  plan_task T1 10:00 builder:aaaa0010
+  live aaaa0012 T1-builder-02 busy
+  team_reading 8
+  plan_level 1 none
+  assert_equal "$(plan_steps)" '["stow","T1",0]'
 }
 
 @test "plan: with no reading there is no budget and nothing to plan, and an unreadable session list fails it" {
