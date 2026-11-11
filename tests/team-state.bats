@@ -5,6 +5,7 @@ load helpers/common
 
 setup() {
   sandbox
+  # shellcheck disable=SC2153 # TEAM_HOME is the sandbox's, not a misspelt TEAM_CHROME
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
 [proj]
 repo = "owner/proj"
@@ -36,7 +37,9 @@ event() {
   ledger_line --arg t "$1" --arg e "$2" "{ts: \"2026-10-22T02:00:00Z\", task: \$t, event: \$e} + (${3:-{\}})"
 }
 
-# The opened task T14 of project proj, with its thread and a builder's launch.
+# The opened task T14 of project proj, with its thread and a builder's launch, which puts the
+# feature task in building with no plan-approved (the lifecycle's launch rule), so every test
+# built on it reads building where it read planning before the lifecycle fold.
 open_task() {
   event T14 opened '{project: "proj", path: "feature", type: "feat", title: "The tooling",
     branch: "feat/T14-tooling", base: "main", base_sha: "0123456", worktree: "/w/1"}'
@@ -100,7 +103,7 @@ phase_of() {
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c 'del(.workers)' <<<"$output")" "$(jq -cn '{
     schema: "team-state/1", task: "T14", title: "The tooling", project: "proj", path: "feature",
-    phase: "planning",
+    phase: "building",
     worktrees: [
       {project: "proj", branch: "feat/T14-tooling", worktree: "/w/1", returned: false},
       {project: "conv", branch: "feat/T14-x", worktree: "/t/2", returned: true}],
@@ -108,7 +111,7 @@ phase_of() {
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
     waiting: null, walk: null, rehome_failures: [], merge_preapproval: null, pr: null,
-    progress: {tickets: {done: [], total: 0}, on: [],
+    progress: {tickets: {done: [], total: 0, graph: null}, on: [],
       reviews: {count: 0, verdict: null, head: null, sent_back: null}}}')"
   assert_equal "$(stub_calls gh)" ""
 }
@@ -220,7 +223,7 @@ reply_line() {
   assert_equal "$(jq -c '.workers[0].context' <<<"$output")" 302010
 
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | T14-builder idle 302k"
+  assert_equal "$output" "T14 proj feature building | T14-builder idle 302k"
 }
 
 @test "a live worker with no transcript has a null context and no figure" {
@@ -232,7 +235,7 @@ reply_line() {
   assert_equal "$(jq -c '.workers[0] | [.live, .context]' <<<"$output")" '[true,null]'
 
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | T14-builder idle"
+  assert_equal "$output" "T14 proj feature building | T14-builder idle"
 }
 
 @test "a session list that cannot be read is refused" {
@@ -291,16 +294,20 @@ reply_line() {
   assert_equal "$(phase_of T14)" merged
 }
 
-@test "merged wins over a held from before it, and closed over merged" {
+@test "a held from before the merge shows over merged while it stands, and closed over both" {
   open_task
   event T14 held '{reason: "OS update"}'
   event T14 merged '{pr: 5, merge: "fedcba9", head: "a1b2c3d", by: "1563"}'
+  # The lifecycle's precedence: a standing held shows over merged wherever it was logged (it was
+  # merged before the fold, which hid a held logged before the merge).
+  assert_equal "$(phase_of T14)" held
+  event T14 resumed
   assert_equal "$(phase_of T14)" merged
   event T14 closed '{archive: [], returned: [], kept: []}'
   assert_equal "$(phase_of T14)" closed
 }
 
-@test "a held or blocked logged after the merge outranks it while it stands, for a later part still to come" {
+@test "a held or blocked logged after the merge outranks it while it stands" {
   open_task
   event T14 merged '{pr: 5, merge: "fedcba9", head: "a1b2c3d", by: "1563"}'
   event T14 blocked '{reason: "the second half waits on T31"}'
@@ -311,15 +318,29 @@ reply_line() {
   assert_equal "$(phase_of T14)" merged
 }
 
+@test "a merged naming phases left reads merged-part on the line, and a builder's launch after it building" {
+  open_task
+  event T14 merged '{pr: 5, merge: "fedcba9", head: "a1b2c3d", by: "1563", phases_left: [2, 3]}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature merged-part | no live worker"
+  event T14 launch '{role: "builder", session: "3ed2d1f2", worktree: "/w/1", toolkits: []}'
+  assert_equal "$(phase_of T14)" building
+  event T14 merged '{pr: 6, merge: "0123456", head: "b2c3d4e", by: "1563", phases_left: []}'
+  assert_equal "$(phase_of T14)" merged
+}
+
 @test "a task blocked, relaunched and then merged is merged" {
   open_task
   event T14 blocked '{reason: "a denied push"}'
   event T14 launch '{role: "builder", session: "3ed2d1f2", worktree: "/w/1", toolkits: []}'
   event T14 merged '{pr: 5, merge: "fedcba9", head: "a1b2c3d", by: "1563"}'
   assert_equal "$(phase_of T14)" merged
-  # A block still standing from before the merge changes nothing either.
+  # A block still standing from before the merge shows over it (the lifecycle's precedence; it
+  # read merged before the fold), until a launch ends it.
   event T14 blocked '{reason: "a denied push"}'
   event T14 merged '{pr: 6, merge: "0123456", head: "b2c3d4e", by: "1563"}'
+  assert_equal "$(phase_of T14)" blocked
+  event T14 launch '{role: "reviewer", session: "4fe3e2a3", worktree: "/w/1", toolkits: []}'
   assert_equal "$(phase_of T14)" merged
 }
 
@@ -632,7 +653,7 @@ EOF
   assert_equal "$(jq -c .rehome_failures <<<"$output")" \
     '[{"project":"proj","branch":"feat/T14-tooling","machine":"laptop","reason":"the second refusal","since":"2026-10-22T02:00:00Z"},{"project":"other","branch":"feat/T14-tooling","machine":"laptop","reason":"no slot","since":"2026-10-22T02:00:00Z"}]'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | not re-homed: proj on laptop: the second refusal; other on laptop: no slot"
+  assert_equal "$output" "T14 proj feature building | no live worker | not re-homed: proj on laptop: the second refusal; other on laptop: no slot"
 
   # A worktree made elsewhere (worktree-moved) or at its recorded path (rehomed) clears its
   # project's failure, and only that one.
@@ -643,7 +664,7 @@ EOF
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .rehome_failures <<<"$output")" '[]'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker"
+  assert_equal "$output" "T14 proj feature building | no live worker"
 
   # A later failure stands again, until the worktree is returned.
   event T14 rehome-failed '{project: "proj", branch: "feat/T14-tooling", machine: "home-pc", reason: "again"}'
@@ -660,9 +681,9 @@ EOF
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .waiting <<<"$output")" \
     '{"on":"Daniel","reason":"restart the Docker daemons","since":"2026-10-22T02:00:00Z"}'
-  assert_equal "$(jq -r .phase <<<"$output")" planning
+  assert_equal "$(jq -r .phase <<<"$output")" building
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | waiting on Daniel: restart the Docker daemons"
+  assert_equal "$output" "T14 proj feature building | no live worker | waiting on Daniel: restart the Docker daemons"
   event T14 launch '{role: "builder", session: "3ed2d1f2", worktree: "/w/1", toolkits: []}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .waiting <<<"$output")" null
@@ -682,16 +703,16 @@ EOF
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .walk <<<"$output")" '{"since":"2026-10-22T03:00:00Z"}'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | walk on since 2026-10-22T03:00:00Z | waiting on Daniel: walk the import page"
+  assert_equal "$output" "T14 proj feature building | no live worker | walk on since 2026-10-22T03:00:00Z | waiting on Daniel: walk the import page"
   # An off ends it; the next on starts another, from its own time.
   ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T14", event: "walk", state: "off"}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .walk <<<"$output")" null
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | waiting on Daniel: walk the import page"
+  assert_equal "$output" "T14 proj feature building | no live worker | waiting on Daniel: walk the import page"
   ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "walk", state: "on"}'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | walk on since 2026-10-22T05:00:00Z | waiting on Daniel: walk the import page"
+  assert_equal "$output" "T14 proj feature building | no live worker | walk on since 2026-10-22T05:00:00Z | waiting on Daniel: walk the import page"
   # A walk left on ends with its task.
   ledger_line '{ts: "2026-10-22T06:00:00Z", task: "T14", event: "closed", archive: [], returned: [], kept: []}'
   run_bin -0 team-state T14 --json
@@ -705,7 +726,7 @@ EOF
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .merge_preapproval <<<"$output")" null
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker"
+  assert_equal "$output" "T14 proj feature building | no live worker"
 
   # proj opts in now and is not the team's own.
   sed -i 's/^merge_method = "merge"$/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
@@ -717,12 +738,12 @@ EOF
     discord_message: "1563000000000000001", scope: ["src/", "README.md"], ts: "2026-10-22T03:00:00Z",
     withdrawn: null, opted_in: true, own: false}')"
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved"
 
   # The text says it before any waiting.
   event T14 waiting '{on: "Daniel", reason: "a word on the name"}'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved | waiting on Daniel: a word on the name"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved | waiting on Daniel: a word on the name"
   event T14 resumed
 
   # The registry is read now: a project that no longer opts in says so.
@@ -730,7 +751,7 @@ EOF
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.merge_preapproval | [.opted_in, .own]' <<<"$output")" '[false,false]'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but proj does not opt in"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved, but proj does not opt in"
 
   # A withdrawal of it is told, whatever the registry says.
   ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T14", event: "merge-preapproval-withdrawn", project: "proj",
@@ -739,7 +760,7 @@ EOF
   assert_equal "$(jq -c .merge_preapproval.withdrawn <<<"$output")" \
     '{"ts":"2026-10-22T04:00:00Z","discord_message":"1563000000000000002"}'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approval withdrawn"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approval withdrawn"
 
   # A later approval stands again, and the latest of the task's is the one read.
   sed -i 's/^merge_method = "merge"$/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
@@ -749,7 +770,7 @@ EOF
   assert_equal "$(jq -c '.merge_preapproval | [.discord_message, .scope, .withdrawn, .opted_in]' <<<"$output")" \
     '["1563000000000000003",["src/"],null,true]'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved"
 }
 
 @test "a pre-approval of the team's own project says so, by name or by its repo, even opted in" {
@@ -763,7 +784,7 @@ EOF
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.merge_preapproval | [.opted_in, .own]' <<<"$output")" '[true,true]'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but proj is the team's own project"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved, but proj is the team's own project"
 
   # By name, with the key left out, as the registry must have it.
   cat >>"$TEAM_HOME/projects.toml" <<'TOML'
@@ -787,7 +808,7 @@ TOML
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.merge_preapproval | [.project, .opted_in, .own]' <<<"$output")" '["agent-team",false,true]'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but agent-team is the team's own project"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved, but agent-team is the team's own project"
 }
 
 @test "a pre-approval of a project the registry no longer has does not opt in, and the state is still told" {
@@ -798,7 +819,7 @@ TOML
   assert_equal "$(jq -c '.merge_preapproval | [.project, .opted_in, .own]' <<<"$output")" '["gone",false,false]'
   assert_equal "$stderr" ""
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but gone does not opt in"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved, but gone does not opt in"
 }
 
 # T14 awaiting the merge of PR #5 of proj at $head, from its own branch, after a clean pass that
@@ -987,7 +1008,7 @@ progress_task() {
     {"id": "3ed2d1f2", "sessionId": "3ed2d1f2-1111", "name": "T14-ops", "status": "busy", "state": "working"}]'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .progress <<<"$output")" "$(jq -cn '{
-    tickets: {done: ["01", "02", "03"], total: 7},
+    tickets: {done: ["01", "02", "03"], total: 7, graph: null},
     on: [{role: "builder", session: "59709d99", brief: "brief-build-04"}, {role: "ops", session: "3ed2d1f2", brief: null}],
     reviews: {count: 0, verdict: null, head: null, sent_back: null}}')"
   assert_equal "$(jq -c '[.workers[] | .brief]' <<<"$output")" \
@@ -1002,17 +1023,80 @@ progress_task() {
   event T14 ticket-done '{ticket: "01", commits: ["a0017cce"]}'
   event T14 ticket-done '{ticket: "01", commits: ["9e0e3990"]}'
   run_bin -0 team-state T14 --json
-  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":2}'
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":2,"graph":null}'
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature building | no live worker | tickets 1/2"
 
   # A second Blocked by: line: team-tickets refuses the set, so the total is unknown.
   echo "Blocked by: 01" >>"$BATS_TEST_TMPDIR/wt/.scratch/task/tickets/02-ticket-2.md"
   run_bin -0 --separate-stderr team-state T14 --json
-  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":null}'
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":null,"graph":null}'
   assert_equal "$stderr" ""
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature building | no live worker | tickets 1 done"
+}
+
+# A stub Chrome, by TEAM_CHROME, whose screenshot is a PNG's signature, for team-tickets --graph.
+stub_chrome() {
+  stub_command chrome
+  export TEAM_CHROME=$BATS_TEST_TMPDIR/stubs/chrome
+  stub_script chrome <<'SH'
+for arg; do
+  [[ $arg != --screenshot=* ]] || printf '\x89PNG\r\n\x1a\n' >"${arg#*=}"
+done
+SH
+}
+
+@test "the tickets' graph is null and unsaid with no tickets or no page" {
+  progress_task 2
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":[],"total":2,"graph":null}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 0/2"
+
+  # A page left in a task directory with no tickets names no graph.
+  local dir=$BATS_TEST_TMPDIR/wt/.scratch/task
+  rm "$dir"/tickets/*.md
+  echo '<!doctype html>' >"$dir/tickets.html"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":[],"total":0,"graph":null}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker"
+}
+
+@test "the graph team-tickets --graph made is fresh until a ticket-done, and stale with its PNG missing or older" {
+  progress_task 2
+  stub_chrome
+  local dir=$BATS_TEST_TMPDIR/wt/.scratch/task
+  run_bin -0 team-tickets T14 --graph
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph <<<"$output")" \
+    "$(jq -cn --arg dir "$dir" '{html: "\($dir)/tickets.html", png: "\($dir)/tickets.png", fresh: true}')"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 0/2, graph fresh"
+
+  # A ticket-done changes the tickets the page shows.
+  event T14 ticket-done '{ticket: "01", commits: ["a0017cce"]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph.fresh <<<"$output")" false
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 1/2, graph stale"
+
+  # Remade, it is fresh again; a PNG older than its page is stale.
+  run_bin -0 team-tickets T14 --graph
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph.fresh <<<"$output")" true
+  touch -d '2026-10-01 00:00' "$dir/tickets.png"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph.fresh <<<"$output")" false
+
+  # With no PNG it is stale, and png is null.
+  rm "$dir/tickets.png"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets.graph <<<"$output")" \
+    "$(jq -cn --arg dir "$dir" '{html: "\($dir)/tickets.html", png: null, fresh: false}')"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 1/2, graph stale"
 }
 
 @test "progress carries the review count and the latest review's verdict, head and sent-back findings" {
@@ -1021,15 +1105,16 @@ progress_task() {
   event T14 review '{verdict: "pass", head: "2222222"}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .progress.reviews <<<"$output")" '{"count":2,"verdict":"pass","head":"2222222","sent_back":null}'
+  # A review puts a building task in review, a PR logged or not (the lifecycle's review phase).
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature building | no live worker | review 2 pass"
+  assert_equal "$output" "T14 proj feature in-review | no live worker | review 2 pass"
 
   event T14 review '{verdict: "findings", head: "3333333", sent_back: [], findings: {blocking: 0}}'
   event T14 review '{verdict: "findings", head: "4444444", sent_back: [5, 6]}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .progress.reviews <<<"$output")" '{"count":4,"verdict":"findings","head":"4444444","sent_back":[5,6]}'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature building | no live worker | review 4 findings, sent back 5, 6"
+  assert_equal "$output" "T14 proj feature in-review | no live worker | review 4 findings, sent back 5, 6"
 }
 
 @test "an open PR's behind_by is GitHub's compare of its base and head, null and unsaid when unreadable" {
@@ -1073,15 +1158,16 @@ progress_task() {
   assert_equal "$output" "T14 proj feature building | no live worker"
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .progress <<<"$output")" \
-    '{"tickets":{"done":[],"total":0},"on":[],"reviews":{"count":0,"verdict":null,"head":null,"sent_back":null}}'
+    '{"tickets":{"done":[],"total":0,"graph":null},"on":[],"reviews":{"count":0,"verdict":null,"head":null,"sent_back":null}}'
 }
 
-@test "--help documents progress, each worker's brief and the PR's behind_by and caught_up" {
+@test "--help documents progress, the tickets' graph, each worker's brief and the PR's behind_by and caught_up" {
   run_bin -0 team-state --help
   assert_contains "$output" "progress"
   assert_contains "$output" "behind_by"
   assert_contains "$output" "on build-04"
-  assert_contains "$output" "tickets 3/7"
+  assert_contains "$output" "tickets 3/7, graph stale"
+  assert_contains "$output" "{html, png, fresh}"
   assert_contains "$output" "16 behind dev"
   assert_contains "$output" "caught_up"
   assert_contains "$output" "(caught up cleanly with <base>)"

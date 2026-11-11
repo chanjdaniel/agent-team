@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Put a question to Daniel in one call: post it in the task's Discord thread and a one-line ping
-# in #coordinator that links there, both through team-post (so a fenced machine posts nothing),
-# then log the ask in the ledger. team-answer takes their answer back.
+# Put a question to Daniel in one call: post it, with any images, in the task's Discord thread and
+# a one-line ping in #coordinator that links there, both through team-post (so a fenced machine
+# posts nothing), then log the ask in the ledger. team-answer takes their answer back.
 #
-# Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]
+# Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]...
 # <id> names the ask (letters, digits, dot, dash and underscore), as team-answer names it again.
 # The question is the file's text, its leading and trailing blank lines and spaces dropped. The
 # ping mentions each of Daniel's ids, the top-level allowFrom of the Discord plugin's
@@ -11,17 +11,26 @@
 # line>", the question's first line cut to 200 characters. Once both are posted it logs, in
 # order: question role=<role> text=<the question> when --from names the worker role that asked
 # it; asked id=<id> text=<the question's first line> discord_message=<the question's first
-# message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask in the Waiting on
-# you message; when that fails, a line on stderr says so, and the ask stands.
+# message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask, numbered, in the
+# team home's waiting.md; when that fails, a line on stderr says so, and the ask stands.
+# --from ops, an ops session's question, which may hold production data, is posted whole in the
+# thread, but its first line is the fixed line "An ops question of <n> characters, in T<n>'s
+# thread." in the ping and the asked's text, n its length in characters, and its question is
+# logged as question role=ops chars=<n> discord_message=<the question's first message>, never
+# its text.
 # --script asks Daniel to OK running a script, which team-run-approved T<n> <id> then runs only
 # while the file hashes the same: before anything is posted it hashes the file (a regular file,
 # its path made absolute, its links resolved), ends the question with the lines "Script: <path>"
 # and "sha256: <its sha256sum>", so Daniel's OK names those bytes, then "It runs only on a reply
-# in Discord with a line that starts with yes.", the rule team-run-approved holds the answer to,
-# and the asked carries script= and sha256= too, which no other script logs. A script
-# team-run-approved would never run, one outside the task's open worktrees and its tasks/T<n>/
-# once its links are resolved, is refused before anything is posted, as team-run-approved refuses
-# it (script_place_refusal in bin/lib/team.sh).
+# in Discord with a line that starts with yes, or, by its number on the waiting list, "<number>
+# yes".", the rules team-run-approved holds the answer to, and the asked carries script= and
+# sha256= too, which no other script logs. A script team-run-approved would never run, one
+# outside the task's open worktrees and its tasks/T<n>/ once its links are resolved, is refused
+# before anything is posted, as team-run-approved refuses it (script_place_refusal in
+# bin/lib/team.sh).
+# --attach <image>, repeatable, posts the image with the question in the task's thread through
+# team-post --attach (on the question's first message and on), which checks each image before
+# anything is posted and logs it as image-posted; the ping carries none.
 # A post that fails logs nothing: when the ping fails, the question stays posted, its id said.
 # A worker session may not run it (worker_refusal in bin/lib/team.sh): its questions go to the
 # coordinator.
@@ -33,14 +42,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 # The most characters of the question's first line the ping carries.
 PING_LINE=200
-USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]"
+USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]..."
 
-task='' id='' file='' role='' script=''
+task='' id='' file='' role='' script='' attach=()
 while (($#)); do
   case $1 in
     --file) (($# > 1)) || usage_error "$USAGE"; file=$2; shift ;;
     --from) (($# > 1)) || usage_error "$USAGE"; role=$2; [[ $role =~ ^[a-z]+$ ]] || usage_error "$USAGE"; shift ;;
     --script) (($# > 1)) && [[ -n $2 ]] || usage_error "$USAGE"; script=$2; shift ;;
+    --attach) (($# > 1)) && [[ -n $2 ]] || usage_error "$USAGE"; attach+=(--attach "$2"); shift ;;
     -*) usage_error "$USAGE" ;;
     *)
       if [[ -z $task ]]; then task=$1
@@ -68,9 +78,15 @@ if [[ -n $script ]]; then
   script=$(realpath -e -- "$script")
   sha256=$(sha256sum -- "$script" | cut -d' ' -f1)
   question=$(printf '%s\n\nScript: %s\nsha256: %s\n%s' "$question" "$script" "$sha256" \
-    "It runs only on a reply in Discord with a line that starts with yes.")
+    'It runs only on a reply in Discord with a line that starts with yes, or, by its number on the waiting list, "<number> yes".')
 fi
-line=$(jq -nr --arg q "$question" '$q | split("\n")[0] | sub("\\s+\\z"; "")')
+# An ops session's question may hold production data, so the ledger and the ping carry only its
+# length and where it is; any other's first line.
+if [[ $role == ops ]]; then
+  line=$(jq -nr --arg q "$question" --arg task "$task" '"An ops question of \($q | length) characters, in \($task)'"'"'s thread."')
+else
+  line=$(jq -nr --arg q "$question" '$q | split("\n")[0] | sub("\\s+\\z"; "")')
+fi
 # Daniel's ids, each a Discord snowflake, so the ping holds nothing but mentions of them.
 mentions=$(jq -r '.allowFrom | arrays | map(tostring | select(test("^[0-9]+$")) | "<@\(.)>") | join(" ")' \
   "$HOME/.claude/channels/discord/access.json" 2>/dev/null) || mentions=''
@@ -83,7 +99,8 @@ now=$(date -u +%FT%TZ)
 mapfile -t lines < <(jq -nc --arg ts "$now" --arg task "$task" --arg id "$id" --arg role "$role" \
   --arg question "$question" --arg line "$line" --arg script "$script" --arg sha256 "$sha256" '
   {ts: $ts, task: $task} as $e
-  | (if $role != "" then $e + {event: "question", role: $role, text: $question} else empty end),
+  | (if $role == "ops" then $e + {event: "question", role: $role, chars: ($question | length)}
+     elif $role != "" then $e + {event: "question", role: $role, text: $question} else empty end),
     $e + {event: "asked", id: $id, text: $line}
       + (if $script != "" then {script: $script, sha256: $sha256} else {} end),
     $e + {event: "waiting", on: "Daniel", reason: "ask \($id)"}')
@@ -101,7 +118,7 @@ jq -nr --arg mentions "$mentions" --arg task "$task" --arg thread "$thread" --ar
 
 bin=$(dirname "${BASH_SOURCE[0]}")
 code=0
-asked=$("$bin/team-post" "$task" --file "$scratch/question") || code=$?
+asked=$("$bin/team-post" "$task" --file "$scratch/question" "${attach[@]}") || code=$?
 if ((code)); then
   echo "team-ask: the question was not posted, so nothing is logged" >&2
   exit "$code"
@@ -114,7 +131,7 @@ fi
 
 for event in "${lines[@]}"; do
   ledger_append "$(jq -c --arg ts "$(date -u +%FT%TZ)" --arg message "$(head -n 1 <<<"$asked")" \
-    '.ts = $ts | if .event == "asked" then .discord_message = $message else . end' <<<"$event")"
+    '.ts = $ts | if .event == "asked" or (.event == "question" and .role == "ops") then .discord_message = $message else . end' <<<"$event")"
 done
 refresh_inbox
 jq -nc --arg task "$task" --arg id "$id" --arg asked "$asked" --arg ping "$ping" \

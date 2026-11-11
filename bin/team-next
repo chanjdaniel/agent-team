@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Take a worker's message to the task's next step: log its events, then hand the work on.
 #
-# Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>]
+# Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>]
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
 #   --from       the sender, as team-log --from-message takes it, when the message cannot tell it
+#   --relay      with an ops session's DONE, the Discord id of the message that relayed its answer,
+#                logged as its done's relay, as team-log --from-message takes it
 #   --sent-back  with a DONE findings message, required, the numbers sent back (none for none), logged
 #                as the review's sent_back; with a DONE pass, the findings it counts that go back
 #                before the merge, required while it counts any
@@ -20,7 +22,8 @@
 # reads it (its refusal is team-log's, with its exit code).
 # Then it logs, through team-log, each of the message's events that the ledger does not already
 # hold since the sending worker's launch (the session its events name, else the task's latest
-# launch): a ticket-done of the same ticket, a done of the same session and report, a pr of the
+# launch): a ticket-done of the same ticket, a done of the same session and report (an ops
+# session's: of the same report_chars, its relay aside), a pr of the
 # same url and head, a review of the same head and verdict, any other event with the same fields;
 # so a rerun never logs one twice. Each line it prints is one step: "logged <event> <key=value>..."
 # or "already logged <event> ...", then the hand-off's.
@@ -55,8 +58,11 @@
 # rereview-<k>, the lowest k from 2 whose brief no launch read, and takes the PR's url and head (a
 # PR) or the reported head (review-ready), the rest derived by team-brief (a DONE merged's head
 # from GitHub, and its since naming the merge's conflicted files), --since added after the
-# derived since. It launches as a reviewer with the toolkits of the task's latest reviewer
-# launch, else of its latest builder launch.
+# derived since. Each of these briefs names the instruction and settings files its head changes
+# against the base, team-brief's instruction_files; a brief team-brief refuses (that list
+# unreadable, say, or exit 75 on an unreachable origin) logs and launches nothing, with its exit
+# code. It launches as a reviewer with the toolkits of the task's latest reviewer launch, else of
+# its latest builder launch.
 # A reviewer's DONE pass or DONE findings launches nothing: refused, before anything is logged,
 # when the task has no plan-approved, a DONE findings without --sent-back, a pass that counts a
 # blocking, correctness, security, real-data or note-change finding with no --sent-back list of
@@ -86,8 +92,27 @@
 # or a pass that sent some
 # back (which team-log logs as findings): the message for the holder under 250k (its name, the
 # findings sent back and the findings file the message names, for a pass the newest of review.md
-# and rereview*.md in the holder's task directory, as team-brief derives a round's), else the
-# T<n> STOW to send it (after recovering it when gone), or no hand-off when nothing was sent back.
+# and rereview*.md in the holder's task directory, as team-brief derives a round's, and that
+# each is fixed as narrowly as it asks, a fix reaching shapes it does not name a T<n> QUESTION
+# first), else the T<n> STOW to send it (after recovering it when gone), or no hand-off when
+# nothing was sent back.
+# The churn rule: when this review sent back a finding its widening= marks (one in what the last
+# fix added), the task's previous review (the latest before this one, on a rerun the latest
+# before the line that holds it) sent back one of its own, and every finding this one sent back
+# outside its widening may be a plain note, the last line is instead "churn: findings <W> of the
+# review of <head> sit in what the fix since the last review added, as findings <P> of the
+# review of <previous head> did: decide whether to narrow them (the holder makes each a
+# documented limit in the code's header instead of widening the fix, and the next rereview's
+# --since says so), revert the fix that widened, or run one more round: <the line above>", each
+# list's numbers sent back and each head's first 8 characters; with
+# "the review found guarded areas <them>, so ask Daniel with team-ask T<n> <an id> --file <the
+# question>" for decide when its guarded names guardrails, permissions or secrets. Nothing is
+# launched either way. Its documented limit: the counts do not say which number is which kind,
+# so a sent-back finding outside widening is taken as a plain note only when the review counts
+# no blocking, correctness, security or real-data finding, and a round whose serious findings
+# are all widening but which sends back a plain note outside it is a plain fix round. A verify
+# review, or a first review, marks no widening, so either breaks a chain, and so does a phase's
+# first review, which follows a pass.
 # A PAUSED stowed (its reason the word stowed, alone or with more after it) while the latest
 # review sent findings back, with no launch since
 # it but an ops session's, launches the fix round: team-brief T<n> builder-round --name
@@ -100,7 +125,9 @@
 # are logged, then team-worker launches it, and the last line is "launched T<n>-<role> <session
 # id>". A launch that fails is finished by running the same command again, which logs nothing
 # twice.
-# Any other message is logged, and the last line says it has no hand-off.
+# Any other message is logged, and the last line says it has no hand-off: an ops session's DONE
+# among them, whatever its first word, which team-log logs as its length and never its text, as
+# it does the ops session's QUESTION.
 # It never posts to Discord, sends a message, merges, approves a plan or answers a question.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
@@ -111,7 +138,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "runs no team-next") && die "$why"
 
 bin=$(dirname "$TEAM_LIB")
-usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>'"
+usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>'"
 
 [[ $# -ge 1 && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"
 task=$1
@@ -120,7 +147,7 @@ log_opts=() next='' checks='' since='' template_opt=''
 declare -A given=()
 while (($#)) && [[ $1 != -- ]]; do
   case $1 in
-    --from | --sent-back | --next | --checks | --since | --template)
+    --from | --sent-back | --relay | --next | --checks | --since | --template)
       [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
       [[ $# -ge 2 && -n $2 ]] || usage_error "$1 needs a value"
       given[$1]=1
@@ -128,6 +155,10 @@ while (($#)) && [[ $1 != -- ]]; do
         --next)
           [[ $2 =~ ^[0-9]{2}$ ]] || usage_error "--next takes a two-digit ticket number, got '$2'"
           next=$2
+          ;;
+        --relay)
+          [[ $2 =~ ^[1-9][0-9]{0,18}$ ]] || usage_error "--relay takes the Discord id of the relay's message, got '$2'"
+          log_opts+=("$1" "$2")
           ;;
         --checks) checks=$2 ;;
         --since) since=$2 ;;
@@ -157,8 +188,7 @@ sibling() {
 events=$(task_event_array "$task")
 open_status='' problems=''
 json_vars --ledger open_status=task_status problems='[
-    if standing("held") then
-      (map(select(.event == "held")) | last) as $h | "\($task) is held since \($h.ts): \($h.reason)" else empty end,
+    (lifecycle | lifecycle_park("held") | select(. != null) | "\($task) is held since \(.ts): \(.reason)"),
     (pending_asks[] | "\($task) has an unanswered ask, \(.id), since \(.ts)")]
   | join("; ")' -- --arg task "$task" <<<"$events"
 case $open_status in
@@ -180,14 +210,15 @@ parsed="[${parsed%,}]"
 same_def='def same($p): .event == $p.event and
   if $p.event == "ticket-done" then .ticket == $p.ticket
   elif $p.event == "done" then .session == $p.session and .role == $p.role and .report == $p.report
+    and .report_chars == $p.report_chars
   elif $p.event == "pr" then .url == $p.url and same_head(.head; $p.head)
   elif $p.event == "review" then .verdict == $p.verdict and same_head(.head; $p.head)
   else del(.ts) == ($p | del(.ts)) end;'
 
 # In one jq run over the task's events and the message's:
 # - kind: the message's kind as the hand-off reads it, for what is printed. A PAUSED stowed is the
-#   answer to a STOW: its paused event's reason is the word stowed, alone or followed by more
-#   ("stowed, handoff.md written"), never a word that only starts with it.
+#   answer to a STOW: its paused event's cause is stow (park_cause in bin/lib/ledger.jq: the word
+#   stowed, alone or followed by more, "stowed, handoff.md written").
 # - back: the findings a pass counts that go back before the merge, as text, or nothing.
 # - held: which of the message's events the ledger holds since the sender's launch, each as
 #   {event, at}, at the index of the event that holds it, or null; anchor is the sender's launch's
@@ -206,10 +237,11 @@ kind='' back='' held='' briefs='' builder_kits='' reviewer_kits='' sender_wt='' 
 review='' latest=''
 json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3]
   | (.[1] // "") as $sub
-  | if .[0] == "DONE" and ($sub | test("^[0-9]{2}$")) then "DONE <NN>"
+  | if .[0] == "DONE" and any($parsed[]; .event == "done" and .role == "ops") then "DONE"
+    elif .[0] == "DONE" and ($sub | test("^[0-9]{2}$")) then "DONE <NN>"
     elif .[0] == "DONE" and ($sub | IN("review-ready", "merged", "pass", "findings", "gate")) then join(" ")
     else .[0] end
-  | if . == "PAUSED" and (try any($parsed[]; .event == "paused" and (.reason | test("^stowed(\\W|$)"))) catch false)
+  | if . == "PAUSED" and any($parsed[]; .event == "paused" and park_cause == "stow")
     then "PAUSED stowed" else tostring end' \
   back='$parsed | map(select(.event == "review")) | first | select((.sent_back // []) == [])
     | [(.findings // {}) as $f | "blocking", "correctness", "security", "real-data", "note-change"
@@ -402,10 +434,34 @@ if [[ $handoff == verdict ]]; then
       where=${file:+in $file}
       stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
       case $holds in
-        holds) echo "send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $short} on the same branch, then deliver again as your brief says" ;;
-        full) echo "send to $who: $stow" ;;
-        gone) echo "$gone $stow" ;;
+        holds) fix="send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $short} on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a $task QUESTION first), then deliver again as your brief says" ;;
+        full) fix="send to $who: $stow" ;;
+        gone) fix="$gone $stow" ;;
       esac
+      # The churn rule (see the header), over the ledger as it was before this run logged anything,
+      # the previous review on a rerun the latest before the index that holds this one.
+      churn=$(jq -c --argjson review "$review" --argjson held "$held" '
+        def sent_widening: (.sent_back // []) as $s | [(.widening // [])[] | select(IN($s[]))];
+        ([$held.events[] | select(.event.event == "review") | .at] | first) as $at
+        | ([to_entries[] | select(.value.event == "review" and ($at == null or .key < $at)) | .value] | last) as $prev
+        | ($review | sent_widening) as $w
+        | (($prev // {}) | sent_widening) as $p
+        | ($review.findings // {}) as $f
+        | any("blocking", "correctness", "security", "real-data"; ($f[.] // 0) > 0) as $serious
+        | any(($review.sent_back // [])[]; IN($w[]) | not) as $outside
+        | select($w != [] and $p != [] and (($serious and $outside) | not))
+        | {w: $w, p: $p, short: $review.head[:8], prev_short: $prev.head[:8],
+           areas: [($review.guarded // [])[] | select(IN("guardrails", "permissions", "secrets"))]}' <<<"$events")
+      if [[ -z $churn ]]; then
+        echo "$fix"
+      else
+        whom=decide
+        areas=$(jq -c .areas <<<"$churn")
+        if [[ $areas != '[]' ]]; then
+          whom="the review found guarded areas $(and_list "$areas"), so ask Daniel with team-ask $task <an id> --file <the question>"
+        fi
+        echo "churn: findings $(and_list "$(jq -c .w <<<"$churn")") of the review of $(jq -r .short <<<"$churn") sit in what the fix since the last review added, as findings $(and_list "$(jq -c .p <<<"$churn")") of the review of $(jq -r .prev_short <<<"$churn") did: $whom whether to narrow them (the holder makes each a documented limit in the code's header instead of widening the fix, and the next rereview's --since says so), revert the fix that widened, or run one more round: $fix"
+      fi
     fi
     exit 0
   fi

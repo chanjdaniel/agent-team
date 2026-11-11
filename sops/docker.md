@@ -53,6 +53,7 @@ The wrapper:
 - creates each bind mount's host directory before `up` and runs every service that writes into a bind mount as the calling user, since Docker creates a missing source directory as root and a service running as root writes root-owned files into the worktree, which no session can remove without `sudo` (T3's `node_modules`, T21's and T24's gate worktrees).
 
 The `stack` block's `seed` command, which `team-stack` runs from the worktree with `env`'s exports, finds the stack running and never starts one: when the stack is not up, it refuses and exits non-zero, so only `team-stack up` starts a stack, labelled and admitted.
+It may run again on a stack that holds data, a half-seeded one included: `team-stack seed` runs it whenever asked, and `up` runs it again on a stack whose seed is owed, after a seed that failed or never finished ("The stack record").
 Conventioner's seed command, `scripts/seed_fixture.sh`, does not meet this yet: run by hand after an `up` refused for room on 2026-11-01, it started slot 8's stack itself, with no team labels, which `team-stack` then refused to start or remove.
 
 A caller clears its own stack identity (`COMPOSE_PROJECT_NAME`, `TH_PORTS` and every `TH_*_PORT`) before calling the wrapper and sets only what it means, so a shell that once exported another stack's never redirects a call.
@@ -61,10 +62,11 @@ A caller clears its own stack identity (`COMPOSE_PROJECT_NAME`, `TH_PORTS` and e
 
 An agent starts, reaches, stops and removes its stack with `~/agent-team/bin/team-stack`, never with `docker compose up`, the wrapper's `up` or `docker run`.
 
-- `~/agent-team/bin/team-stack up` starts the worktree's stack once the machine has room for it ("Admission"), labelled with its task, and seeds a new database.
+- `~/agent-team/bin/team-stack up` starts the worktree's stack once the machine has room for it ("Admission"), labelled with its task, and seeds a new database, or one whose seed is owed ("The stack record").
 - `eval "$(~/agent-team/bin/team-stack env)"` exports what reaches it: `COMPOSE_PROJECT_NAME`, a `TH_<SERVICE>_PORT` per service (the wrapper's `ports`) and the stack's five `TEAM_*` labels, so the seed, Playwright, `mongosh` and a hand-run wrapper call reach the same stack without changing its labels.
-- `~/agent-team/bin/team-stack seed` runs the project's seed command again, from the worktree, with those exports.
-- `~/agent-team/bin/team-stack stop` stops its containers and keeps its data; the next `up` starts them again and does not seed.
+  When the stack's seed is not done, it first warns on stderr ("The stack record"), its stdout the same, so the `eval` still works and the warning shows in the caller's output.
+- `~/agent-team/bin/team-stack seed` runs the project's seed command again, from the worktree, with those exports, and records how it ended.
+- `~/agent-team/bin/team-stack stop` stops its containers and keeps its data; the next `up` starts them again and does not seed, unless its seed is owed.
 - `~/agent-team/bin/team-stack down` saves its logs and removes it, leaving no container, volume (named or anonymous) or network of it.
 
 Each acts on the worktree it is run in (or `--worktree <path>`), resolved the same way:
@@ -79,7 +81,7 @@ Every stack starts fresh for its task:
 
 - A team stack of another task in the worktree's slot is taken down first, exactly as `down` does, its logs saved as `stack-logs/<old task>-<project>-<service>.log`, so the new task gets an empty database and volumes carrying its own labels.
 - A new stack gets `TEAM_OWNER=agent-team`, its task, `TEAM_KIND=dev`, the worktree's path and an empty `TEAM_EXPIRES`; an existing one of the same task is always called with the labels read back from its containers.
-- The seed runs only when the stack is new and none of its named volumes was there before, and not with `up --no-seed`.
+- The seed runs when the stack is new and none of its named volumes was there before, or when the stack's record says its seed is owed, and never with `up --no-seed`.
 
 `down` saves the last 1 MiB of each `log_services` service's log to `<worktree>/<task_dir>/stack-logs/<project>-<service>.log`, for the builder while the task is open.
 `team-close`'s archive leaves `stack-logs/` out (`archive_left_out` in `bin/lib/team.sh`), so the logs never reach the records and go when the worktree is returned.
@@ -87,6 +89,31 @@ It then runs `docker compose -p <project> down -v --remove-orphans`, removes any
 With no stack, `stop` and `down` say so and exit 0; `env` and `seed` refuse.
 
 Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command line, 75 try again later (no room for the stack, see "Admission").
+
+## The stack record
+
+Each team stack has one record of what Docker cannot tell, `~/.local/state/agent-team/stacks/<Compose project>.json`: `{"schema": "team-stack/1", "seed": {...}, "admission": {...}, "last_busy": ...}`, each key optional.
+Running and stopped stay Docker's, and ownership stays in the labels.
+
+- The seed's `state` is `pending`, `running`, `done`, `failed` or `skipped`, with `at`, when it took that state (UTC), and `commit`, the worktree's `HEAD` when the seed started (null when git cannot say, and for `pending` and `skipped`).
+  A `running` seed also has `pid`, the `team-stack` running it, and a `failed` one `exit`, the seed command's status.
+- `admission` is `{id, at}`, the admission the stack was started on ("Admission"), and when it was made.
+- A record with no `seed` (every file from before the record), a missing one for a stack that exists, and a file that is not a JSON object read as `unknown`, and are left alone, so a stack that holds Daniel's or a builder's data is never seeded on a guess.
+- Only `team-stack` writes it, each write under an exclusive `flock` on `~/.local/state/agent-team/stacks/records.lock`, a temporary file moved into place, so the sweep's `last_busy` and an `up`'s seed never overwrite each other.
+
+How the seed moves:
+
+- An `up` of a new stack writes its record new before its `up -d --wait`: `pending`, or `skipped` with `--no-seed`.
+  So an `up -d --wait` that fails, or an `up` killed before its seed, leaves the seed owed.
+- The seed command starting (in `up` or `seed`) makes it `running`; exiting 0 makes it `done`, and non-zero `failed`, with the message "the seed command <seed> failed (exit <n>) for <name>; the next team-stack up or team-stack seed seeds it again".
+- The seed is owed when it is `pending`, `failed`, or `running` with a `pid` that `ps -o args= -p <pid>` does not show as a `team-stack` (a pid since reused by another process included).
+  An `up` without `--no-seed` of an existing stack whose seed is owed seeds it again and says why: "seeded again: its seed, owed since <at>, never ran", "... its seed failed at <at> (exit <n>)" or "... its seed, started at <at>, never finished".
+  Two `up`s never seed one stack at once: each moves the record to `running` only while it is still the seed it read.
+- An `up` leaves a seed a live `team-stack` is running ("not seeded: its seed is running in team-stack <pid>"), one that is `done` or `unknown` ("not seeded: its database was there"), and one that is `skipped`, which only `team-stack seed` seeds ("not seeded: it was started with --no-seed at <at> and never seeded; team-stack seed seeds it").
+- `up --no-seed` never seeds, and on an owed stack says what is owed: "not seeded: --no-seed, though <the owed words>; team-stack seed seeds it".
+- `stop`, the sweep and `team-level`'s stop leave the seed as it is; `down`, the reaper's removal and `up`'s takedown of another task's stack remove it.
+
+`env` warns when the seed is not done, one line on stderr before its exports: "team-stack: warning: <name> is not seeded: <the owed words, or 'it was started with --no-seed at <at> and never seeded'>; team-stack seed seeds it", or "...: its seed is running in team-stack <pid>"; `done` and `unknown` print nothing.
 
 ## Instances: more stacks of one worktree
 
@@ -127,6 +154,12 @@ A browser-driving agent gets its own the same way: `~/agent-team/bin/team-stack 
   - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`; on macOS the home directory's, below) at least `disk_floor_gb` GB, `team-stack`'s own;
   - **budget**: this checkout's `team-capacity admit --kind stack:<registered project> --task T<n>` admits it to the level's memory budget beside what the team's work reserves, given the sum of the stack's `mem_limit`s (`--seed-bytes`; a Conventioner stack is about 2.75 GiB) for a stack it has no estimate of yet: 0 admits, 75 refuses with its reason, anything else fails `up`.
   A disk short of room never asks `team-capacity`, so no admission is kept for a stack that does not start.
+- The admission's id is `admit`'s first line, and `up` releases it (`team-capacity release <id>`) on every exit before the wrapper's `up -d --wait` has returned 0, a TERM included, so a stack that fails to start frees its room at once; only a KILL leaves it to its 10 minutes.
+  Once the stack runs, the id is written to its record as `admission` ("The stack record"), so a seed that fails afterwards leaves it reserved for the running stack.
+- `stop` (`team-level`'s stop of an idle stack included, which runs it) and `down` release the admission the record names, so a stack stopped or removed within its 10 minutes frees its room at once; so do the reaper's removal of a team stack, `up`'s takedown of another task's stack and the takedown of instances.
+  `stop` then takes `admission` out of the record.
+  A release that fails is one line on stderr, "team-stack: warning: could not release admission <id>: <reason>; it ends 10 minutes after it was made", and the stop or down goes on.
+  The sweep's stop releases nothing, since it stops only a stack idle for `idle_minutes`, long past its admission's 10 minutes.
 - With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes` from that first refusal, and then exits 75 naming the failing check with its numbers, for example `team-stack: no room for conventioner-1: stack:conventioner at minor (30%): 8.9 GiB of 9.2 GiB reserved, a stack of conventioner needs 2.8 GiB; room comes when the team's work shrinks or the level rises`, or `team-stack: no room for conventioner-1: stack:conventioner: the team is at level none: nothing starts; room comes when Daniel raises the level`.
   An agent that gets 75 reports `PAUSED` with that line rather than fighting for room.
 - Gate runs never call `team-stack`, so they are never held back; a running gate stack is reserved in the budget all the same, and their own turn-taking is Conventioner's end-to-end lock.
@@ -139,6 +172,7 @@ The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object 
 | `disk_floor_gb` | 30 | the GB left free on Docker's file system |
 | `wait_minutes` | 15 | how long `up` waits for room; 0 does not wait |
 | `idle_minutes` | 30 | how long a team stack may go without a busy session before the sweep stops it |
+| `gate_idle_minutes` | 30 | how long the stored readings must show a running gate stack with no process in use before the sweep removes it |
 | `heartbeat_sweep` | false | whether the heartbeat runs the sweep |
 | `heartbeat_janitor` | false | whether the heartbeat runs the janitor |
 
@@ -150,17 +184,33 @@ On macOS, Docker runs in Docker Desktop's VM, whose disk image lives on the file
 
 ## Stopping idle stacks
 
-`team-stack sweep` stops the team stacks nobody is using, so a crashed or finished worker's stack does not hold memory for hours.
+`team-stack sweep` removes the gate stacks no gate run is using and stops the team stacks nobody is using, so a finished gate run's stack, or a crashed or finished worker's, does not hold memory for hours.
 The heartbeat runs it once Daniel turns `heartbeat_sweep` on ("The heartbeat's steps"); anyone may run it by hand.
+
+First, whether or not a team stack runs and before it reads the session list, it removes each idle gate stack:
+
+- It looks only at running gate stacks: every container of the Compose project of class gate, one running.
+- It judges one by the stored readings of the machine (`~/.local/state/agent-team/capacity/readings.jsonl`, which the heartbeat's capacity step writes each run, right before its level and stacks steps), each of which says whether a process works in each running gate stack (`in_use`, "Readings" in `sops/resources.md`).
+  A missing or unreadable file is no readings.
+- A gate stack is idle since the earliest reading of the unbroken run of latest readings that each hold it with `in_use` false, each at most 10 minutes after the one before, so a reading that lacks it (Docker did not answer, the stack was stopped) or shows it in use restarts the count, and one the newest reading shows in use is never removed.
+  A gap of more than 10 minutes with no reading (the heartbeat off, the machine asleep, a handoff) restarts the count too, so idleness is never counted across time nothing was read in.
+- `in_use` sees only processes working in the gate run's worktree, so a gate step that runs none there (a long wait on GitHub's checks, say) reads as idle, and a step quiet for longer than `gate_idle_minutes` loses its stack while the run goes on.
+  Whether the gate needs its stack after such a step is the gate's behaviour, which the team has not checked, so the 30 minutes are a guess at the gate's longest quiet step: lengthen `gate_idle_minutes` on a machine where a gate run loses its stack that way.
+- When no reading is from the last 10 minutes, it removes nothing and says nothing, so a heartbeat that has not read the machine for a while never acts on old evidence.
+- Idle for at least `gate_idle_minutes` ("Admission" has the settings), it is removed as the reaper removes a gate stack (`docker compose -p <project> down -v --remove-orphans`, then its anonymous volumes, no logs), and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-11-11T10:00:00Z removed gate stack nmtest-1895520: no process in use in it since 2026-11-11T09:30:00Z (gate_idle_minutes 30), its test data removed`.
+- The daily reap's gate rule ("Removing what is left behind") still removes the gate stacks the readings never saw idle: a machine whose sweep is off, a stopped gate stack.
+
+Then it stops each idle team stack:
 
 - It looks only at running team stacks: every container of the Compose project of class team, so gate and unowned stacks, and a project whose containers mix them with team ones, are never stopped; only containers count, so a team project holding an unowned volume is stopped, which keeps every object.
 - A stack is busy while a live session (`claude agents --json`, interactive sessions included) with `status` `busy` has its `cwd` in the stack's `worktree` label or below it: the `cwd` or one of its parents names the same directory as the label, however either is spelled (a symlink, or another case on a case-insensitive filesystem), so a sibling path sharing the prefix (`shop-1-2` for `shop-1`) is not inside it.
-- For a busy stack it writes the time to `~/.local/state/agent-team/stacks/<project>.json` as `last_busy`, since the session list keeps no last-activity time.
-- A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable state file is never seen busy.
+- For a busy stack it writes the time to its record ("The stack record") as `last_busy`, keeping the rest, since the session list keeps no last-activity time.
+- A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable record is never seen busy.
 - Idle for more than `idle_minutes` ("Admission" has the settings), it is stopped with `docker compose -p <project> stop`, its data kept, and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-10-25T10:00:00Z stopped conventioner-2 of T7 in /home/daniel/.treehouse/Conventioner-d4c77a/2/Conventioner: last busy at 2026-10-25T09:20:00Z (idle_minutes 30), its data kept`.
-  `~/agent-team/bin/team-stack up` starts it again with its data, without seeding.
-- Docker not answering means no stack runs: it says so on stderr and exits 0, so the heartbeat logs nothing for it; a session list that cannot be read exits 1 and stops nothing; a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
-- `down` removes the stack's state file with the stack.
+  `~/agent-team/bin/team-stack up` starts it again with its data, without seeding unless its seed is owed.
+- Docker not answering means no stack runs: it says so on stderr and exits 0, so the heartbeat logs nothing for it; a session list that cannot be read exits 1 and stops nothing; a gate stack's removal or a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
+- Unowned stacks are never touched.
+- `down` removes the stack's record with the stack.
 - Instances (`--instance`) are team stacks labelled with their worktree, so they are swept the same way.
 
 ## Removing what is left behind
@@ -232,7 +282,7 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
   The next run picks it up: there is nothing to restart.
 - To turn it off, they set the key to `false` or remove it; a missing file is every key off.
 - Both run only where the checkpoint runs: on the lease holder, after the lease step (or the back step, after an outage), never on a fenced machine, while GitHub is unreachable, on a machine that does not hold the lease, or while another run holds the heartbeat's lock.
-  The checkpoint is the first step after the lease step, so no slower step widens the window of records not yet on origin; the ledger, alert, inbox, finished, capacity, level, stacks, pack and janitor steps follow it in that order.
+  The checkpoint is the first step after the lease step, so no slower step widens the window of records not yet on origin; the ledger, coordinator, alert, inbox, finished, capacity, level, stacks, pack and janitor steps follow it in that order.
 - Each logs one line in `~/.local/state/agent-team/heartbeat.log` per line its command prints, and nothing while it is off.
   A step that fails, or whose `stack.json` is malformed, is logged as `<step>: failed: <reason>`; the steps after it still run, and the run exits 1.
   That line, like every heartbeat line that reports a problem, goes to `heartbeat-failures.log` beside it too, which keeps 30 days, while the heartbeat log keeps its last 1000 to 2000 lines.
@@ -281,7 +331,7 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 - The bats tests never reach the machine's Docker: `tests/helpers/docker.bash` installs a stub `docker` that answers from fixtures recorded on this machine (`tests/fixtures/docker/`) and logs every call.
 - The stub also models the fixture project's stack (`tests/fixtures/stack/`), so `up`, `env`, `seed`, `stop` and `down` are tested through the wrapper contract rather than Conventioner.
 - The stub also stands in for the machine's memory and disk: `TEAM_MEMINFO` names a file read in place of `/proc/meminfo`, a stub `df` answers from the test's numbers, and `TEAM_STACK_RECHECK_SECONDS` shortens the 30 seconds between admission checks.
-- The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree.
+- The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree, and write the stored readings its gate rule reads.
 - The reaper's tests age the stub's objects with `docker_created` and refuse one removal with `docker_refuse`, and every test of `tests/team-stack.bats` and `tests/team-janitor.bats` fails when a Docker call it made pruned.
 - The janitor's tests add `oom` events with `docker_event`, set the free disk through the stub `df`, and stub Discord's answers to its posts (the sandbox's `curl` stub).
 - `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last room in the budget (a stored reading leaving room for one), has the sweep stop an idle stack that `up` then brings back with its data, runs the worktree's stack and two instances at once on ports of their own, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.

@@ -20,7 +20,7 @@
 {"ts":"2026-10-22T07:00:00Z","task":"T60","event":"gate-run","run":"R1","head":"aaaaaaa","outcome":"red","minutes":{"review":6,"test":24}}
 {"ts":"2026-10-22T07:00:00Z","task":"T60","event":"paused","reason":"the gate re-runs once the machine's load drops"}
 {"ts":"2026-10-22T07:30:00Z","task":"T60","event":"resumed"}
-{"ts":"2026-10-22T08:30:00Z","task":"T60","event":"gate-run","run":"R2","head":"bbbbbbb","outcome":"pushed","cause":"load","minutes":{"review":5,"test":25,"document":1,"push":1,"ci":28}}
+{"ts":"2026-10-22T08:30:00Z","task":"T60","event":"gate-run","run":"R2","head":"bbbbbbb","outcome":"pushed","cause":"load","minutes":{"review":5,"test":25,"document":1,"push":1,"ci":28},"approved":["review-coverage"]}
 {"ts":"2026-10-22T08:30:00Z","task":"T60","event":"pr","url":"https://github.com/chanjdaniel/Conventioner/pull/7","head":"bbbbbbb"}
 {"ts":"2026-10-22T08:30:00Z","task":"T60","event":"done","role":"builder","session":"s0000000"}
 {"ts":"2026-10-22T08:30:00Z","task":"T60","event":"launch","role":"reviewer","session":"s0000005","worktree":"/home/danielc/wt/T60","toolkits":[]}
@@ -30,7 +30,7 @@
 {"ts":"2026-10-22T10:00:00Z","task":"T60","event":"paused","reason":"gate run for the review's findings"}
 {"ts":"2026-10-22T10:00:00Z","task":"T61","event":"opened","project":"agent-team","path":"small","type":"fix","title":"T61 fixture","branch":"fix/T61-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T61"}
 {"ts":"2026-10-22T10:00:00Z","task":"T61","event":"launch","role":"builder","session":"s0000007","worktree":"/home/danielc/wt/T61","toolkits":[]}
-{"ts":"2026-10-22T11:00:00Z","task":"T60","event":"gate-run","run":"R3","head":"ccccccc","outcome":"stopped-green","cause":"review","minutes":{"review":4,"test":26,"ci":30}}
+{"ts":"2026-10-22T11:00:00Z","task":"T60","event":"gate-run","run":"R3","head":"ccccccc","outcome":"stopped-green","cause":"review","minutes":{"review":4,"test":26,"ci":30},"approved":["review-coverage","lint-before"]}
 {"ts":"2026-10-22T11:00:00Z","task":"T60","event":"resumed"}
 {"ts":"2026-10-22T11:00:00Z","task":"T60","event":"pr","url":"https://github.com/chanjdaniel/Conventioner/pull/7","head":"ccccccc"}
 {"ts":"2026-10-22T11:00:00Z","task":"T60","event":"done","role":"builder","session":"s0000000"}

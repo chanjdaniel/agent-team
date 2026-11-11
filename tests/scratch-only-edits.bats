@@ -110,9 +110,70 @@ setup() {
 }
 
 @test "a wrong argument on its command line refuses every call" {
-  run_bin -2 --separate-stderr hooks/scratch-only-edits --bogus \
-    <<<"$(jq -cn --arg cwd "$wt" '{cwd: $cwd, tool_name: "Read", tool_input: {file_path: "a"}}')"
-  assert_equal "$stderr" "scratch-only-edits: usage: scratch-only-edits   (the hook's input on stdin)"
+  local arg
+  for arg in --bogus '' /abs/answer.md .scratch/../answer.md ./.scratch/answer.md .scratch//answer.md \
+    .scratch/answer.md/ .scratch/. '.scratch/a b.md' "$(printf '.scratch/a\nb')"; do
+    run_bin -2 --separate-stderr hooks/scratch-only-edits "$arg" \
+      <<<"$(jq -cn --arg cwd "$wt" '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: ".scratch/answer.md"}}')"
+    assert_equal "$stderr" "scratch-only-edits: usage: scratch-only-edits [<the one file a session may write, relative to the worktree>]   (the hook's input on stdin)"
+  done
+  run_bin -2 --separate-stderr hooks/scratch-only-edits .scratch/answer.md .scratch/other.md \
+    <<<"$(jq -cn --arg cwd "$wt" '{cwd: $cwd, tool_name: "Write", tool_input: {file_path: ".scratch/answer.md"}}')"
+  assert_contains "$stderr" "usage: scratch-only-edits ["
+}
+
+# one <status> <tool> <path> [cwd]: run the hook given the one file .scratch/answer.md on an edit
+# tool's call.
+one() {
+  run_bin "$1" --separate-stderr hooks/scratch-only-edits .scratch/answer.md \
+    <<<"$(jq -cn --arg tool "$2" --arg p "$3" --arg cwd "${4:-$wt}" '{hook_event_name: "PreToolUse", cwd: $cwd,
+      tool_name: $tool, tool_input: (if $tool == "NotebookEdit" then {notebook_path: $p} else {file_path: $p, content: "x"} end)}')"
+}
+
+@test "given one file, an edit tool writes that file and nothing else, elsewhere under .scratch/ included" {
+  local tool
+  for tool in Write Edit MultiEdit NotebookEdit; do
+    one -0 "$tool" "$wt/.scratch/answer.md"
+    assert_equal "$output$stderr" ""
+    one -0 "$tool" .scratch/answer.md
+    one -0 "$tool" answer.md "$wt/.scratch"
+    one -0 "$tool" "$wt/.scratch/task/../answer.md"
+    one -2 "$tool" "$wt/.scratch/task/notes.md"
+    assert_equal "$stderr" "Blocked: this session may edit one file only, $wt/.scratch/answer.md (tried $wt/.scratch/task/notes.md)."
+    one -2 "$tool" "$wt/.scratch/answer.md.bak"
+    assert_contains "$stderr" "(tried $wt/.scratch/answer.md.bak)"
+    one -2 "$tool" "$wt/.scratch/answer.md/x"
+    one -2 "$tool" "$wt/src/main.sh"
+    assert_contains "$stderr" "only, $wt/.scratch/answer.md (tried $wt/src/main.sh)."
+    one -2 "$tool" "$HOME/elsewhere/answer.md"
+  done
+  # The root is the project directory when set, as without the argument.
+  mkdir -p "$HOME/project/.scratch"
+  CLAUDE_PROJECT_DIR=$HOME/project one -0 Write "$HOME/project/.scratch/answer.md"
+  CLAUDE_PROJECT_DIR=$HOME/project one -2 Write "$wt/.scratch/answer.md"
+  assert_contains "$stderr" "only, $HOME/project/.scratch/answer.md (tried"
+  # A call with no path passes, as without the argument.
+  run_bin -0 hooks/scratch-only-edits .scratch/answer.md \
+    <<<"$(jq -cn --arg cwd "$wt" '{cwd: $cwd, tool_name: "Write", tool_input: {}}')"
+}
+
+@test "given one file, a symlink to it or from it is blocked" {
+  # The file itself a link, to outside or inside .scratch/: the write would land elsewhere.
+  ln -s "$HOME/elsewhere/target.md" "$wt/.scratch/answer.md"
+  one -2 Write "$wt/.scratch/answer.md"
+  assert_equal "$stderr" "Blocked: this session may edit one file only, $wt/.scratch/answer.md (tried $HOME/elsewhere/target.md)."
+  rm "$wt/.scratch/answer.md"
+  ln -s "$wt/.scratch/task/notes.md" "$wt/.scratch/answer.md"
+  one -2 Write "$wt/.scratch/answer.md"
+  rm "$wt/.scratch/answer.md"
+  # A .scratch/ that is a link.
+  mkdir -p "$HOME/wt2"
+  ln -s "$wt/.scratch" "$HOME/wt2/.scratch"
+  CLAUDE_PROJECT_DIR=$HOME/wt2 one -2 Write "$HOME/wt2/.scratch/answer.md"
+  assert_equal "$stderr" "Blocked: this session may edit one file only, $HOME/wt2/.scratch/answer.md (tried $wt/.scratch/answer.md)."
+  # A path that links to the one file writes that file.
+  ln -s "$wt/.scratch/answer.md" "$wt/.scratch/alias.md"
+  one -0 Write "$wt/.scratch/alias.md"
 }
 
 @test "a shell append to the team home's records is blocked" {

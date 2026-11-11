@@ -7,9 +7,12 @@
 # from its opened to its closed, or to --until (default now) while it is open, cut to the window
 # from --since (default the ledger's start) to --until; --task measures that task alone.
 # Each stretch of a task's time is one phase, walked through its events in ledger order:
-#   a park (waiting, blocked, paused, held) holds until the next launch or resumed, or, for a
-#   wait on Daniel, merge-approved, never an answered; it is classed first match wins: wait:limit
-#   (the usage, token, weekly or session limit), wait:off (stowed, shutdown, OS update, handoff);
+#   the waits come from the ledger's lifecycle fold, the one team-state reads: a park (waiting,
+#   blocked, paused, held) stands until the fold ends it (a launch ends every one but a held, a
+#   resumed with none of id, all and brief every one, a merge-approved an old wait on Daniel),
+#   never at an answered, and the latest standing one holds the stretch; it is classed first
+#   match wins: wait:limit (the usage, token, weekly or session limit), wait:off (stowed,
+#   shutdown, OS update, handoff);
 #   then its on, when given, decides before its reason, in any case: wait:daniel (on=Daniel),
 #   wait:task (on=T<n>), unattributed (on=coordinator), gate (on=gate), wait:other
 #   (on=schedule), wait:external (any other party); then its reason: wait:external (GitHub
@@ -19,23 +22,25 @@
 #   wait:other; a park logged after the fact with since holds from since, not from its own ts;
 #   an asked with no park standing is a wait on Daniel until it and every ask asked while it
 #   stands are settled, each by an answered or merge-preapproved with its id or a merge-approved
-#   whose url its text names, or a launch, resumed or another park ends it;
+#   whose url its text names, or a launch, resumed, another park or a merge-approved ends it;
 #   with no park, the last marker: a planner or ops launch planning, a builder's building, a
 #   reviewer's review, merge-approved merging, a passing review while a plan-time approval of the
 #   task stands (a merge-preapproved of a project with no later merge-preapproval-withdrawn of it)
 #   merging until the merged, or until a withdrawal leaves none standing with no merge-approved
 #   since that review, a review that sends notes back (sent_back) building (the builder's fix
-#   round, which a reviewer's done leaves building, and in which a paused reason=stowed is
+#   round, which a reviewer's done leaves building, and in which a paused whose cause is stow
+#   (its own, or a reason starting with stowed) is
 #   building up to the fresh builder's launch, until a builder's done, pr or ticket-done, another
 #   review, a merged or another role's launch), and a done (save one in that merging), merged or
 #   other review unattributed (the coordinator's turn, or a gate run the ledger did not see);
 #   a task starts unattributed;
-#   with no park, an ask still open while the phase is unattributed is a wait on Daniel.
+#   with no park, an ask the fold holds open while the phase is unattributed is a wait on Daniel.
 # A gate-run's minutes, ending at its ts, are gate time taken from building, unattributed or a
 # wait on Daniel.
 # Then the counts, of the events in the window: gate runs per PR (a run's PR is the first pr
 # event after it, else the latest before it), by cause ("none" for a first run) and by outcome,
-# with each step's median minutes; reviews and findings per PR (a review's PR is the latest pr
+# with each step's median minutes, and the parks the builder approved itself (each approved id of
+# a gate-run, by id); reviews and findings per PR (a review's PR is the latest pr
 # event before it, else the first after it); builder launches and tickets done per task; denials
 # (denied events, which park nothing, and blocked events classed wait:denial); Daniel's answers,
 # each asked matched to the task's next event that settles it, with the median and 90th

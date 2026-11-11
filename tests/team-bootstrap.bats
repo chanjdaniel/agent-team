@@ -22,6 +22,8 @@ preflight: done: jq, git and Python 3.11 are installed
 machine: done: this machine is home-pc
 machine: done: ~/.config/agent-team/home names $TEAM_HOME
 machine: done: the team home fetches only dev and lease
+machine: running: git -C $TEAM_HOME fetch origin
+machine: done: the team home shares history with origin's dev
 packages: done: every OS package is installed
 tools: done: every tool is at its pin or above its minimum
 projects: done: every project is cloned and set up
@@ -49,18 +51,23 @@ summary: set up, and this machine holds the lease"
   git -C "$TEAM_HOME" config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
   git -C "$TEAM_HOME" fetch -q origin
   run_bin -0 team-bootstrap --stage machine --dry-run
-  assert_equal "$(stage_lines machine | tail -n2)" "would run: git -C $TEAM_HOME remote set-branches origin dev lease
-would run: git -C $TEAM_HOME branch -r -d origin/wip/home/T1"
+  assert_equal "$(stage_lines machine | tail -n4)" "would run: git -C $TEAM_HOME remote set-branches origin dev lease
+would run: git -C $TEAM_HOME branch -r -d origin/wip/home/T1
+would run: git -C $TEAM_HOME fetch origin
+done: the team home shares history with origin's dev"
   assert_equal "$(git -C "$TEAM_HOME" config --get-all remote.origin.fetch)" '+refs/heads/*:refs/remotes/origin/*'
   run_bin -0 team-bootstrap --stage machine
-  assert_equal "$(stage_lines machine | tail -n2)" "running: git -C $TEAM_HOME remote set-branches origin dev lease
-running: git -C $TEAM_HOME branch -r -d origin/wip/home/T1"
+  # The fetch after the narrowing brings dev and lease alone.
+  assert_equal "$(stage_lines machine | tail -n4)" "running: git -C $TEAM_HOME remote set-branches origin dev lease
+running: git -C $TEAM_HOME branch -r -d origin/wip/home/T1
+running: git -C $TEAM_HOME fetch origin
+done: the team home shares history with origin's dev"
   assert_equal "$(git -C "$TEAM_HOME" config --get-all remote.origin.fetch)" "+refs/heads/dev:refs/remotes/origin/dev
 +refs/heads/lease:refs/remotes/origin/lease"
   assert_equal "$(git -C "$TEAM_HOME" for-each-ref --format='%(refname)' refs/remotes | grep -v '/HEAD$')" "refs/remotes/origin/dev
 refs/remotes/origin/lease"
   run_bin -0 team-bootstrap --stage machine
-  assert_equal "$(stage_lines machine | tail -n1)" "done: the team home fetches only dev and lease"
+  assert_equal "$(stage_lines machine | tail -n3 | head -n1)" "done: the team home fetches only dev and lease"
 }
 
 @test "a fresh Mac: every stage installs what its doctor lines lack, then Daniel's steps in order; a second run installs nothing" {
@@ -72,7 +79,9 @@ refs/remotes/origin/lease"
   node=$(lock_pin node)
   assert_equal "$(stage_lines machine)" "named this machine laptop (~/.config/agent-team/machine)
 named the team home $TEAM_HOME (~/.config/agent-team/home)
-done: the team home fetches only dev and lease"
+done: the team home fetches only dev and lease
+running: git -C $TEAM_HOME fetch origin
+done: the team home shares history with origin's dev"
   assert_equal "$(head -n1 "$HOME/.config/agent-team/machine")" laptop
   assert_equal "$(cat "$HOME/.config/agent-team/home")" "$TEAM_HOME"
   assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
@@ -134,8 +143,9 @@ trust site"
   calls=$(install_calls)
   run_bin -1 team-bootstrap
   assert_equal "$(install_calls)" "$calls"
-  assert_equal "$(grep -v '^check: ' <<<"$output" | grep -vc ': done')" 1
-  assert_equal "$(stage_lines preflight | head -n1)" "macOS"
+  # Every stage is done, but for the preflight's OS line and the team home's fetch, which runs each time.
+  assert_equal "$(grep -v '^check: ' <<<"$output" | grep -v ': done')" "preflight: macOS
+machine: running: git -C $TEAM_HOME fetch origin"
   assert_equal "$(stage_lines check | grep -c '^Daniel')" 7
 }
 
@@ -148,7 +158,9 @@ trust site"
   assert_equal "$(install_calls)" ""
   assert_equal "$(stage_lines machine)" "would write laptop to ~/.config/agent-team/machine
 would write $TEAM_HOME to ~/.config/agent-team/home
-done: the team home fetches only dev and lease"
+done: the team home fetches only dev and lease
+would run: git -C $TEAM_HOME fetch origin
+done: the team home shares history with origin's dev"
   assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
 would run: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '2,3p')" "would run: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
@@ -174,7 +186,9 @@ would then set up conventioner's task directory exclude and its no-mistakes gate
   fresh arch
   run_bin -0 team-bootstrap --stage machine --name laptop
   assert_equal "$output" "machine: named this machine laptop (~/.config/agent-team/machine)
-machine: done: the team home fetches only dev and lease"
+machine: done: the team home fetches only dev and lease
+machine: running: git -C $TEAM_HOME fetch origin
+machine: done: the team home shares history with origin's dev"
   run_bin -1 team-bootstrap --stage packages
   assert_equal "$output" "packages: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage packages, which runs pacman -S --needed $ARCH_PACKAGES with sudo and asks for your password; then team-bootstrap again"
   run_bin -0 team-bootstrap --stage preflight

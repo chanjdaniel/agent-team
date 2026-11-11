@@ -3,8 +3,10 @@
 #
 # The Discord plugin logs in to Discord from every session that loads it, so it is off in user
 # settings and on here alone, through this session's own --settings. Bypass mode, by Daniel's
-# choice; workers run in auto mode, and crossSessionInbound: accept (user settings) keeps their
-# messages to this session from being held. With the safety classifier off here, its settings'
+# choice; workers run in auto mode, which holds a bypass-mode sender's message for an approval
+# nobody gives unless the receiver's settings accept it, so the workers' own settings
+# (settings/worker.json, crossSessionInbound: accept) take this session's messages, whatever a
+# machine's user settings say. With the safety classifier off here, its settings'
 # deny rules stop the plain spelling of a force push, a push to dev or main, git reset --hard,
 # git clean, git branch -D, a Docker prune and a merge outside team-merge, by the workers' own
 # rules (tests/repo.bats holds the two together), a speed bump another spelling gets past;
@@ -36,10 +38,17 @@
 # that this machine holds the lease, naming the holder, or saying a coordinator never starts
 # offline when GitHub is unreachable.
 #
-# Only one coordinator: it refuses (exit 1, naming the session id) while `claude agents --json`
-# lists a live session named coordinator, so the ledger keeps one writer and Discord one
-# listener. A non-blocking flock on ~/.local/state/agent-team/coordinator-launch.lock, held from
-# that check through the launch, makes a second launch at the same moment exit 1 at once.
+# Only one coordinator: it refuses (exit 1, naming the session id) while `claude agents --json
+# --all` lists a session named coordinator in any state but stopped, so the ledger keeps one
+# writer and Discord one listener: a background one whose turn is done (or that failed) counts,
+# though the daemon has settled its process and the list without --all leaves it out, since a
+# message or a finished shell of its wakes it. A non-blocking flock on
+# ~/.local/state/agent-team/coordinator-launch.lock, held from that check through the launch,
+# makes a second launch at the same moment exit 1 at once. The list is this machine's alone:
+# claude agents --json lists no Remote Control session, so a twin over Remote Control (another
+# machine's coordinator, or this session's own row left from before its machine went down) is
+# the coordinator's ListAgents check at each start (bin/hooks/session-digest), and team-sweep's
+# coordinator-twin finds a second one on this machine.
 #
 # Usage: claude-coordinator [--prompt <text>] [working-directory]   (default: the team home)
 #   --prompt  the session's first prompt, in place of "You are the coordinator. Daniel talks to
@@ -70,9 +79,15 @@ mkdir -p "$state"
 exec {lock_fd}>"$lock"
 flock -n "$lock_fd" || die "another claude-coordinator is launching right now (it holds $lock)"
 
-live_sessions
-live=$(jq -r 'map(select(.name == "coordinator")) | first
-  | if . then .id // ((.sessionId // "")[:8]) else empty end' <<<"$LIVE_SESSIONS")
+# Every session the daemon may run again: without --all, the list leaves out a background session
+# with no process that is neither working nor blocked, as one is once its turn ends (done) or it
+# failed and the daemon settles its process, though a message or a finished shell of its wakes it.
+# --all lists every job the daemon still keeps, so only a stopped one, which nothing wakes on its
+# own, is gone.
+sessions=$(claude agents --json --all {lock_fd}>&- | jq -ce 'select(type == "array")' 2>/dev/null) ||
+  die "cannot read the session list (claude agents --json --all)"
+live=$(jq -r 'map(select(.name == "coordinator" and .state != "stopped")) | first
+  | if . then .id // ((.sessionId // "")[:8]) else empty end' <<<"$sessions")
 [[ -z $live ]] || die "a coordinator is already live: session $live; stop it with claude stop $live first"
 
 # The lock's file is closed for team-lease, so no helper its git leaves running holds it.

@@ -1,7 +1,8 @@
 # SOP: moving the team between machines
 
 The method T6 designed, T7 revised and T17 built (2026-10-23), in short; the research is in `tasks/T6/report.md` and `tasks/T7/report.md`, and nothing here needs it.
-Each command's `--help` is its exact reference; `tests/drill.bats` runs a handoff, a stale lease, a crash and an outage end to end through the real commands, two machines against local bare repos.
+Each command's `--help` is its exact reference.
+`tests/drill.bats` runs these paths in a sandbox (a handoff, a stale lease, a crash and an outage, end to end through the real commands, two machines against local bare repos), and `sops/drills.md` lists the drills that run them for real, between real machines.
 Setting up a machine is `sops/machine-setup.md`.
 
 ## Principles
@@ -34,6 +35,7 @@ Two repositories hold the team, each checked out on every machine:
 | Claude user config (instructions, settings, skills, plugins) | `machine/claude/` | `team-config capture` (in a handoff), `team-config apply` (in a resume) |
 | Auto memory | `memory/<project>/`, which every worktree of the project uses through `autoMemoryDirectory`, and `memory/coordinator/`, the team home's own once it is no project's primary checkout | `team-checkpoint`, `team-handoff` |
 | Each machine's Claude usage (token counts, never content), and where each launched worker session's time went (durations and tool or command names only) | `usage/<machine>/`, the time rows in `usage/<machine>/time/` | `team-tokens export`, in `team-checkpoint` and `team-handoff` |
+| Each drill's runs (what ran, the machine, the code commit, the Claude Code version and the verdict) | `drills.jsonl` | `team-drill` and the drills that record themselves; `team-checkpoint`, `team-handoff` |
 | Tool versions | `bin/lib/tools.lock` | read by `team-doctor` and `team-bootstrap` |
 | Which secrets a machine needs (never a value) | `machine/secrets.json`, described in `machine/secrets.md` | read by `team-secrets` |
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |
@@ -48,22 +50,30 @@ Two repositories hold the team, each checked out on every machine:
 - Every change is a commit on the tip just read, pushed without force: a rejected push means another machine moved it first, so two machines racing end with one holder.
   `git log origin/lease` is its history.
 - `team-lease take` takes a released lease; one another machine holds is refused, saying fresh or stale.
-  Stale (not renewed for 60 minutes) changes only that message: taking it still needs `take --steal` and the holder's name typed on a terminal, which deny rules keep every team session from doing.
+  Stale (not renewed for 60 minutes) changes only that message: taking it still needs `take --steal` and the holder's name typed on a terminal, which the coordinator's deny rules and the workers' `command-guard` keep every team session from doing.
 - `claude-coordinator` and `team-worker` (all but the load check's `T0`) refuse unless `team-lease check` confirms against origin that this machine holds it; offline, they refuse too.
 - Team sessions run with `isolatePeerMachines`, so a message to a session on another machine asks first.
 
 ## The heartbeat
 
-`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, checkpoint on each run (once the last checkpoint is 5 minutes old, less a minute for the timer's slack) right after the renewal, so no slower step widens the window of records not yet on origin, then bring the Waiting on you message in `#coordinator` up to date (`team-inbox`), take a reading of the machine's load with the team's use per task and place its sessions in their slices (`team-capacity sample` and `place`), and hold the team to its resource level (`team-level tick`, `sops/resources.md`).
-Between the checkpoint and the inbox it reads the ledger once for lines no reader can parse and writes its health record, `health.json` in `~/.local/state/agent-team/`, which `team-timers health` reads and the Waiting on you message's health line, the doctor's `health` line and the sweep's `checkpoint-stale` and `health` findings show.
-When checkpoints fail two runs in a row or stop for 15 minutes, the ledger holds a line no reader can parse, or another step fails 12 runs in a row, it posts once in `#coordinator`, and edits that post to say it is resolved once the cause ends.
+`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, checkpoint on each run (once the last checkpoint is 5 minutes old, less a minute for the timer's slack) right after the renewal, so no slower step widens the window of records not yet on origin, then bring the team home's `waiting.md` up to date (`team-inbox`), take a reading of the machine's load with the team's use per task and place its sessions in their slices (`team-capacity sample` and `place`), and hold the team to its resource level (`team-level tick`, `sops/resources.md`).
+Between the checkpoint and the inbox it reads the ledger once for lines no reader can parse, looks in the live session list for a session named `coordinator`, runs `team-sweep --json` and remembers since when it has seen each finding, and writes its health record, `health.json` in `~/.local/state/agent-team/`, which `team-timers health` reads and the health line of the list `team-inbox --post` posts, the doctor's `health` line and the sweep's `checkpoint-stale` and `health` findings show.
+When checkpoints fail two runs in a row or stop for 15 minutes, no coordinator session is live two runs in a row, a live coordinator has left a sweep finding standing for an hour with nothing logged since, the ledger holds a line no reader can parse, or another step fails 12 runs in a row, it posts once in `#coordinator`, and edits that post to say it is resolved once the cause ends.
+A post made in an earlier holding of the lease gets no such edit: the first run after the lease comes back closes it, and posts afresh if the cause still stands.
+It never starts or restarts a coordinator itself: its posts name `claude-coordinator`, the command that starts one.
 After those it packs the team home (`git gc`) once it has 200 loose objects, so the records' git stays packed on whichever machine holds the lease; `team-doctor`'s `team home pack` line warns at 400.
 Once Daniel turns each on, it also stops idle stacks and runs `team-janitor` daily (`sops/docker.md`, "The heartbeat's steps"); both ship off.
 It is enabled only on the holder: `team-resume` enables it, `team-handoff` disables it, and a run on a machine that does not hold the lease changes nothing.
 
 ## Checkpoints
 
-`team-checkpoint` makes a dead machine lose at most 5 minutes:
+What a dead machine can lose:
+
+- while checkpoints succeed, about the last 5 minutes of work in flight, since the heartbeat checkpoints on each run;
+- none of the ledger's events of a kind its contract marks `"push": true` (Daniel's word and answers, a `plan-approved`, a `merged`, a `closed`, a `ran`), since each writer pushes the ledger the moment it logs one (`ledger_push` in `bin/lib/team.sh`), and a push that fails, or one not tried while the team holds offline, says so on stderr and leaves it to the next checkpoint;
+- when checkpoints stop, everything since the last good one, which no window bounds: what holds then is the heartbeat's post in `#coordinator` and the sweep's `checkpoint-stale` finding, both standing until a checkpoint succeeds again.
+
+What `team-checkpoint` does:
 
 - first, before any worktree, `ledger.jsonl` and `level.jsonl` alone are committed as `chore: checkpoint ledger` and pushed, so no worktree, however slow or broken, keeps the ledger from origin;
 - each open task's task directory is mirrored into its archive in the team home, less what `archive_left_out` (`bin/lib/team.sh`) leaves out, each named on a line of the checkpoint's output, which is no failure: its stderr holds problems only, and the heartbeat logs each of them.
@@ -81,19 +91,21 @@ Nothing new means no commit and no push; `team-close` deletes the task's `wip/<p
 ## Fencing
 
 A machine that finds another holder or a higher epoch (its renew, its heartbeat) fences itself: it writes `fenced`, stops its own coordinator and `T<n>-<role>` sessions, and disables its heartbeat.
+On macOS the heartbeat's two LaunchAgent files and caffeinate go at once, and the fencing run unloads its own job as its last act, after its log line and record, since a `launchctl bootout` stops a job's running process.
 The `lease-fence` hook blocks the coordinator's Discord replies, and its `git push`, `team-merge`, `team-catch-up`, `team-open` and `team-close`, from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
-It blocks `team-post`, `team-ask`, `team-answer`, `team-inbox` and `team-thread wait` for every role the same way, and `team-post`, which `team-ask` posts through, `team-answer`, `team-inbox`, and `team-thread`'s `--interview` and `wait` refuse there by themselves too, through the same check (`lease_refusal` in `bin/lib/team.sh`).
+It blocks `team-post`, `team-ask`, `team-answer`, `team-inbox` (its write of `waiting.md`, its `--post` and its `--item`) and `team-thread wait` for every role the same way, and `team-post`, which `team-ask` posts through, `team-answer`, `team-inbox` but its `--item`, which only reads `waiting.json`, and `team-thread`'s `--interview` and `wait` refuse there by themselves too, through the same check (`lease_refusal` in `bin/lib/team.sh`).
 While the team holds offline, posts go on, as the plugin's do: Discord is up, and only `team-thread wait` is held.
 So a coordinator left running on a machine that lost the lease (its fence's `claude stop` failed, or `team-handoff --retire` never ran) acts on nothing the holder's coordinator owns.
 `team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to the team home's origin as `salvage/<project>/T<n>-<machine>`, for Daniel to run.
 Like a snapshot, a salvage never goes to the project's origin, which may be public; `team-open --resume` names the same place for a branch here with commits origin's lacks.
 A worktree whose head a salvage branch holds, with nothing uncommitted, is salvaged, and neither a salvage nor a snapshot ever counts as landed for `team-close`.
+Its `salvage records` line does the same for the team home itself, as "A crash" says.
 `team-lease take` (inside `team-resume`) clears the fence.
 
 ## Offline
 
 - The probe is `git ls-remote` of the lease branch, 20 seconds at most; a network failure is tried again after 60 seconds, and a second one means offline.
-  GitHub refusing the login is not offline: it is posted once and the doctor fails it.
+  GitHub refusing the login is not offline: it is posted once per refusal (again at the next refused run when Discord refused the post) and the doctor fails it.
 - Offline, the holder keeps the lease and holds the team: the heartbeat posts the hold in `#coordinator` once, the hook blocks workers' pushes, `gh` and `team-thread wait` with the hold message (and a wait already running ends with it), and no worker starts, no coordinator starts, and no checkpoint, handoff, resume or take runs.
 - The coordinator learns of it through its offline watch, `team-timers watch --once` in the background (or a worker's `T<n> PAUSED offline`), sends `T<n> HOLD` to each live worker, and each commits locally, writes `handoff.md` and answers `T<n> PAUSED held`.
 - The first probe that answers renews the lease, clears the flag and posts "GitHub back"; the coordinator sends `T<n> RESUME`.
@@ -135,8 +147,10 @@ Taking the PC down for a while (an update, a restart, a night off) is a handoff 
 
 - The surviving machine: Daniel runs `team-resume --steal` in their own terminal and types the dead holder's name.
 - A task with a launch after its latest `stowed` crashed: `team-open --resume` resumes it from the later of origin's branch and the head `wip/<project>/T<n>` holds, and applies the snapshot as uncommitted changes only when its parent is that head.
-- The resume brief tells each worker the checkpoint it starts from and that up to 5 minutes of work, and any no-mistakes run in flight, may be missing, so it checks before building on it.
+- The resume brief tells each worker the checkpoint it starts from and what may be missing, as "Checkpoints" says, with any no-mistakes run in flight, so it checks before building on it.
 - When the dead machine boots, its still-enabled heartbeat finds the new holder and fences it before anyone could start a coordinator there (sessions do not restart on their own after a shutdown); its doctor then lists the salvage commands.
+- Its doctor's `salvage records` line names what its team home holds that origin's branch lacks, the commits and the uncommitted records (the ledger lines of its last minutes, with their count), and the commands that commit them as `wip: salvage records from <machine>` and push the head to the team home's origin as `salvage/records/<machine>-<epoch>`, the epoch of the lease that machine last held.
+  Daniel runs them before that team home is brought level with origin, since the reset that levels it throws those lines away; the line passes once the salvage branch holds the head and nothing is uncommitted.
 
 ## A real server later
 

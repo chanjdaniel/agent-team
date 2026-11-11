@@ -163,20 +163,34 @@ rm 4f2a9c1e archive:2 worktrees:2"
   assert_contains "$output" "closed"
 }
 
-@test "a close takes the task out of the Waiting on you message, and Discord refusing that is a line on stderr" {
+@test "the closed and worktree-returned lines are on origin when the close ends" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]} tip
+  work_and_push "$slot" feature.txt
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-close T1
+  [[ $stderr != *"not on origin"* ]]
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T1 worktree-returned closed"
+  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -r .event | tail -n 2)" "worktree-returned
+closed"
+}
+
+@test "a close takes the task out of waiting.md, and a list team-inbox cannot write is a line on stderr" {
   run_bin -0 team-open home feature feat work "Do the work"
   ledger_line '{ts: "2026-10-22T02:11:00Z", task: "T1", event: "asked", id: "go", text: "Go on?"}'
   run_bin -0 team-inbox
-  assert_equal "$(inbox_items_shown)" "**Asks**
-- T1 go: Go on? <#1563000000000000001>"
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T1 go: Go on? <#1563000000000000001>"
   run_bin -0 --separate-stderr team-close T1
-  [[ $stderr != *"Waiting on you"* ]]
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  [[ $stderr != *"waiting.md"* ]]
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 
   run_bin -0 team-open home feature feat more "Do more"
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  waiting_unwritable
   run_bin -0 --separate-stderr team-close T2
-  assert_equal "$(tail -n 1 <<<"$stderr")" "team-close: the Waiting on you message is not updated: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-close: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(events closed | jq -r .task)" "T1
 T2"
 }
@@ -198,6 +212,22 @@ T2"
 ./scratch/spec.md"
   # Another task's captures are its own.
   [[ -f $TEAM_HOME/tasks/T2/ui/page.png ]]
+}
+
+# The system prompts team-worker generated for the task's sessions, each with a copy of a
+# project's instructions, stay on this machine and go with the task.
+@test "the task's generated system prompts in the machine's state directory are removed, another task's kept" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]} prompts=$HOME/.local/state/agent-team/prompts
+  mkdir -p "$slot/.scratch/task" "$prompts/T1" "$prompts/T2"
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  echo "You build." >"$prompts/T1/builder.home.md"
+  echo "You plan." >"$prompts/T2/planner.home.md"
+  work_and_push "$slot" feature.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $prompts/T1 ]]
+  assert_contains "$stderr" "team-close: removed ~/.local/state/agent-team/prompts/T1/, the system prompts team-worker generated for the task's sessions"
+  [[ -f $prompts/T2/planner.home.md ]]
 }
 
 # What team-thread wait saves from an interview goes the same way.
@@ -867,6 +897,118 @@ SH
   assert_equal "$(jq -c '[.stopped, .returned, .kept]' <<<"$output")" "$(jq -cn --arg wt "$wt" '[["4f2a9c1e"], [], [$wt]]')"
   [[ -f $wt/late.txt ]]
   assert_equal "$(events worktree-returned)" ""
+}
+
+# ops_session <status>: T1's ops session, launched in $wt and listed with <status>, with the
+# transcript and the answer file team-ops-end deletes; sets ops_transcript and ops_answer.
+ops_session() {
+  local uuid=6f93fe38-1111-4222-8333-444455556666
+  launch T1 ops 6f93fe38 "$wt"
+  ops_transcript=$HOME/.claude/projects/-slots-home-1/$uuid.jsonl
+  ops_answer=$wt/.scratch/answer.md
+  mkdir -p "$(dirname "$ops_transcript")"
+  echo '{"query": "results"}' >"$ops_transcript"
+  echo "42 documents" >"$ops_answer"
+  sessions "$(jq -c --arg wt "$wt" '.cwd = $wt' <<<"$(session 6f93fe38 T1-ops "$1" "done")")" \
+    "$(session 4f2a9c1e T1-builder idle blocked)"
+  remember_before
+}
+
+@test "an ops session is ended through team-ops-end before the other sessions stop, and the close goes on" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session idle
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c '[.stopped, .removed]' <<<"$output")" '[["4f2a9c1e"],["6f93fe38","4f2a9c1e"]]'
+  assert_contains "$stderr" "deleted $ops_transcript"
+  assert_contains "$stderr" "deleted $ops_answer"
+  assert_contains "$stderr" "ended T1-ops (6f93fe38)"
+  [[ ! -e $ops_transcript ]]
+  # team-ops-end's own stop and rm come first; the close stops and removes no ops session itself.
+  assert_equal "$(claude_actions)" '["stop","6f93fe38"]
+["rm","6f93fe38"]
+["stop","4f2a9c1e"]
+["rm","4f2a9c1e"]'
+  assert_equal "$(events closed)" "$(jq -cn --arg wt "$wt" \
+    '{task: "T1", event: "closed", archive: ["tasks/T1/scratch"], returned: [$wt], kept: []}')"
+}
+
+@test "a failed team-ops-end stops the close half closed with its reason, and a second close after the fix completes" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session idle
+  touch "$BATS_TEST_TMPDIR/rm-fails"
+  stub_script claude <<'SH'
+case $1 in
+  agents) cat "$BATS_TEST_TMPDIR/sessions.json" ;;
+  stop) ;;
+  rm) [[ ! -e $BATS_TEST_TMPDIR/rm-fails ]] ;;
+  *) exit 64 ;;
+esac
+SH
+
+  run_bin -1 --separate-stderr team-close T1
+  assert_contains "$stderr" "team-ops-end: claude rm 6f93fe38 failed; its transcript is kept"
+  assert_contains "$stderr" "team-close: cannot end T1-ops with team-ops-end; its reason is above"
+  assert_contains "$stderr" "team-close: T1 is half closed"
+  [[ -f $ops_transcript ]]
+  # The builder was never stopped, nothing was archived, and the slot is still held.
+  assert_equal "$(claude_actions)" '["stop","6f93fe38"]
+["rm","6f93fe38"]'
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+  assert_equal "$(home_worktrees)" "$(cat "$BATS_TEST_TMPDIR/worktrees.before")"
+
+  rm "$BATS_TEST_TMPDIR/rm-fails"
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .removed <<<"$output")" '["6f93fe38","4f2a9c1e"]'
+  [[ ! -e $ops_transcript ]]
+  assert_equal "$(events closed | jq -r .event)" closed
+}
+
+@test "a busy ops session refuses the close; --stop-busy ends it through team-ops-end" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session busy
+
+  run_bin -1 team-close T1
+  assert_contains "$output" "  T1-ops 6f93fe38 is busy"
+  assert_equal "$(grep -c 'is busy' <<<"$output")" 1
+  assert_contains "$output" "--stop-busy"
+  assert_unchanged
+  [[ -f $ops_transcript ]]
+
+  run_bin -0 --separate-stderr team-close T1 --stop-busy
+  assert_contains "$stderr" "ended T1-ops (6f93fe38)"
+  [[ ! -e $ops_transcript && ! -e $ops_answer ]]
+  assert_equal "$(claude_actions | grep -c 6f93fe38)" 2
+  assert_equal "$(jq -c '[.stopped, .removed]' <<<"$output")" '[["4f2a9c1e"],["6f93fe38","4f2a9c1e"]]'
+}
+
+@test "an ops session listed with no launch of its own is ended too, and a launched one no longer listed is left alone" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  # A launch of an ops session that team-ops-end already ended: it is not removed again.
+  launch T1 ops 0a0b0c0d "$wt"
+  # As Claude Code lists them, a background session that has finished only with --all; a busy one
+  # listed there alone still refuses the close.
+  stub_script claude <<'SH'
+case $1 in
+  agents) if [[ ${3:-} == --all ]]; then cat "$BATS_TEST_TMPDIR/sessions.json"; else jq -c 'map(select(.state != "done"))' "$BATS_TEST_TMPDIR/sessions.json"; fi ;;
+  stop | rm) ;;
+  *) exit 64 ;;
+esac
+SH
+  sessions "$(session 7e7e7e7e T1-ops busy "done")" "$(session 4f2a9c1e T1-builder idle blocked)"
+  run_bin -1 team-close T1
+  assert_contains "$output" "  T1-ops 7e7e7e7e is busy"
+  sessions "$(session 7e7e7e7e T1-ops idle "done")" "$(session 4f2a9c1e T1-builder idle blocked)"
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_contains "$stderr" "ended T1-ops (7e7e7e7e)"
+  assert_equal "$(jq -c .removed <<<"$output")" '["7e7e7e7e","4f2a9c1e"]'
+  [[ $(claude_actions) != *0a0b0c0d* ]]
 }
 
 @test "a two-project task archives both task directories and returns both slots through their pools" {

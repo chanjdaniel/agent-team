@@ -117,25 +117,107 @@ pr: []"
   assert_equal "$(sed -n 's/^status: //p' "$TEAM_HOME/projects/proj/backlog/E40-h/F01-m/S02-w.md" | head -n 1)" ready
 }
 
-@test "a merge brings the Waiting on you message up to date" {
+# T14's worktree becomes $wt, on this machine, with an empty tickets/ in its task directory, so
+# team-tickets reads T14's tickets from it: in_worktree
+in_worktree() {
+  wt=$BATS_TEST_TMPDIR/wt
+  mkdir -p "$wt/.scratch/task/tickets"
+  jq -c --arg wt "$wt" 'if .event == "opened" then .worktree = $wt else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+}
+
+# A ticket of T14 in phase <phase>, finished (a ticket-done of it logged) when asked: ticket <NN> <phase> [finished]
+ticket() {
+  printf '# %s\n\n**Blocked by:** None\n\n**Phase:** %s\n' "$1" "$2" >"$wt/.scratch/task/tickets/$1-part.md"
+  [[ ${3:-} != finished ]] || event T14 ticket-done "{ticket: \"$1\", commits: [\"abc1234\"]}"
+}
+
+@test "a merge names the phases with a ticket not done as phases_left, so a part merged reads merged-part" {
+  in_worktree
+  ticket 01 1 finished
+  ticket 02 1 finished
+  ticket 03 2 finished
+  ticket 04 2
+  ticket 05 2
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -c .phases_left)" "[2]"
+  stub_reply claude "[]"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -r .phase <<<"$output")" merged-part
+  TEAM_HOME=$TEAM_HOME run -0 "$REPO_ROOT/bin/team-log" --check
+}
+
+@test "the last part's merge, every ticket done, names no phases left and reads merged" {
+  in_worktree
+  ticket 01 1 finished
+  ticket 02 2 finished
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -c .phases_left)" "[]"
+  stub_reply claude "[]"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -r .phase <<<"$output")" merged
+}
+
+@test "a task with no tickets logs no phases_left" {
+  in_worktree
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -c 'has("phases_left")')" false
+  [[ $stderr != *tickets* ]]
+}
+
+@test "tickets team-tickets cannot read are a line on stderr, and the merge goes on with no phases_left" {
+  in_worktree
+  printf '# 01\n\nno blockers line\n' >"$wt/.scratch/task/tickets/01-part.md"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: cannot read T14's tickets (team-tickets: $wt/.scratch/task/tickets/01-part.md: no Blocked by: line; write 'Blocked by: None' or 'Blocked by: 01, 03'), so its merged names no phases left"
+  assert_equal "$(merged_events | jq -c '[.pr, has("phases_left")]')" "[5,false]"
+}
+
+@test "a merge brings waiting.md up to date" {
   # Reviewed at the head and not yet approved, the PR waits on Daniel.
   jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   event T14 review '{head: "a1b2c3d4", verdict: "pass"}'
   run_bin -0 team-inbox
-  assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
-- T14 The tooling: https://github.com/owner/proj/pull/5"
+  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
+- **1** T14 The tooling: <https://github.com/owner/proj/pull/5>"
   event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000", head: "a1b2c3d4"}'
   : >"$STUB_FIXTURES/inbox/calls"
   run_bin -0 --separate-stderr team-merge T14
-  [[ $stderr != *"Waiting on you"* ]]
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000001"
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  [[ $stderr != *"waiting.md"* ]]
+  # The guild is kept, so the refresh calls Discord for nothing.
+  assert_equal "$(inbox_calls)" ""
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 }
 
-@test "Discord refusing the Waiting on you message is a line on stderr, and the merge stands" {
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+@test "the merged event is on origin when the merge ends, and when the steps after it fail" {
+  printf 'ledger.jsonl.lock\n' >"$TEAM_HOME/.gitignore"
+  local team_origin tip
+  team_origin=$(hold_lease home-pc)
+  tip=$(git -C "$team_origin" rev-parse dev)
   run_bin -0 --separate-stderr team-merge T14
-  assert_contains "$stderr" "team-merge: the Waiting on you message is not updated: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 500"
+  [[ $stderr != *"not on origin"* ]]
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T14 merged"
+  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
+
+  # The story cannot be marked and waiting.md cannot be written, both after the merge.
+  merge_again
+  story_of E40/F01/S02
+  waiting_unwritable
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "its story E40/F01/S02 is not marked done"
+  assert_contains "$stderr" "waiting.md is not updated"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T14 merged"
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
+}
+
+@test "a waiting list team-inbox cannot write is a line on stderr, and the merge stands" {
+  waiting_unwritable
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(merged_events | wc -l)" 1
 }
 
@@ -944,6 +1026,7 @@ EOF
     "back-end/migrations/migrate_roles.py:migrations, permissions" db/migration/0001.py:migrations
     "scripts/migrate_users.py:ci, migrations" "db/add_roles_migration.py:migrations, permissions" schema/init.sql:migrations
     .vscode/launch.json:settings .mcp.json:settings CLAUDE.md:settings front-end/AGENTS.md:settings
+    CLAUDE.local.md:settings front-end/CLAUDE.local.md:settings
     front-end/.env.example:settings .env:settings back-end/settings.py:settings treehouse.toml:settings
     back-end/api/permissions.py:permissions src/rbac/roles.py:permissions src/ACL.py:permissions
     docs/CODEOWNERS:permissions
@@ -1049,16 +1132,15 @@ EOF
 1562486564871995482 $(merge_post 1563 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')"
   assert_equal "$(jq -r .merged "$discord/posts" | sort -u)" 1
   [[ $stderr != *post* ]]
-  # The guild for the link is read from #coordinator's channel, then the Waiting on you message is posted.
+  # The guild for the link is read from #coordinator's channel, then again by team-inbox, which
+  # keeps it for waiting.md's links and posts nothing.
   assert_equal "$(stub_calls curl | jq -r '.[-1] | capture("v10/(?<p>.*)").p' | grep -v '/messages/[0-9]*$')" \
     "channels/1562486564871995482
 channels/1563/messages
 channels/1562486564871995482/messages
-channels/1562486564871995482
-channels/1562486564871995482/messages"
+channels/1562486564871995482"
   assert_equal "$(inbox_calls)" "GET channels/1562486564871995482
-GET channels/1562486564871995482
-POST channels/1562486564871995482/messages"
+GET channels/1562486564871995482"
 }
 
 @test "the post's revert is the project's merge method's: git revert -m 1 for a merge, the rebased commits' range for a rebase" {

@@ -28,6 +28,17 @@
 #   local_checks     optional: shell commands, run from the root of a checkout of the PR's exact
 #                    head, that must all pass before team-merge merges it (default none);
 #                    team-checks runs them, for team-merge and for the workers alike
+#   uptime           optional: the project's production checks, which the heartbeat's uptime
+#                    step runs (team-uptime), an array of tables ([[<name>.uptime]]), each with
+#                    exactly three strings (default none):
+#                      name     the check's name, lowercase letters, digits and dashes, once in
+#                               the project
+#                      url      what it fetches with a plain GET: https:// to a host, or http://
+#                               only to this machine's loopback (127.0.0.1, localhost or ::1),
+#                               with no user name or password, on one line with no spaces
+#                      expect   the text a good answer's body holds, one line of 1 to 200
+#                               characters
+#                    the projects together list at most 10, which fit the uptime step's time
 #   merge_with_plan  optional: true lets Daniel approve a task's merge in the word that approves
 #                    its plan, which team-merge holds to its own conditions (default false); never
 #                    true on the team's own project, named agent-team or at the code checkout this
@@ -35,7 +46,10 @@
 #                    worktree), which --check refuses
 #   task_dir         a task's scratch directory
 #   docs             what a worker reads first
-#   toolkits         the toolkits a worker of this project may be given
+#   toolkits         the toolkits a worker of this project may be given, an allow list
+#                    team-worker enforces: it refuses any other in the project's worktrees
+#                    (T0, the load check, takes one unlisted but prod-* and vercel-read); a new one
+#                    takes Daniel's yes, then its name here
 #   models           optional: a table of worker role (planner, builder or reviewer) to the model
 #                    alias or name its sessions launch on, such as { reviewer = "sonnet" }
 #                    (default none: every role on the user settings' model); team-worker passes
@@ -91,6 +105,7 @@ if sys.version_info < (3, 11):
     sys.exit(1)
 
 import tomllib
+import urllib.parse
 
 NAME = os.path.basename(sys.argv[0])
 USAGE = "usage: team-project <name> [<key>] | --list | --find <key> <value> | --check"
@@ -103,7 +118,13 @@ PROJECT_KEYS = PROJECT_STRINGS + PROJECT_LISTS + ("pool",)
 # memory/coordinator/ (team-config).
 RESERVED = {"coordinator": "the team home's auto memory, memory/coordinator/"}
 # Optional keys, with the value a project without one has.
-PROJECT_OPTIONAL = {"local_checks": [], "merge_with_plan": False, "models": {}, "visibility": "public"}
+PROJECT_OPTIONAL = {"local_checks": [], "merge_with_plan": False, "models": {}, "uptime": [], "visibility": "public"}
+# A production check's keys, every one required and a string, and the most checks the registry
+# may list in all, so the heartbeat's uptime step fits its time limit.
+UPTIME_KEYS = ("name", "url", "expect")
+UPTIME_LIMIT = 10
+# The hosts a check may reach over plain http://: this machine's loopback, the tests' stub server.
+LOOPBACK = ("127.0.0.1", "localhost", "::1")
 # The values a project's visibility takes.
 VISIBILITIES = ("public", "private")
 # The code checkout this script runs from, the directory above its bin/: the team's own project's
@@ -329,10 +350,62 @@ def check_merge_with_plan(name, project, problems):
             problems.append(f"{where}: its path is {main}, the main worktree of the code checkout team-project runs from, {OWN}")
 
 
+# The problem with a check's url, or None: one line with no spaces, https:// to a host or http://
+# to the loopback, and no user name or password.
+def uptime_url_problem(url):
+    if any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in url):
+        return "must be one line with no spaces"
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        parts, host = None, None
+    if not (parts and ((parts.scheme == "https" and host) or (parts.scheme == "http" and host in LOOPBACK))):
+        return f"'{url}' must be https://, or http:// to this machine's loopback"
+    if parts.username is not None or parts.password is not None:
+        return "must carry no user name or password"
+    return None
+
+
+# Check one project's production checks, a list of {name, url, expect} tables; returns how many
+# it lists, for the registry-wide limit.
+def check_uptime(name, checks, problems):
+    if not isinstance(checks, list):
+        problems.append(f"{name}.uptime: must be a list of tables")
+        return 0
+    if not all(isinstance(item, dict) for item in checks):
+        problems.append(f"{name}.uptime: must be a list of tables")
+    names = set()
+    for index, item in enumerate(checks):
+        if not isinstance(item, dict):
+            continue
+        where = f"{name}.uptime[{index}]"
+        check_keys(where, item, UPTIME_KEYS, UPTIME_KEYS, problems)
+        for key in UPTIME_KEYS:
+            if key in item and not isinstance(item[key], str):
+                problems.append(f"{where}.{key}: must be a string")
+        check_name = item.get("name")
+        if isinstance(check_name, str):
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", check_name):
+                problems.append(f"{where}.name: '{check_name}' is lowercase letters, digits and dashes")
+            elif check_name in names:
+                problems.append(f"{where}.name: '{check_name}' is listed twice")
+            names.add(check_name)
+        if isinstance(item.get("url"), str):
+            problem = uptime_url_problem(item["url"])
+            if problem:
+                problems.append(f"{where}.url: {problem}")
+        expect = item.get("expect")
+        if isinstance(expect, str) and not (1 <= len(expect) <= 200 and "\n" not in expect and "\r" not in expect):
+            problems.append(f"{where}.expect: must be one line, 1 to 200 characters")
+    return len(checks)
+
+
 # Every problem with the registry, as one line each; none means it is valid.
 def check(registry):
     problems = [] if registry else ["defines no projects"]
     slot_owners = {}
+    uptime_checks = 0
     for name, project in registry.items():
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             problems.append(f"{name}: a project name is lowercase letters, digits and dashes")
@@ -353,6 +426,7 @@ def check(registry):
             problems.append(f"{name}.local_checks: must be a list of strings")
         elif any(not command.strip() or "\n" in command for command in checks):
             problems.append(f"{name}.local_checks: each command must be one line, not empty")
+        uptime_checks += check_uptime(name, project.get("uptime", []), problems)
         check_merge_with_plan(name, project, problems)
         check_models(name, project.get("models", {}), problems)
         if project.get("visibility", "public") not in VISIBILITIES:
@@ -367,6 +441,8 @@ def check(registry):
             check_pool(name, project["pool"], slot_owners, problems)
         if "stack" in project:
             check_stack(name, project["stack"], problems)
+    if uptime_checks > UPTIME_LIMIT:
+        problems.append(f"uptime: {uptime_checks} checks in all; at most {UPTIME_LIMIT} fit the heartbeat's uptime step")
     return problems
 
 

@@ -78,8 +78,13 @@
 # on, auto-merge is turned off and it is exit 1); then merged is appended with pr, merge, head,
 # by (naming the Discord message and its author), project, branch, discord_message,
 # discord_channel, url (the PR's), approval (head for the per-head word, plan for the plan-time
-# one, standing for the standing one), and local_checks (the commands that passed on head) when
-# there were any. Prints {task, pr, merge, head, by}.
+# one, standing for the standing one), local_checks (the commands that passed on head) when
+# there were any, and phases_left, the phases of the task with a ticket not done, as team-tickets
+# T<n> --json read them just before gh pr merge ([] when every ticket is done, so the task reads
+# merged, else merged-part); a task with no tickets logs none, and a team-tickets that fails logs
+# none and says so on stderr, the merge going on. Prints {task, pr, merge, head, by}, then commits
+# the ledger and pushes it to the team home's origin at once, before any later step (ledger_push
+# in bin/lib/team.sh, which says on stderr when it is not on origin yet, the exit staying 0).
 # Then, when the task's opened event names a story (team-open --story) and the PR is of the project
 # it opened in, that story's backlog file in the team home (story_file in bin/lib/team.sh) is
 # marked: its front matter's status becomes done and the PR's number joins its pr: list (in the
@@ -89,9 +94,10 @@
 # on stderr with why; the merge stands and the exit stays 0.
 # Then, on the plan-time or standing word only, team-post posts one message to the task's thread
 # and one to #coordinator: the task, the PR's URL, which word it merged on, the merge commit,
-# Daniel's message as a link (its guild the one team-inbox keeps, else #coordinator's channel's;
-# its channel the one the message was read in; with none, the message is named and a line on
-# stderr says why), and how to revert: the PR page's Revert button, or on the base
+# Daniel's message as a link (its guild the one team-inbox keeps in inbox.json, else
+# #coordinator's channel's; its channel the one the message was read in; with none, the message
+# is named and a line on stderr says why), and how to revert: the PR page's Revert button, or on
+# the base
 # git revert -m 1 <merge> for a merge, git revert <merge> for a squash, and for a rebase
 # git revert <merge>~<n>..<merge>, the PR's n commits less its merges; with no thread, it posts to
 # #coordinator alone, saying so on stderr. A post that fails (Discord refuses it, or team-post
@@ -104,7 +110,7 @@
 # detached HEAD, with local changes, ahead or diverged, with untracked files in the way, or with
 # origin out of reach, it is left as it is, with the reason and the command to run, and the exit
 # stays 0.
-# Last, team-inbox takes the PR out of the Waiting on you message; when that fails, a line on
+# Last, team-inbox takes the PR out of the team home's waiting.md; when that fails, a line on
 # stderr says so, and the exit stays 0.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
@@ -511,6 +517,16 @@ if ((${#local_checks[@]})); then
   refuse_on_problems
 fi
 
+# The task's phases with a ticket not done, read before the merge so the merged event says whether
+# a part of the task is still to build: a JSON list, or empty when the task has no tickets or they
+# cannot be read, which never stops the merge.
+phases_left=''
+if "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json >"$scratch/tickets" 2>"$scratch/tickets-error"; then
+  phases_left=$(jq -c 'if . == [] then empty else map(select(.state != "done") | .phase) | unique end' "$scratch/tickets")
+else
+  echo "team-merge: cannot read $task's tickets ($(grep -m 1 . "$scratch/tickets-error" || echo "team-tickets failed")), so its merged names no phases left" >&2
+fi
+
 gh pr merge "$number" --repo "$repo" "--$method" --match-head-commit "$head" >&2 ||
   die "gh pr merge did not merge PR #$number (exit $?); nothing was logged"
 
@@ -533,13 +549,17 @@ trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-merge: PR #$nu
 ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$merge" --arg head "$head" \
   --arg by "$by" --arg project "$project" --arg branch "$branch" --arg message "$message" --arg channel "$channel" \
   --arg url "$url" --arg approval "$word" --argjson checks "$(printf '%s\n' "${local_checks[@]}" | jq -R . | jq -cs 'map(select(. != ""))')" \
+  --argjson left "${phases_left:-null}" \
   '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
     project: $project, branch: $branch, discord_message: $message, discord_channel: $channel, url: $url,
     approval: $approval}
-    + if $checks == [] then {} else {local_checks: $checks} end')"
+    + if $checks == [] then {} else {local_checks: $checks} end
+    + if $left == null then {} else {phases_left: $left} end')"
 trap 'rm -rf "$scratch"' EXIT
 jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \
   '{task: $task, pr: $url, merge: $merge, head: $head, by: $by}'
+# Pushed now, before the steps that follow, so none of them failing can keep it off origin.
+ledger_push
 
 # Mark the backlog file <file> done with PR <number> in its front matter, in place: status: done,
 # and the number added to pr: unless there; prints changed or unchanged, or fails saying why on
@@ -610,7 +630,8 @@ fi
 # post in the task's thread and one in #coordinator, through team-post. A post that fails is said
 # on stderr with its text, for the coordinator to post; the merge stands and the exit stays 0.
 if [[ $word != head ]]; then
-  # Daniel's message as a link, which needs the guild: the one team-inbox keeps, else Discord's.
+  # Daniel's message as a link, which needs the guild: the one team-inbox keeps in inbox.json,
+  # else Discord's.
   guild=$(jq -r --arg c "$COORDINATOR_CHANNEL" 'select((.channel | tostring) == $c) | .guild | tostring | select(test("^[0-9]+$"))' \
     "$HOME/.local/state/agent-team/inbox.json" 2>/dev/null) || guild=''
   if [[ -z $guild ]] && reply=$(discord_api "channels/$COORDINATOR_CHANNEL" --max-time 20 2>"$scratch/guild"); then

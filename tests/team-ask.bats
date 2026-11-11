@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# team-ask: a question put to Daniel in one call: posted in the task's thread with a ping in
-# #coordinator, then question, asked and waiting logged, and nothing logged when a post fails.
+# team-ask: a question put to Daniel in one call: posted, with any images, in the task's thread
+# with a ping in #coordinator, then question, asked and waiting logged, and nothing logged when a
+# post fails.
 
 load helpers/common
 load helpers/inbox
@@ -66,9 +67,9 @@ logged() {
 {"task":"T7","event":"waiting","on":"Daniel","reason":"ask sign-in"}'
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
-  # The Waiting on you message lists it by the end of the command, linked to the question.
-  assert_equal "$(inbox_items_shown)" "**Asks**
-- T7 sign-in: Which of the two sign-in limits stays? https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001"
+  # waiting.md lists it by the end of the command, linked to the question.
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T7 sign-in: Which of the two sign-in limits stays? <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001>"
 }
 
 @test "--script hashes the script first, ends the question with its path, its sha256 and the yes rule, and logs one asked with both" {
@@ -84,7 +85,7 @@ Five tries a minute, or ten an hour.
 
 Script: $path
 sha256: $hash
-It runs only on a reply in Discord with a line that starts with yes."
+It runs only on a reply in Discord with a line that starts with yes, or, by its number on the waiting list, \"<number> yes\"."
   assert_equal "$(logged | jq -c 'select(.event == "asked")')" \
     "$(jq -cn --arg path "$path" --arg hash "$hash" '{task: "T7", event: "asked", id: "fix",
       text: "Which of the two sign-in limits stays?", script: $path, sha256: $hash,
@@ -120,11 +121,11 @@ asked
 waiting"
 }
 
-@test "a Waiting on you message Discord refuses is a line on stderr, and the ask stands" {
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+@test "a waiting list team-inbox cannot write is a line on stderr, and the ask stands" {
+  waiting_unwritable
   run_bin -0 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
   assert_equal "$output" '{"task":"T7","id":"sign-in","question":["1564000000000000001"],"ping":"1564000000000000002"}'
-  assert_equal "$stderr" "team-ask: the Waiting on you message is not updated: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 500"
+  assert_equal "$stderr" "team-ask: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(logged | jq -r .event)" "asked
 waiting"
 }
@@ -133,6 +134,30 @@ waiting"
   run_bin -0 team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
   assert_equal "$(logged | jq -r .event)" "asked
 waiting"
+}
+
+@test "an ops session's question is posted whole, and logged and pinged only as its length and the thread it is in" {
+  printf 'Write 2 orders of Jean Dupré?\n\nfilter {_id: 1187}, set {status: "void"}\n' >"$BATS_TEST_TMPDIR/ops.md"
+  local question
+  question=$(<"$BATS_TEST_TMPDIR/ops.md")
+  assert_equal "${#question}" 71
+  run_bin -0 --separate-stderr team-ask T7 write-1 --file "$BATS_TEST_TMPDIR/ops.md" --from ops
+  assert_equal "$output" '{"task":"T7","id":"write-1","question":["1564000000000000001"],"ping":"1564000000000000002"}'
+  local line="An ops question of 71 characters, in T7's thread."
+  assert_equal "$(posted)" "$(jq -cn --arg q "$question" '$q')
+\"<@757> T7 has a question for you in <#2222>: $line\""
+  assert_equal "$(logged)" "{\"task\":\"T7\",\"event\":\"question\",\"role\":\"ops\",\"chars\":71,\"discord_message\":\"1564000000000000001\"}
+{\"task\":\"T7\",\"event\":\"asked\",\"id\":\"write-1\",\"text\":\"$line\",\"discord_message\":\"1564000000000000001\"}
+{\"task\":\"T7\",\"event\":\"waiting\",\"on\":\"Daniel\",\"reason\":\"ask write-1\"}"
+  if grep -E 'Dupré|1187' "$TEAM_HOME/ledger.jsonl"; then
+    echo "the ledger holds the ops question's text" >&2
+    return 1
+  fi
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+  # waiting.md, and the snapshot's pending asks, show it by that line.
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T7 write-1: $line <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001>"
 }
 
 @test "the ping mentions each of Daniel's ids and cuts a long first line" {
@@ -144,6 +169,45 @@ waiting"
   assert_equal "$(posted | tail -n 1 | jq -r .)" "<@757> <@758> T7 has a question for you in <#2222>: ${long:0:197}..."
   # asked keeps the whole first line.
   assert_equal "$(logged | jq -r 'select(.event == "asked") | .text')" "${long% }"
+}
+
+@test "--attach posts each image with the question in the task's thread, none with the ping, and logs the ask as before" {
+  local png=$BATS_TEST_TMPDIR/tickets.png
+  printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' >"$png"
+  printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' >"$BATS_TEST_TMPDIR/second.png"
+  run_bin -0 --separate-stderr team-ask T7 plan --file "$BATS_TEST_TMPDIR/q.md" --attach "$png" --attach "$BATS_TEST_TMPDIR/second.png"
+  assert_equal "$output" '{"task":"T7","id":"plan","question":["1564000000000000001"],"ping":"1564000000000000002"}'
+  assert_equal "$stderr" ""
+  # The question goes as one multipart post to the task's thread, its images with it.
+  local posts
+  posts=$(stub_calls curl | jq -c 'select(any(.[]; test("/channels/[0-9]+/messages$")))')
+  assert_equal "$(jq -r '.[-1]' <<<"$posts")" "https://discord.com/api/v10/channels/2222/messages
+https://discord.com/api/v10/channels/1562486564871995482/messages"
+  assert_equal "$(head -n 1 <<<"$posts" | jq -c --arg d "$BATS_TEST_TMPDIR" '. as $args
+    | [to_entries[] | select(.value == "--form-string" or .value == "-F") | $args[.key + 1]]')" \
+    "$(jq -cn --arg d "$BATS_TEST_TMPDIR" '[
+    "payload_json={\"content\":\"Which of the two sign-in limits stays?  \\n\\nFive tries a minute, or ten an hour.\",\"allowed_mentions\":{\"parse\":[\"users\"]}}",
+    "files[0]=@\"\($d)/tickets.png\";filename=\"tickets.png\";type=image/png",
+    "files[1]=@\"\($d)/second.png\";filename=\"second.png\";type=image/png"]')"
+  # The ping in #coordinator is text alone.
+  assert_equal "$(posted)" '"<@757> T7 has a question for you in <#2222>: Which of the two sign-in limits stays?"'
+  [[ $(tail -n 1 <<<"$posts") != *'"-F"'* ]]
+  assert_equal "$(logged | jq -c 'select(.event != "image-posted")')" '{"task":"T7","event":"asked","id":"plan","text":"Which of the two sign-in limits stays?","discord_message":"1564000000000000001"}
+{"task":"T7","event":"waiting","on":"Daniel","reason":"ask plan"}'
+  assert_equal "$(logged | jq -c 'select(.event == "image-posted") | [.thread, .discord_thread, .discord_message, .file]')" \
+    '["task","2222","1564000000000000001","tickets.png"]
+["task","2222","1564000000000000001","second.png"]'
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+}
+
+@test "an image team-post refuses posts nothing and logs nothing" {
+  run_bin -1 --separate-stderr team-ask T7 plan --file "$BATS_TEST_TMPDIR/q.md" --attach "$BATS_TEST_TMPDIR/none.png"
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-post: no image to attach: $BATS_TEST_TMPDIR/none.png
+team-ask: the question was not posted, so nothing is logged"
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged)" ""
 }
 
 @test "a refused question posts no ping and logs nothing" {
@@ -218,9 +282,10 @@ EOF
   for args in "" "T7" "T7 sign-in" "T7 sign-in --file" "7 sign-in --file q.md" "T7 --file q.md" \
     "T7 'sign in' --file q.md" "T7 -x --file q.md" "T7 sign-in --file q.md --from" \
     "T7 sign-in --file q.md --from Planner" "T7 sign-in more --file q.md" "T7 sign-in --file q.md --to 1111" \
-    "T7 sign-in --file q.md --script" "T7 sign-in --file q.md --script ''"; do
+    "T7 sign-in --file q.md --script" "T7 sign-in --file q.md --script ''" "T7 sign-in --file q.md --attach" \
+    "T7 sign-in --file q.md --attach ''"; do
     eval "run_bin -2 team-ask $args"
-    assert_contains "$output" "usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]"
+    assert_contains "$output" "usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]..."
   done
   assert_equal "$(stub_calls curl)" ""
   assert_equal "$(logged)" ""
@@ -229,5 +294,5 @@ EOF
 @test "--help prints the header" {
   run_bin -0 team-ask --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-ask")"
-  assert_contains "$output" "Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]"
+  assert_contains "$output" "Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]..."
 }

@@ -275,8 +275,8 @@ EOF
   # The whole doctor, since the assertions read every line and its order.
   TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL trust team home: claude --bg in $shown says Workspace not trusted; fix: Daniel runs claude once in $shown and accepts the trust dialog"
-  # Before the projects' lines, after the records'.
-  assert_equal "$(checks | grep -A1 -B1 '^trust team home$')" "records
+  # Before the projects' lines, after the records' and the drills'.
+  assert_equal "$(checks | grep -A1 -B1 '^trust team home$')" "drills
 trust team home
 captures"
   [[ $(checks | grep -n '^trust team home$' | cut -d: -f1) -lt $(checks | grep -n '^checkout conventioner$' | cut -d: -f1) ]]
@@ -409,7 +409,7 @@ SCRIPT
   give_stack conventioner "$CONVENTIONER" 805306368
   echo '{"memory_floor_gib": "1", "stack_caps": 2}' >"$HOME/.config/agent-team/stack.json"
   run_bin -0 team-doctor
-  assert_equal "$(line_of 'stack memory')" "WARN stack memory: ~/.config/agent-team/stack.json: memory_floor_gib must be a number of 0 or more, not \"1\"; stack_caps is not a setting (they are: stack_cap, memory_floor_gib, disk_floor_gb, wait_minutes, idle_minutes, heartbeat_sweep, heartbeat_janitor); fix: correct it as team-stack --help describes, since team-stack up refuses it too"
+  assert_equal "$(line_of 'stack memory')" "WARN stack memory: ~/.config/agent-team/stack.json: memory_floor_gib must be a number of 0 or more, not \"1\"; stack_caps is not a setting (they are: stack_cap, memory_floor_gib, disk_floor_gb, wait_minutes, idle_minutes, gate_idle_minutes, heartbeat_sweep, heartbeat_janitor); fix: correct it as team-stack --help describes, since team-stack up refuses it too"
   echo '{"stack_cap": 6, "memory_floor_gib": 6, "wait_minutes": 15}' >"$HOME/.config/agent-team/stack.json"
   run_bin -0 team-doctor
   assert_equal "$(line_of 'stack memory')" "WARN stack memory: ~/.config/agent-team/stack.json sets stack_cap and memory_floor_gib, which nothing reads since the level's budget admits a stack (team-capacity admit); fix: remove stack_cap and memory_floor_gib from ~/.config/agent-team/stack.json"

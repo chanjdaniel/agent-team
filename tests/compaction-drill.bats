@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # tests/compaction-drill, dry-run against a stub claude: the sandbox it builds from its fixture,
-# the three print-mode turns it asks for and the purge after them, and its checks' verdicts on
-# canned answers. The real drill starts Claude sessions, which only the coordinator runs.
+# the three print-mode turns it asks for and the purge after them, its checks' verdicts on canned
+# answers, and the compaction line it records in the team home's drills.jsonl through
+# bin/team-drill. The real drill starts Claude sessions, which only the coordinator runs.
 load helpers/common
 
 setup() {
@@ -11,14 +12,19 @@ setup() {
   export TMPDIR=$BATS_TEST_TMPDIR/tmp
   mkdir -p "$TMPDIR"
   export DRILL_CODE=$REPO_ROOT
+  # team-drill names the machine it records on.
+  mkdir -p "$HOME/.config/agent-team"
+  echo home-pc >"$HOME/.config/agent-team/machine"
   # The stub plays the session: each turn records where and how it ran ($STUB_FIXTURES/turn-<n>.*,
-  # n counting the calls) and runs the SessionStart hook as Claude Code would; turn 1 writes the
-  # new promise into tasks/current.md unless no-write is set; turn 2 reports a compaction unless
-  # no-compact is set; turn 3 answers with $STUB_FIXTURES/answer. Every turn prints the stream
-  # of a print-mode session: an init line, then its result with usage.
+  # n counting the calls but purge and the --version team-drill asks, which it answers 2.1.321)
+  # and runs the SessionStart hook as Claude Code would; turn 1 writes the new promise into
+  # tasks/current.md unless no-write is set; turn 2 reports a compaction unless no-compact is set;
+  # turn 3 answers with $STUB_FIXTURES/answer. Every turn prints the stream of a print-mode
+  # session: an init line, then its result with usage and a cost, "unknown" when bad-cost is set.
   stub_script claude <<'EOF'
 if [[ $1 == purge ]]; then exit 0; fi
-n=$(grep -cv '"purge"' "$STUB_CALLS/claude.log")
+if [[ $1 == --version ]]; then echo '2.1.321 (Claude Code)'; exit 0; fi
+n=$(grep -cvE '"purge"|"--version"' "$STUB_CALLS/claude.log")
 out=$STUB_FIXTURES/turn-$n
 printf '%s\n' "$PWD" >"$out.pwd"
 printf '%s\n' "$PATH" >"$out.path"
@@ -47,8 +53,11 @@ case $n in
     ;;
   3) result=$(cat "$STUB_FIXTURES/answer") ;;
 esac
-jq -cn --arg result "$result" --argjson n "$n" '{type: "result", subtype: "success", is_error: false,
-  result: $result, total_cost_usd: (0.25 * $n),
+bad_cost=false
+[[ ! -f $STUB_FIXTURES/bad-cost ]] || bad_cost=true
+jq -cn --arg result "$result" --argjson n "$n" --argjson bad_cost "$bad_cost" '{type: "result",
+  subtype: "success", is_error: false, result: $result,
+  total_cost_usd: (if $bad_cost then "unknown" else 0.25 * $n end),
   usage: {input_tokens: (10 * $n), cache_creation_input_tokens: (1000 * $n),
     cache_read_input_tokens: (20000 * $n), output_tokens: (100 * $n)}}'
 EOF
@@ -73,9 +82,23 @@ full_answer() {
       "next T92 open a task to pin Node 22 in CI once T92 merges | https://discord.com/channels/1100000000000000000/1200000000000000000/1300000000000000042"]}'
 }
 
-# The drill's calls to claude, one JSON array of arguments per line.
+# The drill's calls to claude, one JSON array of arguments per line, but team-drill's --version.
 calls() {
-  stub_calls claude
+  stub_calls claude | grep -vFx '["--version"]' || true
+}
+
+# The team home's drill record, each line's fields but at, which every test reads.
+drill_lines() {
+  if [[ -e $TEAM_HOME/drills.jsonl ]]; then jq -c 'del(.at)' "$TEAM_HOME/drills.jsonl"; fi
+}
+
+# The one compaction line a run should have recorded, but at: drill_line <verdict> <detail>
+drill_line() {
+  jq -cn --arg commit "$(git -C "$REPO_ROOT" rev-parse HEAD)" --argjson dirty \
+    "$([[ -z $(git -C "$REPO_ROOT" status --porcelain --untracked-files=no) ]] && echo false || echo true)" \
+    --arg verdict "$1" --arg detail "$2" \
+    '{drill: "compaction", machine: "home-pc", commit: $commit, dirty: $dirty, claude: "2.1.321",
+      verdict: $verdict, detail: $detail}'
 }
 
 # The value after <flag> in call <n> (counting from 1).
@@ -115,8 +138,11 @@ turn 1 (Daniel's message): 10 1000 20000 100 0.25
 turn 2 (/compact): 20 2000 40000 200 0.50
 turn 3 (the question): 30 3000 60000 300 0.75
 total: 60 6000 120000 600 1.50
-== 11 of 11 checks passed"
-  assert_equal "${lines[-1]}" "== 11 of 11 checks passed"
+== 11 of 11 checks passed
+team-drill: recorded compaction pass on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
+  assert_equal "${lines[-1]}" "team-drill: recorded compaction pass on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
+  # One line in the team home the drill was run with, never the sandbox's.
+  assert_equal "$(drill_lines)" "$(drill_line pass "11 of 11 checks passed, 1.50 USD")"
 }
 
 @test "it runs three print-mode turns on one session, coordinator-shaped, then purges it" {
@@ -168,11 +194,12 @@ total: 60 6000 120000 600 1.50
   diff "$STUB_FIXTURES/turn-1.ledger" "$fixture/team/ledger.jsonl"
   local digest
   digest=$(cat "$STUB_FIXTURES/turn-1.digest")
+  # T92's and T94's builder launches put them in building (the lifecycle's launch rule).
   assert_contains "$digest" "Open tasks (4):
   T91 drill feature planning | no live worker
-  T92 drill feature planning | no live worker | waiting on Daniel: rotate the staging database password
+  T92 drill feature building | no live worker | waiting on Daniel: rotate the staging database password
   T93 drill feature blocked | no live worker
-  T94 drill feature planning | T94-builder busy
+  T94 drill feature building | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 Standing merge word: none
 Live team sessions (1):
@@ -204,7 +231,7 @@ Current items (3):
   run -0 "$REPO_ROOT/tests/compaction-drill"
   local digest
   digest=$(cat "$STUB_FIXTURES/turn-1.digest")
-  assert_contains "$digest" "  T94 drill feature planning | T94-builder busy
+  assert_contains "$digest" "  T94 drill feature building | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 Standing merge word: none
 Live team sessions (1):
@@ -215,13 +242,15 @@ Open PRs:
 "
 }
 
-@test "it removes the sandbox and never touches the team home or HOME it was run with" {
+@test "it removes the sandbox and touches the team home it was run with only to record its run" {
   full_answer
   run -0 "$REPO_ROOT/tests/compaction-drill"
   [[ ! -e $(drill_sandbox) ]]
   assert_equal "$(find "$TMPDIR" -mindepth 1)" ""
-  assert_equal "$(find "$TEAM_HOME" -mindepth 1)" "$TEAM_HOME/ledger.jsonl"
+  assert_equal "$(find "$TEAM_HOME" -mindepth 1 | sort)" "$TEAM_HOME/drills.jsonl
+$TEAM_HOME/ledger.jsonl"
   [[ ! -s $TEAM_HOME/ledger.jsonl ]]
+  assert_equal "$(wc -l <"$TEAM_HOME/drills.jsonl")" 1
 }
 
 @test "a TMPDIR inside a .claude directory puts the sandbox under /tmp instead, where the session's writes do not prompt" {
@@ -249,9 +278,11 @@ PASS T94 has its builder at work"
 FAIL the new promise: a task to pin Node 22, in the answer
 FAIL the new promise: a next item to pin Node 22, in tasks/current.md
 == tokens"
-  assert_equal "${lines[-1]}" "== 8 of 11 checks passed"
+  assert_contains "$output" "== 8 of 11 checks passed
+team-drill: recorded compaction fail on home-pc at "
   [[ ! -e $(drill_sandbox) ]]
   assert_equal "$(calls | sed -n 4p | jq -r '.[0]')" purge
+  assert_equal "$(drill_lines)" "$(drill_line fail "8 of 11 checks passed, 1.50 USD")"
 }
 
 @test "an answer that gives T94's builder as no longer live fails its check, though it names the builder" {
@@ -267,7 +298,8 @@ FAIL the new promise: a next item to pin Node 22, in tasks/current.md
       "next T92 open a task to pin Node 22 in CI once T92 merges"]}'
   run -1 "$REPO_ROOT/tests/compaction-drill"
   assert_contains "$output" "FAIL T94 has its builder at work"
-  assert_equal "${lines[-1]}" "== 10 of 11 checks passed"
+  assert_contains "$output" "== 10 of 11 checks passed
+team-drill: recorded compaction fail"
 }
 
 @test "a turn 2 that reports no compaction fails that check" {
@@ -275,7 +307,8 @@ FAIL the new promise: a next item to pin Node 22, in tasks/current.md
   touch "$STUB_FIXTURES/no-compact"
   run -1 "$REPO_ROOT/tests/compaction-drill"
   assert_contains "$output" "FAIL the compaction ran (turn 2 reported a compact_boundary)"
-  assert_equal "${lines[-1]}" "== 10 of 11 checks passed"
+  assert_contains "$output" "== 10 of 11 checks passed
+team-drill: recorded compaction fail"
 }
 
 @test "an answer with no JSON object fails every check of the answer" {
@@ -285,7 +318,9 @@ FAIL the new promise: a next item to pin Node 22, in tasks/current.md
 FAIL T91 waits on its unanswered ask, q1 on the licence"
   assert_contains "$output" "PASS the new promise: a next item to pin Node 22, in tasks/current.md
 == tokens"
-  assert_equal "${lines[-1]}" "== 2 of 11 checks passed"
+  assert_contains "$output" "== 2 of 11 checks passed
+team-drill: recorded compaction fail"
+  assert_equal "$(drill_lines)" "$(drill_line fail "2 of 11 checks passed, 1.50 USD")"
 }
 
 @test "a turn that fails stops the drill with its error, exit 1, and still cleans up" {
@@ -297,6 +332,59 @@ API Error: the stub's turn 2 failed"
   assert_equal "$(calls | wc -l)" 3
   assert_equal "$(calls | sed -n 3p | jq -r '.[0]')" purge
   [[ ! -e $(drill_sandbox) ]]
+  assert_contains "$output" "team-drill: recorded compaction fail on home-pc at "
+  assert_equal "$(drill_lines)" "$(drill_line fail "turn 2 (/compact) failed")"
+}
+
+@test "a drill that stops on an error of its own after its turns records a fail with its exit" {
+  full_answer
+  # A cost that is no number: the drill's sum of it fails.
+  touch "$STUB_FIXTURES/bad-cost"
+  run -5 "$REPO_ROOT/tests/compaction-drill"
+  assert_contains "$output" "team-drill: recorded compaction fail on home-pc at "
+  assert_equal "$(drill_lines)" "$(drill_line fail "it stopped with exit 5 before its verdict")"
+  [[ ! -e $(drill_sandbox) ]]
+}
+
+@test "a first turn that fails records its failure too" {
+  full_answer
+  touch "$STUB_FIXTURES/fail-1"
+  run -1 "$REPO_ROOT/tests/compaction-drill"
+  assert_contains "$output" "FAIL turn 1 (Daniel's message) failed (exit 1):"
+  assert_equal "$(drill_lines)" "$(drill_line fail "turn 1 (Daniel's message) failed")"
+}
+
+@test "a run that ends before its first turn starts records nothing: no claude on PATH" {
+  local bare=$BATS_TEST_TMPDIR/bare-path
+  mkdir -p "$bare"
+  ln -s "$(command -v dirname)" "$bare/dirname"
+  run -1 env PATH="$bare" "$BASH" "$REPO_ROOT/tests/compaction-drill"
+  assert_equal "$output" "compaction-drill: no claude on PATH"
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+}
+
+@test "a refused record says why on stderr and leaves the drill's exit status: a machine with no team name" {
+  full_answer
+  rm "$HOME/.config/agent-team/machine"
+  run -0 --separate-stderr "$REPO_ROOT/tests/compaction-drill"
+  assert_equal "${lines[-1]}" "== 11 of 11 checks passed"
+  assert_equal "$stderr" "compaction-drill: not recorded: team-drill: this machine has no team name; write one with: echo <name> > ~/.config/agent-team/machine"
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+  # A failing drill keeps its exit 1. The stub counts its turns afresh.
+  rm "$STUB_CALLS/claude.log"
+  touch "$STUB_FIXTURES/no-compact"
+  run -1 --separate-stderr "$REPO_ROOT/tests/compaction-drill"
+  assert_equal "${lines[-1]}" "== 10 of 11 checks passed"
+  assert_contains "$stderr" "compaction-drill: not recorded: team-drill: this machine has no team name"
+}
+
+@test "with no team home named, the drill still runs, says it is not recorded and keeps its exit status" {
+  full_answer
+  unset TEAM_HOME
+  [[ ! -e $HOME/.config/agent-team/home ]]
+  run -0 --separate-stderr "$REPO_ROOT/tests/compaction-drill"
+  assert_equal "${lines[-1]}" "== 11 of 11 checks passed"
+  assert_equal "$stderr" "compaction-drill: not recorded: team-drill: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
 }
 
 @test "--help prints its header, which says it spends allowance and never runs in tests/run; arguments are exit 2" {
@@ -304,7 +392,11 @@ API Error: the stub's turn 2 failed"
   assert_contains "$output" "spends allowance"
   assert_contains "$output" "never runs in tests/run"
   assert_contains "$output" "Usage: tests/compaction-drill"
+  # It says it records its run, and where.
+  assert_contains "$output" "drills.jsonl"
+  assert_contains "$output" "bin/team-drill record compaction"
   run -2 "$REPO_ROOT/tests/compaction-drill" extra
   assert_equal "$output" "usage: tests/compaction-drill"
-  assert_equal "$(calls)" ""
+  assert_equal "$(stub_calls claude)" ""
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
 }

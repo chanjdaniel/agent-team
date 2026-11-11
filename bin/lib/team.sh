@@ -9,15 +9,16 @@
 # exported, so every script and every session it starts runs with that one PATH. It sets
 # TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
-# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append,
+# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append, ledger_push,
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
-# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
+# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, claude_cache_dir, tool_dirs,
+# team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, memory_setting, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
-# daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
-# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
+# own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
+# discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, OPS_REQUEST_MAX_AGE, and
+# LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
 # that sets team_guard (below) exits 2 for every exit of its but 0.
 # shellcheck shell=bash
@@ -211,25 +212,48 @@ ledger_refused_data() {
   printf '%s' "$out"
 }
 
+# The tasks and kinds this script appended to the ledger, in order, and whether one of them makes a
+# push due (ledger_append), for ledger_push.
+LEDGER_TASKS=() LEDGER_KINDS=() LEDGER_PUSH_DUE=''
+
 # Append one JSON object as one line to the ledger, under an exclusive lock beside it, so two
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
 # script must be its kind's writer, and no string in it may hold what the records hook refuses (an
 # address at a public provider), since the ledger is append-only and that line would fail every
-# later commit of it. With <seconds>, the lock is waited on at most that long, and a lock still
-# held then is a refusal: ledger_append <event> [<seconds>]
+# later commit of it; these checks read the event alone, before the lock.
+# Under the lock, the event of a writer in bin/lib/lifecycle.json's refusing_writers is checked
+# against the task's state, its events read from the ledger and folded in one jq run
+# (transition_problems in bin/lib/ledger.jq), so no other writer appends between the read and the
+# append. An event the table takes is appended with nothing said. One it refuses is, while the
+# table's lifecycle_from is null or after the event's ts, appended with one line on stderr per
+# problem, "<script>: lifecycle: <problem> (logged anyway; bin/lib/lifecycle.json refuses it from
+# its lifecycle_from, not set yet)", or "..., <lifecycle_from>)"; from lifecycle_from on, refused,
+# "refusing a ledger event: lifecycle: <problems joined by ; >", with nothing appended. Any other
+# writer acted before it logs, so its event is appended unchecked, saying nothing, and team-log
+# --check-lifecycle names it. With <seconds>, the lock is waited on at most that long, and a lock
+# still held then is a refusal, before any lifecycle check. An event of a kind the contract marks
+# push (Daniel's word, or an outside fact) makes a push due, which the script's ledger_push makes:
+# ledger_append <event> [<seconds>]
 ledger_append() {
-  local out line problems lock_wait=()
-  # One jq run: the object's compact line, then its problems ("none" when the input holds no object
-  # or is not JSON, "many" when it holds more than one). Any other failure (an unreadable contract,
-  # an error in ledger.jq) is jq's own, and its message is shown.
+  local out line problems push task event refusing verdict ledger=$TEAM_HOME/ledger.jsonl lock_wait=()
+  # One jq run: the object's compact line, then "<push> <refusing> <task> <event>", then its
+  # problems ("none" when the input holds no object or is not JSON, "many" when it holds more than
+  # one). Any other failure (an unreadable contract or table, an error in ledger.jq) is jq's own,
+  # and its message is shown.
   out=$(ledger_jq '(try [inputs | select(type == "object")] catch []) as $objects
       | if ($objects | length) == 0 then "none" elif ($objects | length) > 1 then "many"
-        else ($objects[0] | tojson), ([$objects[0] | append_problems($contract; $writer)] | join("; ")) end' \
+        else ($objects[0] | tojson),
+          ($objects[0] | ((.event | strings) // "") as $event
+            | "\(($contract.kinds[$event] // {}).push == true) \($writer | IN(lifecycle_table.refusing_writers[]))"
+              + " \((.task | strings) // "") \($event)"),
+          ([$objects[0] | append_problems($contract; $writer)] | join("; ")) end' \
     -nr --arg writer "${0##*/}" <<<"$1") || die "cannot check the event against the ledger contract: $1"
   line=${out%%$'\n'*} problems=''
-  [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
   [[ $line != none ]] || die "not a JSON object for the ledger: $1"
   [[ $line != many ]] || die "not one JSON object for the ledger: $1"
+  out=${out#*$'\n'}
+  read -r push refusing task event <<<"${out%%$'\n'*}"
+  [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
   [[ ! $line =~ $DATA_EMAIL ]] || problems=$(ledger_refused_data "$line")
   [[ -z $problems ]] ||
@@ -237,8 +261,66 @@ ledger_append() {
   [[ -z ${2:-} ]] || lock_wait=(-w "$2")
   {
     flock -x "${lock_wait[@]}" 9 || die "could not take the ledger's lock${2:+ within ${2}s}"
-    printf '%s\n' "$line" >>"$TEAM_HOME/ledger.jsonl"
+    if [[ $refusing == true ]]; then
+      # The verdict: nothing when the table takes the event, else "warn" and a line per problem,
+      # or "refuse" and the problems joined. The task's events are the lines naming it (a cheap
+      # test before each is parsed) that are its objects.
+      verdict=$(ledger_jq '[inputs | select(contains($e.task)) | fromjson? | select(type == "object" and .task == $e.task)]
+          | [transition_problems($e)] as $problems
+          | lifecycle_table.lifecycle_from as $from
+          | if $problems == [] then empty
+            elif $from != null and $e.ts >= $from then "refuse", ($problems | join("; "))
+            else "warn", ($problems[] | "\($writer): lifecycle: \(.) (logged anyway; bin/lib/lifecycle.json refuses it"
+              + " from its lifecycle_from, \($from // "not set yet"))") end' \
+        -nrR --argjson e "$line" --arg writer "${0##*/}" "$([[ -e $ledger ]] && echo "$ledger" || echo /dev/null)") ||
+        die "cannot check the event against the lifecycle table: $line"
+      case ${verdict%%$'\n'*} in
+        refuse) die "refusing a ledger event: lifecycle: ${verdict#*$'\n'}" ;;
+        warn) printf '%s\n' "${verdict#*$'\n'}" >&2 ;;
+      esac
+    fi
+    printf '%s\n' "$line" >>"$ledger"
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
+  [[ " ${LEDGER_TASKS[*]} " == *" $task "* ]] || LEDGER_TASKS+=("$task")
+  [[ " ${LEDGER_KINDS[*]} " == *" $event "* ]] || LEDGER_KINDS+=("$event")
+  [[ $push != true ]] || LEDGER_PUSH_DUE=1
+}
+
+# Commit and push the ledger at once when this script appended an event of a kind the contract
+# marks push (ledger_append notes it), so Daniel's word and outside facts are on origin the moment
+# they are logged; else do nothing. It commits ledger.jsonl alone as "chore: ledger <tasks>
+# <kinds>", the tasks and kinds this script appended, and pushes the team home's branch through
+# commit_records, each network call limited to 20 s. It prints nothing on stdout and never fails
+# its caller: a commit that fails (the records hook refuses it) or a push that fails is one line
+# on stderr, "<script>: the ledger is not on origin yet (<why>); the next checkpoint pushes it",
+# and a machine that is fenced or lost the lease (lease_refusal) commits and pushes nothing,
+# saying so in the same form. While the team holds offline (the heartbeat's offline flag) and the
+# machine is not fenced, it makes no network call: it commits nothing and says GitHub is
+# unreachable since when, in the first form, since the checkpoint of the heartbeat's back step
+# commits and pushes the ledger. A team home that is no git checkout with an origin is left as it
+# is, silently. Each script that writes a push kind calls it once, after its last event:
+# ledger_push
+ledger_push() {
+  local why err since
+  [[ -n ${LEDGER_PUSH_DUE:-} ]] || return 0
+  LEDGER_PUSH_DUE=''
+  [[ -e $TEAM_HOME/.git ]] && git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 0
+  if ! fence_reason >/dev/null && since=$(offline_since); then
+    echo "${0##*/}: the ledger is not on origin yet (GitHub is unreachable since $(date -d "$since" +%H:%M), and the team is holding); the next checkpoint pushes it" >&2
+    return 0
+  fi
+  if why=$(lease_refusal "commits and pushes no ledger"); then
+    echo "${0##*/}: the ledger is not on origin yet ($why)" >&2
+    return 0
+  fi
+  err=$(mktemp) || return 0
+  if ! (NET_ERR=$err.net NET_TIMEOUT=20 commit_records "chore: ledger ${LEDGER_TASKS[*]} ${LEDGER_KINDS[*]}" ledger.jsonl \
+    >/dev/null 2>"$err"); then
+    why=$({ grep -m1 . "$err" || true; } | sed -E "s/^${0##*/}: team home: //; s/^committed [0-9a-f]+ [^;]*; //; s/:$//")
+    echo "${0##*/}: the ledger is not on origin yet (${why:-commit_records failed with no reason}); the next checkpoint pushes it" >&2
+  fi
+  rm -f "$err" "$err.net"
+  return 0
 }
 
 # All of a task's events, in ledger order, one compact object per line (lines that are not JSON
@@ -358,10 +440,14 @@ local_path() {
 #   over 200 files     any other directory holding more than 200 files through its
 #                      subdirectories, the outermost one only
 #   link               a symbolic link
-#   image              a file whose extension IMAGE_TYPE names, in any case (a screenshot is
-#                      never kept in git; the records hook refuses one)
+#   image              a file whose extension IMAGE_TYPE names, in any case, or whose first
+#                      bytes image_magic reads as an image's (a screenshot is never kept in git;
+#                      the records hook refuses one)
 #   over 1 MiB         a file over 1 MiB
 #   may hold a secret  a path secret_paths names
+#   email at a public  a file whose bytes hold an address refused_emails records counts, the
+#   provider           owner being the team home's git user.email: the records hook refuses it,
+#                      and one such file would stop every checkpoint's commit of its task
 # Nothing is looked for inside a path named by an earlier reason. This is the one place the list
 # is written; the scripts that archive, and their docs, point here.
 # A missing directory has none: archive_left_out <dir>
@@ -403,10 +489,40 @@ archive_left_out() {
       skip_path "$dir"
     done < <(find . -mindepth 1 -maxdepth 1 -type d ! \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -printf '%P\0' | sort -z)
     walk . -type l -printf 'link\t%P\0' | sort -z
-    walk . -type f "${is_image[@]}" -printf 'image\t%P\0' | sort -z
-    walk . -type f ! \( "${is_image[@]}" \) -size +1048576c -printf 'over 1 MiB\t%P\0' | sort -z
-    walk . -type f ! \( "${is_image[@]}" \) -size -1048577c -printf '%P\0' |
-      secret_paths | sort | tr '\n' '\0' | sed -z 's/^/may hold a secret\t/'
+    # An image by its extension, or by its first bytes, which image_magic reads only in the files
+    # that could start with an image's signature: those grep takes for binary (a NUL byte, as tiff's
+    # and ico's signatures hold) or empty, and the text files a line of which starts as png's,
+    # jpeg's, gif's (GIF8, whatever byte follows), webp's (RIFF) or bmp's (BM) signature does, or
+    # that hold heif's ftyp, so a directory of other text starts no process per file. A file grep
+    # cannot read is left to the mirror, which names it (grep -s).
+    local -A image=() candidate=() secret=()
+    local path owner small=() signature=$'^(\x89PNG|\xff\xd8\xff|GIF8|RIFF|BM)|ftyp'
+    while IFS= read -r -d '' path; do image[$path]=1; done < <(walk . -type f "${is_image[@]}" -printf '%P\0')
+    while IFS= read -r -d '' path; do candidate[$path]=1; done < <(
+      walk . -type f ! \( "${is_image[@]}" \) -printf '%P\0' |
+        xargs -0r sh -c 'grep -sILZ -e "" -- "$@"; grep -slZE -e "$0" -- "$@"' "$signature" || true
+    )
+    for path in "${!candidate[@]}"; do
+      [[ -z $(image_magic <"$path") ]] || image[$path]=1
+    done
+    ((${#image[@]} == 0)) || printf 'image\t%s\0' "${!image[@]}" | sort -z
+    while IFS= read -r -d '' path; do
+      [[ -n ${image[$path]:-} ]] || printf 'over 1 MiB\t%s\0' "$path"
+    done < <(walk . -type f ! \( "${is_image[@]}" \) -size +1048576c -printf '%P\0' | sort -z)
+    while IFS= read -r -d '' path; do
+      [[ -n ${image[$path]:-} ]] || small+=("$path")
+    done < <(walk . -type f ! \( "${is_image[@]}" \) -size -1048577c -printf '%P\0' | sort -z)
+    ((${#small[@]} == 0)) || while IFS= read -r path; do
+      secret[$path]=1
+      printf 'may hold a secret\t%s\0' "$path"
+    done < <(printf '%s\0' "${small[@]}" | secret_paths | sort)
+    # An address the records hook refuses, read with refused_emails only in the files one grep
+    # finds an address in, the owner being the team home's git user.email, as the hook's is.
+    owner=$(git -C "$TEAM_HOME" config user.email 2>/dev/null) || owner=''
+    ((${#small[@]} == 0)) || while IFS= read -r -d '' path; do
+      [[ -n ${secret[$path]:-} || -z $(refused_emails records "${owner,,}" <"$path") ]] ||
+        printf 'email at a public provider\t%s\0' "$path"
+    done < <(printf '%s\0' "${small[@]}" | xargs -0r grep -slaEZ -e "$DATA_EMAIL" -- | sort -z || true)
   )
 }
 
@@ -497,6 +613,16 @@ team_os() {
   esac
 }
 
+# Claude Code's cache directory, where it keeps each project's MCP logs: env-paths' cache of
+# claude-cli-nodejs, ~/Library/Caches/ on macOS, $XDG_CACHE_HOME or ~/.cache/ elsewhere.
+claude_cache_dir() {
+  if [[ ${TEAM_KERNEL:-$(uname -s)} == Darwin ]]; then
+    echo "$HOME/Library/Caches/claude-cli-nodejs"
+  else
+    echo "${XDG_CACHE_HOME:-$HOME/.cache}/claude-cli-nodejs"
+  fi
+}
+
 # The directories the tools of bin/lib/tools.lock are installed into on this OS, in the lock's
 # order, one per line, whether or not they exist (tool_dirs in bin/lib/tools.jq): nvm's under
 # NVM_DIR, else ~/.nvm, and Homebrew's under the prefix bin/lib/platform.sh found. None without jq
@@ -548,15 +674,23 @@ fence_reason() {
     "$file" 2>/dev/null || echo "fenced since $since"
 }
 
-# Print the hold while the team holds offline (team-timers' ~/.local/state/agent-team/offline,
-# {"since": "<UTC time>", ...}, dated from its modification time without one): "GitHub is
-# unreachable (since 13:05); the team is holding: commit locally, write handoff.md, send T<n>
-# PAUSED offline, and wait.", or fail when it does not hold. The lease-fence hook and
-# team-thread wait give it: offline_hold
-offline_hold() {
-  local file=$HOME/.local/state/agent-team/offline since
+# Print since when the team holds offline, a UTC time, or fail when it does not: the one reader of
+# team-timers' flag, ~/.local/state/agent-team/offline ({"since": "<UTC time>", ...}, dated from
+# its modification time without one), for offline_hold, ledger_push and team-timers:
+# offline_since
+offline_since() {
+  local file=$HOME/.local/state/agent-team/offline
   [[ -e $file ]] || return 1
-  since=$(jq -er '.since | strings' "$file" 2>/dev/null) || since=$(date -u -r "$file" +%FT%TZ)
+  jq -er '.since | strings' "$file" 2>/dev/null || date -u -r "$file" +%FT%TZ
+}
+
+# Print the hold while the team holds offline (offline_since): "GitHub is unreachable (since
+# 13:05); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and
+# wait.", or fail when it does not hold. The lease-fence hook and team-thread wait give it:
+# offline_hold
+offline_hold() {
+  local since
+  since=$(offline_since) || return 1
   echo "GitHub is unreachable (since $(date -d "$since" +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
 }
 
@@ -586,7 +720,9 @@ lease_refusal() {
 # settings' AGENT_TEAM_ROLE names a role other than the coordinator; Daniel's own shell and the
 # heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
 # when the caller passes --interview, for the interview thread's post and wait. Worker settings
-# deny most of the same commands; this holds where a deny pattern misses a spelling:
+# deny most of the same commands by their bare name, and command-guard refuses team-ask,
+# team-answer, team-inbox, team-thread T<n> and team-run-approved by any path where a command
+# starts; this holds where both miss a spelling:
 # worker_refusal <task or ""> <does> [--interview]
 worker_refusal() {
   local role=${AGENT_TEAM_ROLE:-} own=${AGENT_TEAM_TASK:-}
@@ -682,6 +818,16 @@ worktree_changes() {
   [[ -z $list ]] || echo "changes to tracked files: $list"
   list=$(git -C "$1" ls-files --others --exclude-standard | paste -sd ' ')
   [[ -z $list ]] || echo "untracked files: $list"
+}
+
+# A project's memory folder in the team home, as its autoMemoryDirectory names it, the one
+# definition team-config writes into each checkout's .claude/settings.local.json and team-worker
+# into a worker's settings: the team home's memory/<project>, as ~/... when it is under HOME, for
+# Claude Code to expand: memory_setting <project>
+memory_setting() {
+  local dir=$TEAM_HOME/memory/$1
+  [[ $dir != "$HOME"/* ]] || dir=\~/${dir#"$HOME"/}
+  printf '%s\n' "$dir"
 }
 
 # Whether the paths <a> and <b> name one file. Both existing, by identity (-ef), so two spellings
@@ -1184,7 +1330,9 @@ follow_base() {
 
 # Replay the commits on the team home's <branch> that origin's lacks onto origin's, moving the
 # branch, index and working tree as a branch switch would (commit_records); fails with the reason
-# in REPLAY_REASON.
+# in REPLAY_REASON. The commits are built outside the ledger's lock, so inside it the branch head
+# is read again, and one that moved meanwhile (another script's commit) is refused, moving
+# nothing: the next push replays it with that commit.
 replay_records() {
   local branch=$1 base old onto commit tree conflicts way rc=0
   local -a replayed replay_author
@@ -1216,6 +1364,10 @@ replay_records() {
   done
   {
     flock -x 9
+    if [[ $(git -C "$TEAM_HOME" rev-parse HEAD) != "$old" ]]; then
+      REPLAY_REASON="the branch moved meanwhile; the next push replays it"
+      return 1
+    fi
     git -C "$TEAM_HOME" update-index -q --refresh || true
     way=$(in_the_way "$TEAM_HOME" "$onto")
     if [[ -n $way ]]; then
@@ -1226,7 +1378,12 @@ replay_records() {
       REPLAY_REASON="moving the working tree failed: $(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')"
       return 1
     fi
-    git -C "$TEAM_HOME" update-ref -m "${0##*/}: replayed onto origin/$branch" "refs/heads/$branch" "$onto" "$old"
+    if ! git -C "$TEAM_HOME" update-ref -m "${0##*/}: replayed onto origin/$branch" "refs/heads/$branch" "$onto" "$old" 2>"$NET_ERR"; then
+      REPLAY_REASON="moving the branch failed: $(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')"
+      # The working tree goes back to the branch it stayed on.
+      git -C "$TEAM_HOME" read-tree -m -u "$onto" "$old" 2>/dev/null || true
+      return 1
+    fi
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
 }
 
@@ -1261,12 +1418,36 @@ render_template() {
 # shellcheck disable=SC2034 # read by the scripts that source this library
 COORDINATOR_CHANNEL=${TEAM_COORDINATOR_CHANNEL:-1562486564871995482}
 
+# The most seconds before an ops launch that Daniel's message asking for it may have been sent, by
+# the time in its id: team-worker refuses an older one.
+# shellcheck disable=SC2034 # read by the scripts that source this library
+OPS_REQUEST_MAX_AGE=3600
+
 # The Discord channel under which each interviewed task's interview thread is opened: Daniel's,
 # kept out of the plugin's access.json groups, so the plugin delivers none of its messages to the
 # coordinator (it keys a thread on its parent). TEAM_INTERVIEW_CHANNEL overrides it, an empty one
 # included, which the scripts refuse as none set.
 # shellcheck disable=SC2034 # read by the scripts that source this library
 INTERVIEW_CHANNEL=${TEAM_INTERVIEW_CHANNEL-1565336720998928556}
+
+# Print the type of the image whose bytes are on stdin, by its first 16, png, jpeg, gif, webp, bmp,
+# tiff, ico or heif, or nothing: the images the data rules refuse (data-check) and the archive leaves
+# out (archive_left_out), whatever a file's name, which image_type below narrows to those a worker
+# may post: image_magic <bytes
+image_magic() {
+  local hex
+  hex=$(head -c 16 | od -An -tx1 | tr -d ' \n')
+  case $hex in
+    89504e47*) echo png ;;
+    ffd8ff*) echo jpeg ;;
+    474946383*) echo gif ;;
+    52494646????????57454250*) echo webp ;;
+    424d*) echo bmp ;;
+    49492a00* | 4d4d002a*) echo tiff ;;
+    00000100*) echo ico ;;
+    ????????66747970*) echo heif ;;
+  esac
+}
 
 # Print the type of the image <file> holds by its first bytes, png, jpeg, gif or webp, the images a
 # worker session may post, or nothing: image_type <file>
@@ -1307,6 +1488,14 @@ discord_api() {
     return 1
   }
   curl -fsS -H @- "${@:2}" "https://discord.com/api/v10/$1" <<<"Authorization: Bot $token"
+}
+
+# Print the channel and message ids of a Discord message link,
+# https://discord.com/channels/<guild>/<channel>/<message>, as "<channel> <message>", or fail
+# printing nothing: discord_link <link>
+discord_link() {
+  [[ $1 =~ ^https://discord\.com/channels/[1-9][0-9]{0,18}/([1-9][0-9]{0,18})/([1-9][0-9]{0,18})$ ]] || return 1
+  echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
 }
 
 # Read Daniel's word from Discord: message <id> from the first of the places that has it, through
@@ -1400,13 +1589,13 @@ answer_message() {
   printf '%s\n' "$word"
 }
 
-# Bring the Waiting on you message in #coordinator up to date with this checkout's team-inbox, at
-# the end of a script that changed what waits on Daniel; a failure is one line on stderr, "<script>:
-# the Waiting on you message is not updated: <why>", and never the caller's: refresh_inbox
+# Bring the team home's waiting.md up to date with this checkout's team-inbox, at the end of a
+# script that changed what waits on Daniel; a failure is one line on stderr, "<script>: waiting.md
+# is not updated: <why>", and never the caller's: refresh_inbox
 refresh_inbox() {
   local error
   error=$(TEAM_HOME=$TEAM_HOME "$TEAM_LIB/../team-inbox" 2>&1 >/dev/null) && return 0
-  echo "${0##*/}: the Waiting on you message is not updated: $(grep -m 1 . <<<"$error" | sed 's/^team-inbox: //' || echo "team-inbox failed")" >&2
+  echo "${0##*/}: waiting.md is not updated: $(grep -m 1 . <<<"$error" | sed 's/^team-inbox: //' || echo "team-inbox failed")" >&2
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]
@@ -1678,13 +1867,29 @@ session_context() {
   done
 }
 
+# Print the digest of the ticket list on stdin, as team-tickets --json prints it: the sha256 of the
+# list as jq -cS . prints it, 64 hex characters, which team-tickets --html stamps on its page, so a
+# page tells the tickets it shows from the tickets as they stand: tickets_digest <list
+tickets_digest() {
+  jq -cS . | sha256sum | cut -c1-64
+}
+
+# Print the task directory of the first ticket of the ticket list on stdin, as team-tickets --json
+# prints it: the directory above that ticket file's tickets/, where team-tickets --graph writes the
+# graph's page and PNG; nothing for an empty list: ticket_graph_dir <list
+ticket_graph_dir() {
+  local file
+  file=$(jq -r '.[0].file // empty')
+  [[ -z $file ]] || printf '%s\n' "${file%/tickets/*}"
+}
+
 # A task's state, as team-state --json prints it but compact, from its events (one JSON array in
 # ledger order), the live session list, its live workers' transcripts and, when it has a pr event,
 # GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
   local events=$1 state pr dir session_id context contexts=() out plan_project plan_projects opted_in own standing
-  local task tickets
+  local task tickets graph_dir html png fresh page_digest
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
@@ -1715,11 +1920,24 @@ task_state_json() (
     state=$(jq -c --argjson opted_in "$opted_in" --argjson own "$own" \
       '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
   fi
-  # The ticket total: the ticket files team-tickets reads, null when it refuses them.
+  # The ticket total: the ticket files team-tickets reads, null when it refuses them. The graph:
+  # the page team-tickets --graph wrote in the task directory of the first ticket, fresh while it
+  # was drawn from the tickets as they stand and its PNG is no older than it; null with no page.
   if tickets=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json 2>/dev/null </dev/null) &&
     out=$(jq -cn 'input as $tickets | input | .progress.tickets.total = ($tickets | length)' 2>/dev/null \
       <<<"$tickets"$'\n'"$state"); then
     state=$out
+    graph_dir=$(ticket_graph_dir <<<"$tickets") || exit 1
+    if [[ -n $graph_dir && -f $graph_dir/tickets.html ]]; then
+      html=$graph_dir/tickets.html png=$graph_dir/tickets.png fresh=false
+      page_digest=$(sed -n 's/.*<meta name="team-tickets-digest" content="\([0-9a-f]\{64\}\)">.*/\1/p;T;q' "$html")
+      if [[ -n $page_digest && $page_digest == "$(tickets_digest <<<"$tickets")" && -f $png && ! $png -ot $html ]]; then
+        fresh=true
+      fi
+      [[ -f $png ]] || png=
+      state=$(jq -c --arg html "$html" --arg png "$png" --argjson fresh "$fresh" \
+        '.progress.tickets.graph = {html: $html, png: (if $png == "" then null else $png end), fresh: $fresh}' <<<"$state") || exit 1
+    fi
   fi
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1

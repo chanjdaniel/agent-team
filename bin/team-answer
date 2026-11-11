@@ -4,6 +4,9 @@
 # coordinator to send on. team-ask put the question.
 #
 # Usage: team-answer T<n> <id> <discord message id>
+#        team-answer --item <n> <discord message id>
+# The first form takes a reply to task T<n>'s ask <id>, as one in the task's thread; the second, a
+# reply that answers by number the waiting list team-inbox keeps (below).
 # The task must be open and have logged asked id=<id>, and no answered of <id> from that message
 # yet; a later message for the same ask is an addition, logged as another answered. It is the one
 # writer of an answered that names a message, which team-log refuses. The message is read with
@@ -16,22 +19,57 @@
 # team-run-approved holds the answer it runs on to as well); and it must have text. Then it logs
 # answered id=<id> answer=<the message's text, verbatim> discord_message=<its id>, and resumed
 # when the task's standing park is the ask's own wait (the latest waiting, blocked, paused, held,
-# resumed or launch is waiting on=Daniel reason="ask <id>", as team-ask logs it). Then team-inbox
-# takes the ask out of the Waiting on you message; when that fails, a line on stderr says so, and
+# resumed or launch is waiting on=Daniel reason="ask <id>", as team-ask logs it), and commits the
+# ledger and pushes it to the team home's origin at once (ledger_push in bin/lib/team.sh, which
+# says on stderr when it is not on origin yet, the answer standing). Then team-inbox
+# takes the ask out of the team home's waiting.md; when that fails, a line on stderr says so, and
 # the answer stands.
+# --item <n> (n from 1 to 999), for one reply that answers several items ("3 yes, 5 no"): the ask
+# is the item this checkout's team-inbox --item <n> names, refused with its reason when it names
+# none. A PR's number is refused, naming the merge word's team-log line, and an interview's,
+# naming its thread, logging nothing. For an ask it does all the first form does, and also refuses
+# a message whose numbered parts name no part n: each line, a leading bullet (- or *) dropped, is
+# split before each comma, semicolon, & or "and" that a number follows, and a part is an optional
+# #, a number, an optional . ) : or -, then spaces and its text, a part with none taking the text
+# of the next on its line that has some, so "3 and 5 yes" answers both (numbered_parts in
+# bin/lib/ledger.jq). It logs answered as the first form does, the whole message verbatim, with
+# item=<n>, which team-log refuses.
 # It refuses on a machine that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh),
 # before reading Discord, and in a worker session (worker_refusal).
-# Prints the message's text verbatim. Any refusal is exit 1 with nothing logged.
+# Prints the message's text verbatim, or with --item the text of each part naming n, one per line;
+# an empty line is a part that named n with no text of its own and none after it on its line,
+# which answers nothing (ask Daniel what they meant), as "approve 3 and 5" names 5 alone, since a
+# part starts with its number and "approve 3" does not.
+# Any refusal is exit 1 with nothing logged.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-USAGE="usage: team-answer T<n> <id> <discord message id>"
+USAGE="usage: team-answer T<n> <id> <discord message id>, or team-answer --item <n> <discord message id>"
 
 (($# == 3)) || usage_error "$USAGE"
-task=$1 id=$2 message=$3
-[[ $task =~ ^T[1-9][0-9]*$ && $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $message =~ ^[1-9][0-9]{0,18}$ ]] ||
-  usage_error "$USAGE"
+item=''
+if [[ $1 == --item ]]; then
+  item=$2 task='' id='' message=$3
+  [[ $item =~ ^[1-9][0-9]{0,2}$ && $message =~ ^[1-9][0-9]{0,18}$ ]] || usage_error "$USAGE"
+else
+  task=$1 id=$2 message=$3
+  [[ $task =~ ^T[1-9][0-9]*$ && $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $message =~ ^[1-9][0-9]{0,18}$ ]] ||
+    usage_error "$USAGE"
+fi
 why=$(worker_refusal "$task" "logs no answer of Daniel's") && die "$why"
+
+# By number: the ask the waiting list numbers <n>, as team-inbox --item names it.
+if [[ -n $item ]]; then
+  named=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-inbox" --item "$item" 2>&1) ||
+    die "$(grep -m 1 . <<<"$named" | sed 's/^team-inbox: //' || echo "team-inbox --item $item failed")"
+  read -r kind task id <<<"$named"
+  case $kind in
+    ask) ;;
+    pr) die "item $item is $task's PR $id, which Daniel's word merges: on a merge word, log team-log $task merge-approved url=$id discord_message=$message head=<the full sha you asked on>, then run team-merge $task" ;;
+    interview) die "item $item is $task's interview, which Daniel answers in <#$id>; nothing is logged" ;;
+    *) die "item $item is $named, which no answer is logged for" ;;
+  esac
+fi
 
 events=$(open_task_events "$task")
 jq -e --arg id "$id" 'any(.[]; .event == "asked" and .id == $id)' <<<"$events" >/dev/null ||
@@ -46,13 +84,26 @@ word=$(answer_message "$task" "$id" "$message" "$events" \
   "logs no answer; the coordinator on the holder takes Daniel's answers." 2>"$scratch/error") || die "$(<"$scratch/error")"
 answer=$(jq -r '.message.content | strings' <<<"$word")
 [[ $answer =~ [^[:space:]] ]] || die "Discord message $message has no text to log as the answer"
+# By number, the reply must name the number, and what is printed is the text of its parts that do.
+if [[ -n $item ]]; then
+  parts=$(ledger_jq '.message.content | numbered_parts
+    | {mine: [.[] | select(.n == $n) | .text], named: ([.[].n] | unique | map(tostring))}' -c --argjson n "$item" <<<"$word")
+  jq -e '.mine != []' <<<"$parts" >/dev/null ||
+    die "Discord message $message names no item $item (it names $(ledger_jq '.named | if . == [] then "no item by number" else and_text end' -r <<<"$parts")); log it with team-answer $task $id $message if it answers that ask"
+fi
 
 ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" --arg id "$id" --arg message "$message" \
-  --argjson word "$word" '{ts: $ts, task: $task, event: "answered", id: $id, answer: $word.message.content, discord_message: $message}')"
+  --argjson word "$word" --arg item "$item" '{ts: $ts, task: $task, event: "answered", id: $id, answer: $word.message.content,
+    discord_message: $message} + if $item == "" then {} else {item: ($item | tonumber)} end')"
 if jq -e --arg id "$id" '
   map(select(.event | IN("waiting", "blocked", "paused", "held", "resumed", "launch"))) | last
   | . != null and .event == "waiting" and .on == "Daniel" and .reason == "ask \($id)"' <<<"$events" >/dev/null; then
   ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" '{ts: $ts, task: $task, event: "resumed"}')"
 fi
+ledger_push
 refresh_inbox
-jq -r '.message.content' <<<"$word"
+if [[ -n $item ]]; then
+  jq -r '.mine[]' <<<"$parts"
+else
+  jq -r '.message.content' <<<"$word"
+fi

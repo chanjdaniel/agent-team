@@ -2,7 +2,9 @@
 // ui-capture reads the element selected in DevTools on a local fixture page shaped like
 // Conventioner's dev build (vite-plugin-vue-inspector's hidden __v_inspector props, a Vue app
 // with a router), or the page Daniel is on when nothing is selected, and only localhost pages;
-// agent-chrome starts Chrome with its own profile and debugging port.
+// agent-chrome starts Chrome with its own profile and debugging port. The Chrome is the machine's,
+// or TEAM_CHROME, headless and never a window on the screen, and must be current enough for
+// open_devtools, which chrome-helper.test.mjs checks fails at once on one too old.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";

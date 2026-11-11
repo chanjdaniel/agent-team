@@ -1,3 +1,17 @@
+# salvage records
+#               On a fenced machine only: fails when the team home holds commits its origin
+#               branch lacks (its remote-tracking branch as it is, with no fetch) or uncommitted
+#               changes to records, naming the count of commits and the changed paths (the ledger
+#               with its count of new lines); the fix is the commands that commit them as
+#               "wip: salvage records from <machine>" and push the head to the team home's origin
+#               as salvage/records/<machine>-<epoch>, the epoch of the lease this machine last held,
+#               for Daniel to run before the team home is brought level with origin. Passes when
+#               there is neither, or that branch holds the head and nothing is uncommitted.
+#               Uncommitted changes to waiting.md and waiting.json count for nothing: the new
+#               holder's team-inbox writes the items again from the ledger, and a post pushed
+#               the numbers it showed at once; what is lost is the numbers plain runs gave new
+#               items since the last checkpoint (and a post's whose push failed), which the new
+#               holder gives afresh.
 # salvage       On a fenced machine only: fails for each open task's worktree here with
 #               commits on no origin branch (a checkpoint's wip/<project>/T<n> aside) or
 #               uncommitted changes, the fix being the commands that push them to the team
@@ -9,14 +23,59 @@
 # shellcheck disable=SC2154 # machine, from the machine check
 # reads state from: 070-machine.sh 220-lease.sh
 
-# On a fenced machine, each open task's worktree here holding what origin lacks. The salvage
-# goes to the team home's origin, as a snapshot does, since the project's may be public; a
-# clean worktree whose head that salvage holds is salvaged.
+# On a fenced machine, the team home and each open task's worktree here holding what origin
+# lacks. The salvage goes to the team home's origin, as a snapshot does, since the project's may
+# be public; a clean head that its salvage branch holds is salvaged.
 if [[ -n $fenced ]]; then
+  salvage_url=$(git -C "$TEAM_HOME" remote get-url origin 2>/dev/null) || salvage_url="<the team home's origin>"
+  salvaged=$(GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" ls-remote "$salvage_url" 'refs/heads/salvage/*' 2>/dev/null) || salvaged=''
+
+  # The team home's own records origin lacks: its commits not on origin's branch as this machine
+  # last saw it, and its uncommitted records, the ledger lines of its last minutes among them.
+  if git -C "$TEAM_HOME" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD) || branch=HEAD
+    if git -C "$TEAM_HOME" rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null; then
+      count=$(git -C "$TEAM_HOME" rev-list --count "refs/remotes/origin/$branch..HEAD")
+    else
+      count=$(git -C "$TEAM_HOME" rev-list --count HEAD)
+    fi
+    mapfile -t record_specs < <(records_pathspecs)
+    mapfile -d '' -t changed < <(git -C "$TEAM_HOME" status --porcelain -z --no-renames -- "${record_specs[@]}")
+    changed=("${changed[@]#???}")
+    # The waiting list is left out: the new holder's team-inbox writes its items again from the
+    # ledger, and numbers afresh the items no pushed waiting.json numbered (see the header).
+    for record_i in "${!changed[@]}"; do
+      [[ ${changed[record_i]} != waiting.md && ${changed[record_i]} != waiting.json ]] || unset 'changed[record_i]'
+    done
+    changed=("${changed[@]}")
+    held_epoch=$(jq -er '.epoch' "$HOME/.local/state/agent-team/lease.json" 2>/dev/null) || held_epoch=unknown
+    ref=salvage/records/$machine-$held_epoch
+    kept=$(awk -v ref="refs/heads/$ref" '$2 == ref { print $1 }' <<<"$salvaged")
+    if ((count == 0 && ${#changed[@]} == 0)) ||
+      { ((${#changed[@]} == 0)) && [[ -n $kept ]] && git -C "$TEAM_HOME" merge-base --is-ancestor HEAD "$kept" 2>/dev/null; }; then
+      report "salvage records" PASS "the team home holds no records that neither origin's $branch nor a salvage branch keeps"
+    else
+      shown=$(tilde "$TEAM_HOME")
+      what=() paths=()
+      ((count == 0)) || what+=("$count commit$( ((count == 1)) || echo s) origin's $branch lacks")
+      for path in "${changed[@]}"; do
+        if [[ $path == ledger.jsonl ]]; then
+          lines=$(git -C "$TEAM_HOME" diff --no-ext-diff --numstat HEAD -- ledger.jsonl | cut -f1)
+          paths+=("ledger.jsonl: ${lines:-0} new line$( ((${lines:-0} == 1)) || echo s)")
+        else
+          paths+=("$path")
+        fi
+      done
+      ((${#changed[@]} == 0)) || what+=("uncommitted records ($(printf '%s; ' "${paths[@]}" | sed 's/; $//'))")
+      push="git -C $shown push $salvage_url HEAD:refs/heads/$ref"
+      ((${#changed[@]} == 0)) ||
+        push="git -C $shown add -A --$(printf ' %q' "${changed[@]}") && git -C $shown commit -m \"wip: salvage records from $machine\", then $push"
+      report "salvage records" FAIL "$shown has $(printf '%s and ' "${what[@]}" | sed 's/ and $//')" "$push"
+    fi
+  fi
+
   salvage=0
   if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
-    salvage_url=$(git -C "$TEAM_HOME" remote get-url origin 2>/dev/null) || salvage_url="<the team home's origin>"
-    salvaged=$(GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" ls-remote "$salvage_url" 'refs/heads/salvage/*' 2>/dev/null) || salvaged=''
     while IFS=$'\t' read -r task project wt; do
       top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || continue
       same_path "$top" "$wt" || continue

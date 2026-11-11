@@ -154,11 +154,12 @@ section() {
   launch T20 planner 3ed2d1f2
   sessions "$(session 59709d99 T12-builder idle blocked)"
   run_bin -0 team-snapshot
+  # T12's builder launch put it in building (the lifecycle's launch rule).
   local tasks
   tasks=$(section "Open tasks")
   assert_equal "$tasks" "Open tasks (3):
   T3 proj feature planning | no live worker
-  T12 proj feature planning | T12-builder idle blocked
+  T12 proj feature building | T12-builder idle blocked
   T20 planning | no live worker"
   run_bin -0 team-state T12
   assert_contains "$tasks" "  $output"
@@ -175,7 +176,7 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","standing_words","sessions","strays","prs","pending_asks","items"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","standing_words","production","sessions","strays","prs","pending_asks","items"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
@@ -359,6 +360,16 @@ Live team sessions: none"
   T12 d15: The November spread question for the organizer"
 }
 
+@test "an ops session's pending ask shows by its fixed line, and its question with no text breaks nothing" {
+  opened T5
+  event T5 question '{role: "ops", chars: 71, discord_message: "1564000000000000001"}'
+  event T5 asked '{id: "write-1", text: "An ops question of 71 characters, in T5'"'"'s thread.", discord_message: "1564000000000000001"}'
+  event T5 question '{role: "ops", chars: 28}'
+  run_bin -0 team-snapshot
+  assert_equal "$(section "Pending asks")" "Pending asks (1):
+  T5 write-1: An ops question of 71 characters, in T5's thread."
+}
+
 @test "an empty ledger shows every part as none" {
   reserve_agent_team
   open_prs owner/proj '[]'
@@ -417,6 +428,103 @@ Live team sessions: none"
 Live team sessions: none"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c .standing_words <<<"$output")" '[]'
+}
+
+# production_check <project> <name>: an [[<project>.uptime]] check of the registry, on the loopback
+# (no test fetches it: team-snapshot reads only the last results).
+production_check() {
+  printf '\n[[%s.uptime]]\nname = "%s"\nurl = "http://127.0.0.1:9/%s"\nexpect = "ok"\n' "$1" "$2" "$2" >>"$TEAM_HOME/projects.toml"
+}
+
+# production_state <written> <entries>: team-uptime's state file, written at <written>, its checks
+# the jq object <entries>.
+production_state() {
+  mkdir -p "$HOME/.local/state/agent-team"
+  jq -n --arg written "$1" "{schema: \"team-uptime/1\", written: \$written, checks: ($2)}" \
+    >"$HOME/.local/state/agent-team/uptime.json"
+}
+
+# A check of production_check's as team-uptime run leaves it, checked at <at>: up_check <project>
+# <name> <at>, and down_check <project> <name> <at> <since> <reason> (down, its outage posted).
+up_check() {
+  jq -nc --arg p "$1" --arg n "$2" --arg at "$3" '{("\($p)/\($n)"): {project: $p, name: $n,
+    url: "http://127.0.0.1:9/\($n)", expect: "ok", checked: $at, ok: true, reason: null, failures: 0, since: null, alert: null}}'
+}
+down_check() {
+  jq -nc --arg p "$1" --arg n "$2" --arg at "$3" --arg since "$4" --arg reason "$5" '{("\($p)/\($n)"): {project: $p, name: $n,
+    url: "http://127.0.0.1:9/\($n)", expect: "ok", checked: $at, ok: false, reason: $reason, failures: 3, since: $since,
+    alert: {since: $since, posted: $since, reminded: null, message: "1569000000000000001", back: null}}}'
+}
+
+@test "with no production checks there is no Production line, and --json's production has a null line" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 3,4p <<<"$output")" "Standing merge word: none
+Live team sessions: none"
+  [[ $output != *Production* ]]
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c .production <<<"$output")" '{"schema":"team-uptime/1","written":null,"line":null,"checks":[]}'
+}
+
+@test "the Production line follows the standing merge words, all up or a check down, and --json carries team-uptime status --json's object" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  standing T3 merge-standing conv 1564100000000000001 2026-10-22T03:00:00Z
+  production_check proj api
+  production_check conv front-end
+  local at since
+  at=$(date -u -d '-3 minutes' +%FT%TZ)
+  since=$(date -u -d '-40 minutes' +%FT%TZ)
+  production_state "$at" "$(up_check proj api "$at") + $(up_check conv front-end "$at")"
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 4,6p <<<"$output")" "Standing merge word: conv (Discord message 1564100000000000001, 2026-10-22T03:00:00Z, T3)
+Production: all 2 checks up, last checked $(date -d "$at" +%H:%M)
+Live team sessions: none"
+
+  production_state "$at" "$(up_check proj api "$at") + $(down_check conv front-end "$at" "$since" 'HTTP 503')"
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 5p <<<"$output")" \
+    "Production: conv front-end down since $(date -d "$since" +%H:%M): HTTP 503; 1 more up, last checked $(date -d "$at" +%H:%M)"
+  run_bin -0 team-snapshot --json
+  local snapshot=$output
+  run_bin -0 team-uptime status --json
+  assert_equal "$(jq -c .production <<<"$snapshot")" "$(jq -c . <<<"$output")"
+}
+
+@test "the Production line is cut at 200 columns" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  local at n entries='{}'
+  at=$(date -u -d '-3 minutes' +%FT%TZ)
+  for n in 1 2 3 4; do
+    production_check proj "check-$n"
+    entries+=" + $(down_check proj "check-$n" "$at" "$at" 'Could not resolve host: api.conventioner.io')"
+  done
+  production_state "$at" "$entries"
+  run_bin -0 team-snapshot
+  local line
+  line=$(sed -n 4p <<<"$output")
+  assert_equal "${#line}" 200
+  [[ $line == "Production: proj check-1 down since "*... ]] || { echo "line: $line" >&2; return 1; }
+}
+
+@test "a team-uptime that fails gives production its error, the text says production is unreadable, and the rest is as before" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  production_check proj api
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo 'not json {' >"$HOME/.local/state/agent-team/uptime.json"
+  run_bin -0 --separate-stderr team-snapshot --json
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c .production <<<"$output")" '{"error":"~/.local/state/agent-team/uptime.json is not a team-uptime/1 state"}'
+  assert_equal "$(jq -c '.tasks | length' <<<"$output")" 1
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 4,6p <<<"$output")" "Standing merge word: none
+Production unreadable: ~/.local/state/agent-team/uptime.json is not a team-uptime/1 state
+Live team sessions: none"
 }
 
 @test "current items are the item lines of tasks/current.md, after the pending asks and in --json" {
@@ -547,7 +655,7 @@ $line"
   assert_equal "  $output" "$line"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c '.tasks[0] | [.progress.tickets, .progress.reviews.sent_back, .pr.behind_by]' <<<"$output")" \
-    '[{"done":["01","02","03"],"total":7},[5,6],16]'
+    '[{"done":["01","02","03"],"total":7,"graph":null},[5,6],16]'
 }
 
 @test "a waiting task says what it waits on" {
@@ -555,8 +663,9 @@ $line"
   launch T5 builder 59709d99
   event T5 waiting '{on: "Daniel", reason: "restart the Docker daemons"}'
   run_bin -0 team-snapshot
+  # Its builder's launch put the feature task in building (the lifecycle's launch rule).
   assert_equal "$(section "Open tasks")" "Open tasks (1):
-  T5 proj feature planning | no live worker | waiting on Daniel: restart the Docker daemons"
+  T5 proj feature building | no live worker | waiting on Daniel: restart the Docker daemons"
 }
 
 @test "a task with a worktree not re-homed says so until the worktree is made" {

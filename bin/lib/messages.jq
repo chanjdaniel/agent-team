@@ -8,8 +8,8 @@ def message_forms:
   ["QUESTION <text>", "BLOCKED <what> <why>", "NEED toolkit <name>", "PAUSED <why>",
    "PR <full url> [merged <base> conflicts: <files or none>]",
    "DONE <NN> <sha>... <line>", "DONE review-ready <sha>", "DONE merged <base> <sha> conflicts: <files or none>",
-   "DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list> [memory=<path>]",
-   "DONE findings <path> findings=<kind:n,...> [before=<list>] guarded=<list> [memory=<path>]",
+   "DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list> [widening=<list>] [memory=<path>]",
+   "DONE findings <path> findings=<kind:n,...> [before=<list>] guarded=<list> [widening=<list>] [memory=<path>]",
    "DONE gate <key=value>...", "DONE <report>", "FAILED <why>", "INJECTION <where> <what it asked>"];
 
 def message_sha: test("^[0-9a-f]{7,40}$");
@@ -94,7 +94,8 @@ def with_sender($task; $events; $from; $implied; f):
 def message_event($event; $fields): {event: $event, fields: $fields};
 
 # A reviewer's DONE pass or findings: the review and the reviewer's done, the review carrying
-# memory=, the file of memories the reviewer added for the coordinator to file, when it names one.
+# widening=, the numbers of a rereview's new findings in what the last fix added, and memory=, the
+# file of memories the reviewer added for the coordinator to file, when it names them.
 # Its head is the head of the brief record its latest launch read ($records, by brief name), else
 # the message's own head for a pass on a head, else it is refused naming head=. Its verdict is the
 # message's word, raw:
@@ -107,9 +108,9 @@ def message_review($task; $events; $records; $from; $sent_back; $verdict; $rest)
       message_refused("DONE pass takes a PR url or a head of 7 to 40 hex digits, got '\($m.target)'")
     else ($m.pairs | message_pairs("DONE \($verdict)")) as $p
       | if $p.problems then $p
-        elif any($p.pairs[]; .[0] | IN("findings", "before", "guarded", "memory") | not) then
-          message_refused("DONE \($verdict) takes findings=<kind:n,...>, before=<list>, guarded=<list> and memory=<path>, got "
-            + ([$p.pairs[] | .[0] | select(IN("findings", "before", "guarded", "memory") | not)] | join(", ")))
+        elif any($p.pairs[]; .[0] | IN("findings", "before", "guarded", "widening", "memory") | not) then
+          message_refused("DONE \($verdict) takes findings=<kind:n,...>, before=<list>, guarded=<list>, widening=<list> and memory=<path>, got "
+            + ([$p.pairs[] | .[0] | select(IN("findings", "before", "guarded", "widening", "memory") | not)] | join(", ")))
         elif ([$p.pairs[] | .[0] | select(IN("findings", "guarded"))] | length) < 2 then
           message_refused("DONE \($verdict) needs findings= and guarded=")
         else with_sender($task; $events; $from; "reviewer";
@@ -149,11 +150,26 @@ def message_ticket($task; $events; $from; $ticket; $rest):
 def message_builder_done($task; $events; $from; $report):
   with_sender($task; $events; $from; "builder"; {events: [message_event("done"; [["role", "builder"], ["session", .session], ["report", $report]])]});
 
-# A DONE: the forms above by their first word, else the sender's done with its report.
+# An ops session's DONE or QUESTION, whose text may hold production data: its event with the
+# text's length in characters (report_chars, chars) and never the text.
+def message_ops($event; $l; $text):
+  if $event == "done" then
+    {events: [message_event("done"; [["role", "ops"], ["session", $l.session], ["report_chars", ($text | length | tostring)]])]}
+  else {events: [message_event("question"; [["role", "ops"], ["chars", ($text | length | tostring)]])]} end;
+
+# Whether --from ($from) names an ops session of the task, which takes its DONE whatever its
+# first word.
+def message_from_ops($task; $events; $from):
+  $from != "" and (message_sender($task; $events; $from; null) | .sender.role? == "ops");
+
+# A DONE: an ops session's when --from names one, else the forms above by their first word, else
+# the sender's done with its report, or an ops sender's with its length.
 def message_done($task; $events; $records; $from; $sent_back; $rest):
   ($rest | capture("^(?<word>\\S+)(?:\\s+(?<more>.*))?$"; "s")) as $d
   | ($d.more // "") as $more
-  | if ($d.word | test("^[0-9]{2}$")) then message_ticket($task; $events; $from; $d.word; $more)
+  | if message_from_ops($task; $events; $from) then
+      with_sender($task; $events; $from; null; message_ops("done"; .; $rest))
+    elif ($d.word | test("^[0-9]{2}$")) then message_ticket($task; $events; $from; $d.word; $more)
     elif $d.word == "review-ready" then
       if ($more | message_sha) then message_builder_done($task; $events; $from; $rest)
       else message_refused("DONE review-ready takes 'DONE review-ready <sha>', got 'DONE \($rest)'") end
@@ -166,7 +182,8 @@ def message_done($task; $events; $records; $from; $sent_back; $rest):
       ($more | message_pairs("DONE gate")) as $p
       | if $p.problems then $p else {events: [message_event("gate-run"; $p.pairs)]} end
     else with_sender($task; $events; $from; null;
-      {events: [message_event("done"; [["role", .role], ["session", .session], ["report", $rest]])]}) end;
+      if .role == "ops" then message_ops("done"; .; $rest)
+      else {events: [message_event("done"; [["role", .role], ["session", .session], ["report", $rest]])]} end) end;
 
 # The message (the input) of $task read into {events: [{event, fields}...]}, or {problems}. $events
 # are the task's events, $records its brief records by name (brief-review: {template, project,
@@ -185,7 +202,9 @@ def parse_message($task; $events; $records; $from; $sent_back):
         + (if $m.kind == "DONE" then "DONE " + ([$rest | splits("\\s+")][0]) else $m.kind end))
     elif $rest == "" then unreadable
     elif $m.kind == "QUESTION" then
-      with_sender($task; $events; $from; null; {events: [message_event("question"; [["role", .role], ["text", $rest]])]})
+      with_sender($task; $events; $from; null;
+        if .role == "ops" then message_ops("question"; .; $rest)
+        else {events: [message_event("question"; [["role", .role], ["text", $rest]])]} end)
     elif $m.kind == "BLOCKED" then {events: [message_event("blocked"; [["reason", $rest]])]}
     elif $m.kind == "NEED" then
       if ($rest | test("^toolkit\\s+\\S+$")) then {events: [message_event("blocked"; [["reason", "needs " + ($rest | sub("\\s+"; " "))]])]}
@@ -204,3 +223,17 @@ def parse_message($task; $events; $records; $from; $sent_back):
         else with_sender($task; $events; $from; null;
           {events: [message_event("injection"; [["role", .role], ["source", $i.source], ["text", $i.text]])]}) end
     else unreadable end;
+
+# The parsed message (parse_message's, of the message $message) with --relay's id ($relay, or "")
+# on its ops session's done, the pointer to the coordinator's relay of its answer in Discord; any
+# other message is refused with it, naming its kind and its sender when it has one.
+def message_relay($task; $message; $relay):
+  if $relay == "" or .problems then .
+  else [.events[] | .fields | map({key: .[0], value: .[1]}) | from_entries] as $fields
+    | if any($fields[]; .report_chars != null) then
+        .events |= map(if .event == "done" then .fields += [["relay", $relay]] else . end)
+      else ($message | gsub("^\\s+"; "") | [splits("\\s+")][1]) as $kind
+        | ([$fields[] | .role | strings] | first) as $role
+        | message_refused("--relay is taken only with an ops session's DONE, the answer it points at in Discord, not "
+          + if $role != null then "\($task)-\($role)'s \($kind)" else $kind end) end
+  end;

@@ -12,6 +12,7 @@
 #        team-capacity costs [--json]
 #        team-capacity admit --kind <kind> [--task T<n>] [--name <stack name>] [--seed-bytes <n>]
 #                            [--freed <session id>]...
+#        team-capacity release <admission id>
 #        team-capacity plan [--json] [--sessions <file>]
 #        team-capacity jobs [--verbose]
 #
@@ -27,21 +28,28 @@
 #          says so. Idempotent. Exit 1 when the user manager does not answer the reload.
 # place    On Linux, adopts each live team session (claude agents --json: every session named
 #          T<n>-<role> whose process runs, never the coordinator, an unnamed one or a load
-#          check's T0; with ids, only those, each an 8-hex session id, and an id that is no live
-#          team session, or whose process is gone, is a failure) into the
+#          check's T0; with ids, only those, each an 8-hex session id) into the
 #          transient scope agent-team-T<n>-<id>.scope in the slice agent-team-T<n>.slice, which
 #          systemd nests under agent-team.slice by its name: the session's process, its parent
 #          when that is the claude daemon's bg-pty-host, and every descendant, but those already
-#          in a cgroup under agent-team.slice (a heavy run's scope). It asks the user manager
-#          through busctl --user call org.freedesktop.systemd1 ... StartTransientUnit with the
-#          PIDs, and once more with a fresh tree when that call fails (a process that ended
-#          meanwhile). A session already in its scope is left. Each placed and left session is
-#          one line on stdout (with --quiet, the heartbeat's, only each placed one), each one it
-#          cannot place one line on stderr, and the others are still placed; exit 1 when any
-#          failed.
-# check    What the doctor's resources line says, as {os, verdict (PASS, WARN or FAIL), reason,
-#          fix, problems: [{verdict, reason, fix}]} with --json, else the line "<verdict>
-#          <reason>" and "; fix: <fix>" when there is one, exiting 1 unless it passes. Its reason
+#          in a cgroup under agent-team.slice (a heavy run's scope). With ids, as team-worker
+#          runs it right after a launch, an id the list does not hold yet, holds with no pid or
+#          with a pid that has no process is read again from a fresh list once a second until
+#          TEAM_CAPACITY_PLACE_SECONDS (30) have passed since its wait began, then is a failure
+#          ("no live session has that id", "its process <pid> is gone"); an id listed as no team
+#          session is one at once. It asks the user manager through busctl --user call
+#          org.freedesktop.systemd1 ... StartTransientUnit with the PIDs, and when that call fails
+#          while the session's process runs, once more at once with its pid from a fresh list and
+#          a fresh tree (a process that ended meanwhile); with ids, while the call says a process
+#          is gone (No such process), again a second apart until the id's seconds have passed.
+#          With no ids, as the heartbeat and the doctor's fix run it, nothing waits. A session
+#          already in its scope is left. Each placed and left session is one line on stdout (with
+#          --quiet, the heartbeat's, only each placed one), each one it cannot place one line on
+#          stderr, and the others are still placed; exit 1 when any failed.
+# check    What the doctor's resources line says, as {os, backend (systemd on Linux, macos on
+#          macOS), verdict (PASS, WARN or FAIL), reason, fix, problems: [{verdict, reason, fix}]}
+#          with --json, else the line "<verdict> <reason>" and "; fix: <fix>" when there is one,
+#          exiting 1 unless it passes. Its reason
 #          starts with the level's words (team-level status --json --stored's says: "manual,
 #          minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved"). On any OS it
 #          FAILs on a capacity.json or a level.jsonl line that is malformed, naming it. On Linux
@@ -60,7 +68,8 @@
 #          with --holding (this machine holds the lease, whose heartbeat takes a reading every 5
 #          minutes) when the newest reading is more than 15 minutes old, or there is none, its fix
 #          the heartbeat log's capacity lines, or team-timers enable with --heartbeat disabled. The
-#          passing reason names the slice and how many live team sessions are in it.
+#          passing reason, after the level's words, is "systemd backend: agent-team.slice holds the
+#          team, <n> live team session(s) in it" on Linux, and the macOS words below on macOS.
 # sample   Takes one reading of the machine's load with the team's use per task and appends it to
 #          ~/.local/state/agent-team/capacity/readings.jsonl, kept to the last 24 hours (the
 #          heartbeat's capacity step runs it every 5 minutes), printing nothing; within 60
@@ -140,9 +149,11 @@
 #          minutes old), reading (the newest, as sample writes it, or null), reserved: {bytes (the
 #          total), sessions_use, spike_allowance, admissions, stacks, heavy_runs, gates (the bytes
 #          of each part, 0 with none), items: [{part, kind, task, name, estimate_bytes, use_bytes,
-#          bytes}]}, room: {mode, level (the team home's level.jsonl's, manual full with none),
-#          share, budget_bytes (the memory budget, as team-level says it), bytes (the budget less
-#          what is reserved, below 0 when over it); both null with no reading}}. What is reserved,
+#          bytes, and on an item that is an admission or stands for one, an admissions item or a
+#          stack or heavy run an admission names, admission: its id, null for one with none}]},
+#          room: {mode, level (the team home's level.jsonl's, manual full with none), share,
+#          budget_bytes (the memory budget, as team-level says it), bytes (the budget less what is
+#          reserved, below 0 when over it); both null with no reading}}. What is reserved,
 #          by part (the estimates are costs'):
 #            sessions_use     each live team session of the newest reading past its admission
 #                             window, at its use (its scope's working set, RAM only);
@@ -153,12 +164,17 @@
 #                             session or stack has not grown yet, until a session's launch was
 #                             logged a minute or more before a claude agents --json that does not
 #                             list that session was read, which leaves it out of the reading
-#                             too; the session its logged launch names, once the reading holds
-#                             it, reserved once, at the larger of the estimate and its use (its
-#                             use plus its gap), until those 10 minutes end; a session of its
-#                             kind and task the reading holds that no admission's launch names
-#                             is in the window of one whose session the reading does not hold
-#                             yet (the one using least, when several), reserved the same way;
+#                             too; the session its logged launch names (an admission with an id
+#                             pairs with the launch whose admission is that id, whatever their
+#                             order; one with none, from before ids, oldest first with the first
+#                             launch of its role and task at or after its time that carries no
+#                             admission), once the reading holds it, reserved once, at the larger
+#                             of the estimate and its use (its use plus its gap), until those 10
+#                             minutes end, and before then at its estimate alone, standing for
+#                             no other session; a session of its kind and task the reading holds
+#                             that no admission's launch names is in the window of an admission
+#                             with no launch paired (the one using least, when several),
+#                             reserved the same way;
 #            stacks, gates    each running team or gate stack, and the gate while it runs a
 #                             pipeline, at the larger of its estimate and its use, but a gate
 #                             stack no process works in (in_use false) at its use; a stack an
@@ -195,17 +211,26 @@
 #          still holds), and the kind's estimate: costs' when it has one, else --seed-bytes
 #          (team-stack gives the sum of the stack's mem_limits), else heavy_gib or session_gib,
 #          else 0. When the reserved memory plus the estimate is at most the budget it exits 0,
-#          saying so on stdout, and keeps the admission in
-#          ~/.local/state/agent-team/capacity/admitted.json ({at, kind, task, name (a stack's, else
-#          null), bytes, pid (a heavy run's team-heavy, the lock's holder)}), which reserves it for
-#          10 minutes as status --json's admissions say (a heavy run's while its team-heavy holds
-#          the lock, a session's until its session stops); else it exits 75 with the reason on
-#          stderr and what makes room, "no room for session:reviewer at minor (30%): 8.9 GiB of
-#          9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or
-#          the level rises", and at level none "no room for session:reviewer: the team is at level
-#          none: nothing starts; room comes when Daniel raises the level" ("when the level rises"
-#          in auto mode). CPU is never admitted: the slice's quota holds it. Above none, with no
-#          reading to size the budget by, exit 1 with the reason.
+#          printing the admission's id (12 lowercase hex digits from /dev/urandom, made again on a
+#          clash with a kept one) alone on its first line and saying so on its second, and keeps
+#          the admission in ~/.local/state/agent-team/capacity/admitted.json ({id, at, kind, task,
+#          name (a stack's, else null), bytes, pid (a heavy run's team-heavy, the lock's holder)},
+#          every earlier entry keeping its id), which reserves it for 10 minutes as status --json's
+#          admissions say (a heavy run's while its team-heavy holds the lock, a session's until its
+#          session stops), or until release ends it; else it exits 75 with the reason on stderr,
+#          printing no id, and what makes room, "no room for session:reviewer at minor (30%): 8.9
+#          GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work
+#          shrinks or the level rises", and at level none "no room for session:reviewer: the team is
+#          at level none: nothing starts; room comes when Daniel raises the level" ("when the level
+#          rises" in auto mode). CPU is never admitted: the slice's quota holds it. Above none, with
+#          no reading to size the budget by, exit 1 with the reason.
+# release  Ends the admission <admission id> (admit's first line) at once: under the exclusive
+#          flock on capacity.lock (a lock still held after 2 minutes is exit 75, naming it), it
+#          removes the entry with that id from admitted.json, printing "released admission <id>:
+#          <kind> of <task>" ("<kind>" for no task); with no such entry (released, expired, never
+#          made, or an admitted.json that is missing or not an array) it prints "no admission <id>:
+#          nothing to release". Both exit 0. It reads no reading, level or session list. An id
+#          not of 12 lowercase hex digits, or any other argument, is a usage error.
 # plan     What brings the team back under the level's memory budget, and what may come back,
 #          from the stored readings only (it takes none, so the sweep and the heartbeat read it
 #          fast), the ledger and the session list (claude agents --json, or with --sessions the
@@ -226,22 +251,27 @@
 #          until the rest fits; at none every one. Then the tasks stowed, waiting to resume
 #          (their latest stowed, for the level or a handoff, names roles to relaunch and no
 #          launch follows it), oldest stow first, each with the estimate of its roles to
-#          relaunch and whether that fits now (never at none); then the tasks whose launches were
-#          refused for room and not launched since (refused_launches in bin/lib/ledger.jq), oldest
-#          refusal first, each with its roles' estimate and whether it fits. Text:
-#          "Over budget at minor (30%): 14.5 GiB reserved of 9.6 GiB.", then "  stop T1-reviewer
-#          aaaa0012, its work handed on: frees 1.0 GiB", "  stop conventioner-3 of T3, no busy
-#          session in its worktree: frees 3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed,
-#          waiting to resume, oldest stow first:" and "  T6 (planner): needs 0.5 GiB, fits",
-#          then "Refused for room, waiting to launch, oldest refusal first:" and its lines alike.
-#          With --json {schema: "team-capacity-plan/1", mode, level, share, budget (bytes, null with no
-#          reading above none), reserved, over, confirmed, stop_sessions: [{task, role, session,
-#          frees}], stop_stacks: [{task, name, worktree, frees}], stow: [{task, opened, frees}],
-#          resume: [{task, stowed, roles, needs, fits}], launch: [{task, refused, roles, needs,
-#          fits}]}, bytes throughout; each step list is []
-#          unless confirmed. team-level tick takes the two stop steps; the stows are the
-#          coordinator's, on team-sweep's level-stow finding, and so are the launches, on its
-#          level-resume and level-launch findings.
+#          relaunch, whether that fits now (never at none) and what holds it, if anything (its
+#          latest held while it stands, or a waiting or blocked logged after its stow while it
+#          stands: stow_hold in bin/lib/ledger.jq), which keeps it from being relaunched until a
+#          resumed lifts it; then the tasks whose launches were refused for room and not
+#          launched or resumed since (refused_launches in bin/lib/ledger.jq), oldest refusal
+#          first, each with its roles' estimate, whether it fits and what holds it alike (a
+#          waiting or blocked logged after its latest refusal). Text: "Over budget at minor (30%): 14.5 GiB
+#          reserved of 9.6 GiB.", then "  stop T1-reviewer aaaa0012, its work handed on: frees
+#          1.0 GiB", "  stop conventioner-3 of T3, no busy session in its worktree: frees
+#          3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed, waiting to resume, oldest stow first:"
+#          and "  T6 (planner): needs 0.5 GiB, fits", a held one's line ending ", on hold, not
+#          relaunched: waiting on Daniel: <reason>", then "Refused for room, waiting to launch,
+#          oldest refusal first:" and its lines alike, a held one's ending ", on hold, not
+#          launched: <what holds it>". With --json {schema: "team-capacity-plan/1", mode, level,
+#          share, budget (bytes, null with no reading above none), reserved, over, confirmed,
+#          stop_sessions: [{task, role, session, frees}], stop_stacks: [{task, name, worktree,
+#          frees}], stow: [{task, opened, frees}], resume: [{task, stowed, roles, needs, fits,
+#          hold (the text, or null)}], launch: [{task, refused, roles, needs, fits, hold}]},
+#          bytes throughout; each step list is [] unless confirmed. team-level tick takes the
+#          two stop steps; the stows are the coordinator's, on team-sweep's level-stow finding,
+#          and so are the launches, on its level-resume and level-launch findings.
 # jobs     How many processes a test suite runs at once (tests/run, and team-checks' commands
 #          through TEAM_JOBS): the floor of the level's CPU budget, at least 1, as team-level
 #          status --stored reads it, from the stored readings only (it takes none) and the
@@ -269,8 +299,10 @@
 # sample, status and costs, naming each (exit 1).
 #
 # On macOS, which has no cgroups, install and place change nothing and say so once on stderr,
-# check passes with "no hard limits on macOS: admission and stow only", and sample reads each
-# task's use by the working-directory rule alone.
+# check passes with "macOS backend, admission and stow only: no cgroups, so no hard CPU or memory
+# limit holds the team's sessions, heavy runs or gate; the team's containers' CPU is held with
+# docker update, and their memory within Docker Desktop's VM", its warnings and failures only
+# the any-OS ones, and sample reads each task's use by the working-directory rule alone.
 # Test seams: TEAM_CGROUP_ROOT stands for / where the user manager's cgroup.controllers and /proc
 # are read by place and check, and each unit's cgroup by sample, so the tests run on a tree of
 # their own; sample reads the machine
@@ -289,11 +321,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # shellcheck source=bin/lib/reading.sh
 source "$TEAM_LIB/reading.sh"
 
-USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--name <stack name>] [--seed-bytes <n>] [--freed <session id>]... | plan [--json] [--sessions <file>] | jobs [--verbose]"
+USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--name <stack name>] [--seed-bytes <n>] [--freed <session id>]... | release <admission id> | plan [--json] [--sessions <file>] | jobs [--verbose]"
 [[ $# -ge 1 ]] || usage_error "$USAGE"
 command=$1
 shift
 json=0 verbose=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' name='' seed=null sessions_file='' freed=()
+release_id=''
 case $command in
   install | sample) [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'" ;;
   jobs)
@@ -310,6 +343,9 @@ case $command in
     fi
     for id; do [[ $id =~ ^[0-9a-f]{8}$ ]] || usage_error "a session id is 8 hex digits, got '$id'"; done
     ids=("$@")
+    PLACE_SECONDS=${TEAM_CAPACITY_PLACE_SECONDS:-30}
+    [[ $PLACE_SECONDS =~ ^[0-9]+$ ]] ||
+      usage_error "TEAM_CAPACITY_PLACE_SECONDS must be a whole number of seconds, not '$PLACE_SECONDS'"
     ;;
   check | status | costs | plan)
     while [[ $# -gt 0 ]]; do
@@ -362,6 +398,13 @@ case $command in
     done
     [[ -n $kind ]] || usage_error "admit needs --kind <kind>"
     [[ -z $name || $kind == stack:* ]] || usage_error "--name names a stack, for --kind stack:<project>"
+    ;;
+  release)
+    [[ $# -ge 1 ]] || usage_error "release takes the admission id admit printed"
+    [[ $1 =~ ^[0-9a-f]{12}$ ]] || usage_error "an admission id is 12 hex digits, got '$1'"
+    release_id=$1
+    shift
+    [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'"
     ;;
   *) usage_error "unknown subcommand '$command'; $USAGE" ;;
 esac
@@ -515,9 +558,33 @@ start_scope() {
     PIDs au $# "$@" Slice s "$slice" Description s "agent-team session ${scope#agent-team-}" 0
 }
 
-# Place one live team session <id> <name> <pid>; returns 1 when it could not.
+# The microseconds since the epoch.
+now_us() {
+  local t=$EPOCHREALTIME
+  echo "${t/[.,]/}"
+}
+
+# Sleep a second, or what is left until <deadline> (microseconds) when that is less.
+sleep_toward() {
+  local left=$(($1 - $(now_us)))
+  if ((left >= 1000000)); then
+    sleep 1
+  elif ((left > 0)); then
+    sleep "0.$(printf '%06d' "$left")"
+  fi
+}
+
+# Read the live session list again into LIVE_SESSIONS, keeping the last one when it cannot be read.
+reread_sessions() {
+  local list
+  list=$(claude agents --json 2>/dev/null | jq -ce 'select(type == "array")' 2>/dev/null) && LIVE_SESSIONS=$list
+  return 0
+}
+
+# Place one live team session <id> <name> <pid>, its retries bounded by <deadline> (microseconds,
+# empty with no ids); returns 1 when it could not.
 place_one() {
-  local id=$1 name=$2 pid=$3 task scope slice pids out
+  local id=$1 name=$2 pid=$3 deadline=$4 task scope slice pids out tries=0 sid fresh
   task=${name%%-*}
   scope=agent-team-$task-$id.scope slice=agent-team-$task.slice
   if [[ ! $pid =~ ^[0-9]+$ || ! -d $ROOT/proc/$pid ]]; then
@@ -530,28 +597,60 @@ place_one() {
     ((quiet)) || echo "left $name $id: already in $scope"
     return 0
   fi
-  for _ in once again; do
+  while :; do
     mapfile -t pids < <(session_pids "$pid")
     if out=$(start_scope "$scope" "$slice" "${pids[@]}" 2>&1); then
       echo "placed $name $id in $scope (${#pids[@]} process$( ((${#pids[@]} == 1)) || echo es))"
       return 0
     fi
+    tries=$((tries + 1))
     [[ -d $ROOT/proc/$pid ]] || break
+    # The first retry is at once; with ids, a process that ended meanwhile is tried for again,
+    # a second apart, until the id's seconds have passed.
+    if ((tries > 1)); then
+      if [[ -z $deadline || $out != *"No such process"* ]] || (($(now_us) >= deadline)); then break; fi
+      sleep_toward "$deadline"
+    fi
+    reread_sessions
+    IFS=$'\t' read -r sid _ fresh < <(team_sessions "$id") || true
+    [[ $sid == "$id" && $fresh =~ ^[0-9]+$ && -d $ROOT/proc/$fresh ]] && pid=$fresh
   done
   echo "team-capacity: could not place $name $id (pid $pid) in $slice: $(grep -m1 . <<<"$out" || echo "busctl failed")" >&2
   return 1
 }
 
-# The live team sessions, one "<id><TAB><name><TAB><pid>" per line, or with ids "-<TAB><reason>"
-# for each id that is no live team session.
+# The live team sessions, one "<id><TAB><name><TAB><pid>" per line, or with ids only those, and
+# "?<TAB><reason>" for each id the list does not hold and "-<TAB><reason>" for each it holds as no
+# team session: team_sessions [<id>...]
 team_sessions() {
   jq -r --args '[.[] | {id: (.id // (.sessionId // "" | .[:8])), name: (.name // ""), pid: (.pid // "" | tostring)}] as $live
     | def team: .name | test("^T[1-9][0-9]*-[a-z]+$");
     if $ARGS.positional == [] then $live[] | select(team) | [.id, .name, .pid] | @tsv
     else $ARGS.positional[] as $id | ($live | map(select(.id == $id)) | first) as $s
-      | if $s == null then ["-", "\($id): no live session has that id"]
+      | if $s == null then ["?", "\($id): no live session has that id"]
         elif ($s | team | not) then ["-", "\($id): it is no team session (named \(if $s.name == "" then "nothing" else $s.name end), not T<n>-<role>)"]
-        else [$s.id, $s.name, $s.pid] end | @tsv end' "${ids[@]}" <<<"$LIVE_SESSIONS"
+        else [$s.id, $s.name, $s.pid] end | @tsv end' "$@" <<<"$LIVE_SESSIONS"
+}
+
+# Place the session <id> once it is listed with a running process, reading the list again once a
+# second until PLACE_SECONDS have passed; returns 1 when it could not.
+place_id() {
+  local id=$1 deadline sid name pid
+  deadline=$(($(now_us) + PLACE_SECONDS * 1000000))
+  while :; do
+    IFS=$'\t' read -r sid name pid < <(team_sessions "$id")
+    # A name does not change: one listed as no team session fails at once.
+    [[ $sid != - ]] || break
+    [[ $sid == '?' || ! $pid =~ ^[0-9]+$ || ! -d $ROOT/proc/$pid ]] || break
+    (($(now_us) < deadline)) || break
+    sleep_toward "$deadline"
+    reread_sessions
+  done
+  if [[ $sid == [-?] ]]; then
+    echo "team-capacity: could not place $name" >&2
+    return 1
+  fi
+  place_one "$sid" "$name" "$pid" "$deadline"
 }
 
 place() {
@@ -561,13 +660,12 @@ place() {
     return 0
   fi
   live_sessions
+  if ((${#ids[@]})); then
+    for id in "${ids[@]}"; do place_id "$id" || failed=1; done
+    return "$failed"
+  fi
   while IFS=$'\t' read -r id name pid; do
-    if [[ $id == - ]]; then
-      echo "team-capacity: could not place $name" >&2
-      failed=1
-    elif ! place_one "$id" "$name" "$pid"; then
-      failed=1
-    fi
+    place_one "$id" "$name" "$pid" '' || failed=1
   done < <(team_sessions)
   return "$failed"
 }
@@ -637,11 +735,12 @@ check() {
   printf '%s\n' "${problems[@]}" | jq -sc --arg os "$os" --argjson placed "$placed" --arg level "$LEVEL_SAYS" '
     map(select(. != null)) as $p
     | {os: $os,
+       backend: (if $os == "macos" then "macos" else "systemd" end),
        verdict: (if any($p[]; .verdict == "FAIL") then "FAIL" elif $p != [] then "WARN" else "PASS" end),
        reason: ((if $level == "" then [] else [$level] end)
          + if $p != [] then $p | map(.reason)
-           elif $os == "macos" then ["no hard limits on macOS: admission and stow only"]
-           else ["agent-team.slice holds the team, \($placed) live team session\(if $placed == 1 then "" else "s" end) in it"] end
+           elif $os == "macos" then ["macOS backend, admission and stow only: no cgroups, so no hard CPU or memory limit holds the team'"'"'s sessions, heavy runs or gate; the team'"'"'s containers'"'"' CPU is held with docker update, and their memory within Docker Desktop'"'"'s VM"]
+           else ["systemd backend: agent-team.slice holds the team, \($placed) live team session\(if $placed == 1 then "" else "s" end) in it"] end
          | join("; ")),
        fix: ($p | map(.fix | select(. != "")) | unique | join("; ")),
        problems: $p}' >"$work/check.json"
@@ -997,7 +1096,7 @@ costs() {
 # and the admissions and whether the newest reading is under 10 minutes old, a reading taken first
 # when it is not, as fresh_reading does; another makes the estimate, the status and the admission.
 admit() {
-  local fd read=false budget admitted entry
+  local fd read=false budget admitted entry id
   read_settings
   mkdir -p "$STATE"
   # release_stopped_admissions' list, read before the lock: however long the lock takes, it judges
@@ -1017,6 +1116,7 @@ admit() {
     read_level_and_admitted || die "$(level_error)"
   fi
   [[ $kind != stack:* && $stacks_seen != true ]] || read=true
+  id=$(new_admission_id)
   # Four lines: whether there is a budget to admit by, whether it admits, admitted.json's new
   # content, then what it says.
   status_program "$kind" "$read" '
@@ -1025,12 +1125,12 @@ admit() {
       else capacity_admit($status; $kind; $estimate.bytes) as $admit
       | true, $admit.admitted,
         (if $admit.admitted then
-           ($admitted[0] | map(del(.session))) + [{at: (now | floor | todate), kind: $kind, task: ($task | select(. != "") // null),
+           ($admitted[0] | map(del(.session))) + [{id: $id, at: (now | floor | todate), kind: $kind, task: ($task | select(. != "") // null),
                             name: ($name | select(. != "") // null), bytes: $estimate.bytes,
                             pid: (if $kind | startswith("heavy:") then $heavy[0].pid else null end)}] | tojson
          else "" end),
         $admit.says end' \
-    -r --arg kind "$kind" --arg task "$task" --arg name "$name" --argjson seed "$seed" >"$work/admit"
+    -r --arg kind "$kind" --arg task "$task" --arg name "$name" --argjson seed "$seed" --arg id "$id" >"$work/admit"
   { IFS= read -r budget && IFS= read -r admitted && IFS= read -r entry; } <"$work/admit"
   [[ $budget == true ]] ||
     die "no reading of the machine's load, so no budget to admit $kind by: team-capacity sample says why it takes none"
@@ -1040,7 +1140,41 @@ admit() {
   fi
   printf '%s\n' "$entry" >"$ADMITTED.$$"
   mv -f "$ADMITTED.$$" "$ADMITTED"
+  printf '%s\n' "$id"
   tail -n +4 "$work/admit"
+}
+
+# A new admission id, 12 hex digits from 6 random bytes, made again while an admission kept in
+# $work/admitted.json (what admit writes back) has it.
+new_admission_id() {
+  local id
+  while :; do
+    id=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+    [[ $id =~ ^[0-9a-f]{12}$ ]] || die "could not read 6 random bytes from /dev/urandom for an admission id"
+    jq -e --arg id "$id" 'any(.[]; .id == $id)' "$work/admitted.json" >/dev/null || break
+  done
+  printf '%s\n' "$id"
+}
+
+# End the admission release_id names at once, as the header's release says: under admit's lock, it
+# removes the entry from admitted.json, reading nothing else, so an exit handler is fast.
+release() {
+  local fd entry
+  mkdir -p "$STATE"
+  exec {fd}>>"$ADMIT_LOCK"
+  if ! flock -w 120 -x "$fd"; then
+    echo "${0##*/}: another admission still holds $(tilde "$ADMIT_LOCK") after 2 minutes" >&2
+    exit 75
+  fi
+  entry=$(jq -c --arg id "$release_id" 'select(type == "array") | first(.[] | objects | select(.id == $id)) // empty' \
+    "$ADMITTED" 2>/dev/null) || entry=''
+  if [[ -z $entry ]]; then
+    echo "no admission $release_id: nothing to release"
+    return 0
+  fi
+  jq -c --arg id "$release_id" 'map(select(type != "object" or .id != $id))' "$ADMITTED" >"$ADMITTED.$$"
+  mv -f "$ADMITTED.$$" "$ADMITTED"
+  jq -r '"released admission \(.id): \(.kind)" + (if (.task | type) == "string" then " of \(.task)" else "" end)' <<<"$entry"
 }
 
 # The stow and resume plans, as the header's plan says.
@@ -1106,6 +1240,7 @@ jobs_count() {
 case $command in
   install) install ;;
   place) place ;;
+  release) release ;;
   sample) sample ;;
   status | costs | admit | check | plan | jobs)
     work=$(mktemp -d)

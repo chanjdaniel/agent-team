@@ -2,7 +2,9 @@
 // SessionStart hook run as Claude Code runs a plugin's hook, with CLAUDE_PLUGIN_ROOT set to the
 // toolkit and a stub chrome-devtools-axi first on PATH, under the user settings of today and under
 // the guarded ones the PR proposes; and its ui-check skill, whose every chrome-devtools-axi command
-// runs here on the client servers/ pins, headless, against a fixture site.
+// runs here on the client servers/ pins, headless, against a fixture site, in a named axi session
+// of its own; it fails when the skill names a command it does not run, or when its budget table's
+// token figures do not match its image sizes.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";

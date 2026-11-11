@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# List a task's tickets with each one's state, or check their Blocked by:, Waits for: and Phase: lines.
+# List a task's tickets with each one's state, or check their Blocked by:, Waits for:, Phase: and
+# Touches: lines and the spec's Parallel: line.
 #
-# Usage: team-tickets T<n> [--check] [--json]
+# Usage: team-tickets T<n> [--check | --json | --html <file> | --graph]
 # The tickets are the files tickets/NN-<slug>.md in the task directory (the project's task_dir) of
 # each open worktree of the task, one set whose numbers are the task's: NN is the ticket's
 # two-digit number, which no two files share.
@@ -13,66 +14,148 @@
 # and at most one Phase: line, the phase of a task split into phases whose PR it goes in, a whole
 # number from 1, phase 1 without one (a blocker is in the ticket's phase or an earlier one):
 #   Phase: 2
+# and at most one Touches: line, the paths of the task directory's scope.txt the ticket changes,
+# each a file or a directory ending in /, with no leading /, no . or .. segment, no glob, no
+# backtick and no space, joined by ", " (a ticket with none is never named for a shared path):
+#   Touches: bin/team-next, tests/team-next.bats, tests/fixtures/next/
+# The task directory's spec.md has at most one Parallel: line, the planner's proposed cap on the
+# tickets of each phase that build at once, one from 1 to 3 per phase in phase order, the last
+# holding for any later phase:
+#   Parallel: 2, 1
 # A line counts as one of them when its text, after any indent, list marker and bold or italic
-# marks, starts with "Blocked by" or "Waits for" in any case, or with "Phase" and a colon,
-# outside a fenced code block; so a mention inside a sentence or a "- [ ]" item is none.
+# marks, starts with "Blocked by" or "Waits for" in any case, or with "Phase", "Touches" or
+# "Parallel" and a colon, outside a fenced code block; so a mention inside a sentence or a "- [ ]"
+# item is none.
 # Its state, from the ledger: running (a builder's launch with the brief brief-build-NN, and no
 # ticket-done of NN since), done (a ticket-done of NN), blocked (a blocker not done, named),
 # waiting (every blocker done, and a Waits for: line, quoted) or ready (every blocker done).
 # It prints one line per ticket, "NN <state> <slug>", then ": session <id>" for running, ": on
 # <blockers not done>" for blocked and ": <its Waits for: text>" for waiting; --json prints a list
-# of {ticket, slug, state, project, file, phase, blocked_by, waits_for, on, session}, waits_for and
-# session null when there is none. A task with no ticket files prints none (--json, []), saying so
-# on stderr.
+# of {ticket, slug, state, project, file, phase, blocked_by, waits_for, on, session, touches,
+# minutes}, waits_for and session null when there is none, touches the Touches: paths, null with no
+# line, and minutes a done ticket's build minutes: from the latest builder launch on brief-build-NN
+# to the latest ticket-done of NN, rounded half up and at least 1, null for a ticket not done or
+# done with no launch before it (logged by hand). A task with no ticket files prints none (--json,
+# []), saying so on stderr.
 # --check prints, as "<file>:<line>: <reason>" (the file alone when there is no line), and exits 1
 # on: a file in tickets/ not named NN-<slug>.md; a number two files share; a missing, second or
-# malformed Blocked by: line; a second or malformed Waits for: or Phase: line; a blocker that is
-# no ticket of the task, that the line names twice or that is in a later phase than its ticket;
-# and a cycle of blockers, named once at the Blocked by:
-# line of its lowest ticket. The listing refuses such a set the same way. A clean set prints how
-# many tickets it read; one with none says so on stderr. It never writes.
+# malformed Blocked by: line; a second or malformed Waits for:, Phase: or Touches: line; a blocker
+# that is no ticket of the task, that the line names twice or that is in a later phase than its
+# ticket; a cycle of blockers, named once at the Blocked by: line of its lowest ticket; a Touches:
+# line in a task directory with no scope.txt, and a Touches: path in no line of it (a path is in a
+# line when it equals it, or the line is a directory the path is under); when every ticket has a
+# Touches: line, a scope.txt line no Touches: path of its task directory's tickets equals or is
+# under, named at scope.txt; two tickets of one project and phase that may build at once (neither
+# blocks the other, directly or through other tickets) and share a path (equal, or one a directory
+# the other is under), named once per pair at the higher-numbered ticket's Touches: line with the
+# first path both touch; and a second or malformed Parallel: line in spec.md, or one naming more
+# caps than the tickets have phases. The listing refuses such a set the same way. A clean set
+# prints how many tickets it read; one with none says so on stderr.
+# --html <file> writes the tickets as one self-contained HTML page of their dependency graph
+# (bin/lib/ticket_graph.py draws it, its header says how): each ticket a box by level, top to
+# bottom, with its number, state, minutes and slug, each phase a band, an arrow per Blocked by:
+# entry routed clear of every box, the critical path in red, weighed by build minutes (a done
+# ticket its own, every other ticket their median, or each ticket 1 when none has any), and a
+# header with the task's title, the serial total, the critical path, the widest level and how the
+# tickets were weighed; its head carries the digest of the --json list it was drawn from
+# (tickets_digest). It writes through a temporary file in <file>'s directory, renamed over
+# <file>, prints nothing, refuses a directory that does not exist, and writes nothing for a set
+# the listing refuses; a task with no tickets gets a page saying so.
+# --graph writes that page as tickets.html and a PNG of it as tickets.png in the task directory of
+# the task's first ticket listed (ticket_graph_dir), which git ignores and whose archive leaves
+# images out, and prints the PNG's path, then the page's; a task with no tickets is refused.
+# The PNG is headless Chrome's screenshot of the page, its window the page's exact size at twice
+# its scale, so it holds every level: Chrome is bin/lib/chrome.sh's, as team-doctor's chrome line
+# finds it (the file TEAM_CHROME names, a .app directory run as <app>/Contents/MacOS/<its name less
+# .app>, else Google Chrome's app on macOS, else the first of google-chrome-stable, google-chrome,
+# chromium and chromium-browser on PATH), run under a 60-second timeout with a fresh profile
+# directory, removed after. The PNG counts when Chrome exits 0 and wrote one, or when it exits
+# otherwise, but for the timeout, and its stderr says "<n> bytes written to file <the
+# screenshot's path>" of a PNG of n bytes (a Mac with no display writes the screenshot, then
+# hangs until its teardown watchdog ends it with exit 2). With no Chrome, or Chrome failing,
+# timing out or writing no PNG, the page is still written and its path printed, any old
+# tickets.png is removed, stderr says why there is no PNG, and the exit is 1.
+# Make the graph for the plan ask to Daniel and when Daniel asks how a building task stands, and
+# attach its PNG with team-ask --attach or team-post --attach.
+# --html and --graph go with no other mode. Nothing else is written.
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-tickets T<n> [--check] [--json]"
-task='' check='' json=''
-for arg in "$@"; do
-  case $arg in
+usage="usage: team-tickets T<n> [--check | --json | --html <file> | --graph]"
+task='' check='' json='' html='' html_set='' graph=''
+while (($#)); do
+  case $1 in
     --check) check=1 ;;
     --json) json=1 ;;
-    T[0-9]*) [[ -z $task && $arg =~ ^T[0-9]+$ ]] || usage_error "$usage"; task=$arg ;;
+    --html)
+      [[ -z $html_set && $# -ge 2 && -n $2 ]] || usage_error "$usage"
+      html=$2 html_set=1
+      shift ;;
+    --graph) [[ -z $graph ]] || usage_error "$usage"; graph=1 ;;
+    T[0-9]*) [[ -z $task && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"; task=$1 ;;
     *) usage_error "$usage" ;;
   esac
+  shift
 done
 [[ -n $task ]] || usage_error "$usage"
 [[ -z $check || -z $json ]] || usage_error "--check and --json do not go together; $usage"
+[[ -z $html_set || -z $check$json$graph ]] || usage_error "--html goes with no other mode; $usage"
+[[ -z $graph || -z $check$json ]] || usage_error "--graph goes with no other mode; $usage"
+if [[ -n $html_set ]]; then
+  html_dir=$(dirname -- "$html")
+  [[ -d $html_dir ]] || die "$html_dir is not a directory, so $html cannot be written"
+  [[ ! -d $html ]] || die "$html is a directory, not a file the page can be written to"
+fi
 
 events=$(known_task_events "$task")
 
-# The ticket files (files) and each one's project (projects), in the order of the worktrees, then
-# of the file names; a task directory reached twice (two worktrees at one path) is read once.
+# The ticket files (files) and each one's project and task directory (projects, task_dirs), in the
+# order of the worktrees, then of the file names; a task directory reached twice (two worktrees at
+# one path) is read once. Each task directory with tickets/ also gives its scope.txt and spec.md
+# when it has them (dirs_tsv, "<project>\t<task directory>\t<scope.txt or nothing>\t<spec.md or
+# nothing>", and specs).
 files=()
 projects=()
+task_dirs=()
+specs=()
+scopes=()
+dirs_tsv=''
 declare -A seen=()
 while IFS=$'\t' read -r project worktree; do
   [[ -d $worktree ]] || { echo "${0##*/}: skipping $worktree: not on this machine" >&2; continue; }
-  dir=$worktree/$(team_project "$project" task_dir)/tickets
-  [[ -d $dir ]] || continue
-  key=$(realpath -- "$dir")
+  task_dir=$worktree/$(team_project "$project" task_dir)
+  [[ -d $task_dir/tickets ]] || continue
+  key=$(realpath -- "$task_dir/tickets")
   [[ -z ${seen[$key]:-} ]] || continue
   seen[$key]=1
   while IFS= read -r -d '' file; do
     files+=("$file")
     projects+=("$project")
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '*.md' -print0 | sort -z)
+    task_dirs+=("$task_dir")
+  done < <(find "$task_dir/tickets" -mindepth 1 -maxdepth 1 -name '*.md' -print0 | sort -z)
+  scope='' spec=''
+  [[ ! -f $task_dir/scope.txt ]] || { scope=$task_dir/scope.txt; scopes+=("$scope"); }
+  [[ ! -f $task_dir/spec.md ]] || { spec=$task_dir/spec.md; specs+=("$spec"); }
+  dirs_tsv+="$project"$'\t'"$task_dir"$'\t'"$scope"$'\t'"$spec"$'\n'
 done < <(ledger_jq 'open_worktrees(.[]; $home) | [.project, .worktree] | @tsv' -r <<<"$events")
 
-# Each line of the files that counts as a Blocked by:, Waits for: or Phase: line, as
-# "<file>\t<line>\t<blocked, waits or phase>\t<1 when well-formed, else 0>\t<value>", the value
-# the blockers, the condition or the phase when well-formed, else the whole line: read_lines <file>...
+# Each line of the files that counts as a Blocked by:, Waits for:, Phase:, Touches: or Parallel:
+# line, as "<file>\t<line>\t<blocked, waits, phase, touches or parallel>\t<1 when well-formed, else
+# 0>\t<value>", the value the blockers, the condition, the phase, the paths or the caps when
+# well-formed, else the whole line: read_lines <file>...
 read_lines() {
   awk '
+    # A Touches: path: a repository path, a directory ending in /, with no leading /, no . or ..
+    # segment, no empty one, no glob character, no backtick, no comma and no space.
+    function good_path(p,   n, segs, i) {
+      if (p == "" || substr(p, 1, 1) == "/" || p ~ /[[:space:]]/) return 0
+      if (index(p, "*") || index(p, "?") || index(p, "[") || index(p, "`") || index(p, ",")) return 0
+      n = split(p, segs, "/")
+      for (i = 1; i <= n; i++)
+        if (segs[i] == "." || segs[i] == ".." || (segs[i] == "" && i < n)) return 0
+      return 1
+    }
     FNR == 1 { fence = 0 }
     { text = $0; sub(/\r$/, "", text) }
     text ~ /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
@@ -91,25 +174,53 @@ read_lines() {
       } else if (probe ~ /^phase[[:space:]]*(\*\*|__|\*|_)?[[:space:]]*:/) {
         label = "phase"
         good = text ~ /^(\*\*Phase:\*\*|Phase:) +[1-9][0-9]* *$/
+      } else if (probe ~ /^touches[[:space:]]*(\*\*|__|\*|_)?[[:space:]]*:/) {
+        label = "touches"
+        good = text ~ /^(\*\*Touches:\*\*|Touches:) +[^ ]/
+      } else if (probe ~ /^parallel[[:space:]]*(\*\*|__|\*|_)?[[:space:]]*:/) {
+        label = "parallel"
+        good = text ~ /^(\*\*Parallel:\*\*|Parallel:) +[1-3](, [1-3])* *$/
       } else next
       value = text
       if (good) { sub(/^(\*\*[^*]*\*\*|[^:]*:) +/, "", value); sub(/ +$/, "", value) }
+      if (good && label == "touches") {
+        n = split(value, paths, ", ")
+        for (i = 1; i <= n; i++) if (!good_path(paths[i])) good = 0
+        if (!good) value = text
+      }
       printf "%s\t%d\t%s\t%d\t%s\n", FILENAME, FNR, label, good, value
     }' "$@"
 }
 
 
-# The files and the marks as tab-separated rows, read into the analysis's $files and $marks.
+# Each path line of the scope.txt files, as "<scope.txt>\t<line>\t<path>", blank lines skipped.
+read_scopes() {
+  awk '{ path = $0; sub(/\r$/, "", path); sub(/^[[:space:]]+/, "", path); sub(/[[:space:]]+$/, "", path) }
+    path != "" { printf "%s\t%d\t%s\n", FILENAME, FNR, path }' "$@"
+}
+
+# The files, the marks, the task directories and the scope lines as tab-separated rows, read into
+# the analysis's $files, $marks, $dirs and $scope.
 files_tsv=''
-for i in "${!files[@]}"; do files_tsv+="${projects[$i]}"$'\t'"${files[$i]}"$'\n'; done
+for i in "${!files[@]}"; do files_tsv+="${projects[$i]}"$'\t'"${files[$i]}"$'\t'"${task_dirs[$i]}"$'\n'; done
 marks_tsv=''
-((${#files[@]} == 0)) || marks_tsv=$(read_lines "${files[@]}")
+((${#files[@]} == 0)) || marks_tsv=$(read_lines "${files[@]}" "${specs[@]}")
+scope_tsv=''
+((${#scopes[@]} == 0)) || scope_tsv=$(read_scopes "${scopes[@]}")
 
 # The analysis, over the task's events as its input: {problems, tickets}, each problem
 # "<file>[:<line>]: <reason>", each ticket with its state.
 read -r -d '' program <<'JQ' || true
 def where($m): "\($m.file):\($m.line)";
 def blocked_form: "write 'Blocked by: None' or 'Blocked by: 01, 03'";
+def touches_malformed: "a malformed Touches: line; write 'Touches: bin/team-next, tests/team-next.bats', repository paths as scope.txt has them (a directory ending in /) joined by ', ', with no leading /, no . or .., no glob and no space, the label optionally bold";
+# Whether path $p is under the directory $d (a path ending in /); whether it is in the scope line
+# $l (equal to it, or under it); whether two paths are shared (equal, or one under the other), and
+# the narrower of two shared paths, the one both touch.
+def under($p; $d): ($d | endswith("/")) and $p != $d and ($p | startswith($d));
+def in_line($p; $l): $p == $l or under($p; $l);
+def shared($a; $b): $a == $b or under($a; $b) or under($b; $a);
+def narrower($a; $b): if under($b; $a) then $b else $a end;
 # The cycle of blockers through $start in $g (each ticket to its blockers), from $start back to
 # it, or null: a breadth-first search from $start that keeps the ticket each was reached from.
 def cycle($g; $start):
@@ -129,13 +240,22 @@ def cycle($g; $start):
     | . + {name: $name, number: ($name | capture("^(?<n>[0-9]{2})-(?<s>.+)\\.md$")),
            blocked: [$marks[] | select(.file == $f and .label == "blocked")],
            waits: [$marks[] | select(.file == $f and .label == "waits")],
-           phases: [$marks[] | select(.file == $f and .label == "phase")]}
+           phases: [$marks[] | select(.file == $f and .label == "phase")],
+           touches: [$marks[] | select(.file == $f and .label == "touches")]}
     // . + {name: $name, number: null}] as $all
-| [$all[] | select(.number) | . + {ticket: .number.n, slug: .number.s}] as $named
+| [$all[] | select(.number) | . + {ticket: .number.n, slug: .number.s,
+    paths: ((.touches[0] | select(. and .good) | .value | split(", ")) // null)}] as $named
+| (reduce $dirs[] as $d ({}; . + {($d.dir): (if $d.scope == "" then null
+    else [$scope[] | select(.file == $d.scope)] end)})) as $scope_of
 | [$named[].ticket] as $numbers
 | (reduce $named[] as $t ({}; . + {($t.ticket): (($t.phases[0] | select(. and .good) | .value | tonumber) // 1)})) as $phase
 | [$named[] | {(.ticket): ((.blocked[0] | select(. and .good and .value != "None") | .value | split(", ")) // [])}]
   | add // {} | map_values(map(select(. as $n | $numbers | index($n))) | unique) as $graph
+# Each ticket's blockers, direct or through other tickets.
+| ($graph | keys) as $keys
+| (reduce $keys[] as $k ({}; . + {($k): (reduce $keys[] as $_ ($graph[$k];
+    (. + [.[] as $v | $graph[$v][]?]) | unique))})) as $reach
+| [$named[] | select(.paths) ] as $bounded
 | [ ($all[] | select(.number == null) | "\(.file): not named NN-<slug>.md, NN the ticket's two-digit number"),
     ($named | to_entries[] | .value as $t
       | ($named[:.key] | map(select(.ticket == $t.ticket)) | first) as $earlier
@@ -151,6 +271,12 @@ def cycle($g; $start):
           | "\(where(.)): a malformed Waits for: line; write 'Waits for: <an outside condition>', the label optionally bold"),
         ($p[] | select(.good | not)
           | "\(where(.)): a malformed Phase: line; write 'Phase: 2', a whole number from 1, the label optionally bold, nothing else on the line"),
+        (.touches as $t | ($t[1:][] | "\(where(.)): a second Touches: line (the first is line \($t[0].line))"),
+          ($t[] | select(.good | not) | "\(where(.)): \(touches_malformed)")),
+        (select(.paths) | .touches[0] as $m | $scope_of[.dir] as $lines
+          | if $lines == null then "\(where($m)): a Touches: line splits the task directory's scope.txt, and there is none"
+            else .paths[] | . as $path | select([$lines[] | select(in_line($path; .path))] == [])
+              | "\(where($m)): \($path) is in no line of scope.txt" end),
         ($b[0] | select(. and .good and .value != "None") | . as $m | (.value | split(", ")) as $list
           | $list | unique[] | . as $n
           | (select($numbers | index($n) | not) | "\(where($m)): blocker \($n) is no ticket of \($task)"),
@@ -158,7 +284,24 @@ def cycle($g; $start):
             (select($phase[$n] != null and $phase[$n] > $phase[$self])
               | "\(where($m)): blocker \($n) is in phase \($phase[$n]), after this ticket's phase \($phase[$self])"))),
     ($named[] | . as $t | cycle($graph; .ticket) | select(. != null and min == $t.ticket)
-      | "\(where($t.blocked[0])): a cycle of blockers: \(join(" -> "))")
+      | "\(where($t.blocked[0])): a cycle of blockers: \(join(" -> "))"),
+    ($bounded | sort_by(.ticket)[] as $b | $bounded | sort_by(.ticket)[] as $a
+      | select($a.ticket < $b.ticket and $a.project == $b.project and $phase[$a.ticket] == $phase[$b.ticket]
+          and ($reach[$b.ticket] | index($a.ticket) | not) and ($reach[$a.ticket] | index($b.ticket) | not))
+      | [$b.paths[] as $p | $a.paths[] as $q | select(shared($p; $q)) | narrower($p; $q)] | first
+      | select(. != null)
+      | "\(where($b.touches[0])): tickets \($a.ticket) and \($b.ticket) may build at once (phase \($phase[$b.ticket]), neither blocks the other) and both touch \(.); block one on the other, or split the path"),
+    (select($named != [] and ([$named[] | select(.touches == [])] == []))
+      | $dirs[] | .dir as $dir | [$bounded[] | select(.dir == $dir) | .paths[]] as $paths
+      | $scope_of[$dir] // [] | .[] | . as $s | select([$paths[] | select(in_line(.; $s.path))] == [])
+      | "\(where($s)): \($s.path) is in no ticket's Touches: line"),
+    ($dirs[] | .spec as $spec | select($spec != "") | [$marks[] | select(.file == $spec and .label == "parallel")]
+      | (.[1:][] as $m | "\(where($m)): a second Parallel: line (the first is line \(.[0].line))"),
+        (.[] | select(.good | not)
+          | "\(where(.)): a malformed Parallel: line; write 'Parallel: 2' or 'Parallel: 2, 1', a cap from 1 to 3 per phase, the label optionally bold, nothing else on the line"),
+        (.[0] | select(. and .good and $named != []) | (.value | split(", ") | length) as $k
+          | ([$phase[]] | max) as $p | select($k > $p)
+          | "\(where(.)): Parallel: names \($k) caps, but the tickets have \($p) phases"))
   ] as $problems
 | ($events | to_entries) as $indexed
 | (reduce ($named[] | .ticket) as $n ({};
@@ -169,6 +312,13 @@ def cycle($g; $start):
 | ($runs | map_values(
     if .launch and (.done == null or .launch.key > .done) then "running"
     elif .done != null then "done" else null end)) as $ran
+# A done ticket's build minutes: from its latest launch to its latest ticket-done, rounded half up
+# and at least 1, or null with no launch before that ticket-done or a time that does not parse.
+| ($runs | map_values(
+    if .done != null and .launch and .launch.key < .done then
+      (try ((($events[.done].ts | fromdate) - (.launch.value.ts | fromdate)) / 60 + 0.5 | floor | [., 1] | max)
+       catch null)
+    else null end)) as $minutes
 | {problems: $problems,
    tickets: [$named[]
      | (.blocked[0].value // "None" | if . == "None" then [] else split(", ") end) as $blockers
@@ -176,19 +326,23 @@ def cycle($g; $start):
      | (.waits[0].value // null) as $waits
      | {ticket, slug,
         state: ($ran[.ticket] // (if $on != [] then "blocked" elif $waits then "waiting" else "ready" end)),
-        project, file, phase: $phase[.ticket], blocked_by: $blockers, waits_for: $waits, on: [], session: null} as $t
+        project, file, phase: $phase[.ticket], blocked_by: $blockers, waits_for: $waits, on: [], session: null,
+        touches: .paths, minutes: null} as $t
      | $t + (if $t.state == "blocked" then {on: $on}
-             elif $t.state == "running" then {session: $runs[.ticket].launch.value.session} else {} end)]}
+             elif $t.state == "running" then {session: $runs[.ticket].launch.value.session}
+             elif $t.state == "done" then {minutes: $minutes[.ticket]} else {} end)]}
 JQ
 
 # One jq run: the analysis, then a first line of its problem and ticket counts, then each problem,
 # then the tickets as --json prints them or as text lines.
 mode=text
-[[ -z $json ]] || mode=json
-out=$(jq -r --arg task "$task" --arg files_tsv "$files_tsv" --arg marks_tsv "$marks_tsv" --arg me "${0##*/}" \
-  --arg mode "$mode" '
+[[ -z $json$html_set$graph ]] || mode=json
+out=$(jq -r --arg task "$task" --arg files_tsv "$files_tsv" --arg marks_tsv "$marks_tsv" --arg dirs_tsv "$dirs_tsv" \
+  --arg scope_tsv "$scope_tsv" --arg me "${0##*/}" --arg mode "$mode" '
   def rows: split("\n") | map(select(. != "") | split("\t"));
-  ($files_tsv | rows | map({project: .[0], file: .[1]})) as $files
+  ($files_tsv | rows | map({project: .[0], file: .[1], dir: .[2]})) as $files
+  | ($dirs_tsv | rows | map({project: .[0], dir: .[1], scope: (.[2] // ""), spec: (.[3] // "")})) as $dirs
+  | ($scope_tsv | rows | map({file: .[0], line: (.[1] | tonumber), path: .[2]})) as $scope
   | ($marks_tsv | rows | map({file: .[0], line: (.[1] | tonumber), label: .[2], good: (.[3] == "1"), value: .[4]})) as $marks
   | ('"$program"')
   | "\(.problems | length) \(.tickets | length)",
@@ -206,9 +360,86 @@ if ((problems > 0)); then
   printf '%s\n' "$rest" >&2
   exit 1
 fi
+# --graph draws nothing for a task with no tickets, so it says only that.
+((count || ! graph)) || die "$task has no tickets, so it has no graph"
 ((count)) || echo "${0##*/}: $task has no tickets in its open worktrees" >&2
 if [[ -n $check ]]; then
-  ((count == 0)) || echo "$task: $count tickets, every Blocked by:, Waits for: and Phase: line well-formed"
+  ((count == 0)) || echo "$task: $count tickets, every Blocked by:, Waits for:, Phase:, Touches: and Parallel: line well-formed"
+  exit 0
+fi
+
+# What the script made and removes as it ends, whatever way it ends.
+made=()
+trap 'rm -rf -- "${made[@]}"' EXIT
+
+# Write the page to <file> through a temporary file in <dir>, renamed over <file> once whole, and
+# set size to the page's "<width> <height>" in CSS pixels: write_page <file> <dir>
+write_page() {
+  local title digest tmp
+  title=$(jq -r 'map(select(.event == "opened")) | last | .title // "" | tostring' <<<"$events")
+  digest=$(tickets_digest <<<"$rest")
+  tmp=$(mktemp "$2/.${1##*/}.XXXXXX")
+  made+=("$tmp")
+  size=$(python3 -I "$TEAM_LIB/ticket_graph.py" --task "$task" --title "$title" \
+    --as-of "$(date -u '+%Y-%m-%d %H:%M')" --digest "$digest" --out "$tmp" <<<"$rest") ||
+    die "could not draw $task's tickets"
+  mv -f -- "$tmp" "$1"
+}
+
+if [[ -n $html_set ]]; then
+  write_page "$html" "$html_dir"
+  exit 0
+fi
+
+# The Chrome --graph screenshots the page with: bin/lib/chrome.sh's lookup, the doctor's chrome line's.
+# shellcheck source=bin/lib/chrome.sh
+source "$TEAM_LIB/chrome.sh"
+
+if [[ -n $graph ]]; then
+  dir=$(ticket_graph_dir <<<"$rest")
+  page=$dir/tickets.html png=$dir/tickets.png
+  write_page "$page" "$dir"
+  read -r width height <<<"$size"
+  # The page stands without a PNG, and an old PNG never stands for it: no_png <reason>
+  no_png() {
+    rm -f -- "$png"
+    printf '%s\n' "$page"
+    die "no PNG of $task's graph: $1"
+  }
+  chrome=$(chrome_path)
+  [[ -n $chrome ]] || no_png "no Chrome found; set TEAM_CHROME or install Google Chrome"
+  chrome=$(chrome_binary "$chrome")
+  profile=$(mktemp -d)
+  shot=$(mktemp --suffix=.png "$dir/.tickets.XXXXXX")
+  err=$(mktemp)
+  made+=("$profile" "$shot" "$err")
+  url=file://$(jq -rn --arg path "$page" '$path | split("/") | map(@uri) | join("/")')
+  status=0
+  timeout -k 5 60 "$chrome" --headless=new --disable-gpu --hide-scrollbars --no-first-run \
+    --no-default-browser-check --disable-extensions --disable-background-networking \
+    --disable-component-update --disable-sync --mute-audio --user-data-dir="$profile" \
+    --force-device-scale-factor=2 --window-size="$width,$height" --screenshot="$shot" "$url" \
+    </dev/null >/dev/null 2>"$err" || status=$?
+  # A Chrome helper still ending may hold it a moment longer; the EXIT trap removes it then.
+  rm -rf -- "$profile" 2>/dev/null || true
+  ((status != 124)) || no_png "Chrome timed out after 60 s"
+  last=$(grep -v '^[[:space:]]*$' "$err" | tail -n 1) || true
+  # Whether Chrome's stderr says it wrote the screenshot whole: a line "<n> bytes written to file
+  # <the screenshot's path, or its real path>", n the file's size.
+  wrote_shot() {
+    local bytes
+    bytes=$(($(wc -c <"$shot")))
+    grep -qxF -e "$bytes bytes written to file $shot" -e "$bytes bytes written to file $(realpath -- "$shot")" "$err"
+  }
+  # A Mac with no display (CI's macOS runner) writes the screenshot, then hangs in its teardown
+  # until Chrome's watchdog ends it with exit 2, so a nonzero exit, but the timeout's kill, still
+  # takes a PNG that Chrome says it wrote whole.
+  if ((status != 0)) && ! { ((status != 137)) && [[ $(image_type "$shot") == png ]] && wrote_shot; }; then
+    no_png "Chrome exited $status${last:+: $last}"
+  fi
+  [[ $(image_type "$shot") == png ]] || no_png "Chrome exited 0 and wrote no PNG${last:+: $last}"
+  mv -f -- "$shot" "$png"
+  printf '%s\n%s\n' "$png" "$page"
   exit 0
 fi
 [[ -z $rest ]] || printf '%s\n' "$rest"

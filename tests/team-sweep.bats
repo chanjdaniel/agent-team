@@ -232,9 +232,30 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   event T7 merged '{pr: 5, merge: "abcdef0", head: "1234567", by: "daniel"}'
   run_bin -1 team-sweep
   assert_equal "$output" "T7 no-worker: merged and not closed, with no live worker (latest T7-builder 22222222); next: close it with team-close T7"
-  # Blocked after the merge, a later part is still to come: the task is parked, not to be closed.
+  # Blocked after the merge, the task is parked, not to be closed.
   event T7 blocked '{reason: "the second half waits on T31"}'
   run_bin -0 team-sweep
+}
+
+@test "no-worker: a merged part is told to launch the next phase, and its last part to close" {
+  opened T7
+  launch T7 builder 22222222
+  event T7 merged '{pr: 5, merge: "abcdef0", head: "1234567", by: "daniel", phases_left: [2, 3]}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: a part merged, with phase 2, 3 still to build, with no live worker (latest T7-builder 22222222); next: launch the next phase's first ticket's builder (team-tickets T7 names it)"
+  sessions "$(session 22222222 T7-builder idle working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: a part merged, with phase 2, 3 still to build, with every live worker idle (latest T7-builder 22222222); next: launch the next phase's first ticket's builder (team-tickets T7 names it)"
+  # The next phase's builder at work is enough.
+  launch T7 builder 33333333
+  sessions "$(session 33333333 T7-builder busy working)"
+  run_bin -0 team-sweep
+  # Its part merged with every ticket done, the task is merged and told to close.
+  event T7 merged '{pr: 6, merge: "abcdef1", head: "2345678", by: "daniel", phases_left: []}'
+  sessions "$(session 33333333 T7-builder idle working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: merged and not closed, with every live worker idle (latest T7-builder 33333333); next: close it with team-close T7"
+  no_github
 }
 
 @test "no-worker: every live worker idle since a report leaves the next step to the coordinator" {
@@ -707,6 +728,40 @@ EOF
   run_bin -1 team-sweep
   assert_equal "$output" "T7 stray: T7-builder 77777777 is live but T7 is closed; next: read claude logs 77777777 for anything left to log, then stop it with claude stop 77777777
 T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: read claude logs 88888888 for anything left to log, then stop it with claude stop 88888888"
+}
+
+@test "coordinator-twin: another session named coordinator on this machine, beside the one the sweep runs in" {
+  sessions "$(session 3169fcbd coordinator busy working)" "$(session 5e7b1c04 coordinator idle blocked 1762596000000)" \
+    "$(jq -cn '{pid: 5151, cwd: "/home/x", kind: "interactive", startedAt: 1762682400000,
+      sessionId: "c0ffee00-1111-4222-8333-444455556666", name: "coordinator", status: "idle"}')"
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -1 team-sweep
+  assert_equal "$output" "coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-11-08T10:00:00Z) is a second session named coordinator on this machine; next: read claude logs 5e7b1c04 for anything left to log, then stop it with claude stop 5e7b1c04
+coordinator-twin: coordinator c0ffee00 (interactive, idle, started 2025-11-09T10:00:00Z) is a second session named coordinator on this machine; next: ask Daniel to end it, an interactive session, pid 5151"
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map([.task, .kind, .session, .name])' <<<"$output")" \
+    '[[null,"coordinator-twin","5e7b1c04","coordinator"],[null,"coordinator-twin","c0ffee00","coordinator"]]'
+}
+
+@test "coordinator-twin: with no session of its own to tell apart, the sweep names every coordinator, each if it is not you" {
+  sessions "$(session 3169fcbd coordinator busy working)" "$(session 5e7b1c04 coordinator idle blocked)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "coordinator-twin: coordinator 3169fcbd (background, working, started 2025-10-22T02:00:00Z) is one of 2 sessions named coordinator on this machine; next: if it is not you, read claude logs 3169fcbd for anything left to log, then stop it with claude stop 3169fcbd
+coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-10-22T02:00:00Z) is one of 2 sessions named coordinator on this machine; next: if it is not you, read claude logs 5e7b1c04 for anything left to log, then stop it with claude stop 5e7b1c04"
+}
+
+@test "coordinator-twin: a twin with no startedAt reads as started at an unknown time, and the sweep still runs" {
+  sessions "$(session 3169fcbd coordinator busy working)" \
+    "$(session 5e7b1c04 coordinator idle blocked | jq -c 'del(.startedAt)')"
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "coordinator-twin: coordinator 5e7b1c04 (background, blocked, started at an unknown time) is a second session named coordinator on this machine; next: read claude logs 5e7b1c04 for anything left to log, then stop it with claude stop 5e7b1c04"
+}
+
+@test "coordinator-twin: one coordinator, the sweep's own or another, finds nothing" {
+  sessions "$(session 3169fcbd coordinator busy working)"
+  run_bin -0 team-sweep
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -0 team-sweep
+  CLAUDE_CODE_SESSION_ID=0badf00d-1111-4222-8333-444455556666 run_bin -0 team-sweep
 }
 
 @test "the load check's T0 sessions are never stray: T0 is the load check, not a task" {
@@ -1567,6 +1622,67 @@ level_record() {
   assert_equal "$output" ""
 }
 
+# held_pair [<T3 event>...] -- [<T3 event>...]: the ledger afresh, T3 stowed for the level at 04:00
+# with its planner and T4 at 05:00 with its builder, each paused stowed, with each T3 event
+# (<kind>:<jq object of more fields>) logged before T3's stow, or after it when it follows the --.
+held_pair() {
+  local spec at=03:30
+  : >"$TEAM_HOME/ledger.jsonl"
+  level_task T3 03:00
+  level_task T4 03:00
+  for spec in "$@"; do
+    if [[ $spec == -- ]]; then
+      ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T3", event: "stowed", machine: "home-pc", worktrees: [],
+        roles: ["planner"], cause: "level"}'
+      ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T3", event: "paused", reason: "stowed"}'
+      at=04:30
+    else
+      ledger_line --arg e "${spec%%:*}" --arg ts "2026-10-22T$at:00Z" "{ts: \$ts, task: \"T3\", event: \$e} + ${spec#*:}"
+    fi
+  done
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T4", event: "stowed", machine: "home-pc", worktrees: [],
+    roles: ["builder"], cause: "level"}'
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T4", event: "paused", reason: "stowed"}'
+}
+
+# relaunch_t4: T4's builder launched again since its stow, and live.
+relaunch_t4() {
+  ledger_line '{ts: "2026-10-22T06:00:00Z", task: "T4", event: "launch", role: "builder", session: "4e4e4e4e",
+    worktree: "/w/4", toolkits: []}'
+  sessions "$(session 4e4e4e4e T4-builder busy working)"
+}
+
+@test "level-resume: a stowed task held, or waiting or blocked since its stow, is never named, until resumed" {
+  level_record minor
+  # Room for both stowed tasks' roles.
+  capacity_reading 0 8
+  local hold='{reason: "on hold by Daniel (1500000000000000001)"}'
+  # T3 stowed first, then Daniel put it on hold: the finding names T4, the next that fits.
+  held_pair -- "waiting:{on: \"Daniel\", reason: \"on hold by Daniel (1500000000000000001)\"}"
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T4 fits again: relaunch its builder"
+  # With T4 relaunched, T3 is the only one stowed: a held before its stow keeps it stowed.
+  held_pair "held:$hold" --
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # So does a block logged after its stow.
+  held_pair -- "blocked:{reason: \"the fixture server is down\"}"
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # A wait logged before the stow is the stowed planner's own interview, which its relaunch resumes.
+  held_pair "waiting:{on: \"Daniel\", reason: \"interview in <#1563>\"}" --
+  relaunch_t4
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T3 fits again: relaunch its planner"
+  # A resumed lifts the hold (and the stow's pause, so T3's own findings come back too).
+  held_pair "held:$hold" -- "resumed:{}"
+  relaunch_t4
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -r '.[] | select(.task == null) | .text' <<<"$output")" "level: T3 fits again: relaunch its planner"
+}
+
 @test "level-launch: a launch refused for room, not stowed, is named once its role fits again, until it launches" {
   # T5's builder opened its PR; the coordinator's reviewer launch was refused for room at minor.
   level_task T5 03:00 builder:5b5b5b5b
@@ -1593,6 +1709,61 @@ level_record() {
   sessions "$(session 5e5e5e5e T5-reviewer busy working)"
   run_bin -0 team-sweep
   assert_equal "$output" ""
+}
+
+# refused_t5 [<T5 event>...] -- [<T5 event>...]: the ledger afresh, T5's builder launched and its
+# PR opened, then its reviewer's launch refused for room at 04:40, with each T5 event
+# (<kind>:<jq object of more fields>) logged before the refusal, or after it when it follows the --.
+refused_t5() {
+  local spec at=04:35
+  : >"$TEAM_HOME/ledger.jsonl"
+  level_task T5 03:00 builder:5b5b5b5b
+  ledger_line '{ts: "2026-10-22T04:30:00Z", task: "T5", event: "pr", url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  for spec in "$@"; do
+    if [[ $spec == -- ]]; then
+      ledger_line '{ts: "2026-10-22T04:40:00Z", task: "T5", event: "paused",
+        reason: "team-worker: no room for session:reviewer at minor (30%): 9.3 GiB of 9.6 GiB reserved, a reviewer needs 0.5 GiB"}'
+      at=04:50
+    else
+      ledger_line --arg e "${spec%%:*}" --arg ts "2026-10-22T$at:00Z" "{ts: \$ts, task: \"T5\", event: \$e} + ${spec#*:}"
+    fi
+  done
+}
+
+@test "level-launch: a refused launch held, or waiting or blocked since its refusal, is never named, until resumed" {
+  level_record minor
+  # Room for a reviewer.
+  capacity_reading 0 8 T9:builder:9c9c9c9c:8.9
+  local level='.[] | select(.task == null) | .text'
+  # Held after the refusal: no level finding.
+  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # Held before it holds it too, since a held stands wherever it falls.
+  refused_t5 'held:{reason: "on hold by Daniel (1500000000000000001)"}' --
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # Waiting on Daniel, or blocked, since the refusal: none.
+  refused_t5 -- 'waiting:{on: "Daniel", reason: "on hold by Daniel (1500000000000000001)"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  refused_t5 -- 'blocked:{reason: "the fixture server is down"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # A wait before the refusal did not stop the launch tried then, so the finding names T5.
+  refused_t5 'waiting:{on: "Daniel", reason: "the merge"}' --
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
+  # A resumed lifts the hold.
+  refused_t5 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}' --
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
+  # A resumed after the refusal ends the refusal too, since the refusal is a standing park and a
+  # resumed with no id, all or brief ends every park (T278's A4: parked and refused_launches
+  # agree), so nothing is named.
+  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
 }
 
 @test "level: a team-capacity plan that fails is one finding naming its reason, and the task findings still come" {
