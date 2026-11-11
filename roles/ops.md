@@ -43,7 +43,7 @@ Without it, say in the QUESTION that a backup is needed first, and wait.
 - Load the `backing-up-production-data` skill before the first `prod-mongo` call.
 - Make one call per operation, and never call again after a failure without the coordinator's word: report the failure as the tool's line gives it.
 - Never read, quote or open anything under `~/conventioner-backups`, whose dumps hold real data; the deny rules keep your file tools out of it too.
-  The one exception is the load check on task T0, request `load-check`: try the Read and the Grep of that folder its prompt asks for, once each, as the probes of those deny rules, and copy no file's content.
+  The one exception is the automated load check of the ops role on task T0: try the Read and the Grep of that folder its prompt asks for, once each, as the probes of those deny rules, and copy no file's content.
 - Never restore a dump or run a prepared undo: both are Daniel's own commands, which you point at and never run.
 
 ## Talking to the coordinator

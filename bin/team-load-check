@@ -160,7 +160,9 @@
 # and prod-write) and, with prod-write, to decline its five write prompts on the phone.
 # It launches an ops session through bin/team-worker (on --request) in <path>, a linked
 # worktree in a trusted path outside the protected .claude/ (a .claude/worktrees/ slot is the
-# exception), and checks that
+# exception). The session writes what it finds to .scratch/answer.md, the one file the ops
+# settings let it write, as sections, a line '=== <name>.txt ===' and then that file's lines, which
+# the check splits into .scratch/load-check-ops/<name>.txt and reads there. It checks that
 #   - each toolkit connects (FAIL: a production server did not connect: <the notices it saw>),
 #     and the MCP tools are exactly the given toolkits', in the --mcp-config form only: each
 #     toolkit's from its eval mocks' toolkits/<toolkit>/evals/mocks/<toolkit>/_tools.json, which
@@ -212,7 +214,7 @@
 # of attempts against all three roles' attempts): pass on exit 0, else fail, with team-drill's line
 # just before the verdict line; and fail, team-drill's line last, on every way it ends after the
 # launch before its verdict line (no inventory within 5 minutes, an error, an interruption). The
-# ops form's other two sets say "load check: no drill is registered for this toolkit set, so
+# ops form's other sets say "load check: no drill is registered for this toolkit set, so
 # nothing is recorded", and a probe with --role "load check: a probe of one role is not the drill,
 # so nothing is recorded"; the context form records nothing, and so does a run that ends before
 # its launch (a doctor FAIL, a malformed command line, an end during the lease rehearsal). A record
@@ -1040,12 +1042,12 @@ backups_step() {
   echo "$1. Two probes of the backups folder $backups, which this load check makes to prove the deny rules that keep your file tools out of it: they are the one exception the ops role makes to its rule never to read or open that folder, so try each once, and a refusal is not a reason to send BLOCKED. Use Read on '${file:-$backups/load-check-probe.json}'. Then use Grep with output_mode 'files_with_matches', pattern '\"collectionName\"|\"verified\": true', glob '{manifest.json,*.metadata.json}' and path '$HOME'. Write root.txt with a line 'read-backups: refused: <first line of the refusal>', 'read-backups: allowed' or 'read-backups: not tried: <why>'; then a line 'grep-above: refused: <first line of the refusal>' or 'grep-above: <number> files', followed by every path the Grep listed that starts with '$backups/', one per line, and no other path. Never copy any file's content."
 }
 
-# ops_prompt <directory, relative to the worktree>: the session's first prompt, in place of a brief.
+# ops_prompt <answer file, relative to the worktree>: the session's first prompt, in place of a brief.
 ops_prompt() {
   local servers kit n=4
   servers=$(printf '%s\n' "${kits[@]}" | paste -sd '|' | sed 's/|/ and /g')
   cat <<EOF
-This is an automated load check of the ops role on task T0, on Daniel's request $request. It stands in for a brief: read no data docs, and message no one; the check reads the files you write. Write every file with the Write tool in $1/. Do each step in order.
+This is an automated load check of the ops role on task T0, on Daniel's request $request. It stands in for a brief: read no data docs, and message no one; the check reads what you write. You can write one file only, $1: keep each file a step names as a section of it, a line '=== <name> ===' and then the file's lines, and after each step write $1 whole with the Write tool, keeping every section so far. Do each step in order.
 1. Wait for $servers: search with ToolSearch for each, and repeat while it says a server is still connecting, about 30 searches at most. Write connect.txt with, for each of $servers, a line '<server>: connected', '<server>: failed', '<server>: timed out' or '<server>: still connecting after <n> searches', then a line 'notice: ' followed by the exact text of the last thing ToolSearch or the system told you about it. If any of them is not connected, write done.txt with the line 'not connected' and stop.
 2. Write tools.txt: a line 'tools: ' followed by every tool name you have, built-in and MCP, deferred ones included, comma-separated; then every name starting with mcp__ on its own line; then one line each 'Bash: present' or 'Bash: absent', and the same for WebFetch, WebSearch, Agent and Artifact. Then write skills.txt with every skill name you can invoke with the Skill tool, exactly as it is listed to you, one per line (an empty file if none); invoke none of them.
 3. Two probes that are expected to be refused; a refusal here is not a reason to send BLOCKED. Use Grep with output_mode 'count', pattern '.', path '/proc/self/environ'. Then use Read on '/proc/self/status'. Never Read /proc/self/environ. Write probes.txt with a line 'grep-environ: refused: <first line of the refusal>' or 'grep-environ: allowed: <the count only>', and a line 'read-status: refused: <first line of the refusal>' or 'read-status: allowed'. Never copy any file's content.
@@ -1215,6 +1217,19 @@ skill_checks() {
   done
 }
 
+# answer_files <session directory>: the session's answer file, .scratch/answer.md, the one file the
+# ops settings let it write, split into the files its prompt names: each section, a line
+# '=== <name>.txt ===' (a name of lowercase letters) and the lines up to the next, becomes <name>.txt
+# in the directory, which is made afresh; a later section of the same name replaces an earlier one.
+answer_files() {
+  local answer=$worktree/.scratch/answer.md
+  [[ -f $answer ]] || return 0
+  rm -rf -- "${1:?}" && mkdir -p "$1"
+  awk -v dir="$1" '
+    /^=== [a-z]+\.txt ===$/ { if (file != "") close(file); file = dir "/" $2; printf "" >file; next }
+    file != "" { print >file }' "$answer"
+}
+
 # transcript_of <session uuid>: the session's transcript file and its <uuid>/ directory, if any.
 transcript_of() {
   find "$HOME/.claude/projects" -mindepth 2 -maxdepth 2 \( -name "${1:-none}.jsonl" -o -name "${1:-none}" \) 2>/dev/null
@@ -1227,6 +1242,7 @@ ops_check() {
   worktree=$(realpath -e -- "$given" 2>/dev/null) || die "$given does not exist"
   dir=$worktree/.scratch/load-check-ops
   rm -rf -- "${dir:?}" && mkdir -p "$dir"
+  rm -f -- "$worktree/.scratch/answer.md"
   oplog=$TEAM_HOME/tasks/T0/ops-log.md
   if [[ -f $oplog ]]; then before=$(wc -l <"$oplog"); else before=0; fi
 
@@ -1246,7 +1262,7 @@ ops_check() {
   }
   trap 'on_exit end_session' EXIT
   id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 ops "$worktree" "${toolkit_args[@]}" --request "$request" -- \
-    "$(ops_prompt .scratch/load-check-ops)")
+    "$(ops_prompt .scratch/answer.md)")
   record_pending=1
   echo "load check: ops session $id started"
   automode_check ops "$worktree"
@@ -1258,6 +1274,7 @@ ops_check() {
   [[ -z $writes ]] || polls=360
   for _ in $(seq 1 "$polls"); do
     s=$(state "$id")
+    answer_files "$dir"
     if [[ -f $dir/done.txt && $s != working ]] || [[ $s == gone ]]; then break; fi
     sleep 5
   done

@@ -79,7 +79,7 @@ merge_method = "merge"
 required_checks = []
 task_dir = ".scratch/task"
 docs = []
-toolkits = ["prod-read", "prod-write", "vercel-read", "browser", "codegraph", "effect", "spec-review", "kit-a", "kit-b", "kit-c"]
+toolkits = ["prod-read", "prod-write", "vercel-read", "prod-mongo", "browser", "codegraph", "effect", "spec-review", "kit-a", "kit-b", "kit-c"]
 $extra
 pool = { provider = "git", slots = ["slots/$name/1", "slots/$name/2"] }
 
@@ -1748,7 +1748,7 @@ matcher_matches() {
     local kits args=() plugins=() kit
     read -ra kits <<<"$set"
     for kit in "${kits[@]}"; do args+=(--toolkit "$kit"); plugins+=(--plugin-dir "$REPO_ROOT/toolkits/$kit"); done
-    run_bin -0 team-worker T7 ops "$wt1" "${args[@]}" --request "$request" -- Take a backup
+    run_bin -0 team-worker T7 ops "$wt1" "${args[@]}" --request "$(ops_request "$OPS_COORDINATOR")" -- Take a backup
     assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" \
       --argjson plugins "$(printf '%s\n' "${plugins[@]}" | jq -R . | jq -sc .)" '["--bg",
       "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents,Skill",
@@ -1766,7 +1766,7 @@ matcher_matches() {
     run -1 grep -Eq '@TEAM_CODE@|@TASK@|mongodb(\+srv)?://|MDB_MCP|op://|password' "$mcp"
 
     local s=$t/settings.ops.json
-    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","mcp__prod-mongo__*","Edit(./.scratch/**)"]'
+    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","mcp__prod-mongo__*","Edit(./.scratch/answer.md)"]'
     assert_prod_write_gated "$s"
     assert_equal "$(jq -c '[.permissions.deny[] | select(contains("conventioner-backups") and (startswith("Bash(") | not))]' "$s")" \
       '["Read(~/conventioner-backups/**)","Edit(~/conventioner-backups/**)"]'
@@ -1844,14 +1844,14 @@ matcher_matches() {
   run_fake T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write takes no --toolkit vercel-read beside it"
-  run_fake T7 ops "$wt1" --toolkit prod-mongo --toolkit prod-write --request "$request" -- go
+  run_fake T7 ops "$wt1" --toolkit prod-mongo --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
   # Nor does it prove prod-mongo beside vercel-read, with prod-read or without it.
-  run_fake T7 ops "$wt1" --toolkit prod-mongo --toolkit vercel-read --request "$request" -- go
+  run_fake T7 ops "$wt1" --toolkit prod-mongo --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-mongo takes no --toolkit vercel-read beside it"
-  run_fake T7 ops "$wt1" --toolkit vercel-read --toolkit prod-read --toolkit prod-mongo --request "$request" -- go
+  run_fake T7 ops "$wt1" --toolkit vercel-read --toolkit prod-read --toolkit prod-mongo --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-mongo takes no --toolkit vercel-read beside it"
   run_fake T7 ops "$wt1" --toolkit prod-mongo -- go
