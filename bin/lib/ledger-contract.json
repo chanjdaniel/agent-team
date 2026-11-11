@@ -257,7 +257,7 @@
     "image-posted": {
       "writer": "team-post",
       "about": "one image team-post --attach sent: its thread, the message holding it and its base name; a message of several images has one line each, and what left the machine is never removed from the ledger",
-      "required": {"thread": ["interview"], "discord_thread": "id", "discord_message": "id", "file": "string"}
+      "required": {"thread": ["interview", "task"], "discord_thread": "id", "discord_message": "id", "file": "string"}
     },
     "image-retracted": {
       "writer": "team-post",

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Put a question to Daniel in one call: post it in the task's Discord thread and a one-line ping
-# in #coordinator that links there, both through team-post (so a fenced machine posts nothing),
-# then log the ask in the ledger. team-answer takes their answer back.
+# Put a question to Daniel in one call: post it, with any images, in the task's Discord thread and
+# a one-line ping in #coordinator that links there, both through team-post (so a fenced machine
+# posts nothing), then log the ask in the ledger. team-answer takes their answer back.
 #
-# Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]
+# Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]...
 # <id> names the ask (letters, digits, dot, dash and underscore), as team-answer names it again.
 # The question is the file's text, its leading and trailing blank lines and spaces dropped. The
 # ping mentions each of Daniel's ids, the top-level allowFrom of the Discord plugin's
@@ -28,6 +28,9 @@
 # outside the task's open worktrees and its tasks/T<n>/ once its links are resolved, is refused
 # before anything is posted, as team-run-approved refuses it (script_place_refusal in
 # bin/lib/team.sh).
+# --attach <image>, repeatable, posts the image with the question in the task's thread through
+# team-post --attach (on the question's first message and on), which checks each image before
+# anything is posted and logs it as image-posted; the ping carries none.
 # A post that fails logs nothing: when the ping fails, the question stays posted, its id said.
 # A worker session may not run it (worker_refusal in bin/lib/team.sh): its questions go to the
 # coordinator.
@@ -39,14 +42,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 # The most characters of the question's first line the ping carries.
 PING_LINE=200
-USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]"
+USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]..."
 
-task='' id='' file='' role='' script=''
+task='' id='' file='' role='' script='' attach=()
 while (($#)); do
   case $1 in
     --file) (($# > 1)) || usage_error "$USAGE"; file=$2; shift ;;
     --from) (($# > 1)) || usage_error "$USAGE"; role=$2; [[ $role =~ ^[a-z]+$ ]] || usage_error "$USAGE"; shift ;;
     --script) (($# > 1)) && [[ -n $2 ]] || usage_error "$USAGE"; script=$2; shift ;;
+    --attach) (($# > 1)) && [[ -n $2 ]] || usage_error "$USAGE"; attach+=(--attach "$2"); shift ;;
     -*) usage_error "$USAGE" ;;
     *)
       if [[ -z $task ]]; then task=$1
@@ -114,7 +118,7 @@ jq -nr --arg mentions "$mentions" --arg task "$task" --arg thread "$thread" --ar
 
 bin=$(dirname "${BASH_SOURCE[0]}")
 code=0
-asked=$("$bin/team-post" "$task" --file "$scratch/question") || code=$?
+asked=$("$bin/team-post" "$task" --file "$scratch/question" "${attach[@]}") || code=$?
 if ((code)); then
   echo "team-ask: the question was not posted, so nothing is logged" >&2
   exit "$code"
