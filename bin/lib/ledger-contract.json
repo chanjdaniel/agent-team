@@ -168,9 +168,9 @@
     },
     "gate-run": {
       "writer": "team-log",
-      "about": "one per gate run, at its end: run is the gate's run id, head the commit it ran on, cause why it repeats an earlier run on the same PR, minutes each step's minutes as no-mistakes axi status --run prints them",
+      "about": "one per gate run, at its end: run is the gate's run id, head the commit it ran on, cause why it repeats an earlier run on the same PR, minutes each step's minutes as no-mistakes axi status --run prints them, approved the ids of the parks the builder approved itself in the run, each a kind its brief or the project's review rules name (team-time counts them), absent when it approved none",
       "required": {"run": "string", "head": "string", "outcome": ["pushed", "red", "aborted", "stopped-green"]},
-      "optional": {"cause": ["review", "notes", "gate-finding", "load", "tooling", "base-merge", "other"], "minutes": "object"}
+      "optional": {"cause": ["review", "notes", "gate-finding", "load", "tooling", "base-merge", "other"], "minutes": "object", "approved": "array"}
     },
     "merge-approved": {
       "writer": "team-log",
