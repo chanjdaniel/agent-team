@@ -716,3 +716,29 @@ refusal() {
   on stow-failed '{machine: "m1", reason: "x"}'
   assert_equal "$(problems stow-failed '{machine: "m1", reason: "x"}')" "stow-failed with no stowing of T1 standing"
 }
+
+@test "T278's D5: a task crashed only for a machine other than the one its latest launch ran on, with no stow after it" {
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  on launch '{role: "builder", session: "b1", worktree: "/w/1", toolkits: [], machine: "m"}'
+  on "done" '{role: "builder", session: "b1"}'
+  # Its latest launch ran on m, with no stow: m restarting is no crash, and resumes no snapshot over
+  # the live worktree, while another machine taking it over finds m stopped without a handoff.
+  assert_equal "$(fold_read '[crashed("m"), crashed("n"), snapshot_due("proj"; "m"), snapshot_due("proj"; "n")]')" \
+    '[false,true,false,true]'
+
+  # A launch on n that n stowed is a handoff, no crash, for any machine.
+  events=()
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  on launch '{role: "builder", session: "b1", worktree: "/w/1", toolkits: [], machine: "n"}'
+  on stowed '{machine: "n", worktrees: [], roles: ["builder"], cause: "handoff"}'
+  assert_equal "$(fold_read '[crashed("m"), crashed("n")]')" '[false,false]'
+
+  # An old launch names no machine, so it crashed for any machine, as before.
+  events=()
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  assert_equal "$(fold_read '[crashed("m"), crashed("n")]')" '[true,true]'
+}

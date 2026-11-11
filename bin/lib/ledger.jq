@@ -749,9 +749,14 @@ def latest_index($kind): [to_entries[] | select(.value.event == $kind) | .key] |
 # The index of the task's latest stowed, or -1 when it has none.
 def latest_stowed: latest_index("stowed");
 
-# Whether the task crashed on a machine switch: a launch after its latest stowed, or a launch and
-# no stowed at all, so the machine it last ran on stopped without handing it off.
-def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch");
+# Whether the task crashed, read on <machine> (this machine's team name): its latest machine event
+# (a stowed, stow-failed, launch or worktree-moved) is a launch on another machine, or one that
+# names none (an old launch), so the machine it last ran on stopped without handing it off. A
+# launch here with no stow after it is no crash here: this machine restarted, and its worktree is
+# live where it was.
+def crashed($machine):
+  [.[] | select(.event | IN("stowed", "stow-failed", "launch", "worktree-moved"))] | last
+  | . != null and .event == "launch" and .machine != $machine;
 
 # Whether the task is stowed, waiting to resume: its latest stowed, for the level or a handoff (cause
 # level or handoff, or none, as before team-stow), or a stow-failed, which keeps its stowing's
@@ -802,11 +807,12 @@ def lifecycle_refused_launches:
   end;
 def refused_launches: lifecycle | lifecycle_refused_launches;
 
-# Whether the task's worktree in <project> resumes from the last checkpoint's snapshot: the task
-# crashed, or its latest stowed recorded that worktree with uncommitted changes, which the
-# handoff's checkpoint kept as wip/<project>/T<n> on the team home's origin.
-def snapshot_due($project):
-  crashed or (latest_stowed as $stowed | $stowed >= 0
+# Whether the task's worktree in <project> resumes on <machine> from the last checkpoint's
+# snapshot: the task crashed, read on <machine>, or its latest stowed recorded that worktree with
+# uncommitted changes, which the handoff's checkpoint kept as wip/<project>/T<n> on the team
+# home's origin.
+def snapshot_due($project; $machine):
+  crashed($machine) or (latest_stowed as $stowed | $stowed >= 0
     and any(.[$stowed].worktrees[]?; .project == $project and .uncommitted == true));
 
 # Whether the event ends the worker of <role>: its DONE, which the coordinator logs as a done of

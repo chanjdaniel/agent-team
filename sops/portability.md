@@ -147,7 +147,8 @@ Taking the PC down for a while (an update, a restart, a night off) is a handoff 
 ## A crash
 
 - The surviving machine: Daniel runs `team-resume --steal` in their own terminal and types the dead holder's name.
-- A task with a launch after its latest `stowed` crashed: `team-open --resume` resumes it from the later of origin's branch and the head `wip/<project>/T<n>` holds, and applies the snapshot as uncommitted changes only when its parent is that head.
+- A task crashed when its latest `stowed`, `stow-failed`, `launch` or `worktree-moved` is a launch on another machine (or one naming none, as an old launch); one last launched on this machine did not, since this machine only restarted, so its live worktree gets no crash's snapshot.
+  On a crashed task, `team-open --resume` resumes it from the later of origin's branch and the head `wip/<project>/T<n>` holds, and applies the snapshot as uncommitted changes only when its parent is that head.
 - The resume brief tells each worker the checkpoint it starts from and what may be missing, as "Checkpoints" says, with any no-mistakes run in flight, so it checks before building on it.
 - When the dead machine boots, its still-enabled heartbeat finds the new holder and fences it before anyone could start a coordinator there (sessions do not restart on their own after a shutdown); its doctor then lists the salvage commands.
 - Its doctor's `salvage records` line names what its team home holds that origin's branch lacks, the commits and the uncommitted records (the ledger lines of its last minutes, with their count), and the commands that commit them as `wip: salvage records from <machine>` and push the head to the team home's origin as `salvage/records/<machine>-<epoch>`, the epoch of the lease that machine last held.
