@@ -255,9 +255,9 @@
 #          latest held while it stands, or a waiting or blocked logged after its stow while it
 #          stands: stow_hold in bin/lib/ledger.jq), which keeps it from being relaunched until a
 #          resumed lifts it; then the tasks whose launches were refused for room and not
-#          launched since (refused_launches in bin/lib/ledger.jq), oldest refusal first, each
-#          with its roles' estimate, whether it fits and what holds it alike (a waiting or
-#          blocked logged after its latest refusal). Text: "Over budget at minor (30%): 14.5 GiB
+#          launched or resumed since (refused_launches in bin/lib/ledger.jq), oldest refusal
+#          first, each with its roles' estimate, whether it fits and what holds it alike (a
+#          waiting or blocked logged after its latest refusal). Text: "Over budget at minor (30%): 14.5 GiB
 #          reserved of 9.6 GiB.", then "  stop T1-reviewer aaaa0012, its work handed on: frees
 #          1.0 GiB", "  stop conventioner-3 of T3, no busy session in its worktree: frees
 #          3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed, waiting to resume, oldest stow first:"

@@ -322,6 +322,9 @@ launched T7-builder c0000001"
   run_bin -0 team-next T7 -- "T7 PAUSED stowed"
   assert_equal "$output" "logged paused reason=stowed
 no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
+  # A stow with detail is a stow too, by park_cause, as every reader of a stow has it.
+  run_bin -0 team-next T7 -- "T7 PAUSED stowed ad6520fc for shutdown; next: re-run the gate"
+  assert_equal "${lines[1]}" "no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
   run_bin -0 team-next T7 -- "T7 QUESTION Which file holds the goal?"
   assert_equal "$output" "logged question role=builder text=Which file holds the goal?
 no hand-off for QUESTION"
@@ -332,7 +335,7 @@ no hand-off for QUESTION"
   run_bin -0 team-next T7 -- "T7 DONE gate run=r1 head=0123456 outcome=pushed"
   assert_equal "$output" "logged gate-run run=r1 head=0123456 outcome=pushed
 no hand-off for DONE gate"
-  assert_equal "$(logged_from $((count + 1)) | jq -r .event | tr '\n' ' ')" "paused question gate-run "
+  assert_equal "$(logged_from $((count + 1)) | jq -r .event | tr '\n' ' ')" "paused paused question gate-run "
   assert_equal "$(bg_calls)" ""
 }
 

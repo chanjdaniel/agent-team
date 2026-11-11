@@ -26,6 +26,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time or standing merge back to Daniel, read by `team-merge`.
     - `health.jq`: the health module, the one place that says what unhealthy means: the fold of each heartbeat run into the health record, the ledger's one-pass scan, every health threshold, and the view `team-timers health` prints, its problems and its line in markup and plain text.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
+    - `lifecycle.json`: the task lifecycle's table, its statuses, phases, start states, what each kind may follow and does, the park causes and what ends each, and the `lifecycle_from` cutover, which `ledger.jq` imports.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
     - `notice.jq`: the notice module, the one lifecycle of every notice of a standing problem the heartbeat posts in `#coordinator`: the notice record `notices.json`, the table of each source's rules, the judging, its outcomes and the move from the old records.
     - `notices.sh`: the notice record's reads and locked writes, and the move of each old record into it, sourced after `team.sh` by `team-timers` and `team-uptime`.
@@ -180,7 +181,7 @@ It holds:
 - The code checkout is the directory above `bin/` (`~/agent-team`): code (roles, settings, templates, plugins, hooks, toolkits) comes from the script's own checkout, never from the team home.
   In settings files and a toolkit's `.mcp.json`, `@TEAM_CODE@` names the code checkout, `@TASK_DIR@` the team home's `tasks/T<n>/` and `@WORKTREE@` the session's worktree by its real path; `team-worker` fills them in, and `claude-coordinator` fills `@TEAM_CODE@`.
 - Exit codes: 0 done, 1 refused or a check failed (`die`), 2 a malformed command line (`usage_error`), 75 try again later.
-- The ledger changes only through the library's `ledger_append`, which checks each event against `bin/lib/ledger-contract.json` and that the script is its kind's writer, or one of them; a new kind or field goes in the contract first.
+- The ledger changes only through the library's `ledger_append`, which checks each event against `bin/lib/ledger-contract.json` and that the script is its kind's writer, or one of them, and, under the ledger's lock, a `refusing_writers` script's event against the task's state by `bin/lib/lifecycle.json`; a new kind or field goes in the contract first.
   A kind the contract marks `"push": true` (Daniel's word or an outside fact) is committed and pushed the moment it is logged by the library's `ledger_push`, which each of its writers calls once after its last event, as `tests/repo.bats` holds.
 - The registry is read only through `team-project`; a new key goes in its key lists and in its header, which documents every key.
 - A script reaches Discord's API only through `discord_api` and GitHub through `gh`, and never prints a secret.

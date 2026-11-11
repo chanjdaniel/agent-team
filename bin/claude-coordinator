@@ -3,8 +3,10 @@
 #
 # The Discord plugin logs in to Discord from every session that loads it, so it is off in user
 # settings and on here alone, through this session's own --settings. Bypass mode, by Daniel's
-# choice; workers run in auto mode, and crossSessionInbound: accept (user settings) keeps their
-# messages to this session from being held. With the safety classifier off here, its settings'
+# choice; workers run in auto mode, which holds a bypass-mode sender's message for an approval
+# nobody gives unless the receiver's settings accept it, so the workers' own settings
+# (settings/worker.json, crossSessionInbound: accept) take this session's messages, whatever a
+# machine's user settings say. With the safety classifier off here, its settings'
 # deny rules stop the plain spelling of a force push, a push to dev or main, git reset --hard,
 # git clean, git branch -D, a Docker prune and a merge outside team-merge, by the workers' own
 # rules (tests/repo.bats holds the two together), a speed bump another spelling gets past;
@@ -42,7 +44,11 @@
 # though the daemon has settled its process and the list without --all leaves it out, since a
 # message or a finished shell of its wakes it. A non-blocking flock on
 # ~/.local/state/agent-team/coordinator-launch.lock, held from that check through the launch,
-# makes a second launch at the same moment exit 1 at once.
+# makes a second launch at the same moment exit 1 at once. The list is this machine's alone:
+# claude agents --json lists no Remote Control session, so a twin over Remote Control (another
+# machine's coordinator, or this session's own row left from before its machine went down) is
+# the coordinator's ListAgents check at each start (bin/hooks/session-digest), and team-sweep's
+# coordinator-twin finds a second one on this machine.
 #
 # Usage: claude-coordinator [--prompt <text>] [working-directory]   (default: the team home)
 #   --prompt  the session's first prompt, in place of "You are the coordinator. Daniel talks to

@@ -220,26 +220,39 @@ LEDGER_TASKS=() LEDGER_KINDS=() LEDGER_PUSH_DUE=''
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
 # script must be its kind's writer, and no string in it may hold what the records hook refuses (an
 # address at a public provider), since the ledger is append-only and that line would fail every
-# later commit of it. With <seconds>, the lock is waited on at most that long, and a lock still
-# held then is a refusal. An event of a kind the contract marks push (Daniel's word, or an outside
-# fact) makes a push due, which the script's ledger_push makes: ledger_append <event> [<seconds>]
+# later commit of it; these checks read the event alone, before the lock.
+# Under the lock, the event of a writer in bin/lib/lifecycle.json's refusing_writers is checked
+# against the task's state, its events read from the ledger and folded in one jq run
+# (transition_problems in bin/lib/ledger.jq), so no other writer appends between the read and the
+# append. An event the table takes is appended with nothing said. One it refuses is, while the
+# table's lifecycle_from is null or after the event's ts, appended with one line on stderr per
+# problem, "<script>: lifecycle: <problem> (logged anyway; bin/lib/lifecycle.json refuses it from
+# its lifecycle_from, not set yet)", or "..., <lifecycle_from>)"; from lifecycle_from on, refused,
+# "refusing a ledger event: lifecycle: <problems joined by ; >", with nothing appended. Any other
+# writer acted before it logs, so its event is appended unchecked, saying nothing, and team-log
+# --check-lifecycle names it. With <seconds>, the lock is waited on at most that long, and a lock
+# still held then is a refusal, before any lifecycle check. An event of a kind the contract marks
+# push (Daniel's word, or an outside fact) makes a push due, which the script's ledger_push makes:
+# ledger_append <event> [<seconds>]
 ledger_append() {
-  local out line problems push task event lock_wait=()
-  # One jq run: the object's compact line, then "<push> <task> <event>", then its problems ("none"
-  # when the input holds no object or is not JSON, "many" when it holds more than one). Any other
-  # failure (an unreadable contract, an error in ledger.jq) is jq's own, and its message is shown.
+  local out line problems push task event refusing verdict ledger=$TEAM_HOME/ledger.jsonl lock_wait=()
+  # One jq run: the object's compact line, then "<push> <refusing> <task> <event>", then its
+  # problems ("none" when the input holds no object or is not JSON, "many" when it holds more than
+  # one). Any other failure (an unreadable contract or table, an error in ledger.jq) is jq's own,
+  # and its message is shown.
   out=$(ledger_jq '(try [inputs | select(type == "object")] catch []) as $objects
       | if ($objects | length) == 0 then "none" elif ($objects | length) > 1 then "many"
         else ($objects[0] | tojson),
           ($objects[0] | ((.event | strings) // "") as $event
-            | "\(($contract.kinds[$event] // {}).push == true) \((.task | strings) // "") \($event)"),
+            | "\(($contract.kinds[$event] // {}).push == true) \($writer | IN(lifecycle_table.refusing_writers[]))"
+              + " \((.task | strings) // "") \($event)"),
           ([$objects[0] | append_problems($contract; $writer)] | join("; ")) end' \
     -nr --arg writer "${0##*/}" <<<"$1") || die "cannot check the event against the ledger contract: $1"
   line=${out%%$'\n'*} problems=''
   [[ $line != none ]] || die "not a JSON object for the ledger: $1"
   [[ $line != many ]] || die "not one JSON object for the ledger: $1"
   out=${out#*$'\n'}
-  read -r push task event <<<"${out%%$'\n'*}"
+  read -r push refusing task event <<<"${out%%$'\n'*}"
   [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
   [[ ! $line =~ $DATA_EMAIL ]] || problems=$(ledger_refused_data "$line")
@@ -248,7 +261,25 @@ ledger_append() {
   [[ -z ${2:-} ]] || lock_wait=(-w "$2")
   {
     flock -x "${lock_wait[@]}" 9 || die "could not take the ledger's lock${2:+ within ${2}s}"
-    printf '%s\n' "$line" >>"$TEAM_HOME/ledger.jsonl"
+    if [[ $refusing == true ]]; then
+      # The verdict: nothing when the table takes the event, else "warn" and a line per problem,
+      # or "refuse" and the problems joined. The task's events are the lines naming it (a cheap
+      # test before each is parsed) that are its objects.
+      verdict=$(ledger_jq '[inputs | select(contains($e.task)) | fromjson? | select(type == "object" and .task == $e.task)]
+          | [transition_problems($e)] as $problems
+          | lifecycle_table.lifecycle_from as $from
+          | if $problems == [] then empty
+            elif $from != null and $e.ts >= $from then "refuse", ($problems | join("; "))
+            else "warn", ($problems[] | "\($writer): lifecycle: \(.) (logged anyway; bin/lib/lifecycle.json refuses it"
+              + " from its lifecycle_from, \($from // "not set yet"))") end' \
+        -nrR --argjson e "$line" --arg writer "${0##*/}" "$([[ -e $ledger ]] && echo "$ledger" || echo /dev/null)") ||
+        die "cannot check the event against the lifecycle table: $line"
+      case ${verdict%%$'\n'*} in
+        refuse) die "refusing a ledger event: lifecycle: ${verdict#*$'\n'}" ;;
+        warn) printf '%s\n' "${verdict#*$'\n'}" >&2 ;;
+      esac
+    fi
+    printf '%s\n' "$line" >>"$ledger"
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
   [[ " ${LEDGER_TASKS[*]} " == *" $task "* ]] || LEDGER_TASKS+=("$task")
   [[ " ${LEDGER_KINDS[*]} " == *" $event "* ]] || LEDGER_KINDS+=("$event")

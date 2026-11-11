@@ -45,10 +45,10 @@ def worker_rounds:
 # holds a done, else pr or ticket-done); else, for a reviewer, at the task's last review after its
 # launch and before the task's next reviewer launch (review); else at the first after its launch of
 # the task's next launch of the same role (replaced), its stowed or, for a builder or a planner, a
-# paused reason=stowed, which names no session and so says nothing of a reviewer beside them
-# (stowed), or its closed (closed); else it is running (ended "running", end null). Its first done is the minutes to its first
-# round's report; its phases the minutes per phase of the task's segments (gate runs included)
-# over its span, null for a legacy task. Its segments, those over its span, are for workers_join,
+# paused whose cause is stow (park_cause), which names no session and so says nothing of a
+# reviewer beside them (stowed), or its closed (closed); else it is running (ended "running", end
+# null). Its first done is the minutes to its first round's report; its phases the minutes per
+# phase of the task's segments (gate runs included) over its span, null for a legacy task. Its segments, those over its span, are for workers_join,
 # which drops them.
 def task_lifetimes($hi):
   . as $events
@@ -71,7 +71,7 @@ def task_lifetimes($hi):
            [$after[:$after | first_launch("reviewer")][] | select(.event == "review")] | last | if . then {end: .ts, ended: "review"} else null end
          else null end)
      // ([$after[] | select((.event == "launch" and .role == $l.role) or .event == "stowed" or .event == "closed"
-           or (IN($l.role; "builder", "planner") and .event == "paused" and ((.reason // "") | startswith("stowed"))))] | first
+           or (IN($l.role; "builder", "planner") and .event == "paused" and park_cause == "stow"))] | first
          | if . then {end: .ts, ended: (if .event == "launch" then "replaced" elif .event == "paused" then "stowed" else .event end)} else null end)
      // {end: null, ended: "running"}) as $end
   | ((if $end.end then $end.end | fromdate else $hi end)) as $stop
