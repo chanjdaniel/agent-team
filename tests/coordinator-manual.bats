@@ -565,7 +565,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25620 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25740 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message.
   found=$(grep -nE 'team-log T<n> (done|ticket-done|review|pr|paused|question|gate-run)\b' "${files[@]}" || true)
@@ -589,10 +589,11 @@ $WORKER_INSTRUCTIONS"
   # answer as its length, with the pointer to its relay, 24640 once the load check's line named
   # team-drill status, 24690 once it named the probe form, and 117 lines and 25190 bytes once
   # waiting.md, team-inbox --post and the reply by number replaced the Waiting on you message,
-  # 25280 once the heartbeat's line named team-uptime, and 25620 once the plan ask and the build
-  # step named the ticket graph and its PNG).
+  # 25280 once the heartbeat's line named team-uptime, 25620 once the plan ask and the build
+  # step named the ticket graph and its PNG, and 25740 once the review step named the gate parks
+  # a builder approves itself, in the review rules and in DONE gate's approved=).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 25620))
+  (($(wc -c <"$manual") <= 25740))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {
