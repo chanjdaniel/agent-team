@@ -47,12 +47,13 @@
 # the task's first ticket listed (ticket_graph_dir), which git ignores and whose archive leaves
 # images out, and prints the PNG's path, then the page's; a task with no tickets is refused.
 # The PNG is headless Chrome's screenshot of the page, its window the page's exact size at twice
-# its scale, so it holds every level: Chrome is the file TEAM_CHROME names (a .app directory run as
-# <app>/Contents/MacOS/<its name less .app>), else Google Chrome's app on macOS, else the first of
-# google-chrome-stable, google-chrome, chromium and chromium-browser on PATH, run under a 60-second
-# timeout with a fresh profile directory, removed after. With no Chrome, or Chrome failing, timing
-# out or writing no PNG, the page is still written and its path printed, any old tickets.png is
-# removed, stderr says why there is no PNG, and the exit is 1.
+# its scale, so it holds every level: Chrome is bin/lib/chrome.sh's, as team-doctor's chrome line
+# finds it (the file TEAM_CHROME names, a .app directory run as <app>/Contents/MacOS/<its name less
+# .app>, else Google Chrome's app on macOS, else the first of google-chrome-stable, google-chrome,
+# chromium and chromium-browser on PATH), run under a 60-second timeout with a fresh profile
+# directory, removed after. With no Chrome, or Chrome failing, timing out or writing no PNG, the
+# page is still written and its path printed, any old tickets.png is removed, stderr says why
+# there is no PNG, and the exit is 1.
 # Make the graph for the plan ask to Daniel and when Daniel asks how a building task stands, and
 # attach its PNG with team-ask --attach or team-post --attach.
 # --html and --graph go with no other mode. Nothing else is written.
@@ -284,24 +285,9 @@ if [[ -n $html_set ]]; then
   exit 0
 fi
 
-# The Chrome --graph screenshots the page with, or nothing: TEAM_CHROME, else Google Chrome's app
-# on macOS, else the first of its commands on PATH in the doctor's order; a .app directory is run as
-# the executable inside it.
-chrome_command() {
-  local chrome name
-  if [[ -n ${TEAM_CHROME:-} ]]; then
-    chrome=${TEAM_CHROME%/}
-  elif [[ ${TEAM_KERNEL:-$(uname -s)} == Darwin ]]; then
-    chrome='/Applications/Google Chrome.app'
-  else
-    chrome=$(command -v google-chrome-stable google-chrome chromium chromium-browser | head -n 1) || true
-  fi
-  if [[ $chrome == *.app && -d $chrome ]]; then
-    name=${chrome##*/}
-    chrome=$chrome/Contents/MacOS/${name%.app}
-  fi
-  [[ -z $chrome || ! -f $chrome || ! -x $chrome ]] || printf '%s\n' "$chrome"
-}
+# The Chrome --graph screenshots the page with: bin/lib/chrome.sh's lookup, the doctor's chrome line's.
+# shellcheck source=bin/lib/chrome.sh
+source "$TEAM_LIB/chrome.sh"
 
 if [[ -n $graph ]]; then
   dir=$(ticket_graph_dir <<<"$rest")
@@ -314,8 +300,9 @@ if [[ -n $graph ]]; then
     printf '%s\n' "$page"
     die "no PNG of $task's graph: $1"
   }
-  chrome=$(chrome_command)
+  chrome=$(chrome_path)
   [[ -n $chrome ]] || no_png "no Chrome found; set TEAM_CHROME or install Google Chrome"
+  chrome=$(chrome_binary "$chrome")
   profile=$(mktemp -d)
   shot=$(mktemp --suffix=.png "$dir/.tickets.XXXXXX")
   err=$(mktemp)

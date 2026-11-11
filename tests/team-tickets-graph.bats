@@ -462,6 +462,16 @@ chrome_fixture() {
   [[ -s $STUB_CALLS/google-chrome-stable.log && ! -e $STUB_CALLS/chromium.log ]]
 }
 
+@test "a TEAM_CHROME that is no executable finds no Chrome, and --graph never falls back to PATH" {
+  ticket 01-one "Blocked by: None"
+  stub_command google-chrome-stable
+  chrome_fixture google-chrome-stable
+  touch "$BATS_TEST_TMPDIR/not-chrome"
+  TEAM_CHROME=$BATS_TEST_TMPDIR/not-chrome run_bin -1 --separate-stderr team-tickets T172 --graph
+  assert_equal "$stderr" "team-tickets: no PNG of T172's graph: no Chrome found; set TEAM_CHROME or install Google Chrome"
+  [[ ! -e $STUB_CALLS/google-chrome-stable.log && -f $wt/.scratch/task/tickets.html ]]
+}
+
 @test "without TEAM_CHROME, --graph on macOS looks for Google Chrome's app in /Applications" {
   [[ ! -e "/Applications/Google Chrome.app" ]] || skip "this machine has Google Chrome in /Applications"
   ticket 01-one "Blocked by: None"
@@ -476,16 +486,16 @@ chrome_fixture() {
 @test "with no Chrome, or Chrome failing, timing out or writing no PNG, the page stays, the old PNG goes, and stderr says why" {
   ticket 01-one "Blocked by: None"
   stub_chrome
-  local dir=$wt/.scratch/task reason
+  local dir=$wt/.scratch/task reason chrome
   while IFS='|' read -r fixture reason; do
     echo old >"$dir/tickets.png"
     rm -f "$dir/tickets.html"
     case $fixture in
-      missing) export TEAM_CHROME=$BATS_TEST_TMPDIR/no-chrome ;;
-      *) export TEAM_CHROME=$BATS_TEST_TMPDIR/stubs/chrome
+      missing) chrome=$BATS_TEST_TMPDIR/no-chrome ;;
+      *) chrome=$BATS_TEST_TMPDIR/stubs/chrome
          printf '%s\n' "$fixture" >"$STUB_FIXTURES/chrome.sh" ;;
     esac
-    run_bin -1 --separate-stderr team-tickets T172 --graph
+    TEAM_CHROME=$chrome run_bin -1 --separate-stderr team-tickets T172 --graph
     assert_equal "$output" "$dir/tickets.html"
     assert_equal "$stderr" "team-tickets: no PNG of T172's graph: $reason"
     assert_contains "$(cat "$dir/tickets.html")" "<!doctype html>"
@@ -538,14 +548,14 @@ CASES
   [[ ! -e $TEAM_HOME/tasks/T172/scratch/tickets.png ]]
 }
 
-# real_chrome: the Chrome --graph finds on this machine with no TEAM_CHROME, or nothing.
-real_chrome() {
-  if [[ $(uname -s) == Darwin ]]; then
-    [[ ! -e "/Applications/Google Chrome.app" ]] || echo "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-  else
-    command -v google-chrome-stable google-chrome chromium chromium-browser | head -n 1 || true
-  fi
-}
+# real_chrome: the executable --graph runs on this machine with no TEAM_CHROME, or nothing.
+real_chrome() (
+  # shellcheck source=bin/lib/chrome.sh
+  source "$REPO_ROOT/bin/lib/chrome.sh"
+  local chrome
+  chrome=$(TEAM_CHROME='' chrome_path)
+  [[ -z $chrome ]] || chrome_binary "$chrome"
+)
 
 @test "with a real Chrome, T257's PNG is twice the page's size, its drawing whole within a white margin" {
   local chrome

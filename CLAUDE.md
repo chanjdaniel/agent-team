@@ -14,6 +14,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `records-git/`: git's hooks for the team home.
   - `bin/lib/`: the shared library.
     - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the worktrees held, a reading of the machine's load and the team's use per task, the cost samples and estimates, the reservations and the admission rule, the stow and resume plans, and their texts.
+    - `chrome.sh`: the one lookup of a machine's Chrome, its executable and its app, which `team-doctor`'s `chrome` line and `team-tickets --graph` both take.
     - `code`: the paths every tracked path matches.
     - `command_text.py`: the text of a Bash command that runs as code, each heredoc's body left out unless a shell may read it, and a shell's `-c` string and what is piped into a shell where a command starts read as code, for `bin/hooks/command-guard`; `team-tokens` takes its heredoc rule.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
