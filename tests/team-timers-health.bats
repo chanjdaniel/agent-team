@@ -19,6 +19,7 @@ setup() {
   state=$HOME/.local/state/agent-team
   log=$state/heartbeat.log
   record=$state/health.json
+  notices=$state/notices.json
   inbox_discord alerts
   inbox_guild_kept
 }
@@ -28,6 +29,7 @@ COORDINATOR='[{"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
 
 teardown() {
   [[ ! -f $BATS_TEST_TMPDIR/http.pids ]] || xargs kill <"$BATS_TEST_TMPDIR/http.pids" 2>/dev/null || true
+  [[ ! -f $STUB_FIXTURES/lock.pid ]] || kill "$(cat "$STUB_FIXTURES/lock.pid")" 2>/dev/null || true
 }
 
 # The view as JSON, in $view, and its exit status in $view_status.
@@ -513,9 +515,14 @@ problems_logged() {
   cut -d' ' -f2- "$state/heartbeat-failures.log" 2>/dev/null || true
 }
 
-# The ids of the open alerts in the record, by key, as "<key> <message>" lines.
+# The ids of the open alerts in the notice record, by key, as "<key> <message>" lines.
 open_alerts() {
-  jq -r '.alerts // {} | to_entries[] | "\(.key) \(.value.message)"' "$record"
+  [[ ! -e $notices ]] || jq -r '.notices[] | select(.source == "health") | "\(.key) \(.message)"' "$notices"
+}
+
+# The open alert <key> in the notice record, or null.
+open_alert() {
+  jq -c --arg id "health/$1" '.notices[$id]' "$notices"
 }
 
 # Fail the checkpoint as a team home off its branch does, and make it due.
@@ -606,7 +613,7 @@ SH
   rm "$state/last-checkpoint"
   run_bin -0 team-timers run
   jq -e '.content == "No good checkpoint on home-pc yet: the checkpoint step did not run."' <<<"$(alerts_shown)"
-  jq -e '.alerts.checkpoint.since == null and (.alerts.checkpoint.message | type) == "string"' "$record"
+  jq -e '.since == null and (.message | type) == "string"' <<<"$(open_alert checkpoint)"
 }
 
 @test "an alert post Discord refuses is logged in both logs and posted by the next run; an edit of a message that is gone is logged and closes the incident" {
@@ -621,12 +628,12 @@ SH
   assert_equal "$(alert_lines)" "alert: checkpoint: the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run
 alert: checkpoint: the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run"
   assert_equal "$(problems_logged | grep '^alert: ')" "$(alert_lines)"
-  jq -e '.alerts.checkpoint.posted == null and .alerts.checkpoint.message == null' "$record"
+  jq -e '.state == "open" and .posted == null and .message == null' <<<"$(open_alert checkpoint)"
 
   # The next run posts it, with its text of that run, from the incident's since.
   rm "$STUB_FIXTURES/inbox/fail"
   local since
-  since=$(jq -r .alerts.checkpoint.since "$record")
+  since=$(jq -r .since <<<"$(open_alert checkpoint)")
   checkpoint_due
   run_bin -1 team-timers run
   assert_equal "$(alerts_shown | wc -l)" 1
@@ -643,8 +650,128 @@ alert: checkpoint: the post to #coordinator failed (curl: (22) The requested URL
   assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: ended, but message $id could not be marked resolved (curl: (22) The requested URL returned error: 404); closed all the same"
   assert_equal "$(problems_logged | grep '^alert: ' | tail -n 1)" "$(alert_lines | tail -n 1)"
   assert_equal "$(open_alerts)" ""
+  assert_equal "$(open_alert checkpoint)" null
   run_bin -0 team-timers run
   assert_equal "$(grep -c 'PATCH channels/[0-9]*/messages/'"$id" "$STUB_FIXTURES/inbox/calls")" 1
+}
+
+@test "an alert whose post Discord refused, whose problem ends before the next run, is closed with no post and no edit" {
+  run_bin -0 team-timers run
+  fail_checkpoint
+  run_bin -1 team-timers run
+  echo 503 >"$STUB_FIXTURES/inbox/fail"
+  checkpoint_due
+  run_bin -1 team-timers run
+  jq -e '.state == "open"' <<<"$(open_alert checkpoint)"
+
+  rm "$STUB_FIXTURES/inbox/fail"
+  git -C "$TEAM_HOME" checkout -q dev
+  checkpoint_due
+  run_bin -0 team-timers run
+  assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: ended before its post went through; closed"
+  assert_equal "$(alerts_shown)" ""
+  assert_equal "$(grep -c '^PATCH ' "$STUB_FIXTURES/inbox/calls" || true)" 0
+  assert_equal "$(open_alerts)" ""
+}
+
+# The alerts of a health.json from before the notice record, <filter> its alerts object (with
+# date_record's $now at hand), the notice record removed as it was then: old_alerts <filter>
+old_alerts() {
+  rm -f "$notices"
+  date_record ".alerts = ($1)"
+}
+
+@test "the open alerts of a health.json from before the notice record are moved by the next run: the posted one resolved by an edit, the unposted one posted once" {
+  run_bin -0 team-timers run
+  local old=1569000000000000099 text="No coordinator session is live on home-pc since 09:00."
+  jq -n --arg text "$text" '{content: $text}' >"$STUB_FIXTURES/inbox/$old.json"
+  old_alerts "{coordinator: {since: \$now, text: \"$text\", posted: \$now, message: \"$old\"},
+    checkpoint: {since: \$now, text: \"an older text\", posted: null, message: null}}"
+  fail_checkpoint
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  jq -e 'has("alerts") | not' "$record"
+  jq -e '.upgraded == ["health"]' "$notices"
+  # The posted one, whose problem has ended, is edited resolved, never posted again.
+  assert_equal "$(edits_of "$old")" 1
+  [[ $(jq -r .content "$STUB_FIXTURES/inbox/$old.json") =~ ^"$text"$'\n'"-# Resolved at "[0-9]{2}:[0-9]{2}"."$ ]]
+  # The unposted one, whose problem stands, is posted once, with this run's text.
+  assert_equal "$(alerts_shown | wc -l)" 1
+  [[ $(alerts_shown | jq -r .content) == "Checkpoints are failing on home-pc since "* ]]
+  local id
+  id=$(alerts_shown | jq -r .id)
+  assert_equal "$(alert_lines)" "alert: checkpoint: posted to #coordinator (message $id)
+alert: coordinator: resolved (message $old edited)"
+  assert_equal "$(open_alerts)" "checkpoint $id"
+  checkpoint_due
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 1
+  assert_equal "$(edits_of "$old")" 1
+}
+
+@test "an alerts key put back in health.json once its alerts are moved brings no alert back, and is stripped" {
+  run_bin -0 team-timers run
+  jq -e '.upgraded == ["health"] and .notices == {}' "$notices"
+  local old=1569000000000000099
+  echo '{"content": "an old alert"}' >"$STUB_FIXTURES/inbox/$old.json"
+  date_record ".alerts = {coordinator: {since: \$now, text: \"an old alert\", posted: \$now, message: \"$old\"}}"
+  checkpoint_due
+  run_bin -0 team-timers run
+  jq -e 'has("alerts") | not' "$record"
+  assert_equal "$(edits_of "$old")" 0
+  assert_equal "$(alert_lines)" ""
+  assert_equal "$(open_alerts)" ""
+}
+
+@test "a notice record that is not team-notices/1 is set aside as notices.json.bad with a problem line, and the run goes on to post the alert" {
+  run_bin -0 team-timers run
+  echo 'not json' >"$notices"
+  fail_checkpoint
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  assert_equal "$(cat "$notices.bad")" "not json"
+  assert_equal "$(problems_logged | grep '^alert: ')" \
+    "alert: $notices is not a team-notices/1 record; it is set aside as $notices.bad, and the notices start again from empty"
+  assert_equal "$(alerts_shown | wc -l)" 1
+  assert_equal "$(open_alerts)" "checkpoint $(alerts_shown | jq -r .id)"
+
+  # A record of another schema is set aside the same way.
+  echo '{"schema": "team-notices/2", "notices": {}}' >"$notices"
+  checkpoint_due
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  jq -e '.schema == "team-notices/2"' "$notices.bad"
+  jq -e '.schema == "team-notices/1"' "$notices"
+}
+
+@test "a notice record whose lock another writer holds is a problem line that fails nothing, and the next run posts the alert once" {
+  # The lock is taken during the alert's post, and held until the test lets it go.
+  stub_script curl <<'SH'
+if [[ $* == *"-X POST"* && $* == *allowed_mentions* && ! -e $STUB_FIXTURES/lock.pid ]]; then
+  (exec 9>>"$HOME/.local/state/agent-team/notices.lock" && flock 9 && echo "$BASHPID" >"$STUB_FIXTURES/lock.pid.new" &&
+    mv "$STUB_FIXTURES/lock.pid.new" "$STUB_FIXTURES/lock.pid" && exec sleep 60) </dev/null >/dev/null 2>&1 3>&- &
+  for _ in $(seq 1 200); do [[ ! -s $STUB_FIXTURES/lock.pid ]] || break; sleep 0.05; done
+fi
+source "$STUB_FIXTURES/inbox.sh"
+echo "curl: (22) The requested URL returned error: 404" >&2
+exit 22
+SH
+  run_bin -0 team-timers run
+  fail_checkpoint
+  TEAM_NOTICES_LOCK_SECONDS=1 TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  kill "$(cat "$STUB_FIXTURES/lock.pid")"
+  local lock=$state/notices.lock
+  assert_equal "$(alerts_shown | wc -l)" 1
+  # The post went through, but its outcome could not be written; the run's end could not judge.
+  assert_equal "$(problems_logged | grep '^alert: ')" \
+    "alert: checkpoint: cannot write the notice record $notices (another writer held $lock for 1 s), so this alert is judged again next run
+alert: cannot judge the alerts: another writer held $lock for 1 s"
+  jq -e '.state == "open" and .posted == null' <<<"$(open_alert checkpoint)"
+
+  checkpoint_due
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 2
+  assert_equal "$(open_alerts)" "checkpoint $(alerts_shown | tail -n 1 | jq -r .id)"
+  checkpoint_due
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 2
 }
 
 @test "a ledger line no reader can parse posts the ledger alert in the same run, once, and resolves when the line is fixed" {
@@ -713,24 +840,98 @@ alert: checkpoint: the post to #coordinator failed (curl: (22) The requested URL
   run_bin -1 team-timers run
   git -C "$TEAM_HOME" remote set-url origin "$origin"
   rm "$state/login-refused"
-  run -0 "$REPO_ROOT/bin/team-lease" release
-  run_bin -0 team-timers run
   assert_equal "$(alert_lines | wc -l)" "$before"
   assert_equal "$(open_alerts)" "checkpoint $id"
   [[ $(alerts_shown | jq -r .content) != *Resolved* ]]
 
-  # Fenced: the run disables the heartbeat and judges nothing.
+  # The next holder run, in the same holding, judges it again: the checkpoint works, so it
+  # resolves.
+  checkpoint_due
+  run_bin -0 team-timers run
+  assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: resolved (message $id edited)"
+  assert_equal "$(open_alerts)" ""
+
+  # Off the lease and fenced, a run judges nothing.
+  fail_checkpoint
+  run_bin -1 team-timers run
+  checkpoint_due
+  run_bin -1 team-timers run
+  id=$(alerts_shown | tail -n 1 | jq -r .id)
+  git -C "$TEAM_HOME" checkout -q dev
+  before=$(alert_lines | wc -l)
+  run -0 "$REPO_ROOT/bin/team-lease" release
+  run_bin -0 team-timers run
+  assert_equal "$(alert_lines | wc -l)" "$before"
+  assert_equal "$(open_alerts)" "checkpoint $id"
   run -0 "$REPO_ROOT/bin/team-lease" take
   echo '{"since": "2026-11-01T00:00:00Z"}' >"$state/fenced"
   run_bin team-timers run
   assert_equal "$(alert_lines | wc -l)" "$before"
   rm "$state/fenced"
 
-  # The next holder run judges it again: the checkpoint works, so it resolves.
+  # The next holder run judges it again, in a new holding of the lease: it is closed with no edit.
   checkpoint_due
   run_bin -0 team-timers run
-  assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: resolved (message $id edited)"
+  assert_equal "$(alert_lines | tail -n 1)" \
+    "alert: checkpoint: posted in an earlier holding of the lease, so it is closed without an edit (message $id)"
+  assert_equal "$(edits_of "$id")" 0
   assert_equal "$(open_alerts)" ""
+}
+
+# Open the checkpoint alert in this holding of the lease, let laptop steal the lease and release
+# it, and take it back here, as Daniel would after a steal: lease_round_trip
+lease_round_trip() {
+  run_bin -0 team-timers run
+  fail_checkpoint
+  run_bin -1 team-timers run
+  checkpoint_due
+  run_bin -1 team-timers run
+  make_machine laptop
+  steal_lease laptop home-pc
+  on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" release
+  run -0 "$REPO_ROOT/bin/team-lease" take
+}
+
+# How many edits message <id> got.
+edits_of() {
+  inbox_calls | grep -c "^PATCH channels/[0-9]*/messages/$1$" || true
+}
+
+@test "an alert posted in an earlier holding of the lease whose problem has ended is closed with no edit when the lease returns" {
+  lease_round_trip
+  local id
+  id=$(alerts_shown | jq -r .id)
+  git -C "$TEAM_HOME" checkout -q dev
+  checkpoint_due
+  run_bin -0 team-timers run
+  assert_equal "$(edits_of "$id")" 0
+  [[ $(alerts_shown | jq -r .content) != *Resolved* ]]
+  assert_equal "$(alert_lines | tail -n 1)" \
+    "alert: checkpoint: posted in an earlier holding of the lease, so it is closed without an edit (message $id)"
+  assert_equal "$(problems_logged | grep -c '^alert: ')" 0
+  assert_equal "$(alerts_shown | wc -l)" 1
+  assert_equal "$(open_alerts)" ""
+}
+
+@test "an alert posted in an earlier holding of the lease whose problem still stands is closed with no edit and posted afresh when the lease returns" {
+  lease_round_trip
+  local id new
+  id=$(alerts_shown | jq -r .id)
+  checkpoint_due
+  run_bin -1 team-timers run
+  assert_equal "$(edits_of "$id")" 0
+  assert_equal "$(alerts_shown | wc -l)" 2
+  new=$(alerts_shown | tail -n 1 | jq -r .id)
+  [[ $new != "$id" ]]
+  [[ $(alerts_shown | tail -n 1 | jq -r .content) == "Checkpoints are failing on home-pc since "*" (3 runs): "* ]]
+  assert_equal "$(alert_lines | tail -n 2)" \
+    "alert: checkpoint: posted in an earlier holding of the lease, so it is closed without an edit (message $id)
+alert: checkpoint: posted to #coordinator (message $new)"
+  assert_equal "$(open_alerts)" "checkpoint $new"
+  # The next run, in the same holding, posts nothing more.
+  checkpoint_due
+  run_bin -1 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 2
 }
 
 @test "a checkpoint alert is posted before the run's janitor step" {

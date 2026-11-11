@@ -23,12 +23,10 @@
 #    findings: [{key, task, kind, session, text, since}], the sweep findings the last coordinator
 #      step that could run team-sweep --json saw, each keyed by its task, kind and session as the
 #      sweep watch keys them, with when a look first saw it since it last cleared (null before any
-#      step ran the sweep),
-#    alerts: {<key>: {since, text, posted, message}}, each open alert: since when its problem
-#      stands, its text, when it was posted to #coordinator (null until a post went through) and
-#      the message that carries it (null until then, or when Discord gave no id); written by
-#      team-timers as it posts and resolves, never by health_fold}
-# Keys it does not name are kept as they are.
+#      step ran the sweep)}
+# Keys it does not name are kept as they are, an alerts key from before the notice record among
+# them until team-timers run moves it there. The open alerts are notices of the health source in
+# the notice record (bin/lib/notice.jq), which health_alert_wanted gives what to judge.
 
 # The thresholds, each defined here once: a checkpoint failing for `runs` runs in a row alerts, a
 # heartbeat or a good checkpoint older than `stale_minutes` alerts, any other step alerts after
@@ -294,26 +292,20 @@ def health_alerts($lease; $now; $limits):
   [health_problems($lease; $now; $limits)[] | select(.alerting and (.alert | type) == "string")
     | {key, since, text: (.alert | health_cut(health_alert_limit))}];
 
-# What to post and what to resolve at $now, from the record (the input) and its open alerts:
-# {post: [{key, since, text}], resolve: [{key, since, text, posted, message}]}. An alert called for
-# with no open one, or with one never posted, is posted (its since the open one's, its text this
-# run's); one open whose problem is no longer alerting is resolved; one open and posted while its
-# problem stands is left alone, whatever its reason becomes. Only on the holder, so a machine that
-# does not hold plans nothing, and nothing while a heartbeat, offline or login-refused problem
-# stands (a run that has outlasted the stale minutes, say), since each hides the checkpoint
-# problem without saying it has ended: health_alert_plan($lease; $fenced; $machine; $now; $limits)
-def health_alert_plan($lease; $fenced; $machine; $now; $limits):
+# The alerts to judge at $now, from the record (the input), as notice_plan's $wanted for the health
+# source (bin/lib/notice.jq): health_alerts' list, each {key, since, text}, or null when no judging
+# may happen. Only on the holder, so a machine that does not hold judges nothing, and nothing while
+# a heartbeat, offline or login-refused problem stands (a run that has outlasted the stale
+# minutes, say), since each hides the checkpoint problem without saying it has ended; null for a
+# record that is not team-health/1 too: health_alert_wanted($lease; $fenced; $machine; $now; $limits)
+def health_alert_wanted($lease; $fenced; $machine; $now; $limits):
   if ($lease | type) != "object" or $lease.holder != $machine or $lease.state != "held" or $fenced
     or type != "object" or .schema != "team-health/1" then
-    {post: [], resolve: []}
+    null
   elif any(health_problems($lease; $now; $limits)[]; .key == "heartbeat" or .key == "offline" or .key == "login-refused") then
-    {post: [], resolve: []}
+    null
   else
-    (.alerts // {}) as $open
-    | health_alerts($lease; $now; $limits) as $wanted
-    | {post: [$wanted[] | select($open[.key].posted == null) | .since = ($open[.key].since // .since)],
-       resolve: [$open | to_entries[] | select(.key as $key | all($wanted[]; .key != $key))
-         | {key, since: .value.since, text: .value.text, posted: .value.posted, message: .value.message}]}
+    health_alerts($lease; $now; $limits)
   end;
 
 # The view (team-timers health --json) from the record's text $raw (null when there is none), the

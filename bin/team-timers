@@ -149,17 +149,25 @@
 #                     fenced or does not hold the lease, nor while the view's heartbeat problem
 #                     stands (a run that has outlasted its 15 minutes), so an open alert waits
 #                     for the next holder run: each alerting problem of the health view that has
-#                     an alert (bin/lib/health.jq's health_alert_plan) is posted once to
-#                     #coordinator, mentioning no one whatever its text holds, and the message is
-#                     kept in the health record; nothing more is posted while it stands,
-#                     whatever its reason becomes. A post Discord refuses is logged and tried
-#                     again at the next judging, with that run's text. Once the problem ends, the
+#                     an alert (bin/lib/health.jq's health_alert_wanted) is a notice of the
+#                     health source in the notice record (bin/lib/notice.jq), posted once to
+#                     #coordinator, mentioning no one whatever its text holds, its message kept
+#                     there; nothing more is posted while it stands, whatever its reason
+#                     becomes. A post Discord refuses is logged and tried again at the next
+#                     judging, with that run's text, and an alert whose problem ends before its
+#                     post went through is closed with no post. Once the problem ends, the
 #                     message is edited to end with a line "-# Resolved at <HH:MM>." (Discord
 #                     tells no one of an edit) and the alert is closed, an edit that fails (the
 #                     message is gone) closing it all the same; a later incident posts a new
-#                     message. Each post, failed post and edit is a log line ("alert:
+#                     message. An alert posted in an earlier holding of the lease (another
+#                     taken_at in lease.json) is closed with no edit the first time it is judged
+#                     after the lease comes back, and posted afresh while its problem stands.
+#                     Each post, failed post, edit and close is a log line ("alert:
 #                     checkpoint: posted to #coordinator (message <id>)"), a failed one a problem
-#                     line too, and none fails the run. The heartbeat, offline and login-refused
+#                     line too, and none fails the run; so is a notice record that cannot be
+#                     written (the alert is judged again next run) or that is not
+#                     team-notices/1 (set aside as notices.json.bad, the notices starting again
+#                     from empty). The heartbeat, offline and login-refused
 #                     problems post none here (the probe posts the last two). The alerts, each
 #                     text cut to 1978 characters, so with its resolved line it fits Discord's
 #                     2000:
@@ -287,8 +295,11 @@
 # number, with the time of its last event that is not a denied; whether the coordinator step last
 # saw a session named coordinator, and since which run it has not; the sweep findings it last saw,
 # each with the time of the first look that saw it, and the time of the run's look, none when
-# the run made none; and the open alerts, each with
-# since when, its text, when it was posted and its message), heartbeat.log ("<UTC time> <step>:
+# the run made none), notices.json (the notice record, team-notices/1, bin/lib/notice.jq's: the open
+# alerts, each with since when, its text, the holding of the lease it opened in, when it was posted
+# and its message; written whole under notices.lock, through bin/lib/notices.sh; the first run
+# after it came in moved health.json's open alerts there, and strips an alerts key it finds
+# there), notices.lock (one writer of the notice record at a time), heartbeat.log ("<UTC time> <step>:
 # <what happened>", kept to its last 1000 lines once it passes 2000), heartbeat-failures.log (each
 # of its lines that reports a problem, the same line: a failed step, a warning, a failed or refused
 # probe and each run's line of an outage, a lease not checked or not renewed, a failed post, a
@@ -309,10 +320,13 @@
 # TEAM_TIMERS_FAILURES_DAYS the failures log's 30 days, and
 # TEAM_TIMERS_HEALTH_RUNS, TEAM_TIMERS_HEALTH_STALE_MINUTES, TEAM_TIMERS_HEALTH_STEP_RUNS and
 # TEAM_TIMERS_HEALTH_UNATTENDED_MINUTES the health view's and the alerts' 2 runs, 15 minutes, 12
-# runs and 60 minutes (the tests' seams).
+# runs and 60 minutes, and TEAM_NOTICES_LOCK_SECONDS the 10 s a write of the notice record waits
+# for its lock (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/notices.sh
+source "$TEAM_LIB/notices.sh"
 
 # The one definition: every INTERVAL minutes, run this checkout's team-timers run.
 INTERVAL=5
@@ -1010,68 +1024,83 @@ alert_edit() {
   return 1
 }
 
-# Set the open alert <key> in the health record to <json>, or drop it when <json> is null, the
-# record written whole and moved into place: set_alert <key> <json>
-set_alert() {
-  if jq --arg key "$1" --argjson alert "$2" \
-    'if $alert == null then del(.alerts[$key]) else .alerts[$key] = $alert end' "$health" >"$health.$$" 2>/dev/null; then
-    mv -f "$health.$$" "$health"
-  else
-    rm -f "$health.$$"
-    problem alert "$1: cannot write the health record $health, so this alert is judged again next run"
+# Record the outcome of the alert <id>'s action <do> in the notice record (bin/lib/notice.jq's
+# notice_done): note_alert <key> <id> <do> <true|false> [<message>]. A record it cannot write is a
+# problem line and fails nothing: the notice is judged again at the next run.
+note_alert() {
+  if ! notices_update notice 'notice_done($id; $action; $ok; $message; $at) | {record: .}' \
+    --arg id "$2" --arg action "$3" --argjson ok "$4" --arg at "$(date -u +%FT%TZ)" \
+    --argjson message "$(jq -cn --arg m "${5:-}" 'if $m == "" then null else $m end')" >/dev/null 2>"$err"; then
+    problem alert "$1: cannot write the notice record $NOTICES ($(first_error)), so this alert is judged again next run"
   fi
 }
 
 # The alerts, judged on the holder after the record's write before the inbox step and again at the
-# run's end, by bin/lib/health.jq's health_alert_plan: each alert called for with none open is
-# posted once to #coordinator, one Discord refused is tried again at the next judging, and one
-# whose problem has ended has its message edited to end with "-# Resolved at <HH:MM>." and is
-# closed, an edit that fails closing it all the same. Each post, failed post and edit is a log
-# line, a failed one in the failures log too. Fails nothing.
+# run's end, as notices of the health source (bin/lib/notice.jq's notice_plan, of what
+# bin/lib/health.jq's health_alert_wanted calls for): each alert called for with none open is
+# posted once to #coordinator, one Discord refused is tried again at the next judging, one posted in
+# an earlier holding of the lease is closed with no edit (and posted afresh while its problem
+# stands), and one whose problem has ended has its message edited to end with "-# Resolved at
+# <HH:MM>." and is closed, an edit that fails closing it all the same. Each post, failed post, edit
+# and close is a log line, a failed one in the failures log too. Fails nothing.
 alerts_step() {
-  local plan alert key text posted message id now fenced=false lease
+  local plan entry key id why message text lease fenced=false warned
   [[ -f $health && -f $state/lease.json ]] || return 0
   lease=$(jq -c 'objects' "$state/lease.json" 2>/dev/null) || lease=''
   [[ ! -e $state/fenced ]] || fenced=true
-  if ! plan=$(jq -c -L "$TEAM_LIB" --argjson lease "${lease:-null}" --argjson fenced "$fenced" --arg machine "$machine" \
-    --argjson seams "$(health_seams)" \
-    'include "health"; health_alert_plan($lease; $fenced; $machine; now; health_limits($seams))' "$health" 2>"$err"); then
-    problem alert "cannot judge the alerts from $health: $(first_error)"
+  if ! plan=$(notices_update "health notice" '
+      ($health | try fromjson catch null) as $rec
+      | ($rec | health_alert_wanted($lease; $fenced; $machine; now; health_limits($seams))) as $wanted
+      | if $wanted == null then {record: ., actions: [], closed: []}
+        else notice_plan("health"; $wanted; $lease.taken_at; now; null) end' \
+    --rawfile health "$health" --argjson lease "${lease:-null}" --argjson fenced "$fenced" \
+    --arg machine "$machine" --argjson seams "$(health_seams)" 2>"$err"); then
+    problem alert "cannot judge the alerts: $(first_error)"
     return 0
   fi
-  while IFS= read -r alert; do
-    [[ -n $alert ]] || continue
-    key=$(jq -r .key <<<"$alert") text=$(jq -r .text <<<"$alert")
-    now=$(date -u +%FT%TZ)
-    if alert_post "$text"; then
-      id=$ALERT_ID
-      set_alert "$key" "$(jq -c --arg posted "$now" --arg id "$id" \
-        '{since, text, posted: $posted, message: (if $id == "" then null else $id end)}' <<<"$alert")"
-      if [[ -n $id ]]; then
-        log alert "$key: posted to #coordinator (message $id)"
-      else
-        problem alert "$key: posted to #coordinator, but Discord gave no message id, so it cannot be marked resolved"
-      fi
-    else
-      set_alert "$key" "$(jq -c '{since, text, posted: null, message: null}' <<<"$alert")"
-      problem alert "$key: the post to #coordinator failed ($POST_ERROR); it is tried again next run"
-    fi
-  done < <(jq -c '.post[]' <<<"$plan")
-  while IFS= read -r alert; do
-    [[ -n $alert ]] || continue
-    key=$(jq -r .key <<<"$alert") posted=$(jq -r '.posted // empty' <<<"$alert")
-    message=$(jq -r '.message // empty' <<<"$alert") text=$(jq -r .text <<<"$alert")
-    if [[ -z $posted ]]; then
-      log alert "$key: ended before its post went through; closed"
-    elif [[ -z $message ]]; then
-      log alert "$key: ended; closed, but its message is unknown, so it is not marked resolved"
-    elif alert_edit "$message" "$text"$'\n'"-# Resolved at $(date +%H:%M)."; then
-      log alert "$key: resolved (message $message edited)"
-    else
-      problem alert "$key: ended, but message $message could not be marked resolved ($POST_ERROR); closed all the same"
-    fi
-    set_alert "$key" null
-  done < <(jq -c '.resolve[]' <<<"$plan")
+  # A record set aside as not team-notices/1 is said, and the judging went on from empty.
+  warned=$(grep -m1 . "$err" || true)
+  [[ -z $warned ]] || problem alert "$warned"
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    read -r why key message < <(jq -r '"\(.why) \(.notice.key) \(.notice.message // "none")"' <<<"$entry")
+    case $why in
+      earlier-holding) log alert "$key: posted in an earlier holding of the lease, so it is closed without an edit (message $message)" ;;
+      unposted) log alert "$key: ended before its post went through; closed" ;;
+      no-message) log alert "$key: ended; closed, but its message is unknown, so it is not marked resolved" ;;
+      *) log alert "$key: closed" ;;
+    esac
+  done < <(jq -c '.closed[]' <<<"$plan")
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    id=$(jq -r .id <<<"$entry") key=$(jq -r .notice.key <<<"$entry") text=$(jq -r .notice.text <<<"$entry")
+    case $(jq -r .do <<<"$entry") in
+      post)
+        if alert_post "$text"; then
+          message=$ALERT_ID
+          note_alert "$key" "$id" post true "$message"
+          if [[ -n $message ]]; then
+            log alert "$key: posted to #coordinator (message $message)"
+          else
+            problem alert "$key: posted to #coordinator, but Discord gave no message id, so it cannot be marked resolved"
+          fi
+        else
+          note_alert "$key" "$id" post false
+          problem alert "$key: the post to #coordinator failed ($POST_ERROR); it is tried again next run"
+        fi
+        ;;
+      end)
+        message=$(jq -r .notice.message <<<"$entry")
+        if alert_edit "$message" "$text"$'\n'"-# Resolved at $(date +%H:%M)."; then
+          note_alert "$key" "$id" end true
+          log alert "$key: resolved (message $message edited)"
+        else
+          note_alert "$key" "$id" end false
+          problem alert "$key: ended, but message $message could not be marked resolved ($POST_ERROR); closed all the same"
+        fi
+        ;;
+    esac
+  done < <(jq -c '.actions[]' <<<"$plan")
 }
 
 # The lease step: renew on the holder once the last renewal is RENEW_MINUTES old, and at once on
@@ -1516,6 +1545,13 @@ run_heartbeat() {
   if ! flock -n "$run_fd"; then
     problem run "another run is still going; skipped"
     return
+  fi
+  # The open alerts of health.json from before the notice record, moved into it once.
+  if notices_upgrade health 2>"$err"; then
+    # A record set aside as not team-notices/1 is said; the notices start again from empty.
+    ! grep -q . "$err" || problem alert "$(grep -m1 . "$err")"
+  else
+    problem alert "cannot move the open alerts of $health into the notice record $NOTICES: $(first_error); they are moved at the next run"
   fi
   if [[ -f $log ]] && (($(wc -l <"$log") > LOG_MAX)); then
     tail -n "$LOG_KEEP" "$log" >"$log.$$"
