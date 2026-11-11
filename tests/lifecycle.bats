@@ -382,6 +382,8 @@ problems() {
   assert_equal "$(problems retro-change '{retro: "T1", proposals: "1, 2"}')" ""
   assert_equal "$(problems retro-change '{retro: "T5", proposals: "1"}')" "T1 is closed, and a closed task takes no retro-change"
   assert_equal "$(problems merge-standing '{project: "proj", discord_message: "1", discord_channel: "2"}')" ""
+  assert_equal "$(problems merge-default-withdrawn '{scope: "all", discord_message: "1", discord_channel: "2"}')" ""
+  assert_equal "$(problems merge-default-restored '{scope: "proj", discord_message: "1", discord_channel: "2"}')" ""
   assert_equal "$(problems asked '{id: "a1", text: "which?"}')" "T1 is closed, and a closed task takes no asked"
   # A closed task of another path takes no retro-change, even one naming it.
   events=()

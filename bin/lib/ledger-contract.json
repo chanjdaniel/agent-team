@@ -212,6 +212,18 @@
       "about": "Daniel withdrew the standing word on project, or on every project but the team's own when project is all, in discord_message in discord_channel; read with merge-standing across the whole ledger, so a withdrawal of one project leaves a word on all standing for the others, and a later merge-standing stands again",
       "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
     },
+    "merge-default-withdrawn": {
+      "writer": "team-log",
+      "push": true,
+      "about": "Daniel withdrew the default merge word, the approved plan, for scope: task, the task the line is logged under, a registered project's name, every task's PRs in it, or all, every project; said in discord_message in discord_channel, #coordinator's channel or the task's thread, a message team-merge never reads back, since a withdrawal only stops merges; read across the whole ledger with merge-default-restored: for a PR, the latest of the two whose scope covers it (its task's, its project's or all) decides, and the default stands unless that is a withdrawal (merge_authority in bin/lib/ledger.jq)",
+      "required": {"scope": "string", "discord_message": "id", "discord_channel": "id"}
+    },
+    "merge-default-restored": {
+      "writer": "team-log",
+      "push": true,
+      "about": "Daniel gave the default merge word back for scope (task, a registered project or all, as a merge-default-withdrawn's) in discord_message in discord_channel, #coordinator's channel or the thread of the task the line is logged under; team-log refuses one when no withdrawal stands that it covers, and team-merge holds it only when Discord shows the message there from an allowFrom author, so a giving back of all gives back a project or task withdrawn by name before it",
+      "required": {"scope": "string", "discord_message": "id", "discord_channel": "id"}
+    },
     "branch-renamed": {
       "writer": "team-log",
       "about": "the task's branch in project is branch from now on, as when the gate rewrote the remote branch and the builder carried its commits to a new one; the latest opened, worktree-added or branch-renamed of the project names the task's branch there",

@@ -21,6 +21,8 @@
     "retro-change": {"status": ["open", "closed-own-retro"]},
     "merge-standing": {"status": ["open", "closed"]},
     "merge-standing-withdrawn": {"status": ["open", "closed"]},
+    "merge-default-withdrawn": {"status": ["open", "closed"]},
+    "merge-default-restored": {"status": ["open", "closed"]},
     "retro-schedule": {"status": ["open", "closed"]},
     "plan-approved": {"effect": "approve"},
     "plan-approval-withdrawn": {"effect": "withdraw"},

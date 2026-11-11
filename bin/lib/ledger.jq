@@ -968,6 +968,38 @@ def plan_approval:
       | {state: "approved", by: (if $legacy then "coordinator" else .by end), ask: (.ask // null),
          discord_message: (.discord_message // null), plan: (.plan // null), scope: (.scope // null), ts, legacy: $legacy} end;
 
+# Whether a merge-default-withdrawn or merge-default-restored covers the PRs of task $task in
+# project $project: its scope is task and it is logged under $task, its scope is $project, or all.
+# An empty $task or $project names none, so a scope of that kind never covers it.
+def default_covers($task; $project):
+  (.scope == "task" and .task == $task and $task != "") or (.scope == $project and $project != "") or .scope == "all";
+
+# The latest merge-default-withdrawn or merge-default-restored of the events (any array, every
+# task's) that covers the PRs of task $task in $project (default_covers), or null: the one that
+# decides whether the default word stands for them, which it does unless that is a withdrawal.
+def default_cover($task; $project):
+  [.[] | select((.event == "merge-default-withdrawn" or .event == "merge-default-restored") and default_covers($task; $project))]
+  | last;
+
+# Who a merge-default-withdrawn or merge-default-restored is for, as text: its task, "project
+# <name>" or "every project".
+def default_scope_text: if .scope == "task" then .task elif .scope == "all" then "every project" else "project \(.scope)" end;
+
+# Whether a merge-default-restored of $restore ({task, scope}) would give the default word back
+# anywhere, over the ledger's merge-default-withdrawn and merge-default-restored events (an array,
+# every task's): whether some PR it covers has a withdrawal as the latest event covering it
+# (default_cover). $projects maps each task to the projects of its opened and worktree-added
+# events; the PRs tried are each task an event names with each of its projects (none known: no
+# project), and no task with each project an event or a task names (none: no project).
+def default_restore_withdrawn($restore; $projects):
+  . as $events
+  | ([$events[], $restore] | map(select(.scope == "task") | .task) | unique) as $tasks
+  | ([($events[], $restore | .scope | select(. != "task" and . != "all")), ($tasks[] | $projects[.] // [] | .[])] | unique + [""]) as $names
+  | any(($tasks[] | . as $t | ($projects[$t] // [] | if . == [] then [""] else . end) | .[] | {task: $t, project: .}),
+        ($names[] | {task: "", project: .});
+      . as $pr | ($restore | default_covers($pr.task; $pr.project))
+      and ($events | default_cover($pr.task; $pr.project) | .event == "merge-default-withdrawn"));
+
 # The task's latest merge-preapproved of $project, or null, with withdrawn: the first
 # merge-preapproval-withdrawn of $project logged after it, or null while it stands.
 def merge_preapproval($project):
@@ -1083,7 +1115,8 @@ def unattended_review_reasons($head):
 # then the default word, in the order team-merge tries them, each {word: "head" or "default",
 # applies, holds, reasons, facts}, and word the first that holds on the ledger, or null. $own says
 # $project is the team's own (own_project); $withdrawals is the ledger's merge-default-withdrawn
-# and merge-default-restored events, every task's, which no rule reads yet.
+# and merge-default-restored events, every task's, in ledger order, each giving back with thread,
+# the latest thread of the task it was logged under, when team-merge adds it.
 # The per-head word applies when a merge-approved names $url (the latest counts, a trailing slash
 # aside); its one reason is that none does, or that no pr event of $url, nor a review since,
 # logged the head it names; facts: approval (the event, with i its index), head (the head it
@@ -1091,10 +1124,13 @@ def unattended_review_reasons($head):
 # against: head_logged's, or a legacy one's latest pr event of $url, or null).
 # The default word, the approved plan, applies while plan_approval is approved; its reasons: no
 # approval, or one withdrawn; on the team's own project, the one reason that it merges unattended
-# only behind the reviewer App's check, which is not set up; else that the task logged no branch
-# for $project, and unattended_review_reasons($head). Its facts, null unless it applies: the
-# approval's by, ts, legacy, plan and scope, branch (task_branch), and for Daniel's approval its
-# ask, discord_message and asked (the latest asked of that id before the approval, or null).
+# only behind the reviewer App's check, which is not set up; else that the default is withdrawn
+# for the task, $project or every project (the latest of $withdrawals covering the PR,
+# default_cover, is a withdrawal), that the task logged no branch for $project, and
+# unattended_review_reasons($head). Its facts, null unless it applies: the approval's by, ts,
+# legacy, plan and scope, branch (task_branch), restored (that latest event when it is a giving
+# back, whose message team-merge reads back, else null), and for Daniel's approval its ask,
+# discord_message and asked (the latest asked of that id before the approval, or null).
 # A word holds on the ledger when it applies with no reason; team-merge checks what the ledger
 # cannot show (Discord, git, the plan's files and GitHub's) before it merges on one.
 def merge_authority($url; $head; $project; $own; $withdrawals):
@@ -1113,17 +1149,21 @@ def merge_authority($url; $head; $project; $own; $withdrawals):
      facts: {approval: $approval, head: $approved, logged: (if $logged == null then null else $logged | {ts, event} end)}} as $per_head
   | plan_approval as $plan
   | ([to_entries[] | select(.value.event == "plan-approved")] | last | .key) as $at
+  | ($withdrawals | default_cover(first($events[] | .task | strings) // ""; $project)) as $cover
   | {word: "default", applies: ($plan.state == "approved"),
      reasons: (if $plan == null then ["\($task) has no approved plan: no plan-approved is logged"]
                elif $plan.state == "withdrawn" then
                  ["\($task)'s plan approval was withdrawn at \($plan.ts) in Discord message \($plan.discord_message): approve the plan again"]
                elif $own then ["the team's own project merges unattended only behind the reviewer App's check, which is not set up"]
-               else [(task_branch($project) | select(. == null)
+               else [($cover | select(.event == "merge-default-withdrawn")
+                       | "the default word was withdrawn for \(default_scope_text) at \(.ts) in Discord message \(.discord_message), and not given back since"),
+                     (task_branch($project) | select(. == null)
                        | "\($task) logged no branch for \($project): no opened, worktree-added or branch-renamed event of it"),
                      unattended_review_reasons($head)] end),
      facts: (if $plan.state != "approved" then null
              else {by: $plan.by, ts: $plan.ts, legacy: $plan.legacy, plan: $plan.plan, scope: $plan.scope,
-                   branch: task_branch($project)}
+                   branch: task_branch($project),
+                   restored: (if $cover.event == "merge-default-restored" then $cover else null end)}
                + if $plan.by == "Daniel" then
                    {ask: $plan.ask, discord_message: $plan.discord_message, asked: ($events[:$at] | latest_asked($plan.ask))}
                  else {} end end)} as $default

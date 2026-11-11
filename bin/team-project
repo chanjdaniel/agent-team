@@ -12,9 +12,11 @@
 #                                     pool.lease and pool.return as the same file, however
 #                                     spelled (a symlink, or another case on a case-insensitive
 #                                     filesystem); a key no project has is refused
-#        team-project --check         check the whole file and list every problem; the name
-#                                     coordinator is reserved (team-config's folder for the
-#                                     team home's own auto memory)
+#        team-project --check         check the whole file and list every problem; the names
+#                                     coordinator (team-config's folder for the team home's own
+#                                     auto memory), task and all (the scopes of a
+#                                     merge-default-withdrawn or merge-default-restored besides a
+#                                     project's name) and own (bin/lib/guarded's @own) are reserved
 #
 # The registry has one table per project the team works on, keyed by its short name.
 # Per project:
@@ -116,7 +118,12 @@ PROJECT_LISTS = ("required_checks", "docs", "toolkits")
 PROJECT_KEYS = PROJECT_STRINGS + PROJECT_LISTS + ("pool",)
 # Names no project may take: coordinator is the team home's own auto memory folder,
 # memory/coordinator/ (team-config).
-RESERVED = {"coordinator": "the team home's auto memory, memory/coordinator/"}
+RESERVED = {
+    "coordinator": "the team home's auto memory, memory/coordinator/",
+    "task": "the default merge word's withdrawals, whose scope=task is the task they are logged under",
+    "all": "the default merge word's withdrawals, whose scope=all is every project",
+    "own": "the team's own project in bin/lib/guarded's @own lines",
+}
 # Optional keys, with the value a project without one has.
 PROJECT_OPTIONAL = {"local_checks": [], "merge_with_plan": False, "models": {}, "uptime": [], "visibility": "public"}
 # A production check's keys, every one required and a string, and the most checks the registry

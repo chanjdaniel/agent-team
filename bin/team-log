@@ -54,12 +54,21 @@
 # merge-preapproved of its project stands for the task (its latest, with no withdrawal since). A
 # merge-standing, Daniel's standing word, or a merge-standing-withdrawn, its withdrawal, both read
 # across the whole ledger, is refused when its project is neither all nor a project team-project
-# --list names (and all when a registered project is named all), when its project is the team's
+# --list names (team-project --check refuses a project named all), when its project is the team's
 # own (own_project, whatever the registry says; all covers every project but it), when its
 # discord_message is a string of digits that is no Discord id, and when its discord_channel is
 # neither #coordinator's channel nor the task's thread (its latest thread event), naming both; a
 # merge-standing-withdrawn is refused too when no standing word stands for its project (for all:
-# for any project the registry or a merge-standing names). A branch-renamed, the task's new
+# for any project the registry or a merge-standing names). A merge-default-withdrawn, Daniel's
+# withdrawal of the default merge word, or a merge-default-restored, its giving back
+# (scope=<task|project|all> discord_message=<id> discord_channel=<id>), is refused when its scope
+# is neither task (the task it is logged under), all (every project) nor a project team-project
+# --list names, when it is task on a closed task, when its discord_message or discord_channel is
+# no Discord id, and when its discord_channel is neither #coordinator's channel nor the task's
+# latest thread, naming both; a merge-default-restored is refused too when no PR it covers has a
+# withdrawal as the latest of the two kinds covering it, over the whole ledger (a task's PRs in
+# each project of its opened and worktree-added events; default_restore_withdrawn in
+# bin/lib/ledger.jq). A branch-renamed, the task's new
 # branch in a project after the gate rewrote the remote one, is refused when its project is not
 # one of the task's opened or worktree-added events, its branch is the task's there now (the
 # latest opened, worktree-added or branch-renamed of the project), does not name the task, or is
@@ -94,7 +103,8 @@
 # task with no opened event of path retro, or a retro with no answered of id retro.
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
 # plan-approval-withdrawn, merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
-# merge-standing-withdrawn, retro-schedule) is committed and pushed to the team home's origin
+# merge-standing-withdrawn, merge-default-withdrawn, merge-default-restored, retro-schedule) is
+# committed and pushed to the team home's origin
 # before team-log ends (ledger_push in bin/lib/team.sh), in either form; a push that fails, or
 # one not tried while the team holds offline, is one line on stderr, and the exit stays 0.
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
@@ -487,7 +497,7 @@ if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
   if [[ -n $project ]]; then
     registered=$(team_project --list) || exit 1
     if [[ $project == all ]]; then
-      ! grep -qxF all <<<"$registered" || die "projects.toml names a project all, so project=all cannot say every project"
+      true
     elif ! grep -qxF -- "$project" <<<"$registered"; then
       if [[ -z $registered ]]; then names=': it names none'; else names=": $(sed ':a;N;$!ba;s/\n/, /g' <<<"$registered")"; fi
       die "$project is neither all, for every project, nor a project projects.toml names$names"
@@ -514,6 +524,45 @@ if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
       | $events | standing_words($projects | unique) != []' \
       -nRe --arg project "$project" --arg registered "$registered" <"$ledger" >/dev/null ||
       die "no standing word of Daniel's stands for $(if [[ $project == all ]]; then echo "any project"; else echo "$project"; fi), so merge-standing-withdrawn withdraws nothing"
+  fi
+fi
+
+# Daniel's withdrawal of the default word, and its giving back, name a scope (task, the task they
+# are logged under, which must be open; all; or a project the registry names) and a message
+# team-merge can read back: Discord ids, in #coordinator's channel or the task's latest thread. A
+# giving back needs a withdrawal standing that it covers (default_restore_withdrawn in
+# bin/lib/ledger.jq, over the whole ledger).
+if [[ $event == merge-default-withdrawn || $event == merge-default-restored ]]; then
+  scope=${seen[scope]:-}
+  registered=$(team_project --list) || exit 1
+  if [[ $scope == task ]]; then
+    task_events_once
+    [[ $(ledger_jq 'task_status' -r <<<"$TASK_EVENTS") != closed ]] ||
+      die "$task is closed, so scope=task names no PR it may still merge: name its project, or all"
+  elif [[ -n $scope && $scope != all ]] && ! grep -qxF -- "$scope" <<<"$registered"; then
+    if [[ -z $registered ]]; then names=': it names none'; else names=": $(sed ':a;N;$!ba;s/\n/, /g' <<<"$registered")"; fi
+    die "scope $scope is neither task, the task it is logged under, all, every project, nor a project projects.toml names$names"
+  fi
+  for key in discord_message discord_channel; do
+    [[ -z ${seen[$key]:-} || ${seen[$key]} =~ ^[1-9][0-9]{0,18}$ ]] || die "$key ${seen[$key]} is not a Discord id"
+  done
+  channel=${seen[discord_channel]:-}
+  if [[ -n $channel && $channel != "$COORDINATOR_CHANNEL" ]]; then
+    task_events_once
+    thread=$(jq -r '[.[] | select(.event == "thread") | .discord_thread | select(. != null) | tostring] | last // empty' <<<"$TASK_EVENTS")
+    [[ $channel == "$thread" ]] ||
+      die "discord_channel $channel is neither #coordinator's channel, $COORDINATOR_CHANNEL, nor $task's thread$(if [[ -n $thread ]]; then echo ", $thread"; else echo ": it has none"; fi)"
+  fi
+  if [[ $event == merge-default-restored && -n $scope ]]; then
+    ledger=$TEAM_HOME/ledger.jsonl
+    [[ -e $ledger ]] || ledger=/dev/null
+    ledger_jq '[inputs | fromjson? | objects] as $all
+      | ([$all[] | select((.event == "opened" or .event == "worktree-added") and (.task | type) == "string")]
+         | group_by(.task) | map({key: .[0].task, value: (map(.project | strings) | unique)}) | from_entries) as $projects
+      | [$all[] | select(.event == "merge-default-withdrawn" or .event == "merge-default-restored")]
+      | default_restore_withdrawn({task: $task, scope: $scope}; $projects)' \
+      -nRe --arg task "$task" --arg scope "$scope" <"$ledger" >/dev/null ||
+      die "no withdrawal of the default word stands that scope=$scope of $task covers, so merge-default-restored gives nothing back"
   fi
 fi
 

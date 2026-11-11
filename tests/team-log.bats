@@ -190,6 +190,8 @@ merge-preapproved team-log project ask discord_message scope
 merge-preapproval-withdrawn team-log project discord_message
 merge-standing team-log project discord_message discord_channel
 merge-standing-withdrawn team-log project discord_message discord_channel
+merge-default-withdrawn team-log scope discord_message discord_channel
+merge-default-restored team-log scope discord_message discord_channel
 branch-renamed team-log project branch
 failed team-log reason
 retro-schedule team-log every_hours discord_message
@@ -225,6 +227,8 @@ TABLE
   assert_equal "$(jq -c '.kinds["merge-preapproved"].required' "$CONTRACT")" '{"project":"string","ask":"string","discord_message":"id","scope":"array"}'
   assert_equal "$(jq -c '[.kinds["merge-standing", "merge-standing-withdrawn"].required]' "$CONTRACT")" \
     '[{"project":"string","discord_message":"id","discord_channel":"id"},{"project":"string","discord_message":"id","discord_channel":"id"}]'
+  assert_equal "$(jq -c '[.kinds["merge-default-withdrawn", "merge-default-restored"] | [.required, .push]]' "$CONTRACT")" \
+    '[[{"scope":"string","discord_message":"id","discord_channel":"id"},true],[{"scope":"string","discord_message":"id","discord_channel":"id"},true]]'
   assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array","widening":"numbers","memory":"string"}'
   assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","default","plan","standing"]'
   assert_equal "$(jq -c '.kinds.walk.required.state' "$CONTRACT")" '["on","off"]'
@@ -259,6 +263,8 @@ TABLE
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\); pushed at once  \(.*withdr.*\)$' <<<"$output"
   grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
   grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
+  grep -Eq '^  merge-default-withdrawn +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew the default merge word.*task, the task the line is logged under.*the latest of the two whose scope covers it .*decides.*\)$' <<<"$output"
+  grep -Eq '^  merge-default-restored +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel gave the default merge word back.*team-merge holds it only when Discord shows the message .*from an allowFrom author.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|default\|plan\|standing\), phases_left \(list of whole numbers\); pushed at once  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\), approved \(list\)  \(.*approved the ids of the parks the builder approved itself.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\); pushed at once  \(.*legacy.*\)$' <<<"$output"
@@ -500,7 +506,8 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
   # and merge-standing-withdrawn, after it, the word it logged; retro-change a retro Daniel answered;
   # a kind with one_of sets the first field of each (a question its text); a paused its cause, a
   # held Daniel's message and a resumed all=true, which team-log requires of each; plan-approved
-  # the coordinator's, of the task's plan, and plan-approval-withdrawn, after it, its withdrawal.
+  # the coordinator's, of the task's plan, and plan-approval-withdrawn, after it, its withdrawal;
+  # merge-default-withdrawn scope=task, and merge-default-restored, after it, gives it back.
   plan_registry
   opened T14 proj
   plan_md T14
@@ -510,7 +517,7 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
     # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
     mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" --arg coordinator "$COORDINATOR" '(.kinds[$k].required | to_entries[]
       | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
-          elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
+          elif .key == "scope" and ($k | startswith("merge-default-")) then "task" elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
           elif .key == "retro" then "T150" elif .key == "by" and $k == "plan-approved" then "coordinator"
           elif .key == "discord_channel" then $coordinator
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
@@ -522,7 +529,7 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
-  assert_equal "$count" "26"
+  assert_equal "$count" "28"
   run_bin -0 team-log --check
 }
 
@@ -1075,6 +1082,128 @@ LINES
   run_bin -0 team-log --check
 }
 
+# The default word's withdrawals and givings back logged, one "<event> <task> <scope>" per line.
+default_events() {
+  jq -r 'select(.event | startswith("merge-default-")) | "\(.event) \(.task) \(.scope)"' "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "merge-default-withdrawn and merge-default-restored record Daniel's word on the default for a task, a project or every project" {
+  plan_registry
+  opened_task T14
+  thread T14 1563000000000000001
+  local message
+  message=$(soon)
+  run_bin -0 --separate-stderr team-log T14 merge-default-withdrawn scope=task discord_message="$message" discord_channel=1563000000000000001
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+    "{\"task\":\"T14\",\"event\":\"merge-default-withdrawn\",\"scope\":\"task\",\"discord_message\":\"$message\",\"discord_channel\":\"1563000000000000001\"}"
+  # A project the task's events never name, and every project, in #coordinator.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=conv discord_message="$(soon)" discord_channel=$COORDINATOR
+  run_bin -0 team-log T14 merge-default-withdrawn scope=all discord_message="$(soon)" discord_channel=$COORDINATOR
+  run_bin -0 team-log T14 merge-default-restored scope=all discord_message="$(soon)" discord_channel=$COORDINATOR
+  assert_equal "$(default_events)" "merge-default-withdrawn T14 task
+merge-default-withdrawn T14 conv
+merge-default-withdrawn T14 all
+merge-default-restored T14 all"
+  run_bin -0 team-log --check
+}
+
+@test "the default's withdrawal and giving back are refused for an unknown scope, an id no Discord id, a channel neither #coordinator nor the task's thread, and scope=task on a closed task" {
+  plan_registry
+  local kind message channel before
+  for kind in merge-default-withdrawn merge-default-restored; do
+    run_bin -1 team-log T14 $kind scope=web discord_message="$(soon)" discord_channel=$COORDINATOR
+    assert_equal "$output" "team-log: scope web is neither task, the task it is logged under, all, every project, nor a project projects.toml names: proj, conv"
+    for message in 0 01566 15660000000000001234567 soon; do
+      run_bin -1 team-log T14 $kind scope=proj discord_message=$message discord_channel=$COORDINATOR
+      assert_equal "$output" "team-log: discord_message $message is not a Discord id"
+      run_bin -1 team-log T14 $kind scope=proj discord_message="$(soon)" discord_channel=$message
+      assert_equal "$output" "team-log: discord_channel $message is not a Discord id"
+    done
+    run_bin -1 team-log T14 $kind scope=proj discord_message="$(soon)" discord_channel=1563000000000000009
+    assert_equal "$output" "team-log: discord_channel 1563000000000000009 is neither #coordinator's channel, $COORDINATOR, nor T14's thread: it has none"
+  done
+  # The task's latest thread, never an earlier one or another task's.
+  opened_task T14
+  thread T14 1563000000000000001
+  thread T14 1563000000000000002
+  thread T15 1563000000000000003
+  for kind in merge-default-withdrawn merge-default-restored; do
+    for channel in 1563000000000000001 1563000000000000003; do
+      run_bin -1 team-log T14 $kind scope=all discord_message="$(soon)" discord_channel=$channel
+      assert_equal "$output" "team-log: discord_channel $channel is neither #coordinator's channel, $COORDINATOR, nor T14's thread, 1563000000000000002"
+    done
+  done
+  run_bin -1 team-log T14 merge-default-withdrawn discord_message="$(soon)" discord_channel=$COORDINATOR
+  assert_contains "$output" "merge-default-withdrawn needs scope"
+  run_bin -1 team-log T14 merge-default-withdrawn scope=proj discord_channel=$COORDINATOR
+  assert_contains "$output" "merge-default-withdrawn needs discord_message"
+  run_bin -1 team-log T14 merge-default-withdrawn scope=proj discord_message="$(soon)"
+  assert_contains "$output" "merge-default-withdrawn needs discord_channel"
+  assert_equal "$(default_events)" ""
+  # A closed task's own PRs merge no more, so scope=task names nothing there; a project or all does.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=task discord_message="$(soon)" discord_channel=$COORDINATOR
+  echo '{"ts":"2026-11-01T09:00:00Z","task":"T14","event":"closed","archive":[],"returned":[],"kept":[]}' >>"$TEAM_HOME/ledger.jsonl"
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  for kind in merge-default-withdrawn merge-default-restored; do
+    run_bin -1 team-log T14 $kind scope=task discord_message="$(soon)" discord_channel=$COORDINATOR
+    assert_equal "$output" "team-log: T14 is closed, so scope=task names no PR it may still merge: name its project, or all"
+  done
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  run_bin -0 --separate-stderr team-log T14 merge-default-withdrawn scope=proj discord_message="$(soon)" discord_channel=$COORDINATOR
+  assert_equal "$stderr" ""
+}
+
+@test "merge-default-restored needs a withdrawal standing that its scope covers, the latest that covers a PR deciding" {
+  plan_registry "$(plan_project web false)"
+  opened_task T14
+  opened_task T15
+  opened T16 conv
+  local said=(discord_message="$(soon)" discord_channel="$COORDINATOR") scope
+  for scope in task proj all; do
+    run_bin -1 team-log T14 merge-default-restored scope=$scope "${said[@]}"
+    assert_equal "$output" "team-log: no withdrawal of the default word stands that scope=$scope of T14 covers, so merge-default-restored gives nothing back"
+  done
+  # A task's withdrawal: given back for that task, its project or all, never another task's or project's.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=task "${said[@]}"
+  run_bin -1 team-log T15 merge-default-restored scope=task "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=conv "${said[@]}"
+  run_bin -0 team-log T15 merge-default-restored scope=proj "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=task "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=all "${said[@]}"
+  # A project's: given back for it or all, or for one task of it, which leaves the others withdrawn.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=proj "${said[@]}"
+  run_bin -1 team-log T16 merge-default-restored scope=task "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=web "${said[@]}"
+  run_bin -0 team-log T14 merge-default-restored scope=task "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=task "${said[@]}"
+  run_bin -0 team-log T16 merge-default-restored scope=proj "${said[@]}"
+  run_bin -1 team-log T15 merge-default-restored scope=task "${said[@]}"
+  # Every project's: given back for one project, one task, or all, which ends every withdrawal.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=all "${said[@]}"
+  run_bin -0 team-log T14 merge-default-restored scope=web "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=web "${said[@]}"
+  run_bin -0 team-log T16 merge-default-restored scope=task "${said[@]}"
+  run_bin -0 team-log T15 merge-default-withdrawn scope=task "${said[@]}"
+  run_bin -0 team-log T14 merge-default-restored scope=all "${said[@]}"
+  for scope in all proj conv web; do
+    run_bin -1 team-log T15 merge-default-restored scope=$scope "${said[@]}"
+  done
+  run_bin -1 team-log T15 merge-default-restored scope=task "${said[@]}"
+  assert_equal "$output" "team-log: no withdrawal of the default word stands that scope=task of T15 covers, so merge-default-restored gives nothing back"
+  assert_equal "$(default_events)" "merge-default-withdrawn T14 task
+merge-default-restored T15 proj
+merge-default-withdrawn T14 proj
+merge-default-restored T14 task
+merge-default-restored T16 proj
+merge-default-withdrawn T14 all
+merge-default-restored T14 web
+merge-default-restored T16 task
+merge-default-withdrawn T15 task
+merge-default-restored T14 all"
+}
+
 @test "merge-standing records Daniel's standing word on a project or every project, said in #coordinator or the task's thread" {
   plan_registry
   opened_task T14
@@ -1121,11 +1250,12 @@ merge-standing conv"
   done
   run_bin -1 team-log T14 merge-standing project=proj discord_message="$(soon)"
   assert_contains "$output" "merge-standing needs discord_channel"
-  # A project named all makes all name it, never every project.
+  # A project named all is refused by the registry, so all always says every project.
   plan_registry "$(plan_project all false)"
   run_bin -1 team-log T14 merge-standing project=all discord_message="$(soon)" discord_channel=$COORDINATOR
-  assert_equal "$output" "team-log: projects.toml names a project all, so project=all cannot say every project"
+  assert_contains "$output" "all: the name is reserved for the default merge word's withdrawals, whose scope=all is every project"
   assert_equal "$(standing_events)" ""
+  plan_registry
   run_bin -0 team-log T14 merge-standing project=proj discord_message="$(soon)" discord_channel=1563000000000000002
 }
 
@@ -2302,7 +2432,7 @@ origin_subject() {
   while IFS= read -r kind; do
     mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" --arg coordinator "$COORDINATOR" '(.kinds[$k].required | to_entries[]
       | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
-          elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
+          elif .key == "scope" and ($k | startswith("merge-default-")) then "task" elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
           elif .key == "retro" then "T150" elif .key == "by" and $k == "plan-approved" then "coordinator"
           elif .key == "discord_channel" then $coordinator
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
@@ -2326,8 +2456,9 @@ origin_subject() {
     fi
   done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
   # The answered among them is one given at the terminal, with no discord_message, and the
-  # plan-approved the coordinator's, which the plan-approval-withdrawn after it withdraws.
-  assert_equal "${pushed[*]}" "answered plan-approved plan-approval-withdrawn merge-approved merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn retro-schedule"
+  # plan-approved the coordinator's, which the plan-approval-withdrawn after it withdraws, and the
+  # merge-default-restored gives back the task's default word the merge-default-withdrawn withdrew.
+  assert_equal "${pushed[*]}" "answered plan-approved plan-approval-withdrawn merge-approved merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn merge-default-withdrawn merge-default-restored retro-schedule"
   [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
 }
 

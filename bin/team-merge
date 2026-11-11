@@ -30,7 +30,12 @@
 #   as no approved plan, a withdrawal naming when and in which message); on the team's own project
 #   (own_project: agent-team by name, by path or by repo) its one reason is that it merges
 #   unattended only behind the reviewer App's check, which is not set up, nothing more read; else
-#   the plan's files now (plan_files in bin/lib/team.sh: tasks/T<n>/plan.md, and spec.md and
+#   the default is not withdrawn for the PR: the latest merge-default-withdrawn or
+#   merge-default-restored of the whole ledger whose scope covers it (task, logged under the PR's
+#   task; the PR's project; or all) is not a withdrawal, which is refused naming its scope, time and
+#   message, never read, and one that is a giving back holds only when Discord shows its message
+#   from an allowFrom author in #coordinator or the thread of the task it was logged under, else it
+#   is refused naming why; the plan's files now (plan_files in bin/lib/team.sh: tasks/T<n>/plan.md, and spec.md and
 #   scope.txt in the task directory of its first project's worktree) hash as the approval recorded,
 #   each one that differs, is new or is gone named, to approve it again, and files that cannot be
 #   read are refused (a legacy approval, logged before T276 with no plan, has none to compare and no
@@ -220,8 +225,13 @@ fi
 # PR's latest logged head); what the ledger cannot show is checked below, word by word.
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
-withdrawals=$(ledger_jq '[inputs | fromjson? | objects | select(.event == "merge-default-withdrawn" or .event == "merge-default-restored")]' \
-  -nRc <"$ledger") || jq_failed $?
+# The default word's withdrawals and givings back, every task's, each giving back with thread, the
+# latest thread of the task it was logged under, where its message may be read back.
+withdrawals=$(ledger_jq '[inputs | fromjson? | objects] as $all
+  | [$all[] | select(.event == "merge-default-withdrawn" or .event == "merge-default-restored")
+     | if .event == "merge-default-restored" then
+         .task as $t | .thread = ([$all[] | select(.task == $t and .event == "thread") | .discord_thread | tostring] | last)
+       else . end]' -nRc <"$ledger") || jq_failed $?
 team_own=false
 if own_project "$project"; then team_own=true; fi
 authority=$(ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)' -c --arg url "${url%/}" \
@@ -337,8 +347,8 @@ fi
 # The default word, the approved plan, tried when no merge-approved names the PR or the per-head
 # word does not hold for a reason of its own (never one of the checks every merge gets): the
 # ledger's reasons, then, while the approval stands on a project that is not the team's own, the
-# plan's files now against the approval's, Daniel's message read back for an approval of theirs,
-# and on a head GitHub showed, the PR's branch, a caught-up head against git, and the PR's files
+# plan's files now against the approval's, a giving back of the default read back, Daniel's
+# message read back for an approval of theirs, and on a head GitHub showed, the PR's branch, a caught-up head against git, and the PR's files
 # read in full, each within the approval's scope when it has one and none on the short list.
 # files_read is set once GitHub's list of the PR's files is read in full, PR_CHANGED then holding
 # its paths.
@@ -355,6 +365,26 @@ if ! jq -e .applies <<<"$head_word" >/dev/null || ((${#head_reasons[@]})); then
         | "the plan changed since its approval at \($f.ts) (\(join(", "))): approve it again"' <<<"$default_word"
     else
       default_reasons+=("the plan's files cannot be read ($(grep -m 1 . "$scratch/plan" || echo "plan_files failed")), so whether the plan changed since its approval at $(jq -r .facts.ts <<<"$default_word") is not known")
+    fi
+    # A giving back of the default word holds only when Discord shows its message, from an allowFrom
+    # author, in #coordinator or the thread of the task it was logged under; a withdrawal is never read.
+    restored=$(jq -c '.facts.restored // empty' <<<"$default_word")
+    if [[ -n $restored ]]; then
+      given=$(ledger_jq '"the default word was given back for \(default_scope_text) at \(.ts) in Discord message \(.discord_message)"' -r <<<"$restored")
+      said_in=$(jq -r '.discord_channel | tostring' <<<"$restored")
+      said_by=$(jq -r .task <<<"$restored")
+      place=''
+      if [[ $said_in == "$COORDINATOR_CHANNEL" ]]; then
+        place="#coordinator $said_in"
+      elif [[ $said_in == "$(jq -r '.thread // ""' <<<"$restored")" ]]; then
+        if [[ $said_by == "$task" ]]; then place="the task's thread $said_in"; else place="$said_by's thread $said_in"; fi
+      else
+        default_reasons+=("$given, in channel $said_in, which is neither #coordinator nor $said_by's thread")
+      fi
+      if [[ -n $place ]] &&
+        ! daniel_message "$(jq -r '.discord_message | tostring' <<<"$restored")" "the giving back" "$place" >/dev/null 2>"$scratch/restored"; then
+        default_reasons+=("$given, which does not read back: $(<"$scratch/restored")")
+      fi
     fi
     if [[ $(jq -r .facts.by <<<"$default_word") == Daniel ]]; then
       ask=$(jq -r .facts.ask <<<"$default_word")

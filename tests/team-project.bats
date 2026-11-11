@@ -243,6 +243,19 @@ TOML
   [[ $stderr != *alpha* ]]
 }
 
+@test "--check refuses a project named task, all or own, which the default word's withdrawals and the short list read as scopes" {
+  local name
+  cp "$TEAM_HOME/projects.toml" "$BATS_TEST_TMPDIR/registered.toml"
+  for name in task all own; do
+    sed "s/^\\[beta/[$name/" "$BATS_TEST_TMPDIR/registered.toml" >"$BATS_TEST_TMPDIR/projects.toml"
+    registry <"$BATS_TEST_TMPDIR/projects.toml"
+    run_bin -1 --separate-stderr team-project --check
+    assert_contains "$stderr" "$name: the name is reserved for"
+    [[ $stderr != *alpha* ]]
+  done
+  assert_contains "$stderr" "own: the name is reserved for the team's own project in bin/lib/guarded's @own lines"
+}
+
 @test "--check refuses TOML that does not parse and a registry that is missing" {
   registry <<<'[alpha'
   run_bin -1 --separate-stderr team-project --check

@@ -118,6 +118,99 @@ OWN_REASON="the team's own project merges unattended only behind the reviewer Ap
   assert_equal "$(merged_events | jq -r .approval)" default
 }
 
+# A merge-default-<kind> logged under <task> for <scope> in Discord message <message>, in <channel>
+# (#coordinator's by default): default_said <kind> <task> <scope> <message> [<channel>]
+default_said() {
+  event "$2" "merge-default-$1" "{scope: \"$3\", discord_message: \"$4\", discord_channel: \"${5:-$COORDINATOR}\"}"
+}
+
+# Discord's message <message> in <channel> (#coordinator's by default), by user <author> (757,
+# Daniel, by default): discord_has <message> [<channel>] [<author>]
+discord_has() {
+  jq -n --arg m "$1" --arg c "${2:-$COORDINATOR}" --arg a "${3:-757}" \
+    '{id: $m, channel_id: $c, content: "give it back", author: {id: $a, username: "daniel"}}' >"$discord/${2:-$COORDINATOR}-$1.json"
+}
+
+@test "the default word withdrawn for the task, its project or every project is refused, naming the withdrawal, its message never read" {
+  default_word
+  local scope named before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  for scope in task proj all; do
+    case $scope in task) named=T14 ;; proj) named="project proj" ;; all) named="every project" ;; esac
+    printf '%s\n' "$before" >"$TEAM_HOME/ledger.jsonl"
+    default_said withdrawn "$(if [[ $scope == task ]]; then echo T14; else echo T9; fi)" $scope 1562676874444800000
+    refused "the default word was withdrawn for $named at 2026-10-22T02:00:00Z in Discord message 1562676874444800000, and not given back since" \
+      "$(ask_per_head)"
+    assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+    assert_equal "$(reads)" ""
+  done
+  # Another task's withdrawal, and another project's, do not touch it.
+  printf '%s\n' "$before" >"$TEAM_HOME/ledger.jsonl"
+  default_said withdrawn T9 task 1562676874444800000
+  default_said withdrawn T9 conv 1562676874444800001
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" default
+}
+
+@test "a giving back read back from Discord in #coordinator or its task's thread gives the default word back" {
+  default_word
+  default_said withdrawn T9 all 1562676874444800000
+  default_said restored T9 all 1562692000000000000
+  discord_has 1562692000000000000
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .by] | join(" ")')" "default the plan $COORDINATOR_PLAN"
+  # The giving back's message is read, the withdrawal's never.
+  assert_equal "$(reads | jq -r '.[-1]')" "https://discord.com/api/v10/channels/$COORDINATOR/messages/1562692000000000000"
+
+  # In the thread of the task it was logged under, read there.
+  merge_again
+  jq -c 'select(.event != "merge-default-restored")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T9 thread '{discord_thread: "1999"}'
+  default_said restored T9 all 1562692000000000000 1999
+  discord_has 1562692000000000000 1999
+  rm -f "$STUB_CALLS/curl.log"
+  run_bin -0 team-merge T14
+  assert_equal "$(reads | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1999/messages/1562692000000000000"
+}
+
+@test "a giving back Discord cannot show, by an author not in allowFrom, or in a channel neither #coordinator nor its task's thread holds nothing" {
+  default_word
+  default_said withdrawn T9 proj 1562676874444800000
+  default_said restored T9 all 1562692000000000000
+  local given="the default word was given back for every project at 2026-10-22T02:00:00Z in Discord message 1562692000000000000"
+  refused "$given, which does not read back: Discord message 1562692000000000000 cannot be fetched from #coordinator $COORDINATOR: curl: (22) The requested URL returned error: 404" \
+    "$(ask_per_head)"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+  discord_has 1562692000000000000 "$COORDINATOR" 999
+  refused "$given, which does not read back: Discord message 1562692000000000000 is by daniel (999), who is not in allowFrom of ~/.claude/channels/discord/access.json"
+  # T14's thread is not T9's, so a giving back logged under T9 is never read there.
+  jq -c 'select(.event != "merge-default-restored")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  default_said restored T9 all 1562692000000000000 1563
+  discord_has 1562692000000000000 1563
+  rm -f "$STUB_CALLS/curl.log"
+  refused "$given, in channel 1563, which is neither #coordinator nor T9's thread"
+  assert_equal "$(reads)" ""
+}
+
+@test "a giving back of all after a project's withdrawal gives that project back (T278 C3); one of another project leaves it withdrawn" {
+  default_word
+  default_said withdrawn T9 proj 1562676874444800000
+  default_said restored T10 all 1562692000000000000
+  discord_has 1562692000000000000
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" default
+
+  merge_again
+  default_said withdrawn T9 all 1562676874444800002
+  default_said restored T9 conv 1562692000000000001
+  discord_has 1562692000000000001
+  refused "the default word was withdrawn for every project at 2026-10-22T02:00:00Z in Discord message 1562676874444800002, and not given back since"
+  default_said restored T14 task 1562692000000000003
+  discord_has 1562692000000000003
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" default
+}
+
 @test "a task with only the retired plan-time and standing words, and no approved plan, merges nothing unattended" {
   jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   sed -i 's|^toolkits = \[\]$|toolkits = []\nmerge_with_plan = true|' "$TEAM_HOME/projects.toml"
