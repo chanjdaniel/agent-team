@@ -190,6 +190,7 @@ EOF
   answer "docker info --format {{.ServerVersion}}" "28.3.3"
   export TEAM_CHROME=$BATS_TEST_TMPDIR/chrome
   touch "$TEAM_CHROME"
+  chmod +x "$TEAM_CHROME"
   # The heartbeat runs, as it should on the holder.
   "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
   # The user manager delegates cpu and memory, as home-pc's does, the team's slice is installed,

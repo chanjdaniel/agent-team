@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
-# discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, OPS_REQUEST_MAX_AGE, and
 # LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
@@ -1867,13 +1867,29 @@ session_context() {
   done
 }
 
+# Print the digest of the ticket list on stdin, as team-tickets --json prints it: the sha256 of the
+# list as jq -cS . prints it, 64 hex characters, which team-tickets --html stamps on its page, so a
+# page tells the tickets it shows from the tickets as they stand: tickets_digest <list
+tickets_digest() {
+  jq -cS . | sha256sum | cut -c1-64
+}
+
+# Print the task directory of the first ticket of the ticket list on stdin, as team-tickets --json
+# prints it: the directory above that ticket file's tickets/, where team-tickets --graph writes the
+# graph's page and PNG; nothing for an empty list: ticket_graph_dir <list
+ticket_graph_dir() {
+  local file
+  file=$(jq -r '.[0].file // empty')
+  [[ -z $file ]] || printf '%s\n' "${file%/tickets/*}"
+}
+
 # A task's state, as team-state --json prints it but compact, from its events (one JSON array in
 # ledger order), the live session list, its live workers' transcripts and, when it has a pr event,
 # GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
   local events=$1 state pr dir session_id context contexts=() out plan_project plan_projects opted_in own standing
-  local task tickets
+  local task tickets graph_dir html png fresh page_digest
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
@@ -1904,11 +1920,24 @@ task_state_json() (
     state=$(jq -c --argjson opted_in "$opted_in" --argjson own "$own" \
       '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
   fi
-  # The ticket total: the ticket files team-tickets reads, null when it refuses them.
+  # The ticket total: the ticket files team-tickets reads, null when it refuses them. The graph:
+  # the page team-tickets --graph wrote in the task directory of the first ticket, fresh while it
+  # was drawn from the tickets as they stand and its PNG is no older than it; null with no page.
   if tickets=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json 2>/dev/null </dev/null) &&
     out=$(jq -cn 'input as $tickets | input | .progress.tickets.total = ($tickets | length)' 2>/dev/null \
       <<<"$tickets"$'\n'"$state"); then
     state=$out
+    graph_dir=$(ticket_graph_dir <<<"$tickets") || exit 1
+    if [[ -n $graph_dir && -f $graph_dir/tickets.html ]]; then
+      html=$graph_dir/tickets.html png=$graph_dir/tickets.png fresh=false
+      page_digest=$(sed -n 's/.*<meta name="team-tickets-digest" content="\([0-9a-f]\{64\}\)">.*/\1/p;T;q' "$html")
+      if [[ -n $page_digest && $page_digest == "$(tickets_digest <<<"$tickets")" && -f $png && ! $png -ot $html ]]; then
+        fresh=true
+      fi
+      [[ -f $png ]] || png=
+      state=$(jq -c --arg html "$html" --arg png "$png" --argjson fresh "$fresh" \
+        '.progress.tickets.graph = {html: $html, png: (if $png == "" then null else $png end), fresh: $fresh}' <<<"$state") || exit 1
+    fi
   fi
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1

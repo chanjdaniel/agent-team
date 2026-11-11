@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2154 # wt, task_dir and tickets are helpers/tickets.bash's
 # team-tickets: a task's tickets read from each open worktree's task directory, with their strict
 # Blocked by:, Waits for:, Phase: and Touches: lines and spec.md's Parallel: line, each said done,
 # running, ready, waiting or blocked from the ledger; --check refuses a malformed set, a Touches:
@@ -8,77 +9,12 @@
 # each test's ledger says which are done.
 
 load helpers/common
+load helpers/tickets
 
 setup() {
   sandbox
-  cat >"$TEAM_HOME/projects.toml" <<'TOML'
-[proj]
-repo = "owner/proj"
-path = "projects/proj"
-base = "dev"
-delivery = "direct-pr"
-merge_method = "merge"
-required_checks = []
-task_dir = ".scratch/task"
-docs = []
-toolkits = []
-
-[proj.pool]
-provider = "git"
-slots = ["projects/proj-slots/1"]
-
-[other]
-repo = "owner/other"
-path = "projects/other"
-base = "main"
-delivery = "direct-pr"
-merge_method = "merge"
-required_checks = []
-task_dir = ".work/task"
-docs = []
-toolkits = []
-
-[other.pool]
-provider = "git"
-slots = ["projects/other-slots/1"]
-TOML
-  wt=$BATS_TEST_TMPDIR/wt
-  task_dir=$wt/.scratch/task
-  tickets=$task_dir/tickets
-  mkdir -p "$tickets"
+  tickets_sandbox
   cp "$REPO_ROOT"/tests/fixtures/tickets-T172/*.md "$tickets/"
-  event T172 opened "$(jq -cn --arg wt "$wt" '{project: "proj", path: "feature", type: "feat", title: "toil",
-    branch: "feat/T172-toil", base: "dev", base_sha: "aba9d074", worktree: $wt}')"
-}
-
-# event <task> <kind> '<jq object of the other fields>': append one ledger line.
-event() {
-  jq -cn --arg task "$1" --arg event "$2" "{ts: \"2026-11-01T10:00:00Z\", task: \$task, event: \$event} + $3" \
-    >>"$TEAM_HOME/ledger.jsonl"
-}
-
-# ticket_done <NN>...: a ticket-done of each.
-ticket_done() {
-  local n
-  for n in "$@"; do
-    event T172 ticket-done "$(jq -cn --arg n "$n" '{ticket: $n, commits: ["1f2f4a1"]}')"
-  done
-}
-
-# build_launch <NN> <session>: a builder's launch on brief-build-<NN>.
-build_launch() {
-  event T172 launch "$(jq -cn --arg b "brief-build-$1" --arg s "$2" --arg wt "$wt" \
-    '{role: "builder", session: $s, worktree: $wt, toolkits: [], brief: $b}')"
-}
-
-# ticket <NN-slug> <lines>...: write a ticket file of those lines under a title.
-ticket() {
-  printf '%s\n' "# ${1%%-*}: ${1#*-}" "" "${@:2}" "" "- [ ] it works" >"$tickets/$1.md"
-}
-
-# A fresh ticket set of the given files only.
-fresh_tickets() {
-  rm -f "$tickets"/*.md
 }
 
 @test "lists each fixture ticket with its state, and what a blocked one waits on" {
@@ -115,17 +51,22 @@ fresh_tickets() {
   assert_contains "$output" "13 blocked team-next-review-launch: on 12"
 }
 
-@test "--json prints the same as a list of objects" {
-  ticket_done 01 02 03 04 05 06 07 08 09
+@test "--json prints the same as a list of objects, each done ticket with its build minutes" {
+  build_launch 01 0a0a0a0a 2026-11-01T09:00:00Z
+  ticket_done --at 2026-11-01T09:42:10Z 01
+  ticket_done 02 03 04 05 06 07 08 09
   build_launch 10 a1b2c3d4
   run_bin -0 --separate-stderr team-tickets T172 --json
   assert_equal "$(jq length <<<"$output")" 19
   assert_equal "$(jq -c '.[9]' <<<"$output")" "$(jq -cn --arg f "$tickets/10-team-tickets.md" \
     '{ticket: "10", slug: "team-tickets", state: "running", project: "proj", file: $f, phase: 1, blocked_by: ["04"],
-      waits_for: null, on: [], session: "a1b2c3d4", touches: null}')"
-  assert_equal "$(jq -c '.[11] | [.state, .blocked_by, .on, .waits_for, .session]' <<<"$output")" \
-    '["blocked",["03","05","07","10"],["10"],"T171 merged (both edit `roles/coordinator.md`).",null]'
-  assert_equal "$(jq -c '.[0] | [.state, .on, .session]' <<<"$output")" '["done",[],null]'
+      waits_for: null, on: [], session: "a1b2c3d4", touches: null, minutes: null}')"
+  assert_equal "$(jq -c '.[11] | [.state, .blocked_by, .on, .waits_for, .session, .minutes]' <<<"$output")" \
+    '["blocked",["03","05","07","10"],["10"],"T171 merged (both edit `roles/coordinator.md`).",null,null]'
+  # Done after a launch: its minutes, last; done by hand with no launch: null.
+  assert_equal "$(jq -c '.[0] | [.state, .on, .session, .minutes]' <<<"$output")" '["done",[],null,42]'
+  assert_equal "$(jq -c '.[0] | keys_unsorted | last' <<<"$output")" '"minutes"'
+  assert_equal "$(jq -c '.[1] | [.state, .minutes]' <<<"$output")" '["done",null]'
 }
 
 @test "running needs a builder launch on brief-build-NN with no ticket-done of NN since" {
@@ -497,7 +438,7 @@ team-tickets: $wt2/.work/task/scope.txt:3: bin/team-c is in no ticket's Touches:
 
 @test "--help prints the header with both line formats" {
   run_bin -0 team-tickets --help
-  assert_contains "$output" "Usage: team-tickets T<n> [--check] [--json]"
+  assert_contains "$output" "Usage: team-tickets T<n> [--check | --json"
   assert_contains "$output" "Blocked by: None"
   assert_contains "$output" "Waits for:"
 }
