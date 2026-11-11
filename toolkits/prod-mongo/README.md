@@ -2,6 +2,7 @@
 
 Verified backups of Conventioner's production database, and drills that prove they restore, for the `ops` role only.
 The backups land in `~/conventioner-backups` on Daniel's machine, and every answer is counts, sizes and paths, never a document.
+`team-worker` refuses it, the ops load check's launch included, in a worktree of a project whose `toolkits` in `projects.toml` do not list it, so it runs in a worktree of Conventioner, whose database it backs up, once Daniel's yes has put it in that project's line.
 
 ## What loads
 
