@@ -599,7 +599,7 @@ LINES
   )"
   local before value
   before=$(cat "$TEAM_HOME/ledger.jsonl")
-  for value in 4 0 2,4 "2, 1" 2, ,2 two 12 "[2]"; do
+  for value in 4 0 2,4 "2, 1" "2," ,2 two 12 "[2]"; do
     run_bin -1 team-log T26 plan-approved by=Daniel "parallel=$value"
     assert_equal "$output" "team-log: parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '$value'"
   done

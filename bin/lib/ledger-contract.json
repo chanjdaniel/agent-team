@@ -85,8 +85,9 @@
     },
     "ticket-done": {
       "writer": "team-log",
+      "about": "head is the task branch's tip a ticket landed as, which team-next logs through team-log only when it integrated the ticket from its ticket worktree, absent for a ticket built in the task worktree",
       "required": {"ticket": "string", "commits": "array"},
-      "optional": {"repo": "string"}
+      "optional": {"repo": "string", "head": "string"}
     },
     "question": {
       "writer": ["team-log", "team-ask"],
