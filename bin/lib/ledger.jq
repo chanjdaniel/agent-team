@@ -616,7 +616,7 @@ def lifecycle_launch_refusal($task; $role; $past; $hint):
        (.asks as $asks | $past[] | select(IN($asks[].id) | not) | "--past-ask \(.) names no unanswered ask of \($task)")
      end),
     (if IN($role; "builder", "reviewer") and .approval == "withdrawn" then
-       "\($task)'s plan approval was withdrawn at \(.withdrawal.ts) in Discord message \(.withdrawal.discord_message), so it takes no \($role) until the plan is approved again (plan-approved)"
+       "\($task)'s plan approval was withdrawn at \(.withdrawal.ts) in Discord message \(.withdrawal.discord_message), so it takes no \($role) until Daniel approves the plan again (plan-approved by=Daniel)"
      elif IN($role; "builder", "reviewer") and .path == "feature" and .phase == "planning" then
        "\($task) is a feature task with no approved plan (no plan-approved), so it takes no \($role) yet"
      else empty end)
@@ -1600,11 +1600,11 @@ def coordinator_twin_findings($self):
 # takes it): each open task's stowing finding, then its merge-due (on the default word, judged with
 # every task's withdrawals), else its findings unless it is parked, then the stray sessions (named
 # like a team worker whose task is closed or not in the ledger, never the load check's T0, whose
-# session the coordinator
-# waits on for up to 30 minutes), in task number order; then the coordinator-twin, activity,
-# level, retro-due and health findings. $own is the registered projects that are the team's own,
-# or null, as merge_due_finding takes it, $health the health view, as health_findings takes it, and
-# $self the sweep's own session id, as coordinator_twin_findings takes it.
+# session the coordinator waits on for up to 30 minutes), in task number order; then the
+# coordinator-twin, activity, level, retro-due and health findings. $own is the registered projects
+# that are the team's own, or null, as merge_due_finding takes it, $health the health view, as
+# health_findings takes it, and $self the sweep's own session id, as coordinator_twin_findings takes
+# it.
 def sweep($sessions; $plan; $activity; $own; $health; $self):
   . as $events
   | by_task as $tasks
@@ -1671,9 +1671,9 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # resource level ($level, team-level status --json's object or {error}), the withdrawals of the
 # default merge word that stand ($withdrawn, default_withdrawals' list), the session list, each
 # registered project's open PRs ($prs), the current items ($items) and the production checks' last
-# results ($production, team-uptime status --json's object or {error}). It
-# carries $level as level, the open tasks stowed, waiting to resume, as awaiting_resume, the
-# resources_line as resources (null when $level is {error}), and $production as production.
+# results ($production, team-uptime status --json's object or {error}). It carries $level as level,
+# the open tasks stowed, waiting to resume, as awaiting_resume, the resources_line as resources
+# (null when $level is {error}), and $production as production.
 def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed

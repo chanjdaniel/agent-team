@@ -26,12 +26,12 @@
 # launch's past_ask names ("T<n> has an unanswered ask, <id>, since <ts>; launch past it with
 # --past-ask <id>"), and a --past-ask naming none ("--past-ask <id> names no unanswered ask of
 # T<n>"); a builder or reviewer of a task on any path whose plan approval is withdrawn ("T<n>'s
-# plan approval was withdrawn at <ts> in Discord message <id>, so it takes no <role> until the plan
-# is approved again (plan-approved)"); and a builder or reviewer of a feature task still planning
-# ("T<n> is a feature task with no approved plan (no plan-approved), so it takes no <role> yet").
-# It also refuses a task with no
-# Discord thread, a worktree not one of the task's open worktrees, and a launch on a machine that
-# does not hold the lease (`team-lease check`, confirmed against origin) or cannot reach GitHub.
+# plan approval was withdrawn at <ts> in Discord message <id>, so it takes no <role> until Daniel
+# approves the plan again (plan-approved by=Daniel)"); and a builder or reviewer of a feature task
+# still planning ("T<n> is a feature task with no approved plan (no plan-approved), so it takes no
+# <role> yet"). It also refuses a task with no Discord thread, a worktree not one of the task's open
+# worktrees, and a launch on a machine that does not hold the lease (`team-lease check`, confirmed
+# against origin) or cannot reach GitHub.
 # Prints the background session id and logs the launch to ledger.jsonl, with the worktree's
 # project and branch, the machine's team name
 # (~/.config/agent-team/machine), and for ops the request's link and message id. T0, the load check, needs no thread and

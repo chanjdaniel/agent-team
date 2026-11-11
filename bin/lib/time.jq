@@ -72,15 +72,14 @@ def park_class:
 # merge-preapproved no later merge-preapproval-withdrawn of theirs ended), until the merged or a
 # withdrawal that leaves none standing while the word is still plan, a review that sends notes back
 # (sent_back) building (the builder's fix round, fix, which a reviewer's done leaves building and a
-# paused whose cause is
-# stow (park_cause) in it does not park (unparked), so the stow up to the fresh builder's launch is
-# building; a builder's done, pr or ticket-done, another review, a merged or another role's launch
-# ends it), and a done (save one while the word plan or default merges), merged or other review
-# unattributed (the coordinator's turn, or a gate run the ledger did not see); with no park, an ask
-# the fold
-# still holds open while the phase is unattributed is a wait on Daniel (idle_class). A park logged
-# after the fact with since takes effect at since, held to the span from the event before it to its
-# own ts. The task starts unattributed, and the walk stops at the first event after $end.
+# paused whose cause is stow (park_cause) in it does not park (unparked), so the stow up to the
+# fresh builder's launch is building; a builder's done, pr or ticket-done, another review, a merged
+# or another role's launch ends it), and a done (save one while the word plan or default merges),
+# merged or other review unattributed (the coordinator's turn, or a gate run the ledger did not
+# see); with no park, an ask the fold still holds open while the phase is unattributed is a wait on
+# Daniel (idle_class). A park logged after the fact with since takes effect at since, held to the
+# span from the event before it to its own ts. The task starts unattributed, and the walk stops at
+# the first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 
 # What a park event waits on: a typed one's (a cause bin/lib/lifecycle.json's causes list) the

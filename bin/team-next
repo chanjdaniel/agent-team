@@ -92,23 +92,20 @@
 # each such review named, with ", so the default word does not hold" while the plan stands
 # approved on a project not the team's own, and the before notes to queue as follow-ups; for a PR
 # behind its base, "merge base: ..." instead, read with base_merge in the project's primary checkout
-# once the PR's
-# branch and the base are fetched there:
-# "run team-catch-up T<n>, which needs no rereview" when the reviewed head merges the base cleanly,
-# then "then, once the checks pass on its merge: " and the merge line above for the reviewed head
-# with no checks (its guarded areas, risky reviews and before notes as they are), else the
-# builder-merge-base brief for the holder under 250k, else a fresh builder, after the
-# holder's STOW when it is live, with "conflicts on <files>" after the behind count for a conflict,
-# or "(whether the merge is clean is not known: <why>)" when the fetch or git fails. For a pass
-# with no PR (a review-ready, a gated or Disclosure task's, or a later phase's whose earlier PR
-# GitHub says is merged), the message telling the holder to go on with its delivery. For findings,
-# or a pass that sent some
-# back (which team-log logs as findings): the message for the holder under 250k (its name, the
-# findings sent back and the findings file the message names, for a pass the newest of review.md
-# and rereview*.md in the holder's task directory, as team-brief derives a round's, and that
-# each is fixed as narrowly as it asks, a fix reaching shapes it does not name a T<n> QUESTION
-# first), else the T<n> STOW to send it (after recovering it when gone), or no hand-off when
-# nothing was sent back.
+# once the PR's branch and the base are fetched there: "run team-catch-up T<n>, which needs no
+# rereview" when the reviewed head merges the base cleanly, then "then, once the checks pass on its
+# merge: " and the merge line above for the reviewed head with no checks (its guarded areas, risky
+# reviews and before notes as they are), else the builder-merge-base brief for the holder under
+# 250k, else a fresh builder, after the holder's STOW when it is live, with "conflicts on <files>"
+# after the behind count for a conflict, or "(whether the merge is clean is not known: <why>)" when
+# the fetch or git fails. For a pass with no PR (a review-ready, a gated or Disclosure task's, or a
+# later phase's whose earlier PR GitHub says is merged), the message telling the holder to go on
+# with its delivery. For findings, or a pass that sent some back (which team-log logs as findings):
+# the message for the holder under 250k (its name, the findings sent back and the findings file the
+# message names, for a pass the newest of review.md and rereview*.md in the holder's task directory,
+# as team-brief derives a round's, and that each is fixed as narrowly as it asks, a fix reaching
+# shapes it does not name a T<n> QUESTION first), else the T<n> STOW to send it (after recovering it
+# when gone), or no hand-off when nothing was sent back.
 # The churn rule: when this review sent back a finding its widening= marks (one in what the last
 # fix added), the task's previous review (the latest before this one, on a rerun the latest
 # before the line that holds it) sent back one of its own, and every finding this one sent back

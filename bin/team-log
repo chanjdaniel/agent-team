@@ -43,56 +43,53 @@
 # closed task; no tasks/T<n>/plan.md; a task whose opened project has no open worktree that is a
 # directory on this machine, since its spec.md and scope.txt could not be hashed; a scope.txt that
 # lists no path or holds a line that is no clean repository path (a string with no leading /, no .
-# or .. segment, no empty segment, no glob
-# character *?[ and no whitespace; a directory ends in /); and a second approval whose by and
-# plan equal the one standing (plan_approval in bin/lib/ledger.jq). A plan-approval-withdrawn
-# (discord_message=<id>, Daniel's message, which team-log takes as named, since a withdrawal only
-# stops work) is refused for a closed task, a message that is no Discord id, and when no approval
-# stands. A kind the contract marks retired is refused before anything else is read, logging
-# nothing, with its reason: merge-preapproved, merge-preapproval-withdrawn, merge-standing and
-# merge-standing-withdrawn, retired by T276, since the approved plan is the merge word, which
-# merge-default-withdrawn withdraws; --check still passes the lines logged before. A
-# merge-default-withdrawn, Daniel's withdrawal of the default merge word, or a
-# merge-default-restored, its giving back
-# (scope=<task|project|all> discord_message=<id> discord_channel=<id>), is refused when its scope
-# is neither task (the task it is logged under), all (every project) nor a project team-project
-# --list names, when it is task on a closed task, when its discord_message or discord_channel is
-# no Discord id, and when its discord_channel is neither #coordinator's channel nor the task's
-# latest thread, naming both; a merge-default-restored is refused too when no PR it covers has a
-# withdrawal as the latest of the two kinds covering it, over the whole ledger (a task's PRs in
-# each project of its opened and worktree-added events; default_restore_withdrawn in
-# bin/lib/ledger.jq). A branch-renamed, the task's new
-# branch in a project after the gate rewrote the remote one, is refused when its project is not
-# one of the task's opened or worktree-added events, its branch is the task's there now (the
-# latest opened, worktree-added or branch-renamed of the project), does not name the task, or is
-# no branch name git takes (git check-ref-format --branch). A review
-# whose sent_back names any finding is logged with verdict findings, a pass's too, since a pass
-# whose notes go back before the merge is not ready to merge. A review's findings, when given,
-# must count exactly blocking, correctness, security, real-data, note-change and note-before, each
-# a whole number, and its guarded list only ci, migrations, deploy, permissions, secrets and
-# guardrails, the areas of bin/lib/guarded (dependencies and settings are retired); its before, the
-# numbers of its plain notes on code the PR did not change, distinct whole numbers above 0, is
-# required when findings counts a note-before, as many
-# as it counts, and a sent_back naming one of them is refused, since such a note is queued, never
-# sent back; its widening, the numbers of a rereview's new findings in what the last fix added,
-# distinct whole numbers above 0 too, is refused naming any before lists, since a before note is
-# on code the PR did not change, and may name a finding sent_back does not. A park (waiting,
-# blocked, paused, held) carries a cause, one bin/lib/lifecycle.json's causes give its kind, and
-# a cause= given is kept: a held is daniel-hold, Daniel's hold, and is refused without
-# discord_message ("a held is Daniel's hold, and needs discord_message, the id of Daniel's message
-# saying so"); a waiting on=Daniel (any case) is daniel, on anyone else outside (ask is team-ask's);
-# a blocked on=T<m> is task, any other worker (denial, for a denial that stops the work, is given);
-# a paused has no default and is refused without one ("a paused needs cause=, one of limit,
-# machine, shutdown, worker"). A park logged after the fact takes since=<UTC time>, when it began: no later
-# than now and no earlier than the task's latest event, or it is refused naming both times; no
-# other kind takes since. A resumed names what it ends, and is refused with none of id, all=true
-# and brief ("resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T<n> lists
-# the standing parks"): id=<park> ends that park, Daniel's hold only with discord_message, their
-# word lifting it, and never an ask's wait, which its ask's answer ends; all=true every standing
-# park whose cause in bin/lib/lifecycle.json takes all (all but Daniel's hold and an ask's wait);
-# brief=<brief> alone, a merge-base round's holder brief, none. The lifecycle table names a
-# resumed id= the fold would not end (of no standing park, of an ask's wait, of Daniel's hold
-# with no discord_message) and a held while Daniel's hold stands, warned or refused as above.
+# or .. segment, no empty segment, no glob character *?[ and no whitespace; a directory ends in /);
+# and a second approval whose by and plan equal the one standing (plan_approval in
+# bin/lib/ledger.jq). A plan-approval-withdrawn (discord_message=<id>, Daniel's message, which
+# team-log takes as named, since a withdrawal only stops work) is refused for a closed task, a
+# message that is no Discord id, and when no approval stands. A kind the contract marks retired is
+# refused before anything else is read, logging nothing, with its reason: merge-preapproved,
+# merge-preapproval-withdrawn, merge-standing and merge-standing-withdrawn, retired by T276, since
+# the approved plan is the merge word, which merge-default-withdrawn withdraws; --check still passes
+# the lines logged before. A merge-default-withdrawn, Daniel's withdrawal of the default merge word,
+# or a merge-default-restored, its giving back (scope=<task|project|all> discord_message=<id>
+# discord_channel=<id>), is refused when its scope is neither task (the task it is logged under),
+# all (every project) nor a project team-project --list names, when it is task on a closed task,
+# when its discord_message or discord_channel is no Discord id, and when its discord_channel is
+# neither #coordinator's channel nor the task's latest thread, naming both; a merge-default-restored
+# is refused too when no PR it covers has a withdrawal as the latest of the two kinds covering it,
+# over the whole ledger (a task's PRs in each project of its opened and worktree-added events;
+# default_restore_withdrawn in bin/lib/ledger.jq). A branch-renamed, the task's new branch in a
+# project after the gate rewrote the remote one, is refused when its project is not one of the
+# task's opened or worktree-added events, its branch is the task's there now (the latest opened,
+# worktree-added or branch-renamed of the project), does not name the task, or is no branch name git
+# takes (git check-ref-format --branch). A review whose sent_back names any finding is logged with
+# verdict findings, a pass's too, since a pass whose notes go back before the merge is not ready to
+# merge. A review's findings, when given, must count exactly blocking, correctness, security,
+# real-data, note-change and note-before, each a whole number, and its guarded list only ci,
+# migrations, deploy, permissions, secrets and guardrails, the areas of bin/lib/guarded
+# (dependencies and settings are retired); its before, the numbers of its plain notes on code the PR
+# did not change, distinct whole numbers above 0, is required when findings counts a note-before, as
+# many as it counts, and a sent_back naming one of them is refused, since such a note is queued,
+# never sent back; its widening, the numbers of a rereview's new findings in what the last fix
+# added, distinct whole numbers above 0 too, is refused naming any before lists, since a before note
+# is on code the PR did not change, and may name a finding sent_back does not. A park (waiting,
+# blocked, paused, held) carries a cause, one bin/lib/lifecycle.json's causes give its kind, and a
+# cause= given is kept: a held is daniel-hold, Daniel's hold, and is refused without discord_message
+# ("a held is Daniel's hold, and needs discord_message, the id of Daniel's message saying so"); a
+# waiting on=Daniel (any case) is daniel, on anyone else outside (ask is team-ask's); a blocked
+# on=T<m> is task, any other worker (denial, for a denial that stops the work, is given); a paused
+# has no default and is refused without one ("a paused needs cause=, one of limit, machine,
+# shutdown, worker"). A park logged after the fact takes since=<UTC time>, when it began: no later
+# than now and no earlier than the task's latest event, or it is refused naming both times; no other
+# kind takes since. A resumed names what it ends, and is refused with none of id, all=true and brief
+# ("resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T<n> lists the
+# standing parks"): id=<park> ends that park, Daniel's hold only with discord_message, their word
+# lifting it, and never an ask's wait, which its ask's answer ends; all=true every standing park
+# whose cause in bin/lib/lifecycle.json takes all (all but Daniel's hold and an ask's wait);
+# brief=<brief> alone, a merge-base round's holder brief, none. The lifecycle table names a resumed
+# id= the fold would not end (of no standing park, of an ask's wait, of Daniel's hold with no
+# discord_message) and a held while Daniel's hold stands, warned or refused as above.
 # A retro-change is refused when its retro names a
 # task with no opened event of path retro, or a retro with no answered of id retro.
 # A gate-run whose cause is base-merge and whose outcome is not aborted, in either form, is logged

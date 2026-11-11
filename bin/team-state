@@ -38,13 +38,13 @@
 # planning; a builder's launch or a ticket-done moves planning, merged-part or merged to building,
 # except while the plan approval is withdrawn; a builder's done reporting review-ready or merged
 # moves building to in-review; a pr, and while building, in review or awaiting merge a review or
-# (with a
-# PR logged) a history-rewritten, makes it awaiting-merge when it has a PR not merged and each such
-# PR's latest review on its head is a pass, else in-review; a merged that leaves no PR open makes it
-# merged-part when it names phases_left (phases with a ticket not done), else merged. A task's PRs
-# are the latest pr event in each repo; a PR's head is that event's, moved by each later
-# history-rewritten from it (or from a head no PR has); a PR is merged by a merged event naming its
-# URL (legacy: its number). Heads compare by the shorter one's prefix, at least 7 characters.
+# (with a PR logged) a history-rewritten, makes it awaiting-merge when it has a PR not merged and
+# each such PR's latest review on its head is a pass, else in-review; a merged that leaves no PR
+# open makes it merged-part when it names phases_left (phases with a ticket not done), else merged.
+# A task's PRs are the latest pr event in each repo; a PR's head is that event's, moved by each
+# later history-rewritten from it (or from a head no PR has); a PR is merged by a merged event
+# naming its URL (legacy: its number). Heads compare by the shorter one's prefix, at least 7
+# characters.
 # pr is null without a pr event; otherwise it joins the latest pr event with GitHub (gh pr view,
 # gh pr checks, gh pr checks --required): number, repo and project (from the event's project in
 # projects.toml, else from the URL), state, base, branch (the PR's head branch), the live head, the
