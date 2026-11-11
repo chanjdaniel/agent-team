@@ -169,8 +169,8 @@
 # args= does not show as a team-stack (a pid reused by another process included), the owed
 # words being "its seed, owed since <at>, never ran", "its seed failed at <at> (exit <n>)" and
 # "its seed, started at <at>, never finished"; the seed command may run again on a half-seeded
-# database (sops/docker.md, the wrapper contract). stop, the sweep and team-level leave the
-# record; down, the reaper's removal and up's takedown of another task's stack remove it.
+# database (sops/docker.md, the wrapper contract). stop, the sweep and team-level leave its
+# seed as it is; down, the reaper's removal and up's takedown of another task's stack remove it.
 #
 # The owner classes, from each object's own labels and its Compose project, and the registry's
 # stack blocks (team-project --help):

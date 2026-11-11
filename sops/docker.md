@@ -108,7 +108,7 @@ How the seed moves:
   Two `up`s never seed one stack at once: each moves the record to `running` only while it is still the seed it read.
 - An `up` leaves a seed a live `team-stack` is running ("not seeded: its seed is running in team-stack <pid>"), one that is `done` or `unknown` ("not seeded: its database was there"), and one that is `skipped`, which only `team-stack seed` seeds ("not seeded: it was started with --no-seed at <at> and never seeded; team-stack seed seeds it").
 - `up --no-seed` never seeds, and on an owed stack says what is owed: "not seeded: --no-seed, though <the owed words>; team-stack seed seeds it".
-- `stop`, the sweep and `team-level`'s stop leave the record; `down`, the reaper's removal and `up`'s takedown of another task's stack remove it.
+- `stop`, the sweep and `team-level`'s stop leave the seed as it is; `down`, the reaper's removal and `up`'s takedown of another task's stack remove it.
 
 `env` warns when the seed is not done, one line on stderr before its exports: "team-stack: warning: <name> is not seeded: <the owed words, or 'it was started with --no-seed at <at> and never seeded'>; team-stack seed seeds it", or "...: its seed is running in team-stack <pid>"; `done` and `unknown` print nothing.
 
