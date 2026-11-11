@@ -117,6 +117,62 @@ pr: []"
   assert_equal "$(sed -n 's/^status: //p' "$TEAM_HOME/projects/proj/backlog/E40-h/F01-m/S02-w.md" | head -n 1)" ready
 }
 
+# T14's worktree becomes $wt, on this machine, with an empty tickets/ in its task directory, so
+# team-tickets reads T14's tickets from it: in_worktree
+in_worktree() {
+  wt=$BATS_TEST_TMPDIR/wt
+  mkdir -p "$wt/.scratch/task/tickets"
+  jq -c --arg wt "$wt" 'if .event == "opened" then .worktree = $wt else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+}
+
+# A ticket of T14 in phase <phase>, finished (a ticket-done of it logged) when asked: ticket <NN> <phase> [finished]
+ticket() {
+  printf '# %s\n\n**Blocked by:** None\n\n**Phase:** %s\n' "$1" "$2" >"$wt/.scratch/task/tickets/$1-part.md"
+  [[ ${3:-} != finished ]] || event T14 ticket-done "{ticket: \"$1\", commits: [\"abc1234\"]}"
+}
+
+@test "a merge names the phases with a ticket not done as phases_left, so a part merged reads merged-part" {
+  in_worktree
+  ticket 01 1 finished
+  ticket 02 1 finished
+  ticket 03 2 finished
+  ticket 04 2
+  ticket 05 2
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -c .phases_left)" "[2]"
+  stub_reply claude "[]"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -r .phase <<<"$output")" merged-part
+  TEAM_HOME=$TEAM_HOME run -0 "$REPO_ROOT/bin/team-log" --check
+}
+
+@test "the last part's merge, every ticket done, names no phases left and reads merged" {
+  in_worktree
+  ticket 01 1 finished
+  ticket 02 2 finished
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -c .phases_left)" "[]"
+  stub_reply claude "[]"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -r .phase <<<"$output")" merged
+}
+
+@test "a task with no tickets logs no phases_left" {
+  in_worktree
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -c 'has("phases_left")')" false
+  [[ $stderr != *tickets* ]]
+}
+
+@test "tickets team-tickets cannot read are a line on stderr, and the merge goes on with no phases_left" {
+  in_worktree
+  printf '# 01\n\nno blockers line\n' >"$wt/.scratch/task/tickets/01-part.md"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: cannot read T14's tickets (team-tickets: $wt/.scratch/task/tickets/01-part.md: no Blocked by: line; write 'Blocked by: None' or 'Blocked by: 01, 03'), so its merged names no phases left"
+  assert_equal "$(merged_events | jq -c '[.pr, has("phases_left")]')" "[5,false]"
+}
+
 @test "a merge brings waiting.md up to date" {
   # Reviewed at the head and not yet approved, the PR waits on Daniel.
   jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"

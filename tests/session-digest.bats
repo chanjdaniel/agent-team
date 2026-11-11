@@ -84,9 +84,10 @@ team_at_work() {
   team_at_work
   start -0
   assert_equal "$stderr" ""
+  # Each builder's launch put its task in building (the lifecycle's launch rule).
   assert_equal "$output" "Open tasks (2):
-  T3 planning | T3-builder busy
-  T12 planning | T12-builder idle blocked
+  T3 building | T3-builder busy
+  T12 building | T12-builder idle blocked
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 Standing merge word: none
 Live team sessions (2):
@@ -118,8 +119,10 @@ $(watch_lines)"
   event T172 launch '{role: "builder", session: "59709d99", worktree: "/w/1", toolkits: [], brief: "brief-build-04"}'
   stub_reply claude '[{"id": "59709d99", "sessionId": "59709d99-7687", "name": "T172-builder", "status": "idle"}]'
   start -0
+  # Its ticket-done put it in building, and its review in review (the lifecycle's build and review
+  # phase rules).
   assert_contains "$output" "Open tasks (1):
-  T172 proj feature planning | T172-builder idle on build-04 | tickets 3/7 | review 1 findings, sent back 5, 6
+  T172 proj feature in-review | T172-builder idle on build-04 | tickets 3/7 | review 1 findings, sent back 5, 6
 "
 }
 
