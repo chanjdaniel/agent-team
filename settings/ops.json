@@ -1,5 +1,4 @@
 {
-  "crossSessionInbound": "accept",
   "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
   "disableBundledSkills": true,

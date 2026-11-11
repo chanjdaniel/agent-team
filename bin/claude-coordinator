@@ -3,8 +3,10 @@
 #
 # The Discord plugin logs in to Discord from every session that loads it, so it is off in user
 # settings and on here alone, through this session's own --settings. Bypass mode, by Daniel's
-# choice; workers run in auto mode, and crossSessionInbound: accept (user settings) keeps their
-# messages to this session from being held. With the safety classifier off here, its settings'
+# choice; workers run in auto mode, which holds a bypass-mode sender's message for an approval
+# nobody gives unless the receiver's settings accept it, so the workers' own settings
+# (settings/worker.json, crossSessionInbound: accept) take this session's messages, whatever a
+# machine's user settings say. With the safety classifier off here, its settings'
 # deny rules stop the plain spelling of a force push, a push to dev or main, git reset --hard,
 # git clean, git branch -D, a Docker prune and a merge outside team-merge, by the workers' own
 # rules (tests/repo.bats holds the two together), a speed bump another spelling gets past;
