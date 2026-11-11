@@ -9,8 +9,14 @@
 # record (~/.local/state/agent-team/lease.json, as team-lease leaves it) does not say it holds the
 # lease, checks nothing and exits 1 saying so ("team-uptime: <machine> does not hold the lease, so
 # it checks nothing"). One run at a time: while another holds ~/.local/state/agent-team/uptime.lock
-# it prints "another team-uptime run is checking; skipped" and exits 0. With no check in the
-# registry it makes no request, prints nothing, posts nothing and writes no state.
+# it prints "another team-uptime run is checking; skipped" and exits 0. Once it holds that lock, it
+# first strips each check's alert from an uptime.json from before the notice record. The first
+# write of the notice record by either script moves every old record's open notices into it, so
+# team-timers run's move has most often moved the outages already; when no write has yet, this run
+# writes the record first, then strips. A move that fails says so on stderr ("team-uptime: cannot
+# move the open outages of <state> into the notice record <record>: <why>; they are moved at the
+# next run") and fails nothing. With no check in the registry it then makes no request, prints
+# nothing, posts nothing and writes no state.
 #
 # Each check is one fetch, in turn, the same plain GET every time, with no curlrc (-q), no header,
 # cookie or credential of its own and no redirect followed:
@@ -38,41 +44,56 @@
 # one that answers again after its down post went through is due its back post, which closes it,
 # and one that answers before its down post ever went through is closed with no post. A check still
 # down 240 minutes after its down post, or its last reminder, is due a reminder. One that fails
-# again before its back post went through stays the same outage, with no new down post. The posts
-# of one run are at most one message for the down posts, one for the reminders and one for the
-# back posts, in that order, a line per check in registry order, each cut to Discord's 2000
-# characters, mentioning no one and with Discord's link previews off (flags 4), so Discord's
-# crawler never fetches production:
+# again before its back post went through stays the same outage, with no new down post. An outage
+# opened in an earlier holding of the lease than lease.json's taken_at names (the lease went to
+# another machine and came back) is closed with no post, with the line "<project>/<name>: its
+# outage was posted in an earlier holding of the lease; closed without a post" (or, never posted,
+# "...: its outage was opened in an earlier holding of the lease and never posted; closed"), and a
+# check down then gets a down post afresh, as a new outage of this holding. The posts of one run
+# are at most one message for the down posts, one for the reminders and one for the back posts, in
+# that order, a line per check in registry order, each cut to Discord's 2000 characters,
+# mentioning no one and with Discord's link previews off (flags 4), so Discord's crawler never
+# fetches production:
 #   Production down: <project> <name> (<<url>>) since <HH:MM>, <n> checks in a row from <machine>: <reason>.
 #   Production still down: <project> <name> (<<url>>) since <HH:MM>, <duration>: <reason>.
 #   Production back: <project> <name> (<<url>>) answers again at <HH:MM>, down since <HH:MM> (<duration>).
 # times as this machine's local hours and minutes, durations as "<n> minutes", "<h> hours" or
-# "<h> hours <n> minutes", singular for 1. A post that went through is recorded, so neither a
-# later run nor a restart posts it again; one Discord refused is not, so it is due again at the
-# next run, and it fails this one ("team-uptime: the post to #coordinator failed (<reason>); it
-# is tried again next run" on stderr). A check the registry no longer names, or names with
-# another url or expect, is dropped from the state, so a changed one starts fresh; one dropped
-# after its down post went through gets the line "<project>/<name>: no longer checked as it was;
-# its open outage is closed without a post".
+# "<h> hours <n> minutes", singular for 1. A post that went through is recorded in the notice
+# record, so neither a later run nor a restart posts it again; one Discord refused is not, so it is
+# due again at the next run, and it fails this one ("team-uptime: the post to #coordinator failed
+# (<reason>); it is tried again next run" on stderr). A check the registry no longer names, or
+# names with another url or expect, is dropped from the state, so a changed one starts fresh, and
+# its outage closed with no post; one closed after its down post went through gets the line
+# "<project>/<name>: no longer checked as it was; its open outage is closed without a post".
 #
 # It prints, a line each, every failing check ("<project>/<name>: failed: <reason> (<n> in a row,
 # since <UTC time>)"), every outage closed with no post, and every post ("posted to #coordinator
 # (message <id>): <down|still down|back>: <project>/<name>[, ...]", the id none when Discord gave
 # none); a run whose checks are all good and change nothing prints nothing. It exits 0 when every
 # check was counted and every due post went through, production down or not; 1 when the
-# known-good site was unreachable, a post failed, the state file was set aside or the state could
-# not be written, the rest of the run done first; and 1 at once, checking nothing, when the
-# registry cannot be read.
+# known-good site was unreachable, a post failed, the state file or the notice record was set
+# aside, or the state or a post's outcome in the notice record could not be written, the rest of
+# the run done first; 1 at once, checking nothing, when the registry cannot be read; and 1 once
+# the checks are fetched, counting nothing and posting nothing, when the round's notice record
+# cannot be written ("team-uptime: cannot write <record>: <why>" on stderr), so the next run
+# judges it again.
 #
-# The state is ~/.local/state/agent-team/uptime.json, team-uptime/1, written whole and moved into
-# place; bin/lib/uptime.jq's header describes it. A state file that is not JSON, or not
+# The state is ~/.local/state/agent-team/uptime.json, team-uptime/1, each check's counting, written
+# whole and moved into place; bin/lib/uptime.jq's header describes it. Each open outage is the
+# notice uptime/<project>/<name> of the notice record, ~/.local/state/agent-team/notices.json
+# (team-notices/1, bin/lib/notice.jq's lifecycle, read and written through bin/lib/notices.sh
+# under notices.lock, which a writer waits 10 s for); a notice record that is not team-notices/1
+# is set aside as notices.json.bad, said on stderr ("team-uptime: <record> is not a
+# team-notices/1 record; it is set aside as <record>.bad, and the notices start again from
+# empty"), and fails the run. A state file that is not JSON, or not
 # team-uptime/1, is set aside as uptime.json.bad (one file, overwritten), said on stderr
 # ("team-uptime: <file> is not a team-uptime/1 state; it is set aside as <file>.bad, and this run
 # starts from an empty state"), and the run starts from an empty state, so production down then
 # takes two more runs to post.
 #
-# status: each check's last result, from the registry and the state file alone, with no request
-# and no post, on any machine, holder or not; a line per check in registry order,
+# status: each check's last result, from the registry, the state file and the notice record alone
+# (an uptime.json not yet moved read as if it had been), with no request, no post and no write, on
+# any machine, holder or not; a line per check in registry order,
 #   <project>/<name> <state>[ since <HH:MM>][: <reason>], checked <HH:MM> (<url>)
 # its state up, down (2 failures or more in a row, or any while its outage is open, since the
 # outage began) or failing (any other failure), or "<project>/<name> not checked yet (<url>)" for
@@ -80,19 +101,24 @@
 # With --json, the object team-snapshot carries as production: {schema: team-uptime/1, written
 # (when a run last wrote the state, null for none), line, checks: [{project, name, url, expect,
 # state (up, failing, down or unchecked), checked, since, failures, reason, alert}]}, the state's
-# fields of each check (null, and failures 0, for an unchecked one). line is the digest's
-# Production line, null with no check: "Production: all <n> checks up, last checked <HH:MM>", or
-# each check not up ("<project> <name> down since <HH:MM>: <reason>", "<project> <name> failed
-# once: <reason>" or "<project> <name> not checked yet") joined by "; ", then "; <n> more up"
-# when any is, then ", last checked <HH:MM>" when the state was written, cut to 200 characters. A
-# state file that is not team-uptime/1 is left as it is and fails it ("team-uptime: <file> is not
-# a team-uptime/1 state"), as a registry that cannot be read does.
+# fields of each check (null, and failures 0, for an unchecked one), and alert its open outage,
+# {since, posted, reminded, message, back}, back when it answered again, or null. line is the
+# digest's Production line, null with no check: "Production: all <n> checks up, last checked
+# <HH:MM>", or each check not up ("<project> <name> down since <HH:MM>: <reason>", "<project>
+# <name> failed once: <reason>" or "<project> <name> not checked yet") joined by "; ", then "; <n>
+# more up" when any is, then ", last checked <HH:MM>" when the state was written, cut to 200
+# characters. A state file that is not team-uptime/1 is left as it is and fails it ("team-uptime:
+# <file> is not a team-uptime/1 state"), as a registry that cannot be read does, and a notice
+# record that is not team-notices/1 fails it too ("team-uptime: <record> is not a team-notices/1
+# record").
 #
 # Seams for the tests: TEAM_UPTIME_SECONDS replaces each fetch's 10 seconds,
 # TEAM_UPTIME_KNOWN_GOOD the known-good site, and TEAM_UPTIME_REMIND_MINUTES the 240 minutes
 # between reminders (a whole number).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/notices.sh
+source "$TEAM_LIB/notices.sh"
 
 USAGE="usage: team-uptime run | status [--json]"
 STATE_DIR=$HOME/.local/state/agent-team
@@ -103,9 +129,24 @@ REMIND_MINUTES=${TEAM_UPTIME_REMIND_MINUTES:-}
 CONNECT_SECONDS=$((FETCH_SECONDS < 5 ? FETCH_SECONDS : 5))
 POST_TIMEOUT=20
 
-# jq with the uptime module: uptime_jq <filter> [jq options and files...]
+# jq with the uptime module and the notice module it includes: uptime_jq <filter> [jq options and
+# files...]
 uptime_jq() {
-  jq -L "$TEAM_LIB" "include \"uptime\"; $1" "${@:2}"
+  jq -L "$TEAM_LIB" "include \"uptime\"; include \"notice\"; $1" "${@:2}"
+}
+
+# Say on stderr, and fail the run with, a line the notice record's last update left in $err, as a
+# record set aside as not team-notices/1.
+notices_said() {
+  if grep -q . "$err"; then
+    echo "team-uptime: $(grep -m1 . "$err")" >&2
+    rc=1
+  fi
+}
+
+# The notice record could not be written: say why, from $err, on stderr.
+notices_unwritten() {
+  echo "team-uptime: cannot write $NOTICES: $(grep -m1 . "$err" || echo "no reason given")" >&2
 }
 
 # Fail unless this machine holds the lease, by its own record: not fenced, and lease.json naming
@@ -206,7 +247,7 @@ post() {
 }
 
 run_round() {
-  local checks check key url expect results=() now previous plan state count i what keys content id
+  local checks check key url expect results=() now previous plan count i what keys content id
   local failing why limits
   machine=$(machine_name) || exit 1
   limits=$(uptime_jq uptime_limits -nc)
@@ -221,6 +262,15 @@ run_round() {
     echo "another team-uptime run is checking; skipped"
     exit 0
   fi
+  body=$(mktemp) err=$(mktemp)
+  trap 'rm -f "$body" "$err"' EXIT
+  # The open outages of uptime.json from before the notice record, moved into it once (by the
+  # record's first write, whichever script made it), then stripped from the state.
+  if notices_upgrade uptime 2>"$err"; then
+    notices_said
+  else
+    echo "team-uptime: cannot move the open outages of $STATE_FILE into the notice record $NOTICES: $(grep -m1 . "$err" || echo "no reason given"); they are moved at the next run" >&2
+  fi
   checks=$(registry_checks) || exit 1
   [[ $checks != '[]' ]] || exit 0
 
@@ -231,8 +281,6 @@ run_round() {
     previous=$(uptime_jq uptime_empty -nc)
   fi
 
-  body=$(mktemp) err=$(mktemp)
-  trap 'rm -f "$body" "$err"' EXIT
   now=$(date -u +%FT%TZ)
   while IFS= read -r check; do
     json_vars key='"\(.project)/\(.name)"' url=.url expect=.expect <<<"$check"
@@ -248,22 +296,32 @@ run_round() {
     exit 1
   fi
 
-  plan=$(printf '%s\n' "${results[@]}" | jq -sc 'from_entries' |
-    uptime_jq '. as $results | $previous | uptime_round($checks; $results; $now; $machine; $limits)' \
-      --argjson previous "$previous" --argjson checks "$checks" --arg now "$now" --arg machine "$machine" \
-      --argjson limits "$limits")
+  # The round's notice record is written first: one it cannot write fails the run, counting nothing.
+  if ! plan=$(notices_update "uptime notice" \
+    '{state: $previous, record: .} | uptime_round($checks; $results; $now; $machine; $limits; $taken_at)' \
+    --argjson previous "$previous" --argjson checks "$checks" --arg now "$now" --arg machine "$machine" \
+    --argjson limits "$limits" --argjson taken_at "$(notices_taken_at)" \
+    --argjson results "$(printf '%s\n' "${results[@]}" | jq -sc 'from_entries')" 2>"$err"); then
+    notices_unwritten
+    exit 1
+  fi
+  notices_said
   jq -r '.lines[]' <<<"$plan"
-  state=$(jq -c .state <<<"$plan")
-  write_state "$state"
+  write_state "$(jq -c .state <<<"$plan")"
 
   count=$(jq '.posts | length' <<<"$plan")
   for ((i = 0; i < count; i++)); do
     json_vars what=".posts[$i].kind" keys=".posts[$i].keys | join(\", \")" content=".posts[$i].content" <<<"$plan"
     if id=$(post "$content"); then
       echo "posted to #coordinator (message ${id:-none}): $what: $keys"
-      state=$(uptime_jq 'uptime_posted($post; (if $id == "" then null else $id end); $at)' -c \
-        --argjson post "$(jq -c ".posts[$i]" <<<"$plan")" --arg id "$id" --arg at "$(date -u +%FT%TZ)" <<<"$state")
-      write_state "$state"
+      if notices_update "uptime notice" 'uptime_posted($post; (if $id == "" then null else $id end); $at) | {record: .}' \
+        --argjson post "$(jq -c ".posts[$i]" <<<"$plan")" --arg id "$id" --arg at "$(date -u +%FT%TZ)" \
+        >/dev/null 2>"$err"; then
+        notices_said
+      else
+        notices_unwritten
+        rc=1
+      fi
     else
       echo "team-uptime: the post to #coordinator failed ($(grep -m1 . "$err" || echo "no reason given")); it is tried again next run" >&2
       rc=1
@@ -272,12 +330,14 @@ run_round() {
   exit "$rc"
 }
 
-# Each check's last result, read-only: show_status [--json]
+# Each check's last result and open outage, read-only: show_status [--json]
 show_status() {
-  local checks state status
+  local checks state record status
   checks=$(registry_checks) || exit 1
   state=$(read_state) || die "$STATE_FILE is not a team-uptime/1 state"
-  status=$(uptime_jq 'uptime_status($checks; uptime_limits)' -c --argjson checks "$checks" <<<"$state")
+  record=$(notices_read 2>/dev/null) || die "$NOTICES is not a team-notices/1 record"
+  status=$(uptime_jq '{state: ., record: $record} | uptime_status($checks; uptime_limits)' -c \
+    --argjson checks "$checks" --argjson record "$record" <<<"$state")
   if [[ ${1:-} == --json ]]; then
     jq . <<<"$status"
   else

@@ -26,6 +26,7 @@ setup() {
   units=$HOME/.config/systemd/user agents=$HOME/Library/LaunchAgents
   log=$HOME/.local/state/agent-team/heartbeat.log
   failures=$HOME/.local/state/agent-team/heartbeat-failures.log
+  notices=$HOME/.local/state/agent-team/notices.json
   inbox_discord alerts
   inbox_guild_kept
 }
@@ -974,7 +975,7 @@ inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"
   run_bin -75 team-timers run
   run_bin -75 team-timers run
   assert_equal "$(inbox_calls)" ""
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "back checkpoint inbox"
   assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
@@ -1109,7 +1110,7 @@ $fixed 1 ms: Couldn't connect to server), so 1 failing check(s) were not counted
   run_bin -75 team-timers run
   assert_equal "$(uptime_lines "$output")" ""
   assert_equal "$(uptime_requests)" ""
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "back checkpoint uptime"
   assert_equal "$(uptime_requests | jq -r .path | paste -sd ' ')" "/api /known-good"
@@ -1357,7 +1358,7 @@ finished: stopped T9-builder 44444444: its work is handed on"
 
 # Origin unreachable for the team home: a closed local port.
 cut_origin() {
-  git -C "${1:-$TEAM_HOME}" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${1:-${TEAM_HOME:?}}" remote set-url origin https://127.0.0.1:9/agent-team.git
 }
 
 # git's reason for a cut origin, whose wording after "Failed to connect to 127.0.0.1" changes
@@ -1426,7 +1427,7 @@ teardown() {
 @test "a probe that fails once and then answers sets no flag, posts nothing and goes on to the lease" {
   age_lease 20
   stub_sleep <<EOF
-git -C "$TEAM_HOME" remote set-url origin "$origin"
+git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
 EOF
   cut_origin
   run_bin -0 team-timers run
@@ -1453,7 +1454,9 @@ EOF
   local flag=$HOME/.local/state/agent-team/offline since
   since=$(jq -r .since "$flag")
   (($(date -d "$since" +%s) >= before && $(date -d "$since" +%s) <= $(date -u +%s)))
-  jq -e '.posted == true' "$flag"
+  # The flag is the hold alone; that #coordinator was told is the offline notice's.
+  jq -e 'keys == ["since"]' "$flag"
+  jq -e --arg since "$since" '.notices.offline | .state == "posted" and .since == $since' "$notices"
   assert_contains "$(sed -n 2p <<<"$output")" " probe: GitHub unreachable since $since (unable to access 'https://127.0.0.1:9/agent-team.git/': Failed to connect"
   assert_contains "$(sed -n 2p <<<"$output")" "); the team is holding; #coordinator is told"
   assert_equal "$(posts)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team" '$t')"
@@ -1488,7 +1491,7 @@ EOF
   # Renewed 5 minutes ago, so no renewal would be due but for the outage.
   age_lease 5
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   [[ $(lease_tip) != "$tip" ]]
   lease_json | jq -e '.holder == "home-pc" and .epoch == 1 and (.renewed_at | fromdateiso8601) > now - 120'
@@ -1511,17 +1514,19 @@ EOF
   cut_origin
   run_bin -75 team-timers run
   assert_contains "$output" "the team is holding; the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it goes with the back message"
-  jq -e '.posted == false' "$HOME/.local/state/agent-team/offline"
+  jq -e '.notices.offline | .state == "open" and (.tried | type) == "string" and .posted == null' "$notices"
   local since
   since=$(jq -r .since "$HOME/.local/state/agent-team/offline")
 
   discord_answers
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   local back
   back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
   assert_equal "$(posts | sed -n 2p)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team
 GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  [[ ! -e $HOME/.local/state/agent-team/offline ]]
+  jq -e '.notices.offline == null' "$notices"
 }
 
 @test "with a session list that never answers, the back post is still made, saying the list could not be read" {
@@ -1541,7 +1546,7 @@ if [[ ! -e '$BATS_TEST_TMPDIR/hung' ]]; then
 fi
 echo '$COORDINATOR'
 SH
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   local start=$SECONDS
   TEAM_TIMERS_FINISHED_CALL_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
   ((SECONDS - start < 20))
@@ -1555,7 +1560,7 @@ SH
 @test "GitHub refusing the login (HTTP 403 or 401) is not offline: logged each run, posted once, no second try" {
   local tip
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 403)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
   stub_sleep </dev/null
   discord_answers
   run_bin -1 team-timers run
@@ -1566,7 +1571,7 @@ SH
   [[ $(posts | jq -r .) =~ $pattern ]]
 
   # A credential git cannot ask for (HTTP 401) is the same refusal, and is not posted again.
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 401)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 401)"
   run_bin -1 team-timers run
   [[ $output =~ ^[0-9T:Z-]+" probe: GitHub refuses home-pc's login (could not read Username for 'http://127.0.0.1:"[0-9]+"': terminal prompts disabled); not offline"$ ]]
   assert_equal "$(posts | wc -l)" 1
@@ -1574,15 +1579,100 @@ SH
   assert_equal "$(wc -l <"$failures")" 2
 
   # Answering again clears it, so a later refusal is posted again.
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_contains "$(sed -n 1p <<<"$output")" " probe: GitHub accepts home-pc's login again"
+  jq -e '.notices["login-refused"] == null' "$notices"
   [[ ! -e $HOME/.local/state/agent-team/login-refused ]]
   assert_equal "$(lease_tip)" "$tip"
 }
 
+@test "a login refusal whose post Discord refused is posted at the next refused run, once" {
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
+  stub_sleep </dev/null
+  discord_answers 503
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline; the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run" ]]
+  jq -e '.notices["login-refused"] | .state == "open" and (.tried | type) == "string"' "$notices"
+
+  discord_answers
+  : >"$STUB_CALLS/curl.log"
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline; #coordinator is told" ]]
+  assert_equal "$(posts | wc -l)" 1
+  [[ $(posts | jq -r .) == "GitHub refuses home-pc's login ("*"); the heartbeat cannot renew the lease until it is fixed there (team-doctor)" ]]
+  jq -e '.notices["login-refused"].state == "posted"' "$notices"
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline" ]]
+  assert_equal "$(posts | wc -l)" 1
+}
+
+@test "a login-refused file from before the notice record is moved without a second post while the refusal lasts, and closed silently when GitHub accepts the login" {
+  local file=$HOME/.local/state/agent-team/login-refused since
+  since=$(date -u +%FT%TZ)
+  mkdir -p "${file%/*}"
+  jq -n --arg since "$since" '{since: $since, reason: "The requested URL returned error: 403"}' >"$file"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
+  stub_sleep </dev/null
+  discord_answers
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline" ]]
+  assert_equal "$(posts)" ""
+  [[ ! -e $file ]]
+  jq -e --arg since "$since" '(.upgraded | index("login-refused") != null)
+    and (.notices["login-refused"] | .state == "posted" and .since == $since)' "$notices"
+  # The health view reads the refusal from the notice record, dated from the old file.
+  run_bin -1 team-timers health --json
+  jq -e --arg since "$since" '[.problems[] | select(.key == "login-refused") | .since] == [$since]' <<<"$output"
+
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  run_bin -0 team-timers run
+  assert_contains "$(sed -n 1p <<<"$output")" " probe: GitHub accepts home-pc's login again"
+  assert_equal "$(posts)" ""
+  jq -e '.notices["login-refused"] == null' "$notices"
+  [[ ! -e $file ]]
+}
+
+@test "an offline flag from before the notice record is moved by the back step: told, the back post has no outage line; not told, it carries it; the flag goes either way" {
+  local flag=$HOME/.local/state/agent-team/offline since back
+  since=$(date -u +%FT%TZ)
+  discord_answers
+  mkdir -p "${flag%/*}"
+  jq -n --arg since "$since" '{since: $since, posted: true}' >"$flag"
+  run_bin -0 team-timers run
+  [[ ! -e $flag ]]
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_equal "$(posts)" "$(jq -n --arg t "GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  jq -e '(.upgraded | index("offline") != null) and .notices.offline == null' "$notices"
+
+  # The same from a machine with no notice record yet, whose outage post failed.
+  rm "$notices"
+  : >"$STUB_CALLS/curl.log"
+  jq -n --arg since "$since" '{since: $since, posted: false}' >"$flag"
+  run_bin -0 team-timers run
+  [[ ! -e $flag ]]
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_equal "$(posts)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team
+GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  jq -e '.notices.offline == null' "$notices"
+}
+
+@test "an offline flag from before the notice record is rewritten as the hold alone, and a run still offline posts nothing" {
+  local flag=$HOME/.local/state/agent-team/offline since
+  since=$(date -u +%FT%TZ)
+  stub_sleep </dev/null
+  discord_answers
+  mkdir -p "${flag%/*}"
+  jq -n --arg since "$since" '{since: $since, posted: false}' >"$flag"
+  cut_origin
+  run_bin -75 team-timers run
+  assert_equal "$(posts)" ""
+  jq -e --arg since "$since" '. == {since: $since}' "$flag"
+  jq -e --arg since "$since" '.notices.offline | .state == "open" and .tried == $since' "$notices"
+}
+
 @test "GitHub answering 5xx is a network failure, tried again and then offline" {
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 503)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 503)"
   stub_sleep </dev/null
   discord_answers
   run_bin -75 team-timers run
@@ -1620,12 +1710,36 @@ EOF
   steal_lease laptop home-pc
   local tip
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   [[ $output =~ ^[0-9T:Z-]+" back: home-pc no longer holds the lease: laptop holds it (epoch 2); fenced home-pc: stopped coordinator (3169fcbd), T5-builder (81f08540); the heartbeat is disabled: agent-team-heartbeat.timer stopped and removed; team-lease take clears the fence"$ ]]
   [[ -e $HOME/.local/state/agent-team/fenced && ! -e $HOME/.local/state/agent-team/offline ]]
   assert_equal "$(posts | wc -l)" 1
   assert_equal "$(lease_tip)" "$tip"
+}
+
+@test "a machine the back step's renew fences posts nothing and leaves no offline notice" {
+  stub_sleep </dev/null
+  discord_answers
+  stub_script claude <<'SH'
+case $1 in
+  agents) echo '[{"id": "3169fcbd", "name": "coordinator"}]' ;;
+  stop) echo "Stopped $2" ;;
+  *) exit 127 ;;
+esac
+SH
+  run_bin -0 team-timers enable
+  cut_origin
+  run_bin -75 team-timers run
+  jq -e '.notices.offline.state == "posted"' "$notices"
+  make_machine laptop
+  steal_lease laptop home-pc
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  : >"$STUB_CALLS/curl.log"
+  run_bin -0 team-timers run
+  [[ -e $HOME/.local/state/agent-team/fenced && ! -e $HOME/.local/state/agent-team/offline ]]
+  assert_equal "$(posts)" ""
+  jq -e '.notices | has("offline") | not' "$notices"
 }
 
 @test "A holds, B steals: A's next run fences A, stops only its team sessions, disables the heartbeat and posts nothing" {
@@ -2060,7 +2174,7 @@ EOF
   assert_equal "$(docker_calls)" ""
   assert_equal "$(readings)" ""
 
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "back checkpoint stacks janitor"
   assert_equal "$(readings | wc -l)" 1
