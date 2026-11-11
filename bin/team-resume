@@ -45,12 +45,15 @@
 #                   team-open that fails hands back a slot it leased, or keeps it leased to the
 #                   task for the next run to take again (team-open's header), so a run again
 #                   leases no slot more.
-#                   A task that crashed (a launch after its latest stowed, or a launch and no
-#                   stowed) gets its last checkpoint's snapshot applied by team-open, and one more
-#                   line: the machine, the checkpoint it resumes from and the roles to relaunch.
-#                   So does a worktree its latest stowed recorded with uncommitted changes (a
-#                   worker the handoff stopped before it stowed), whose snapshot team-open's line
-#                   reports.
+#                   A task that crashed (its latest stowed, stow-failed, launch or worktree-moved
+#                   is a launch on another machine than this one, or on none named, as an old
+#                   launch: that machine stopped without a handoff) gets its last checkpoint's
+#                   snapshot applied by team-open, and one more line: the machine, the checkpoint
+#                   it resumes from and the roles to relaunch. One last launched here is no crash
+#                   (this machine restarted), so its live worktree gets no crash's snapshot.
+#                   A worktree its latest stowed recorded with uncommitted changes (a worker the
+#                   handoff stopped before it stowed) gets its snapshot applied too, which
+#                   team-open's line reports.
 #                   A task whose latest stowed is from this machine (the shutdown's, or a handoff
 #                   no other machine took) gets one more line, "T1: stowed here on home-pc: a
 #                   same-machine resume": team-open finds each of its worktrees where it was,
@@ -275,7 +278,7 @@ main() {
       | {task: $task,
          stowed: ($tasks[$task] | map(select(.event == "stowed")) | last
            | if . then {ts, machine, roles, sessions} + (if .note then {note} else {} end) else null end),
-         crashed: ($tasks[$task] | if crashed then
+         crashed: ($tasks[$task] | if crashed($machine) then
            {machine: (map(select(.event == "launch")) | last | .machine), roles: unfinished_roles} else null end),
          open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch}]}
       | .here = (.crashed == null and .stowed.machine == $machine)' \

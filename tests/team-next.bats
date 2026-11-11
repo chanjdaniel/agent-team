@@ -269,10 +269,15 @@ launched T7-builder c0000001"
   refused "--next 02 is not ready once 01 is done: 02 running in session b0000002" T7 --next 02 -- "T7 DONE 01 $sha done"
 }
 
-@test "refused with nothing changed: a closed task, a held task, an unanswered ask, no plan-approved" {
+@test "refused with nothing changed, by launch_refusal's texts: a closed task, Daniel's hold, an unanswered ask; and no plan-approved" {
+  # An old held reads as Daniel's hold (legacy_cause), and a typed one is refused alike.
   event held '{reason: "Daniel paused it"}'
-  refused "T7 is held since 2026-11-01T10:00:00Z: Daniel paused it" T7 -- "T7 DONE 01 $sha done"
+  refused "T7 is on Daniel's hold since 2026-11-01T10:00:00Z (held-1): Daniel paused it; only Daniel's word lifts it: team-log T7 resumed id=held-1 discord_message=<their message id>" T7 -- "T7 DONE 01 $sha done"
   event resumed '{}'
+  event held '{reason: "Daniel: not now", cause: "daniel-hold", discord_message: "1563000000000000044"}'
+  # A message that launches nothing is refused too.
+  refused "T7 is on Daniel's hold since 2026-11-01T10:00:00Z (held-2): Daniel: not now" T7 -- "T7 QUESTION which way? | options: a, b"
+  event resumed '{id: "held-2", discord_message: "1563000000000000046"}'
   event asked '{id: "scope", text: "Which scope?"}'
   refused "T7 has an unanswered ask, scope, since 2026-11-01T10:00:00Z" T7 -- "T7 DONE 01 $sha done"
   event answered '{id: "scope", text: "This one.", discord_message: "1563000000000000045"}'
@@ -320,7 +325,7 @@ launched T7-builder c0000001"
   local count
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   run_bin -0 team-next T7 -- "T7 PAUSED stowed"
-  assert_equal "$output" "logged paused reason=stowed
+  assert_equal "$output" "logged paused reason=stowed cause=stow role=builder session=b0000001
 no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
   # A stow with detail is a stow too, by park_cause, as every reader of a stow has it.
   run_bin -0 team-next T7 -- "T7 PAUSED stowed ad6520fc for shutdown; next: re-run the gate"
@@ -337,6 +342,12 @@ no hand-off for QUESTION"
 no hand-off for DONE gate"
   assert_equal "$(logged_from $((count + 1)) | jq -r .event | tr '\n' ' ')" "paused paused question gate-run "
   assert_equal "$(bg_calls)" ""
+  # A gate run that re-gates a base merge says once that the brief asks for no such run, though
+  # team-next reads the message before it logs it.
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE gate run=r2 head=0123456 outcome=pushed cause=base-merge"
+  assert_equal "$output" "logged gate-run run=r2 head=0123456 outcome=pushed cause=base-merge
+no hand-off for DONE gate"
+  assert_equal "$(grep -c 're-gates a base merge' <<<"$stderr")" 1
 }
 
 @test "an ops session's DONE and QUESTION are logged once as their length, the DONE with --relay, and hand nothing on" {
@@ -1315,7 +1326,7 @@ fix_line() {
   echo "# review" >"$wt/.scratch/task/review.md"
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
-  assert_equal "$output" "logged paused reason=stowed
+  assert_equal "$output" "logged paused reason=stowed cause=stow
 brief $TEAM_HOME/tasks/T7/brief-round-1.md
 launched T7-builder c0000001"
   assert_equal "$(record round-1 | jq -cS .)" "$(jq -cnS --arg url "$url" '{template: "builder-round",
@@ -1324,7 +1335,7 @@ launched T7-builder c0000001"
     "$(jq -cn --arg wt "$wt" '{role: "builder", worktree: $wt, toolkits: ["browser"], brief: "brief-round-1"}')"
   # A second stow after that launch launches nothing.
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
-  assert_equal "$output" "logged paused reason=stowed
+  assert_equal "$output" "logged paused reason=stowed cause=stow role=builder session=c0000001
 no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
   assert_equal "$(bg_calls | wc -l)" 1
 }
@@ -1336,7 +1347,7 @@ no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
   touch "$STUB_FIXTURES/fail-once"
   run_bin -1 team-next T7 -- "T7 PAUSED stowed"
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
-  assert_equal "$output" "already logged paused reason=stowed
+  assert_equal "$output" "already logged paused reason=stowed cause=stow
 brief $TEAM_HOME/tasks/T7/brief-round-1.md
 launched T7-builder c0000001"
   # The next round's stow after a re-review that had findings takes round-2.
@@ -1364,7 +1375,7 @@ launched T7-builder c0000001"
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowedaway"
   assert_equal "$(tail -n 1 <<<"$output")" "no hand-off for PAUSED"
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed, handoff.md written"
-  assert_equal "$output" "logged paused reason=stowed, handoff.md written
+  assert_equal "$output" "logged paused reason=stowed, handoff.md written cause=stow
 brief $TEAM_HOME/tasks/T7/brief-round-1.md
 launched T7-builder c0000001"
 }

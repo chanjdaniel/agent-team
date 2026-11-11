@@ -17,11 +17,11 @@ Why: with no terminal each `sudo` attempt counts as a failed login, enough of th
 
 Seen: T18, whose test script's Playwright `--with-deps` locked Daniel's account (ledger 2026-10-22T12:16:15Z, `tasks/T18/plan.md`); T5, T12 and T15, which waited on Daniel's Docker restart (ledger 2026-10-22T00:09:49Z to 2026-10-22T11:08:03Z); T49, which asked Daniel to upgrade Chrome (ledger 2026-10-25T14:30:56Z).
 
-## Once a PR is open and its checks are green, stop the gate run, and treat any commit that lands after the review as unreviewed
+## Treat any commit that lands on a PR after its review as unreviewed
 
-Why: the gate's CI step may push "apply CI fixes" commits on its own, after the reviewer has read the head.
+Why: a review reads one head, and a tool may commit on its own after it: the gate's steps commit after the team's first review, which is why a gated PR is re-reviewed, and its ci step pushed "apply CI fixes" commits even after that re-review had read the head, until the gated delivery skipped that step.
 
-Seen: T4 and T18, whose reviews found such commits (`tasks/T4/scratch/review.md`, `tasks/T18/scratch/review.md`); T5, where one set a `verified` date that had not come yet (`tasks/T5/brief-revert.md`); T24, whose brief stops the gate run (`tasks/T24/brief-build-01.md`).
+Seen: T4 and T18, whose reviews found such commits (`tasks/T4/scratch/review.md`, `tasks/T18/scratch/review.md`); T5, where one set a `verified` date that had not come yet (`tasks/T5/brief-revert.md`).
 
 ## Wait for work with a command that ends when the work does, never a self-set timer or a loop that may never end
 

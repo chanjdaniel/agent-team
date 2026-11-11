@@ -151,10 +151,11 @@ facts() {
       snapshot: null}'
 }
 
-# launch <role> <worktree>: T1's worker launched on home-pc, as team-worker logs it.
+# launch <role> <worktree> [<machine>]: T1's worker launched on <machine> (home-pc by default), as
+# team-worker logs it.
 launch() {
-  jq -cn --arg role "$1" --arg wt "$2" '{ts: (now | todate), task: "T1", event: "launch", role: $role,
-    session: "81f08540", worktree: $wt, toolkits: [], machine: "home-pc"}' >>"$TEAM_HOME/ledger.jsonl"
+  jq -cn --arg role "$1" --arg wt "$2" --arg machine "${3:-home-pc}" '{ts: (now | todate), task: "T1",
+    event: "launch", role: $role, session: "81f08540", worktree: $wt, toolkits: [], machine: $machine}' >>"$TEAM_HOME/ledger.jsonl"
 }
 
 # checkpoint_of <wt>: home-pc's checkpoint of the worktree <wt> of T1, as team-checkpoint makes
@@ -186,6 +187,21 @@ crash_elsewhere() {
   archive T1 scratch
   forget_here "$home" "$branch" "$wt"
   rehome_ledger
+}
+
+# restart_here: T1 opened in home on this machine, laptop, with a pushed commit, its builder launched
+# here and a checkpoint (checkpoint_of) pushed, archived; then laptop restarted with no handoff,
+# its builder having worked on since, so the live worktree holds more than the snapshot does
+# (feature.txt is "live"). Sets wt, branch, head and wip.
+restart_here() {
+  run_bin -0 --separate-stderr team-open home feature feat work "Work in home"
+  wt=$(jq -r .worktree <<<"$output") branch=$(jq -r .branch <<<"$output")
+  head=$(work "$wt" feature.txt)
+  push "$wt"
+  launch builder "$wt" laptop
+  checkpoint_of "$wt"
+  echo "live" >"$wt/feature.txt"
+  archive T1 scratch
 }
 
 # The snapshot facts of wip/home/T1 <wip> on <parent>, applied (true or false) for <reason> (a JSON
@@ -397,6 +413,23 @@ restored_from() {
   launch reviewer "$wt"
   run_bin -0 --separate-stderr team-open --task T1 --resume home
   assert_equal "$(jq -r .snapshot.applied <<<"$output")" true
+}
+
+@test "T278's D5: a task last launched on this machine did not crash here: its live worktree gets no snapshot" {
+  restart_here
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c .snapshot <<<"$output")" null
+  assert_equal "$(cat "$wt/feature.txt")" "live"
+  run -1 git -C "$home" rev-parse -q --verify refs/remotes/team-home/wip/home/T1
+
+  # A later launch on home-pc, with no stow after it, is a crash read here: its snapshot is due, as
+  # before, and kept off the live changes.
+  launch reviewer "$wt"
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r .snapshot.applied <<<"$output")" false
+  assert_equal "$(jq -r .snapshot.reason <<<"$output")" \
+    "$wt has uncommitted changes other than the snapshot's, so it is not applied over them"
 }
 
 @test "a task stowed with uncommitted changes in its worktree gets the handoff's snapshot applied, as after a crash" {

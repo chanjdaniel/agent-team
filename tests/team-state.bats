@@ -110,7 +110,7 @@ phase_of() {
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
-    waiting: null, walk: null, rehome_failures: [], merge_preapproval: null, pr: null,
+    waiting: null, parks: [], stowing: null, walk: null, rehome_failures: [], merge_preapproval: null, pr: null,
     progress: {tickets: {done: [], total: 0, graph: null}, on: [],
       reviews: {count: 0, verdict: null, head: null, sent_back: null}}}')"
   assert_equal "$(stub_calls gh)" ""
@@ -683,7 +683,8 @@ EOF
     '{"on":"Daniel","reason":"restart the Docker daemons","since":"2026-10-22T02:00:00Z"}'
   assert_equal "$(jq -r .phase <<<"$output")" building
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature building | no live worker | waiting on Daniel: restart the Docker daemons"
+  # The line shows the standing parks in place of the waiting part.
+  assert_equal "$output" "T14 proj feature building | no live worker | parks: waiting-1 daniel since 2026-10-22T02:00:00Z: restart the Docker daemons"
   event T14 launch '{role: "builder", session: "3ed2d1f2", worktree: "/w/1", toolkits: []}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .waiting <<<"$output")" null
@@ -691,6 +692,64 @@ EOF
   event T14 resumed
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .waiting <<<"$output")" null
+}
+
+@test "parks lists the standing parks with their ids and causes, a typed one's own and an old one's legacy_cause, in the JSON and on the line" {
+  open_task
+  # An old line, with no cause, and typed lines as team-log and team-ask log them.
+  event T14 blocked '{reason: "Bash(git push) denied by a deny rule"}'
+  ledger_line '{ts: "2026-10-22T02:10:00Z", task: "T14", event: "paused", reason: "stowed, handoff written", cause: "stow",
+    role: "builder", session: "59709d99"}'
+  ledger_line '{ts: "2026-10-22T02:20:00Z", task: "T14", event: "waiting", on: "Daniel", cause: "ask", ask: "naming",
+    reason: "ask naming", since: "2026-10-22T02:15:00Z"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .parks <<<"$output")" "$(jq -cn '[
+    {id: "blocked-1", kind: "blocked", cause: "denial", on: null, reason: "Bash(git push) denied by a deny rule", since: "2026-10-22T02:00:00Z", passed: false},
+    {id: "paused-1", kind: "paused", cause: "stow", on: null, reason: "stowed, handoff written", since: "2026-10-22T02:10:00Z", passed: false},
+    {id: "waiting-1", kind: "waiting", cause: "ask", on: "Daniel", reason: "ask naming", since: "2026-10-22T02:15:00Z", passed: false}]')"
+  # waiting stays in the JSON beside it.
+  assert_equal "$(jq -c .waiting <<<"$output")" '{"on":"Daniel","reason":"ask naming","since":"2026-10-22T02:20:00Z"}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature blocked | no live worker | parks: blocked-1 denial since 2026-10-22T02:00:00Z: Bash(git push) denied by a deny rule; paused-1 stow since 2026-10-22T02:10:00Z: stowed, handoff written; waiting-1 ask since 2026-10-22T02:15:00Z: ask naming"
+  # With none standing, the JSON lists none and the line has no parks part: all=true ends the
+  # block and the pause, and the ask's answer its typed wait.
+  event T14 resumed '{all: true}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.parks | map(.id)' <<<"$output")" '["waiting-1"]'
+  event T14 answered '{id: "naming", answer: "the short one"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .parks <<<"$output")" '[]'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker"
+}
+
+@test "a stow under way shows as stowing since its time, in the JSON and on the line, until its stowed or stow-failed" {
+  open_task
+  ledger_line '{ts: "2026-10-22T03:00:00Z", task: "T14", event: "stowing", machine: "home-pc", cause: "level", roles: ["builder"]}'
+  ledger_line '{ts: "2026-10-22T03:01:00Z", task: "T14", event: "paused", reason: "stowed", cause: "stow"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .stowing <<<"$output")" '{"since":"2026-10-22T03:00:00Z","cause":"level"}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | stowing since 2026-10-22T03:00:00Z | parks: paused-1 stow since 2026-10-22T03:01:00Z: stowed"
+  for kind in stowed stow-failed; do
+    cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+    ledger_line --arg kind "$kind" '{ts: "2026-10-22T03:05:00Z", task: "T14", event: $kind, machine: "home-pc",
+      worktrees: [], roles: ["builder"], reason: "x"}'
+    run_bin -0 team-state T14 --json
+    assert_equal "$(jq -c .stowing <<<"$output")" null
+    run_bin -0 team-state T14
+    assert_equal "$output" "T14 proj feature building | no live worker | parks: paused-1 stow since 2026-10-22T03:01:00Z: stowed"
+    mv "$BATS_TEST_TMPDIR/ledger.before" "$TEAM_HOME/ledger.jsonl"
+  done
+}
+
+@test "an ask's wait a launch went past says so on the line" {
+  # state_line over a state whose ask's wait is passed, as phase 2's launch past an ask leaves it.
+  run jq -L "$REPO_ROOT/bin/lib" -nr --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" \
+    'include "ledger"; {task: "T14", project: "proj", path: "feature", phase: "building", workers: [],
+      parks: [{id: "waiting-2", kind: "waiting", cause: "ask", on: "Daniel", reason: "ask naming", since: "2026-10-22T02:15:00Z", passed: true}]}
+    | state_line'
+  assert_equal "$output" "T14 proj feature building | no live worker | parks: waiting-2 ask since 2026-10-22T02:15:00Z: ask naming (passed by a launch)"
 }
 
 @test "a walk that is on shows with its start, before any waiting part, until it is off or the task closes" {
@@ -703,22 +762,22 @@ EOF
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .walk <<<"$output")" '{"since":"2026-10-22T03:00:00Z"}'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature building | no live worker | walk on since 2026-10-22T03:00:00Z | waiting on Daniel: walk the import page"
+  assert_equal "$output" "T14 proj feature building | no live worker | walk on since 2026-10-22T03:00:00Z | parks: waiting-1 daniel since 2026-10-22T02:00:00Z: walk the import page"
   # An off ends it; the next on starts another, from its own time.
   ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T14", event: "walk", state: "off"}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .walk <<<"$output")" null
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature building | no live worker | waiting on Daniel: walk the import page"
+  assert_equal "$output" "T14 proj feature building | no live worker | parks: waiting-1 daniel since 2026-10-22T02:00:00Z: walk the import page"
   ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "walk", state: "on"}'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature building | no live worker | walk on since 2026-10-22T05:00:00Z | waiting on Daniel: walk the import page"
+  assert_equal "$output" "T14 proj feature building | no live worker | walk on since 2026-10-22T05:00:00Z | parks: waiting-1 daniel since 2026-10-22T02:00:00Z: walk the import page"
   # A walk left on ends with its task.
   ledger_line '{ts: "2026-10-22T06:00:00Z", task: "T14", event: "closed", archive: [], returned: [], kept: []}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .walk <<<"$output")" null
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature closed | no live worker | waiting on Daniel: walk the import page"
+  assert_equal "$output" "T14 proj feature closed | no live worker | parks: waiting-1 daniel since 2026-10-22T02:00:00Z: walk the import page"
 }
 
 @test "merge_preapproval is null with none logged, else the latest one's facts, withdrawal, opt-in and own" {
@@ -743,7 +802,7 @@ EOF
   # The text says it before any waiting.
   event T14 waiting '{on: "Daniel", reason: "a word on the name"}'
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved | waiting on Daniel: a word on the name"
+  assert_equal "$output" "T14 proj feature building | no live worker | merge pre-approved | parks: waiting-1 daniel since 2026-10-22T02:00:00Z: a word on the name"
   event T14 resumed
 
   # The registry is read now: a project that no longer opts in says so.
@@ -883,7 +942,7 @@ files_read() {
   event T14 waiting '{on: "CI", reason: "a rerun"}'
   run_bin -0 team-state T14
   assert_equal "$output" \
-    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | standing word covers it | waiting on CI: a rerun"
+    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | standing word covers it | parks: waiting-1 outside since 2026-10-22T02:00:00Z: a rerun"
 }
 
 @test "a PR of the team's own project has no standing word, while one on every project stands for another's" {

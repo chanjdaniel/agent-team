@@ -235,15 +235,23 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 2. Find what your branch made false: for each file, command, flag, setting and path it adds, renames or removes (`git diff --stat origin/dev...HEAD`), `git grep` its name in the repository's Markdown, `CLAUDE.md`, `AGENTS.md` and script headers, and fix every line that no longer holds, in the same PR.
 3. Push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send `T12 DONE review-ready <the full sha of HEAD>` to `coordinator`, then wait: the team reviews that head before the gate runs, so the gate runs once.
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
-4. Run `/no-mistakes` with an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is "rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes.": on a phase, this phase's part of it alone), under a Disclosure section put in its terms, since the gate drafts the PR's title and body from it.
-   When the review step parks with no finding, only on "review coverage is incomplete", answer it yourself with `no-mistakes axi respond --action approve`, with no QUESTION: the team review reads this head, before the gate or after it. A finding, at any step, still goes to `coordinator` as a QUESTION.
+4. Run `/no-mistakes` with the gate's ci step skipped for the run (`no-mistakes axi run --skip ci --intent "<the intent>"`), so the run ends with outcome `passed` once its pr step has opened or updated the PR, and CI is waited on as step 7 says; never wait for `checks-passed`, and never abort a run to end it.
+   Give it an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is "rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes.": on a phase, this phase's part of it alone), under a Disclosure section put in its terms, since the gate drafts the PR's title and body from it.
+   A step that parks with no finding you approve yourself, with no QUESTION, only when the park is one of these kinds, named by its id:
+   - `review-coverage`: the review step parks on "review coverage is incomplete" alone, and the team review read every file it names at a head this branch contains: a head you or the builder before you sent as `DONE review-ready`, or one the coordinator names as reviewed, that `git merge-base --is-ancestor <that head> HEAD` passes for and whose `git diff --name-only origin/dev...<that head>` lists the file.
+   Approve it with `no-mistakes axi respond --action approve`, write a build note in `.scratch/task/build-notes/` naming the run, the step, the park's id and what the gate said, and put the ids of the parks the run approved in its `DONE gate` line as `approved=<ids, comma-separated>`.
+   Any other park, and a finding at any step, goes to `coordinator` as a QUESTION.
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks, noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
-   Wait with `@CODE@/bin/team-ci-wait <full url> <the full sha you pushed>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
-   The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
-7. Then send `T12 PR <full url>` to `coordinator`, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged.
+6. When the gate's run ends `passed`, repeat step 1; if it merged anything, push, noting each file that conflicted.
+   The gate runs again only for a commit of yours that changes behaviour, such as the fix to a red check, and never for a merge of the base, however its conflicts were resolved (clean, in docs alone or in code), or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI.
+7. Start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait --no-agent-review <full url> <the full sha the gate or step 6 pushed>`, run with Bash `run_in_background`, then send `T12 PR <full url>` to `coordinator` at once, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged, so the review reads while CI runs, and keep the wait going.
+   `--no-agent-review` leaves out the reviewer's `agent-review` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round.
+   Act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push the fix as step 8 says, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
+   The gate leaves Playwright to CI, so a red `e2e` check is a failed check like any other.
+8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new `PR`: the review in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
+9. Once the wait on the head you last pushed ends with exit 0, the delivery is done: send nothing more, since a review's findings come back to you from the coordinator as a fix round.
 
-At each gate run's end (it pushed, went red, was aborted, or was stopped once its PR's checks were green), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted|stopped-green> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
+At each gate run's end (it pushed, went red, or was aborted), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, a run whose gate outcome is `passed` reported as `outcome=pushed`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR, and `approved=<ids>` when you approved a park of it yourself, as step 4 says.
 
 Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
@@ -320,7 +328,7 @@ EOF
     done < <(templates)
   done
   # The delivery partial follows the project's delivery.
-  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-builder-fix.md")" 'Run `/no-mistakes` with an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, this phase'"'"'s part of it alone), under a Disclosure section put in its terms'
+  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-builder-fix.md")" 'Give it an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, this phase'"'"'s part of it alone), under a Disclosure section put in its terms'
   assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-builder-deliver.md")" \
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
   # The PR body and the gate's intent open with what the PR changes, never the task's id and goal.
@@ -658,7 +666,62 @@ EOF
   assert_contains "$brief" "3. Push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send \`T12 DONE review-ready <the full sha of HEAD>\` to \`coordinator\`, then wait: the team reviews that head before the gate runs, so the gate runs once."
   assert_contains "$brief" "once they are fixed, or the coordinator says the review passed, go on."
   # The review comes before the gate.
-  [[ $(grep -n 'review-ready' <<<"$brief" | cut -d: -f1) -lt $(grep -n '/no-mistakes' <<<"$brief" | cut -d: -f1) ]]
+  [[ $(grep -n -m 1 'review-ready' <<<"$brief" | cut -d: -f1) -lt $(grep -n -m 1 '/no-mistakes' <<<"$brief" | cut -d: -f1) ]]
+}
+
+@test "a gated project's gate run ends at its PR, and its CI is waited on as a direct PR's, with the PR sent at the push" {
+  open_t12
+  run_bin -0 team-brief T12 builder-deliver --set "goal=the goal"
+  local brief
+  brief=$(<"$output")
+  # The gate runs with its ci step skipped, so the run ends once its pr step has opened the PR.
+  assert_contains "$brief" '4. Run `/no-mistakes` with the gate'"'"'s ci step skipped for the run (`no-mistakes axi run --skip ci --intent "<the intent>"`), so the run ends with outcome `passed` once its pr step has opened or updated the PR'
+  # The wait starts in the background and the PR goes out at once, on the line that starts it.
+  local step7
+  step7=$(grep -F '7. Start the wait for the PR'"'"'s GitHub checks with' "$output")
+  assert_contains "$step7" "\`$REPO_ROOT/bin/team-ci-wait --no-agent-review <full url> <the full sha the gate or step 6 pushed>\`, run with Bash \`run_in_background\`, then send \`T12 PR <full url>\` to \`coordinator\` at once"
+  # The base's merge after the run comes before the wait, and the wait before the PR.
+  local merge wait pr
+  merge=$(grep -n "^6\. When the gate's run ends \`passed\`, repeat step 1" "$output" | cut -d: -f1)
+  wait=$(grep -n 'team-ci-wait --no-agent-review' "$output" | cut -d: -f1)
+  pr=$(grep -n 'send `T12 PR <full url>`' "$output" | cut -d: -f1)
+  [[ -n $merge && $merge -lt $wait && $wait -le $pr ]]
+  [[ $(grep -c 'PR <full url>` to `coordinator`' "$output") -eq 1 ]]
+  # A failed check's fix is the builder's, pushed with no new report.
+  # It re-gates only a fix that changes behaviour, as step 6 says: a docs-only fix is pushed as it is.
+  grep -qF "8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new \`PR\`" "$output"
+  # No line has the builder wait for checks-passed, stop a green run or report stopped-green.
+  [[ $(grep -c 'checks-passed' "$output") -eq 1 ]]
+  assert_contains "$brief" 'never wait for `checks-passed`, and never abort a run to end it.'
+  refute_grep -e 'stopped-green' -e 'returns checks-passed' -e 'checks were green' -e 'stop the gate' "$output"
+  # The gate's own word for the run's end, passed, is reported as the ledger's pushed.
+  assert_contains "$brief" 'outcome=<pushed|red|aborted> minutes='
+  assert_contains "$brief" 'a run whose gate outcome is `passed` reported as `outcome=pushed`'
+  # Every gate finding still goes to the coordinator, and the builder still approves the parks its
+  # brief names.
+  assert_contains "$brief" 'Any other park, and a finding at any step, goes to `coordinator` as a QUESTION.'
+  assert_contains "$brief" 'Approve it with `no-mistakes axi respond --action approve`'
+  # The gate runs again for a behaviour commit of the builder's alone: never for a merge of the
+  # base, however resolved, as team-log's base-merge line says, nor for a commit of docs, comments
+  # or the PR body.
+  grep -qxF "   The gate runs again only for a commit of yours that changes behaviour, such as the fix to a red check, and never for a merge of the base, however its conflicts were resolved (clean, in docs alone or in code), or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI." "$output"
+  # No role, procedure or other template names a step the delivery dropped.
+  if git -C "$REPO_ROOT" grep -nE 'stopped-green|returns checks-passed|stop the gate run|CI included' \
+    -- roles sops templates plugins; then return 1; fi
+}
+
+@test "a gated project's re-review of its PR starts the wait on its checks before it reads, as a direct-PR one does" {
+  open_t12
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local task base pr wait read
+  for task in T12:dev:Conventioner T14:main:agent-team; do
+    pr=https://github.com/chanjdaniel/${task##*:}/pull/9 base=${task#*:} base=${base%:*} task=${task%%:*}
+    reviewed_branch "$task" "$base"
+    run_bin -0 team-brief "$task" rereview --name rereview --set pr="$pr" --set head="$head" --set "since=the fix"
+    wait=$(grep -n "^1\. First start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`" "$output" | cut -d: -f1)
+    read=$(grep -n '^2\. Review what changed since the last review' "$output" | cut -d: -f1)
+    [[ -n $wait && $wait -lt $read ]] || { cat "$output" >&2; return 1; }
+  done
 }
 
 @test "a direct-PR project's builder pushes nothing under a Disclosure section until the review passes, then pushes, checks and opens the PR" {
@@ -789,7 +852,7 @@ EOF
   brief=$(<"$output")
   assert_contains "$brief" "PR: https://github.com/chanjdaniel/Conventioner/pull/9 against \`dev\`, reviewed at \`$r\`, now at head \`$h\`."
   assert_contains "$brief" "2. Review what changed since the last review, \`git diff $r $h\`, and the commit messages of \`origin/dev..$h\`."
-  assert_contains "$brief" "   That diff holds the gate's own commits, which no reviewer has read: read them as closely as the builder's, and the PR body the gate wrote; after the gate's first run, \`$r\` is the branch's local head, reviewed before the gate."
+  assert_contains "$brief" "   That diff holds the gate's own commits, made by its steps before it opened or updated the PR (its ci step is skipped, so none lands after it), which no reviewer has read: read them as closely as the builder's, and the PR body the gate wrote; after the gate's first run, \`$r\` is the branch's local head, reviewed before the gate."
   assert_contains "$brief" "   If the gate rebased the branch, so \`$r\` is not an ancestor of \`$h\`, compare with \`git range-diff $r...$h\` instead."
 }
 
@@ -870,7 +933,7 @@ BRIEF
   reviewed_branch T12 dev
   run_bin -0 team-brief T12 verify --name verify-2 --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
     --set head="$head" --set reviewed="$reviewed" --set findings=4
-  assert_contains "$(<"$output")" "   That diff holds the gate's own commits, which no reviewer has read: read them as closely as the builder's"
+  assert_contains "$(<"$output")" "   That diff holds the gate's own commits, made by its steps before it opened or updated the PR (its ci step is skipped, so none lands after it), which no reviewer has read: read them as closely as the builder's"
   assert_contains "$(<"$output")" "Every note sent back (4) is fixed at \`$head\`"
 }
 
@@ -1352,6 +1415,79 @@ odd_names_branch() {
   assert_equal "$(<"$TEAM_HOME/tasks/T12/brief.md")" $'one\ngated T12\n\nthe rules of T12\n\ntwo'
 }
 
+# A gated builder approves the routine gate parks its brief names, records each approval, and
+# sends a QUESTION for any other park; the briefs that run the gate are the three that deliver.
+@test "each gated builder brief names the parks its builder approves, records each approval and sends any other park as a QUESTION" {
+  open_t12
+  local template brief
+  findings_files .treehouse/Conventioner-d4c77a/4/Conventioner .scratch/task review.md
+  for template in builder-fix builder-deliver builder-round; do
+    local args=(--set goal=g)
+    [[ $template == builder-fix ]] && args+=(--set read='- `AGENTS.md`.' --set commits=fix)
+    [[ $template == builder-round ]] && args+=(--set pr=none --set findings=1)
+    run_bin -0 team-brief T12 "$template" --name "$template" "${args[@]}"
+    brief=$(<"$TEAM_HOME/tasks/T12/brief-$template.md")
+    assert_contains "$brief" $'\n   A step that parks with no finding you approve yourself, with no QUESTION, only when the park is one of these kinds, named by its id:\n   - `review-coverage`: the review step parks on "review coverage is incomplete" alone, and the team review read every file it names at a head this branch contains: a head you or the builder before you sent as `DONE review-ready`, or one the coordinator names as reviewed, that `git merge-base --is-ancestor <that head> HEAD` passes for and whose `git diff --name-only origin/dev...<that head>` lists the file.\n   Approve it with `no-mistakes axi respond --action approve`, write a build note in `.scratch/task/build-notes/` naming the run, the step, the park\'s id and what the gate said, and put the ids of the parks the run approved in its `DONE gate` line as `approved=<ids, comma-separated>`.\n   Any other park, and a finding at any step, goes to `coordinator` as a QUESTION.\n'
+    assert_contains "$brief" '`cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR, and `approved=<ids>` when you approved a park of it yourself, as step 4 says.'
+    refute_grep -F 'gate-parks' "$TEAM_HOME/tasks/T12/brief-$template.md"
+  done
+  # A direct-PR project runs no gate, so its builder has no park to approve.
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -0 team-brief T14 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g
+  refute_grep -e 'approved=' -e 'gate-parks' -e 'review-coverage' "$TEAM_HOME/tasks/T14/brief.md"
+}
+
+@test "a project's review rules may name more gate parks, which reach its gated builder briefs and never its review briefs" {
+  open_t12
+  reviewed_branch T12 dev
+  local template brief
+  findings_files .treehouse/Conventioner-d4c77a/4/Conventioner .scratch/task review.md
+  mkdir -p "$TEAM_HOME/projects/conv"
+  printf '%s\n' '- Run the data check at `{{head}}`.' '' '## Gate parks' '' \
+    '- `lint-before`: the lint step parks only on a finding in a file `origin/{{base}}...HEAD` does not change.' \
+    '  It names the file and the rule.' \
+    '- `docs-wording`: the document step parks only on wording.' '' \
+    '## More rules' '' '- Read the PR body as Daniel will.' >"$TEAM_HOME/projects/conv/review-rules.md"
+  for template in builder-fix builder-deliver builder-round; do
+    local args=(--set goal=g)
+    [[ $template == builder-fix ]] && args+=(--set read='- `AGENTS.md`.' --set commits=fix)
+    run_bin -0 team-brief T12 "$template" --name "$template" "${args[@]}"
+    brief=$(<"$TEAM_HOME/tasks/T12/brief-$template.md")
+    # The project's parks come after the brief's own, at its indent, their placeholders filled.
+    assert_contains "$brief" $' lists the file.\n   - `lint-before`: the lint step parks only on a finding in a file `origin/dev...HEAD` does not change.\n     It names the file and the rule.\n   - `docs-wording`: the document step parks only on wording.\n   Approve it with'
+    # The review rules never reach a builder.
+    refute_grep -e 'data check' -e 'PR body as Daniel' -e '## Gate parks' "$TEAM_HOME/tasks/T12/brief-$template.md"
+  done
+  # The review briefs take every rule but the section of gate parks.
+  run_bin -0 team-brief T12 reviewer --name review --set head="$head" --set checks=c
+  brief=$(<"$TEAM_HOME/tasks/T12/brief-review.md")
+  assert_contains "$brief" $'\n\n- Run the data check at `'"$head"$'`.\n\n## More rules\n\n- Read the PR body as Daniel will.\n\n'
+  refute_grep -e 'Gate parks' -e 'lint-before' -e 'docs-wording' "$TEAM_HOME/tasks/T12/brief-review.md"
+  # Rules that are only gate parks leave a review brief none.
+  printf '%s\n' '## Gate parks' '- `docs-wording`: the document step parks only on wording.' >"$TEAM_HOME/projects/conv/review-rules.md"
+  run_bin -0 team-brief T12 reviewer --name review-parks --set head="$head" --set checks=c
+  rm "$TEAM_HOME/projects/conv/review-rules.md"
+  run_bin -0 team-brief T12 reviewer --name review-none --set head="$head" --set checks=c
+  assert_equal "$(<"$TEAM_HOME/tasks/T12/brief-review-parks.md")" "$(<"$TEAM_HOME/tasks/T12/brief-review-none.md")"
+}
+
+@test "a gate park the review rules name with no id, or twice, is refused naming it, and nothing is written" {
+  open_t12
+  mkdir -p "$TEAM_HOME/projects/conv"
+  local rules=$TEAM_HOME/projects/conv/review-rules.md
+  printf '%s\n' '## Gate parks' '- the lint step parks on an old file.' >"$rules"
+  run_bin -1 team-brief T12 builder-deliver --set goal=g
+  assert_equal "$output" "team-brief: each gate park in $rules starts \`- \`<id>\`: \`, the id in kebab case; got '- the lint step parks on an old file.'"
+  printf '%s\n' '## Gate parks' '- `lint-before`: one.' '- `lint-before`: two.' >"$rules"
+  run_bin -1 team-brief T12 builder-deliver --set goal=g
+  assert_equal "$output" "team-brief: $rules names the gate park lint-before twice"
+  # The brief's own park is the brief's: the rules cannot name it again.
+  printf '%s\n' '## Gate parks' '- `review-coverage`: any coverage park.' >"$rules"
+  run_bin -1 team-brief T12 builder-deliver --set goal=g
+  assert_equal "$output" "team-brief: $rules names the gate park review-coverage twice"
+  [[ -z $(task_files) ]]
+}
+
 @test "the retro brief renders from the task's facts alone, its digest first and read from team_bin" {
   open_task T31 home retro research/T31-retro-2026-10-25 agent-team/.claude/worktrees/3 "Retro 2026-10-25"
   run_bin -0 team-brief T31 retro
@@ -1475,7 +1611,7 @@ odd_names_branch() {
       assert_contains "$brief" "7. Push each fix of a failed check at once, as you pushed the first head: repeat step 1, run step 4 on the new head"
     else
       assert_contains "$brief" "epeat step 1; if it merged anything"
-      assert_contains "$brief" "a merge of the base is re-reviewed and checked by CI, never re-gated"
+      assert_contains "$brief" "never for a merge of the base, however its conflicts were resolved"
     fi
     assert_contains "$brief" "Never run a command that needs \`sudo\`; send \`$task BLOCKED <the command> needs sudo\` to \`coordinator\` instead."
     # The up-to-date check replaced the old refusal when the base moved.
@@ -1831,7 +1967,7 @@ after"
   # The round fixes each finding as narrowly as it asks, and asks before reaching wider.
   assert_contains "$brief" "4. Fix each finding on the branch as narrowly as it asks, test-first where it changes behaviour; a fix that would reach shapes the finding did not name goes to \`coordinator\` as \`T14 QUESTION\` first, and delete \`.work/task/handoff.md\` once its work is done."
   refute_grep -F '4. Fix each finding on the branch, test-first' "$output"
-  assert_contains "$brief" "   Otherwise, on a direct-PR delivery, send the \`PR\` at the push as the delivery says, its wait for the PR's GitHub checks going on in the background, so the rereview reads while CI runs, and push each fix of a failed check at once with no new report, as it says."
+  assert_contains "$brief" "   Otherwise, send the \`PR\` at the push as the delivery says (on a gated project, the push of the gate's run or of the base's merge after it), its wait for the PR's GitHub checks going on in the background, so the rereview reads while CI runs, and push each fix of a failed check at once with no new report, as it says."
   assert_contains "$brief" "6. $wait"
   # The merge-base builder reports its merge at the push the same way.
   run_bin -0 team-brief T14 builder-merge-base --name merge-base --set pr=$pr

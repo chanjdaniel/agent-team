@@ -300,7 +300,7 @@ level_reading() {
   step building level-stow:-
 
   # The coordinator's STOW: the builder answers PAUSED stowed, then team-stow stows the task.
-  ok team-log T1 paused reason=stowed
+  ok team-log T1 paused cause=stow reason=stowed
   ok team-stow T1
   assert_equal "$(jq -c 'select(.event == "stowed") | [.task, .roles, .cause]' "$TEAM_HOME/ledger.jsonl")" '["T1",["builder"],"level"]'
   assert_equal "$(jq -c 'map(.id)' "$BATS_TEST_TMPDIR/sessions.json")" '[]'
@@ -323,7 +323,7 @@ level_reading() {
   local resume_brief=$output
   assert_contains "$(cat "$resume_brief")" "resuming the task after the stow for the level at "
   ok team-worker T1 builder "$wt" -- "Read your brief at $resume_brief"
-  ok team-log T1 resumed
+  ok team-log T1 resumed all=true
   step building
   run_bin -0 team-log --check
 }
