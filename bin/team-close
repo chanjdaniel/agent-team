@@ -47,7 +47,7 @@
 # each return appending worktree-returned (with ticket for a ticket worktree, whose ticket branch
 # is then deleted when the task branch's local tip holds its tip, "deleted <branch> at <sha8>,
 # which <task branch> holds", else kept, "kept <branch> at <sha8>: the task branch does not hold
-# it", on stderr); the task's
+# it", on stderr, one that cannot be deleted reported with the command that deletes it); the task's
 # wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, and its
 # copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
 # checkout, one that cannot be deleted reported on stderr with the command that deletes it; and
