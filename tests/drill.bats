@@ -89,6 +89,8 @@ SH
   wt=$HOME/slots/home/1
   run_bin -0 team-thread T1 home "Do the work"
   echo "the brief" >"$TEAM_HOME/tasks/T1/brief.md"
+  # Its plan approved, a feature task takes its builder.
+  run_bin -0 team-log T1 plan-approved by=coordinator
   # Its sessions list no pid, so on Linux team-capacity place warns that it cannot place it.
   run_bin -0 --separate-stderr team-worker T1 builder "$wt" -- "Read your brief at $TEAM_HOME/tasks/T1/brief.md"
   builder=$output
@@ -403,16 +405,17 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   git -C "$wt" commit -q -m "feat: c"
   echo "later" >"$wt/a.txt"
   run_bin -0 team-log T1 plan-approved by=daniel
-  run_bin -0 team-log T1 paused reason="waiting on Daniel"
+  run_bin -0 team-log T1 paused cause=worker reason="waiting on Daniel"
   age_lease 75
 
   resume_by_stealing
   assert_equal "$stderr" ""
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .stolen_from]')" '["laptop",2,"home-pc"]'
   assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; resuming from the checkpoint of "
-  # The approval reached origin before home-pc died, so laptop's ledger has it; the park did not.
-  assert_equal "$(jq -sc '[.[] | select(.task == "T1" and (.event == "plan-approved" or .event == "paused")) | .event]' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" \
-    '["plan-approved"]'
+  # The approval reached origin before home-pc died, so laptop's ledger has it after the first
+  # one, the plan's; the park did not.
+  assert_equal "$(jq -sc '[.[] | select(.task == "T1" and (.event == "plan-approved" or .event == "paused")) | [.event, .by]]' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" \
+    '[["plan-approved","coordinator"],["plan-approved","daniel"]]'
   # laptop's worktree is the pushed branch with the checkpoint's changes uncommitted, none later.
   assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
   assert_equal "$(git -C "$lt" status --porcelain)" "$(printf '%s\n' " M a.txt" "?? b.txt")"

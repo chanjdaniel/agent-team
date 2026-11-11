@@ -13,14 +13,20 @@
 #   stow_live [T<n>...]          STOW_LIVE, the live worker sessions of those tasks, or of all.
 #   stow_end_ops                 ends STOW_LIVE's ops sessions with team-ops-end, STOW_ENDED.
 #   stow_stop                    stops and removes STOW_LIVE's other sessions.
+#   stow_stowing <task>          the time of the task's stowing standing (a stow under way), or
+#                                nothing with none.
+#   stow_begin <task> <cause>    logs the task's stowing, unless one stands, and says it.
 #   stow_record <task> <workers> [<cause>]
 #                                logs the task's stowed, unless it is stowed already.
+#   stow_fail <task> <reason>    logs the task's stow-failed, and says it.
 # A failure of one task is kept as STOW_REFUSED[<task>]=<reason>, a refusal of that task alone.
+# STOW_STOWING[<task>]=<since> holds each stowing standing that the run must end: stow_begin sets
+# it, and stow_record and stow_fail unset it once they log the stowed or the stow-failed.
 # shellcheck shell=bash disable=SC2154 # machine and err are the caller's
 
 # A team worker's session name.
 STOW_WORKER='^T[0-9]+-[a-z][a-z0-9-]*$'
-declare -gA STOW_REFUSED=() STOW_WORKTREES=() STOW_NOTES=()
+declare -gA STOW_REFUSED=() STOW_WORKTREES=() STOW_NOTES=() STOW_STOWING=()
 STOW_OPEN=() STOW_PUSHES=() STOW_PROBLEMS=() STOW_STOPPED=()
 STOW_LIVE='[]'
 
@@ -197,11 +203,50 @@ stow_stop() {
   done < <(jq -r '.[] | "\(.id // ((.sessionId // "")[:8])) \(.name)"' <<<"$STOW_LIVE")
 }
 
+# The ts of <task>'s stowing standing (the lifecycle fold's stow under way), or nothing with none:
+# stow_stowing <task>
+stow_stowing() {
+  task_events "$1" | ledger_jq 'lifecycle | lifecycle_stowing | .since // empty' -sr
+}
+
+# Log a stowing of <task> from this machine (cause <cause>, roles its unfinished roles) unless one
+# stands, saying "stowing: T<n> since <ts>", or "stowing: T<n> already since <ts>" with one
+# standing; either way it is STOW_STOWING's, for the run to end: stow_begin <task> <cause>
+stow_begin() {
+  local task=$1 cause=$2 since event
+  since=$(stow_stowing "$task")
+  if [[ -n $since ]]; then
+    echo "stowing: $task already since $since"
+  else
+    event=$(task_events "$task" | ledger_jq '{ts: (now | todate), task: $task, event: "stowing", machine: $machine,
+        cause: $cause, roles: unfinished_roles}' -sc --arg task "$task" --arg machine "$machine" --arg cause "$cause")
+    ledger_append "$event"
+    since=$(jq -r .ts <<<"$event")
+    echo "stowing: $task since $since"
+  fi
+  STOW_STOWING[$task]=$since
+}
+
+# Log a stow-failed of <task> from this machine with <reason>, in a subshell so a refused append
+# is said and stops nothing (it runs from the caller's exit trap too), and say it:
+# stow_fail <task> <reason>
+stow_fail() {
+  local task=$1 reason=$2 event
+  event=$(jq -cn --arg task "$task" --arg machine "$machine" --arg reason "$reason" \
+    '{ts: (now | todate), task: $task, event: "stow-failed", machine: $machine, reason: $reason}')
+  if (ledger_append "$event"); then
+    echo "stow-failed: $task: $reason"
+  else
+    echo "${0##*/}: stow-failed: $task: could not log it ($reason)" >&2
+  fi
+  unset 'STOW_STOWING[$task]'
+}
+
 # Log one stowed for <task> from this machine (stow_branches' worktrees and notes for it, its
 # unfinished roles, and as sessions the roles of <workers>, a JSON array of the session names
 # stopped), with cause <cause> when given, and say it; none when the task's latest machine event
 # (stowed, launch, worktree-moved) is already a stowed from this machine with the same
-# worktrees: stow_record <task> <workers> [<cause>]
+# worktrees and no stowing of it stands (STOW_STOWING): stow_record <task> <workers> [<cause>]
 stow_record() {
   local task=$1 workers=$2 cause=${3:-} event
   event=$(task_events "$task" | ledger_jq '{ts: (now | todate), task: $task, event: "stowed", machine: $machine,
@@ -211,12 +256,13 @@ stow_record() {
      + if $cause == "" then {} else {cause: $cause} end' \
     -sc --arg task "$task" --arg machine "$machine" --argjson worktrees "${STOW_WORKTREES[$task]}" \
     --argjson workers "$workers" --arg note "${STOW_NOTES[$task]:-}" --arg cause "$cause")
-  if task_events "$task" | jq -se --argjson new "$event" \
+  if [[ -z ${STOW_STOWING[$task]:-} ]] && task_events "$task" | jq -se --argjson new "$event" \
     'map(select(.event | IN("stowed", "launch", "worktree-moved"))) | last
       | .event == "stowed" and .machine == $new.machine and .worktrees == $new.worktrees' >/dev/null; then
     echo "stowed: $task already stowed from $machine"
   else
     ledger_append "$event"
+    unset 'STOW_STOWING[$task]'
     echo "stowed: $task $(jq -r '"roles \(.roles | join(", ") | if . == "" then "none" else . end); " + ([.worktrees[] | "\(.project) \(.branch) at \(.head[:7])" + if .uncommitted then " with uncommitted changes" else "" end] | join(", ") | if . == "" then "no worktree" else . end) + if .cause then "; cause \(.cause)" else "" end' <<<"$event")"
   fi
 }

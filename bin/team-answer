@@ -17,10 +17,10 @@
 # earlier than the asked's ts, as team-merge holds an approval to its PR's time; and never
 # edited, so the text logged is the text Daniel sent (answer_message in bin/lib/team.sh, which
 # team-run-approved holds the answer it runs on to as well); and it must have text. Then it logs
-# answered id=<id> answer=<the message's text, verbatim> discord_message=<its id>, and resumed
-# when the task's standing park is the ask's own wait (the latest waiting, blocked, paused, held,
-# resumed or launch is waiting on=Daniel reason="ask <id>", as team-ask logs it), and commits the
-# ledger and pushes it to the team home's origin at once (ledger_push in bin/lib/team.sh, which
+# answered id=<id> answer=<the message's text, verbatim> discord_message=<its id>, which ends the
+# ask's wait as team-ask logs it (waiting cause=ask ask=<id>), with no resumed; for each old wait
+# on it still standing (a waiting reason="ask <id>" with no cause, from before team-ask typed it)
+# it logs resumed id=<that wait's id>, ending it alone; then it commits the ledger and pushes it to the team home's origin at once (ledger_push in bin/lib/team.sh, which
 # says on stderr when it is not on origin yet, the answer standing). Then team-inbox
 # takes the ask out of the team home's waiting.md; when that fails, a line on stderr says so, and
 # the answer stands.
@@ -95,11 +95,15 @@ fi
 ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" --arg id "$id" --arg message "$message" \
   --argjson word "$word" --arg item "$item" '{ts: $ts, task: $task, event: "answered", id: $id, answer: $word.message.content,
     discord_message: $message} + if $item == "" then {} else {item: ($item | tonumber)} end')"
-if jq -e --arg id "$id" '
-  map(select(.event | IN("waiting", "blocked", "paused", "held", "resumed", "launch"))) | last
-  | . != null and .event == "waiting" and .on == "Daniel" and .reason == "ask \($id)"' <<<"$events" >/dev/null; then
-  ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" '{ts: $ts, task: $task, event: "resumed"}')"
-fi
+# A typed wait on the ask (team-ask's, cause ask) ends with the answered, which settles its ask;
+# an old one, its line with no cause, ends with a resumed naming it.
+old_waits=$(ledger_jq 'lifecycle.parks[] | select((.typed | not) and .kind == "waiting" and .reason == "ask \($id)") | .id' \
+  -r --arg id "$id" <<<"$events")
+mapfile -t old_waits <<<"$old_waits"
+for park in "${old_waits[@]}"; do
+  [[ -n $park ]] || continue
+  ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" --arg park "$park" '{ts: $ts, task: $task, event: "resumed", id: $park}')"
+done
 ledger_push
 refresh_inbox
 if [[ -n $item ]]; then

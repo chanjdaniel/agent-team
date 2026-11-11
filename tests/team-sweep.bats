@@ -321,6 +321,26 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   assert_contains "$output" "T8 no-worker: every live worker is idle with a ledger event since its launch"
 }
 
+@test "T278's B5: a launch past an open ask parks nothing, so the sweep watches its worker; an ask no launch passed parks the task" {
+  opened T8
+  event T8 plan-approved '{by: "coordinator"}'
+  launch T8 builder 4f2a9c1e
+  event T8 asked '{id: "q1", text: "which import?"}'
+  event T8 waiting '{on: "Daniel", cause: "ask", ask: "q1", reason: "ask q1"}'
+  ledger_line '{ts: "2026-10-22T02:20:00Z", task: "T8", event: "launch", role: "builder", session: "5e5e5e5e",
+    worktree: "/w/1", toolkits: [], project: "proj", branch: "feat/T8-work"}'
+  sessions "$(session 5e5e5e5e T8-builder idle)"
+  # A launch that did not name the ask leaves the task parked on it: no finding.
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+  # One that went past it (team-worker --past-ask q1) is watched: idle with no event, it is silent.
+  ledger_line '{ts: "2026-10-22T02:30:00Z", task: "T8", event: "launch", role: "builder", session: "6e6e6e6e",
+    worktree: "/w/1", toolkits: [], project: "proj", branch: "feat/T8-work", past_ask: ["q1"]}'
+  sessions "$(session 6e6e6e6e T8-builder idle)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T8 silent: T8-builder 6e6e6e6e is idle with no ledger event since its launch at 2026-10-22T02:30:00Z; next: read claude logs 6e6e6e6e, then send it one line or log what is known with team-log"
+}
+
 @test "a denied finds nothing new: it is no report, parks nothing and clears no park" {
   local denied='{role: "builder", session: "4f2a9c1e", what: "Bash", why: "[deny rule] git reset * --hard*"}'
   opened T8
@@ -1622,6 +1642,42 @@ level_record() {
   assert_equal "$output" ""
 }
 
+@test "stowing: a stow under way 30 minutes with no stowed is named, whatever parks the task, and none at 29" {
+  # T7's builder answered its STOW (a paused, so the task is parked) and the run never came.
+  level_task T7 03:00 builder:7a7a7a7a
+  ledger_line --arg ts "$(date -u -d '30 minutes ago' +%FT%TZ)" '{ts: $ts, task: "T7", event: "stowing",
+    machine: "home-pc", cause: "level", roles: ["builder"]}'
+  event T7 paused '{reason: "stowed", cause: "stow"}'
+  local since
+  since=$(jq -r 'select(.event == "stowing") | .ts' "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T7 stowing: stowing since $since (level), with no stowed; next: run team-stow T7, which finishes the stow or logs stow-failed"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[] | [.task, .kind, .session, .name, .next]' <<<"$output")" \
+    '["T7","stowing",null,null,"run team-stow T7, which finishes the stow or logs stow-failed"]'
+
+  # At 29 minutes it is not named yet.
+  jq -c --arg ts "$(date -u -d '29 minutes ago' +%FT%TZ)" 'if .event == "stowing" then .ts = $ts else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger.next"
+  mv "$BATS_TEST_TMPDIR/ledger.next" "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+
+  # A stowed, or a stow-failed, ends it.
+  for kind in stowed stow-failed; do
+    jq -c --arg ts "$(date -u -d '40 minutes ago' +%FT%TZ)" 'if .event == "stowing" then .ts = $ts else . end' \
+      "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger.next"
+    mv "$BATS_TEST_TMPDIR/ledger.next" "$TEAM_HOME/ledger.jsonl"
+    cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+    ledger_line --arg kind "$kind" '{ts: "2026-10-22T04:00:00Z", task: "T7", event: $kind, machine: "home-pc",
+      worktrees: [], roles: [], reason: "x"}'
+    run_bin -0 --separate-stderr team-sweep
+    assert_equal "$output$stderr" ""
+    mv "$BATS_TEST_TMPDIR/ledger.before" "$TEAM_HOME/ledger.jsonl"
+  done
+}
+
 # held_pair [<T3 event>...] -- [<T3 event>...]: the ledger afresh, T3 stowed for the level at 04:00
 # with its planner and T4 at 05:00 with its builder, each paused stowed, with each T3 event
 # (<kind>:<jq object of more fields>) logged before T3's stow, or after it when it follows the --.
@@ -1681,6 +1737,28 @@ relaunch_t4() {
   relaunch_t4
   run_bin -1 team-sweep --json
   assert_equal "$(jq -r '.[] | select(.task == null) | .text' <<<"$output")" "level: T3 fits again: relaunch its planner"
+}
+
+@test "T278's D1: Daniel's typed hold logged before a level stow keeps level-resume quiet; an outside wait before it does not" {
+  level_record minor
+  capacity_reading 0 8
+  # T3 is held by Daniel before its stow, T4 relaunched: T3 is on hold, and nothing is named.
+  held_pair 'held:{reason: "Daniel: not before the release", cause: "daniel-hold", discord_message: "1500000000000000001"}' --
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '.resume | map([.task, .hold])' <<<"$output")" '[["T3","held: Daniel: not before the release"]]'
+  # An outside wait before the stow was the stowed worker's own state, which its relaunch resumes.
+  held_pair 'waiting:{on: "CI", cause: "outside", reason: "the runner queue"}' --
+  relaunch_t4
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T3 fits again: relaunch its planner"
+  # An ask before the stow that no launch went past holds it, wherever it was logged.
+  held_pair 'asked:{id: "q1", text: "Which name?"}' --
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
 }
 
 @test "level-launch: a launch refused for room, not stowed, is named once its role fits again, until it launches" {

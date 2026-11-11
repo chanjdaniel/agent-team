@@ -219,6 +219,29 @@ laptop_state() {
   assert_equal "$(cat "$wt/.scratch/task/spec.md")" "spec"
 }
 
+@test "T278's D5: after a restart with no handoff, home-pc resumes itself: a task last launched here did not crash" {
+  # home-pc lost power with T1's builder at work: no stowed, and the restart ended every session.
+  # The builder's work since its last commit is in the live worktree.
+  "$REPO_ROOT/bin/team-config" capture >/dev/null
+  git -C "$TEAM_HOME" add machine
+  git -C "$TEAM_HOME" commit -q -m "chore: capture the config"
+  git -C "$TEAM_HOME" push -q origin dev
+  echo "live" >"$wt/a.txt"
+  echo '[]' >"$HOME/sessions.json"
+
+  run_bin -0 --separate-stderr team-resume
+  report=$(reported)
+  assert_equal "$stderr" ""
+  assert_contains "$output" "lease: home-pc holds the lease, epoch 1"
+  [[ $output != *"crashed on"* ]]
+  # Its latest launch ran here, so the report has no crash (one last launched on another machine
+  # does, as --steal's tests show), and no snapshot is applied over the live worktree.
+  assert_equal "$(jq -c '.tasks | map({task, here, stowed, crashed})' "$report")" \
+    '[{"task":"T1","here":false,"stowed":null,"crashed":null}]'
+  assert_equal "$(jq -c '.tasks[0].worktrees[0] | [.worktree, .moved, .head, .snapshot]' "$report")" "[\"$wt\",false,\"$head\",null]"
+  assert_equal "$(cat "$wt/a.txt")" "live"
+}
+
 @test "while home-pc holds a fresh lease, the resume refuses and changes nothing" {
   age_lease 4
   # home-pc has moved dev on since laptop cloned it: a pull would change laptop's team home.
