@@ -507,7 +507,35 @@ printf 'starting\n[ERROR] no display\n\n' >&2; exit 3|Chrome exited 3: [ERROR] n
 exit 9|Chrome exited 9
 exit 124|Chrome timed out after 60 s
 for a; do if [[ $a == --screenshot=* ]]; then echo text >"${a#*=}"; fi; done; echo done >&2|Chrome exited 0 and wrote no PNG: done
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "9 bytes written to file $s" >&2; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s.other" >&2; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; echo text >"$s"; echo "5 bytes written to file $s" >&2; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s" >&2; exit 124|Chrome timed out after 60 s
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s" >&2; echo killed >&2; exit 137|Chrome exited 137: killed
 CASES
+}
+
+@test "--graph takes the PNG of a Chrome that exits otherwise once it says it wrote the screenshot whole" {
+  ticket 01-one "Blocked by: None"
+  stub_chrome
+  # As a Mac with no display does: the screenshot written, then the teardown watchdog's exit 2.
+  cat >"$STUB_FIXTURES/chrome.sh" <<'SH'
+for a; do [[ $a != --screenshot=* ]] || s=${a#*=}; done
+printf '\x89PNG\r\n\x1a\n' >"$s"
+echo "8 bytes written to file $s" >&2
+echo "Teardown watchdog expired; recording dump and terminating." >&2
+exit 2
+SH
+  local dir=$wt/.scratch/task
+  run_bin -0 --separate-stderr team-tickets T172 --graph
+  assert_equal "$output" "$dir/tickets.png
+$dir/tickets.html"
+  assert_equal "$stderr" ""
+  assert_equal "$(head -c 4 "$dir/tickets.png" | tail -c 3)" "PNG"
+  assert_equal "$(ls -A "$dir")" "tickets
+tickets.html
+tickets.png"
 }
 
 @test "--graph refuses a task with no tickets, writing nothing" {
