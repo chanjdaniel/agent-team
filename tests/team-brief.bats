@@ -568,42 +568,58 @@ EOF
   refute_grep -F 'widening' "$output"
 }
 
-@test "the interview brief asks in whole rounds of at most 8, numbered with a recommendation, facts looked up, and its notebook keeps what each held-back question waits on" {
+@test "each build-path planner brief gives one round rule in the same sentences: at most 8, numbered with a recommendation, facts looked up" {
+  open_t12
+  event T12 interview-thread '{discord_thread: "1565400000000000012"}'
+  local template sentence
+  local -a rule=(
+    'Ask in rounds: a round asks every open decision whose prerequisites are settled, and a question whose answer hangs on one still open waits for a later round.'
+    'A round holds at most 8 questions; when more are open and ready, ask the 8 whose answers unblock the most and keep the rest for the next round.'
+    'Number the questions across all your rounds, the first round from Q1 and each later one on from the last, each a line `**Q<n>** - **<title>**: <the question>` with the options you see, then a line `Recommended: <the option and why>`, so Daniel can answer by number.'
+    'Facts are yours to find, never Daniel'"'"'s: look each one up in the code, the docs and the project'"'"'s records before the round, and ask only what Daniel must decide; a question that waits on a lookup still running waits for the next round, and the rest go now.'
+  )
+  for template in planner-feature planner-interview; do
+    run_bin -0 team-brief T12 "$template" --name "$template" --set 'read=- `AGENTS.md`.'
+    refute_grep 'one question, or a few short ones, at a time' "$output"
+    # The interview brief indents the rule under its first step, the feature brief does not.
+    sed 's/^ *//' "$output" >"$BATS_TEST_TMPDIR/$template.flat"
+    for sentence in "${rule[@]}"; do
+      grep -qxF -- "$sentence" "$BATS_TEST_TMPDIR/$template.flat" ||
+        { echo "$template lacks the round line: $sentence" >&2; cat "$output" >&2; return 1; }
+    done
+  done
+}
+
+@test "the interview brief posts each round, and its notebook keeps the number of the question each held-back one waits on" {
   open_t12
   event T12 interview-thread '{discord_thread: "1565400000000000012"}'
   run_bin -0 team-brief T12 planner-interview --set 'read=- `AGENTS.md`.'
   local brief=$TEAM_HOME/tasks/T12/brief.md
-  refute_grep 'one question, or a few short ones, at a time' "$brief"
-  grep -qxF '   Ask in rounds: a round asks every open decision whose prerequisites are settled, and a question whose answer hangs on one still open waits for a later round.' "$brief"
-  grep -qxF '   A round holds at most 8 questions; when more are open and ready, ask the 8 whose answers unblock the most and keep the rest for the next round.' "$brief"
-  grep -qxF '   Number the questions across the whole interview, the first round from Q1 and each later one on from the last, each a line `**Q<n>** - **<title>**: <the question>` with the options you see, then a line `Recommended: <the option and why>`, so Daniel can answer by number.' "$brief"
-  grep -qxF '   Facts are yours to find, never Daniel'"'"'s: look each one up in the code, the docs and the project'"'"'s records before the round, and ask only what Daniel must decide; a question that waits on a lookup still running waits for the next round, and the rest go now.' "$brief"
-  grep -qF 'and each question held back from a round with what it waits on: the question still open, the lookup still running, or the cap of 8.' "$brief"
+  grep -qF 'and each question held back from a round with what it waits on: the number of the question still open, the lookup still running, or the cap of 8.' "$brief"
   grep -qxF '4. Work out the next round from the answers, a question Daniel left unanswered still open, and ask it, or move on to the spec once no decision is open.' "$brief"
   grep -qF '`handoff.md` also names the last message id you read and the round waiting for its answers, if any' "$brief"
 }
 
-@test "the feature planner brief asks Daniel's open choices as one round in one QUESTION file, and looks facts up" {
+@test "the feature planner brief sends Daniel's open decisions as one round in one QUESTION file, and the role gives the same round" {
   open_t12
   run_bin -0 team-brief T12 planner-feature --set 'read=- `AGENTS.md`.'
   local brief=$TEAM_HOME/tasks/T12/brief.md
   grep -qxF '## Ask Daniel only what is theirs to decide' "$brief"
-  grep -qF 'facts are yours to look up in the code, the docs and the project'"'"'s records, never to ask.' "$brief"
-  grep -qxF 'When choices that are Daniel'"'"'s stay open, ask them in rounds: a round holds every open choice whose prerequisites are settled, at most 8, and a choice whose answer hangs on one still open waits for a later round.' "$brief"
-  grep -qxF '1. Write the round to `~/.treehouse/Conventioner-d4c77a/4/Conventioner/.scratch/task/questions-<round>.md`: a first line saying how many choices it holds, since the ping to Daniel quotes it, then each choice as a line `**Q<n>** - **<title>**: <the choice>` with the options you see, then a line `Recommended: <the option and why>`, numbered on from the last round'"'"'s.' "$brief"
+  grep -qxF '1. Write the round to `~/.treehouse/Conventioner-d4c77a/4/Conventioner/.scratch/task/questions-<round>.md`, its first line saying how many questions it holds, since the ping to Daniel quotes it.' "$brief"
   grep -qxF '2. Send `T12 QUESTION <that path>` to `coordinator`, one message for the whole round, and wait for the answer.' "$brief"
-  # The role's QUESTION line gives the same round, for a brief that says none.
-  grep -qxF -- '- `T<n> QUESTION <text> | options: a / b / c` when the plan leaves a real choice open, or `T<n> QUESTION <path>` for several, every open one whose prerequisites are settled (at most 8) in one file, each with its options and the one you recommend. Then wait for the answer.' "$REPO_ROOT/roles/planner.md"
+  # The role's QUESTION line gives the round, the cap, the numbering and the facts rule, for a brief that says none.
+  grep -qxF -- '- `T<n> QUESTION <text> | options: a / b / c` when the plan leaves a real choice open, or `T<n> QUESTION <path>` for several: every open one whose prerequisites are settled, at most 8, numbered, each with its options and the one you recommend, in one file; facts you look up, never ask. Then wait for the answer.' "$REPO_ROOT/roles/planner.md"
 }
 
-@test "each build-path planner brief has the spec list the glossary terms and ADR candidates for the builder" {
+@test "each build-path planner brief has the spec list the glossary terms and ADR candidates, right after its decisions line" {
   open_t12
   event T12 interview-thread '{discord_thread: "1565400000000000012"}'
-  local template
+  local template glossary
+  glossary='   When the project keeps a glossary (`CONTEXT.md`, or `CONTEXT-MAP.md` and its contexts'"'"' `CONTEXT.md`) or ADRs (a `docs/adr/` directory), it also lists the new glossary terms and the ADR candidates the builder should write.'
   for template in planner-feature planner-interview; do
     run_bin -0 team-brief T12 "$template" --name "$template" --set 'read=- `AGENTS.md`.'
-    grep -qxF '   When the project keeps a glossary (`CONTEXT.md`) or ADRs (`docs/adr/`), it also lists the new glossary terms and the ADR candidates the builder should write.' "$output" ||
-      { echo "$template lacks the glossary line" >&2; cat "$output" >&2; return 1; }
+    grep -A1 -F '   Its Implementation Decisions name each choice a builder would otherwise make' "$output" | tail -n 1 | grep -qxF -- "$glossary" ||
+      { echo "$template lacks the glossary line after the decisions line" >&2; cat "$output" >&2; return 1; }
   done
 }
 
