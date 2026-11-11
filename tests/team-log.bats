@@ -1840,6 +1840,9 @@ assert_no_answer_logged() {
   run_bin -0 --separate-stderr team-log T7 --from-message "T7 DONE gate run=01KR2B3C4E head=$HEAD_A outcome=pushed cause=base-merge"
   assert_equal "$stderr" "team-log: T7 gate run 01KR2B3C4E re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '"\(.run) \(.cause)"')" "01KR2B3C4E base-merge"
+  # --print logs nothing, so it says nothing of it either: team-next prints, then logs.
+  run_bin -0 --separate-stderr team-log T7 --print --from-message "T7 DONE gate run=01KR2B3C4F head=$HEAD_A outcome=pushed cause=base-merge"
+  assert_equal "$stderr" ""
   refuses_message "team-log: refusing a ledger event: outcome must be one of pushed, red, aborted, stopped-green" \
     --from-message "T7 DONE gate run=01KR2B3C4D head=$HEAD_A outcome=green minutes={}"
   refuses_message "team-log: DONE gate takes key=value pairs, got 'run 01KR2B3C4D' before the first" \

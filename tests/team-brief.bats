@@ -240,12 +240,12 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
    When the review step parks with no finding, only on "review coverage is incomplete", answer it yourself with `no-mistakes axi respond --action approve`, with no QUESTION: the team review reads this head, before the gate or after it. A finding, at any step, still goes to `coordinator` as a QUESTION.
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
 6. When the gate's run ends `passed`, repeat step 1; if it merged anything, push, noting each file that conflicted.
-   The gate runs again only for a commit that changes behaviour, such as the fix to a red check, and never for a merge of the base, clean or with its conflicts resolved in docs alone, or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI.
+   The gate runs again only for a commit of yours that changes behaviour, such as the fix to a red check, and never for a merge of the base, however its conflicts were resolved (clean, in docs alone or in code), or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI.
 7. Start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait --no-agent-review <full url> <the full sha the gate or step 6 pushed>`, run with Bash `run_in_background`, then send `T12 PR <full url>` to `coordinator` at once, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged, so the review reads while CI runs, and keep the wait going.
    `--no-agent-review` leaves out the reviewer's `agent-review` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round.
    Act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push the fix as step 8 says, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
    The gate leaves Playwright to CI, so a red `e2e` check is a failed check like any other.
-8. Push each fix of a failed check at once: commit it, repeat step 1, run the gate on it as step 4 says, whose push and pr steps update the PR, and start step 7's wait on the head it pushed, but send no new `PR`: the review in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
+8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new `PR`: the review in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
 9. Once the wait on the head you last pushed ends with exit 0, the delivery is done: send nothing more, since a review's findings come back to you from the coordinator as a fix round.
 
 At each gate run's end (it pushed, went red, or was aborted), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, a run whose gate outcome is `passed` reported as `outcome=pushed`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
@@ -685,7 +685,8 @@ EOF
   [[ -n $merge && $merge -lt $wait && $wait -le $pr ]]
   [[ $(grep -c 'PR <full url>` to `coordinator`' "$output") -eq 1 ]]
   # A failed check's fix is the builder's, pushed with no new report.
-  grep -qF "8. Push each fix of a failed check at once: commit it, repeat step 1, run the gate on it as step 4 says, whose push and pr steps update the PR, and start step 7's wait on the head it pushed, but send no new \`PR\`" "$output"
+  # It re-gates only a fix that changes behaviour, as step 6 says: a docs-only fix is pushed as it is.
+  grep -qF "8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new \`PR\`" "$output"
   # No line has the builder wait for checks-passed, stop a green run or report stopped-green.
   [[ $(grep -c 'checks-passed' "$output") -eq 1 ]]
   assert_contains "$brief" 'never wait for `checks-passed`, and never abort a run to end it.'
@@ -697,9 +698,10 @@ EOF
   # brief names.
   assert_contains "$brief" 'A finding, at any step, still goes to `coordinator` as a QUESTION.'
   assert_contains "$brief" 'answer it yourself with `no-mistakes axi respond --action approve`, with no QUESTION'
-  # The gate runs again for a behaviour commit alone: never for a merge of the base, clean or
-  # resolved in docs alone, nor for a commit of docs, comments or the PR body.
-  grep -qxF "   The gate runs again only for a commit that changes behaviour, such as the fix to a red check, and never for a merge of the base, clean or with its conflicts resolved in docs alone, or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI." "$output"
+  # The gate runs again for a behaviour commit of the builder's alone: never for a merge of the
+  # base, however resolved, as team-log's base-merge line says, nor for a commit of docs, comments
+  # or the PR body.
+  grep -qxF "   The gate runs again only for a commit of yours that changes behaviour, such as the fix to a red check, and never for a merge of the base, however its conflicts were resolved (clean, in docs alone or in code), or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI." "$output"
   # No role, procedure or other template names a step the delivery dropped.
   if git -C "$REPO_ROOT" grep -nE 'stopped-green|returns checks-passed|stop the gate run|CI included' \
     -- roles sops templates plugins; then return 1; fi
@@ -1533,7 +1535,7 @@ odd_names_branch() {
       assert_contains "$brief" "7. Push each fix of a failed check at once, as you pushed the first head: repeat step 1, run step 4 on the new head"
     else
       assert_contains "$brief" "epeat step 1; if it merged anything"
-      assert_contains "$brief" "never for a merge of the base, clean or with its conflicts resolved in docs alone"
+      assert_contains "$brief" "never for a merge of the base, however its conflicts were resolved"
     fi
     assert_contains "$brief" "Never run a command that needs \`sudo\`; send \`$task BLOCKED <the command> needs sudo\` to \`coordinator\` instead."
     # The up-to-date check replaced the old refusal when the base moved.

@@ -337,6 +337,12 @@ no hand-off for QUESTION"
 no hand-off for DONE gate"
   assert_equal "$(logged_from $((count + 1)) | jq -r .event | tr '\n' ' ')" "paused paused question gate-run "
   assert_equal "$(bg_calls)" ""
+  # A gate run that re-gates a base merge says once that the brief asks for no such run, though
+  # team-next reads the message before it logs it.
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE gate run=r2 head=0123456 outcome=pushed cause=base-merge"
+  assert_equal "$output" "logged gate-run run=r2 head=0123456 outcome=pushed cause=base-merge
+no hand-off for DONE gate"
+  assert_equal "$(grep -c 're-gates a base merge' <<<"$stderr")" 1
 }
 
 @test "an ops session's DONE and QUESTION are logged once as their length, the DONE with --relay, and hand nothing on" {
