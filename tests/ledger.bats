@@ -115,6 +115,16 @@ after_opened() {
   assert_contains "$output" "a launch's discord_message is only for role ops, not \"reviewer\""
 }
 
+@test "a builder's launch may name its ticket; no other role's launch may" {
+  local launch='{"ts":"2026-11-11T02:00:00Z","task":"T7","event":"launch","session":"4f2a9c1e","worktree":"/w","toolkits":[],"branch":"feat/T7-x--03"'
+  append_as team-worker "$launch,\"role\":\"builder\",\"ticket\":\"03\"}"
+  assert_equal "$status" "0"
+  append_as team-worker "$launch,\"role\":\"reviewer\",\"ticket\":\"03\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" 'team-worker: refusing a ledger event: a launch'"'"'s ticket is only for role builder, not "reviewer"'
+  assert_equal "$(jq -c '[.role, .ticket]' "$TEAM_HOME/ledger.jsonl")" '["builder","03"]'
+}
+
 @test "an ops done may carry its report's length and its relay, and a question its text or its length, one of them" {
   opened_task T7
   local at='"ts":"2026-11-09T02:00:00Z","task":"T7"'
