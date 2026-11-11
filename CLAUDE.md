@@ -26,6 +26,8 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `health.jq`: the health module, the one place that says what unhealthy means: the fold of each heartbeat run into the health record, the ledger's one-pass scan, every health threshold, and the view `team-timers health` prints, its problems and its line in markup and plain text.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
+    - `notice.jq`: the notice module, the one lifecycle of every notice of a standing problem the heartbeat posts in `#coordinator`: the notice record `notices.json`, the table of each source's rules, the judging, its outcomes and the move from the old records.
+    - `notices.sh`: the notice record's reads and locked writes, and the move of each old record into it, sourced after `team.sh` by `team-timers` and `team-uptime`.
     - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names on an opencode gate.
     - `outbound.py`: whether a Bash command's `curl` or `wget` sends a request body or a file to a literal host outside the team's own local ones, directly or through a proxy, read by `command_text.py`'s `simple_commands`, for `bin/hooks/command-guard`.
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
@@ -39,7 +41,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
     - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
-    - `uptime.jq`: `team-uptime`'s rules, the state of each production check, when one is down, when to post and each post's text, and the status line.
+    - `uptime.jq`: `team-uptime`'s rules, the counting of each production check, when one is down, its outages judged as notices through `notice.jq`, each post's text, and the status line.
     - `vendor/git-filter-repo/`: git filter-repo 2.47.0, vendored with its MIT license.
     - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project, model and toolkits, the longest, the running, and the classes and breakdown of their time rows.
     - `working-set.awk`: a cgroup's working set, its `memory.current` less the reclaimable page cache, the one measure of memory use `team-capacity`, `team-heavy` and `team-level` read a cgroup by.
