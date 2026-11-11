@@ -303,14 +303,15 @@
 # number, with the time of its last event that is not a denied; whether the coordinator step last
 # saw a session named coordinator, and since which run it has not; the sweep findings it last saw,
 # each with the time of the first look that saw it, and the time of the run's look, none when
-# the run made none), notices.json (the notice record, team-notices/1, bin/lib/notice.jq's: the open
-# alerts, the offline notice and the login-refused notice, each with since when, its text, the
-# holding of the lease it opened in, when it was posted and its message, the login refusal's
-# reason in its detail; written whole under notices.lock, through bin/lib/notices.sh; the first
-# run after it came in moved health.json's open alerts, the offline flag's posted and the
-# login-refused file there, and strips an alerts key in health.json, a posted in the offline flag
-# and a login-refused file it finds), notices.lock (one writer of the notice record at a time),
-# heartbeat.log ("<UTC time> <step>: <what happened>", kept to its last 1000 lines once it passes 2000), heartbeat-failures.log (each
+# the run made none), notices.json (the notice record, team-notices/1, bin/lib/notice.jq's: the
+# open alerts, the offline notice and the login-refused notice, each with since when, its text,
+# the holding of the lease it opened in, when it was posted and its message, the login refusal's
+# reason in its detail; written whole under notices.lock, through bin/lib/notices.sh; a run moves
+# health.json's open alerts, the offline flag's posted and the login-refused file from before it
+# there once, and strips an alerts key in health.json, a posted in the offline flag and a
+# login-refused file it finds), notices.lock (one writer of the notice record at a time),
+# heartbeat.log ("<UTC time> <step>: <what happened>", kept to its last 1000 lines once it passes
+# 2000), heartbeat-failures.log (each
 # of its lines that reports a problem, the same line: a failed step, a warning, a failed or refused
 # probe and each run's line of an outage, a lease not checked or not renewed, a failed post, a
 # skipped or timed-out run; kept 30 days, the older lines dropped once a run), heartbeat.lock (one
@@ -905,7 +906,7 @@ go_offline() {
   if ! notices_judge probe notice '
       notice_close("offline")
       | notice_plan("offline"; [{key: "offline", since: $since, text: $text, detail: null}]; $taken_at; now; null)' \
-    --arg since "$1" --arg text "$(outage_text "$1")" --argjson taken_at "$(taken_at)"; then
+    --arg since "$1" --arg text "$(outage_text "$1")" --argjson taken_at "$(notices_taken_at)"; then
     judged=0
     problem probe "cannot write the notice record $NOTICES ($(first_error)), so the back post carries the outage line"
   fi
@@ -932,7 +933,7 @@ login_refused() {
       (.notices["login-refused"].since // $now) as $since
       | notice_plan("login-refused"; [{key: "login-refused", since: $since, text: $text, detail: {reason: $reason}}];
           $taken_at; $now; null)' \
-    --arg now "$(date -u +%FT%TZ)" --arg text "$text" --arg reason "$PROBE_REASON" --argjson taken_at "$(taken_at)"; then
+    --arg now "$(date -u +%FT%TZ)" --arg text "$text" --arg reason "$PROBE_REASON" --argjson taken_at "$(notices_taken_at)"; then
     problem probe "cannot write the notice record $NOTICES ($(first_error)), so the refusal is judged again next run"
   elif jq -e 'any(.actions[]; .do == "post")' <<<"$NOTICE_PLAN" >/dev/null; then
     if post "$text"; then
@@ -951,7 +952,7 @@ login_refused() {
 # post, so a later refusal is posted anew.
 login_accepted() {
   jq -e '.notices | has("login-refused")' <<<"$(notices_read 2>/dev/null)" >/dev/null 2>&1 || return 0
-  if ! notices_judge probe notice 'notice_plan("login-refused"; []; $taken_at; now; null)' --argjson taken_at "$(taken_at)"; then
+  if ! notices_judge probe notice 'notice_plan("login-refused"; []; $taken_at; now; null)' --argjson taken_at "$(notices_taken_at)"; then
     problem probe "cannot write the notice record $NOTICES ($(first_error)), so the refusal is judged again next run"
   elif jq -e '.closed | length > 0' <<<"$NOTICE_PLAN" >/dev/null; then
     log probe "GitHub accepts $machine's login again"
@@ -991,7 +992,7 @@ back_step() {
   back=$(date -u +%FT%TZ)
   step_ok lease
   run_fact "$(jq -cn --arg at "$back" '{lease_renewed: $at}')"
-  if notices_judge back notice 'notice_plan("offline"; []; $taken_at; now; null)' --argjson taken_at "$(taken_at)"; then
+  if notices_judge back notice 'notice_plan("offline"; []; $taken_at; now; null)' --argjson taken_at "$(notices_taken_at)"; then
     ended=$(jq -r 'first(.actions[] | select(.do == "end") | .id) // empty' <<<"$NOTICE_PLAN")
     told=$(jq -r '[(.actions[], .closed[]) | select(.id == "offline") | .notice.posted | strings] | length > 0' <<<"$NOTICE_PLAN")
   else
@@ -1010,11 +1011,6 @@ back_step() {
     problem back "cannot write the notice record $NOTICES ($(first_error)), so the offline notice is closed at the next hold"
   fi
   holding=1
-}
-
-# The lease record's taken_at as JSON, null when it has none: the holding a notice opens in.
-taken_at() {
-  jq -c '.taken_at | strings' "$state/lease.json" 2>/dev/null | grep . || echo null
 }
 
 # Judge notices: notices_update <args>, its object in NOTICE_PLAN; a line it said while it went

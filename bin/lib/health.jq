@@ -297,7 +297,8 @@ def health_alerts($lease; $now; $limits):
 # may happen. Only on the holder, so a machine that does not hold judges nothing, and nothing while
 # a heartbeat, offline or login-refused problem stands (a run that has outlasted the stale
 # minutes, say), since each hides the checkpoint problem without saying it has ended; null for a
-# record that is not team-health/1 too: health_alert_wanted($lease; $fenced; $machine; $now; $limits)
+# record that is not team-health/1 too:
+# health_alert_wanted($lease; $fenced; $machine; $now; $limits)
 def health_alert_wanted($lease; $fenced; $machine; $now; $limits):
   if ($lease | type) != "object" or $lease.holder != $machine or $lease.state != "held" or $fenced
     or type != "object" or .schema != "team-health/1" then

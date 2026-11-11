@@ -8,7 +8,11 @@
 # bin/lib/notice.jq's; each write is whole, to a temporary file moved into place, under
 # notices.lock beside it. It provides:
 #   NOTICES                      the record's path.
-#   TEAM_NOTICES_LOCK_SECONDS    how long a writer waits for the lock, 10 s unless set (a test seam).
+#   notices_taken_at             prints the lease record's taken_at as JSON, the holding a
+#                                notice opens in: null when lease.json is missing, unreadable or
+#                                has none.
+#   TEAM_NOTICES_LOCK_SECONDS    how long a writer waits for the lock, 10 s unless set (a test
+#                                seam).
 #   notices_read                 prints the record, with the old records of the sources not yet
 #                                upgraded folded in, writing nothing; with no file, notice_empty
 #                                with the folds. Fails, saying "<file> is not a team-notices/1
@@ -44,6 +48,11 @@ NOTICES_STATE=$HOME/.local/state/agent-team
 NOTICES=$NOTICES_STATE/notices.json
 NOTICES_LOCK=$NOTICES_STATE/notices.lock
 TEAM_NOTICES_LOCK_SECONDS=${TEAM_NOTICES_LOCK_SECONDS:-10}
+
+# The lease record's taken_at as JSON, null when it has none: the holding a notice opens in.
+notices_taken_at() {
+  jq -c '.taken_at | strings' "$NOTICES_STATE/lease.json" 2>/dev/null | grep . || echo null
+}
 
 # The flag file <file> as an object, its since the file's time when it gives none (a file that is
 # not JSON included), or nothing when there is no file: notices_flag <file>
@@ -184,7 +193,8 @@ notices_strip() {
   esac
 }
 
-# Whether the record lists every source of the JSON array <sources> upgraded: notices_upgraded <sources>
+# Whether the record lists every source of the JSON array <sources> upgraded:
+# notices_upgraded <sources>
 notices_upgraded() {
   [[ -e $NOTICES ]] && notices_valid "$NOTICES" &&
     jq -e --argjson sources "$1" '.upgraded as $u | all($sources[]; . as $s | any($u[]?; . == $s))' \

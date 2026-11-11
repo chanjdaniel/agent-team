@@ -133,12 +133,6 @@ uptime_jq() {
   jq -L "$TEAM_LIB" "include \"uptime\"; include \"notice\"; $1" "${@:2}"
 }
 
-# The lease record's taken_at, as JSON: the time this holding began, null when the record is
-# missing, unreadable or has none.
-taken_at() {
-  jq -c '.taken_at | strings' "$STATE_DIR/lease.json" 2>/dev/null | grep . || echo null
-}
-
 # Say on stderr, and fail the run with, a line the notice record's last update left in $err, as a
 # record set aside as not team-notices/1.
 notices_said() {
@@ -303,7 +297,7 @@ run_round() {
   if ! plan=$(notices_update "uptime notice" \
     '{state: $previous, record: .} | uptime_round($checks; $results; $now; $machine; $limits; $taken_at)' \
     --argjson previous "$previous" --argjson checks "$checks" --arg now "$now" --arg machine "$machine" \
-    --argjson limits "$limits" --argjson taken_at "$(taken_at)" \
+    --argjson limits "$limits" --argjson taken_at "$(notices_taken_at)" \
     --argjson results "$(printf '%s\n' "${results[@]}" | jq -sc 'from_entries')" 2>"$err"); then
     notices_unwritten
     exit 1
