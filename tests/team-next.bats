@@ -1614,7 +1614,7 @@ nothing to launch: 06 waiting: PR 9; 07 blocked on 06"
   assert_equal "$(tail -n 1 <<<"$output")" "no hand-off for QUESTION"
   event plan-approved '{by: "coordinator"}'
   event held '{reason: "offline"}'
-  refused "T7 is held since 2026-11-01T10:00:00Z: offline" T7 --fill
+  refused "T7 is on Daniel's hold since 2026-11-01T10:00:00Z (held-1): offline; only Daniel's word lifts it" T7 --fill
   event closed '{archive: [], returned: [], kept: []}'
   refused "T7 is closed" T7 --fill
 }
