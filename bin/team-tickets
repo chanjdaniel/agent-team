@@ -16,7 +16,7 @@
 #   Phase: 2
 # and at most one Touches: line, the paths of the task directory's scope.txt the ticket changes,
 # each a file or a directory ending in /, with no leading /, no . or .. segment, no glob and no
-# space, joined by ", " (a ticket with none is one whose reach is unbounded, which builds alone):
+# space, joined by ", " (a ticket with none is never named for a shared path):
 #   Touches: bin/team-next, tests/team-next.bats, tests/fixtures/next/
 # The task directory's spec.md has at most one Parallel: line, the planner's proposed cap on the
 # tickets of each phase that build at once, one from 1 to 3 per phase in phase order, the last
@@ -41,13 +41,13 @@
 # ticket; a cycle of blockers, named once at the Blocked by: line of its lowest ticket; a Touches:
 # line in a task directory with no scope.txt, and a Touches: path in no line of it (a path is in a
 # line when it equals it, or the line is a directory the path is under); when every ticket has a
-# Touches: line, a scope.txt line no Touches: path equals or is under, named at scope.txt; two
-# tickets of one project and phase that may build at once (neither blocks the other, directly or
-# through other tickets) and share a path (equal, or one a directory the other is under), named
-# once per pair at the higher-numbered ticket's Touches: line with the first path both touch; and
-# a second or malformed Parallel: line in spec.md, or one naming more caps than the tickets have
-# phases. The listing refuses such a set the same way. A clean set prints how many tickets it
-# read; one with none says so on stderr. It never writes.
+# Touches: line, a scope.txt line no Touches: path of its task directory's tickets equals or is
+# under, named at scope.txt; two tickets of one project and phase that may build at once (neither
+# blocks the other, directly or through other tickets) and share a path (equal, or one a directory
+# the other is under), named once per pair at the higher-numbered ticket's Touches: line with the
+# first path both touch; and a second or malformed Parallel: line in spec.md, or one naming more
+# caps than the tickets have phases. The listing refuses such a set the same way. A clean set
+# prints how many tickets it read; one with none says so on stderr. It never writes.
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
