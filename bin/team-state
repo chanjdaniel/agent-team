@@ -14,7 +14,7 @@
 # worktrees (returned or not), thread, workers (every launch, live when claude agents --json
 # lists its session, with that session's status, state and context, the tokens its latest
 # main-conversation reply read, from its transcript, or null, and the brief its launch logged, or
-# null), last_event, pending_asks, waiting, parks, walk, rehome_failures, merge_preapproval, pr, and progress;
+# null), last_event, pending_asks, waiting, parks, stowing, walk, rehome_failures, merge_preapproval, pr, and progress;
 # pending_asks are the asks no later event settles, an answered or a
 # merge-preapproved with the ask's id or a merge-approved whose url its text names.
 # progress is where the task is: tickets (done, the ticket numbers with a ticket-done, each once,
@@ -69,10 +69,13 @@
 # waiting is the task's latest standing waiting (on, reason, since), or null. parks are the task's standing parks (held, blocked, waiting, paused) in the order logged,
 # each {id, kind, cause, on, reason, since, passed}: id <kind>-<n>, the park's ordinal among the
 # task's events of its kind; cause the line's own, else for an old line the one bin/lib/ledger.jq's
-# legacy_cause reads from its words; since its since, else its ts; passed, false for every park
-# until a launch may go past an ask's wait, which will set it. The text form ends with "parks:
+# legacy_cause reads from its words; since its since, else its ts; passed, whether a launch since
+# went past its ask (team-worker --past-ask names it), a typed ask's wait. The text form ends with "parks:
 # <id> <cause> since <since>: <reason>" for each, joined by "; ", " (passed by a launch)" after a
 # passed one, and has no parks part with none.
+# stowing is the task's stow under way, {since, cause} of its stowing (team-stow --begin, or a
+# team-stow run, logged it) until its stowed or stow-failed, or null; the text form says "stowing
+# since <ts>" while one stands, after the walk and before the parks.
 # walk is the task's manual QC walk (team-ui T<n> --walk), {"since": "<ts>"} while it is on, from
 # its latest walk event's ts, and null while it is off or the task is closed; the text form says
 # "walk on since <ts>" while it is on, before the parks, and nothing of it while it is off.

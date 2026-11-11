@@ -248,9 +248,13 @@
 #          team-worker stops a task's own by, over every open task), stop each running team dev
 #          stack of an open task that no busy session (interactive ones too) works in, then stow
 #          open tasks with a live worker or a reservation left, the most recently opened first,
-#          until the rest fits; at none every one. Then the tasks stowed, waiting to resume
-#          (their latest stowed, for the level or a handoff, names roles to relaunch and no
-#          launch follows it), oldest stow first, each with the estimate of its roles to
+#          until the rest fits; at none every one. A task with a stow under way (a stowing
+#          standing, which team-stow --begin or a team-stow run logged, until its stowed or
+#          stow-failed) is never named to stow, what it holds counts as freed already, so no other
+#          task stows in its place, and it is in neither list below. Then the tasks stowed,
+#          waiting to resume (their latest stowed, for the level or a handoff, or stow-failed,
+#          which keeps its stowing's roles, names roles to relaunch and no launch follows it),
+#          oldest stow first, each with the estimate of its roles to
 #          relaunch, whether that fits now (never at none) and what holds it, if anything
 #          (Daniel's hold or an ask no launch went past, wherever logged, or a held, waiting or
 #          blocked logged after its stow, while it stands: stow_hold in bin/lib/ledger.jq), which

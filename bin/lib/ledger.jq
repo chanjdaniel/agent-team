@@ -350,7 +350,7 @@ def lifecycle_statuses: ["unknown", "legacy", "open", "closed", "closed-own-retr
 # The effects lifecycle_step implements, each named by a kind of the table.
 def lifecycle_effects:
   ["open", "close", "approve", "launch", "build", "done", "pr", "review", "rewrite", "merge", "ask",
-   "settle", "park", "resume", "stowed"];
+   "settle", "park", "resume", "stowing", "stowed", "stow-failed"];
 
 # The cause of a park event (held, blocked, waiting, paused) that carries none, as an old line
 # does, first match wins: a paused whose reason starts with the word stowed (any case) stow, a
@@ -421,8 +421,11 @@ def park_role:
 #           ends none; a merge-approved ends every old wait on Daniel (lifecycle_old_wait_on_daniel).
 #   asks    the asks no later event settles (settles), as {id, text, ts, i, passed}, passed whether
 #           a launch since named it in past_ask (team-worker --past-ask), so it parks nothing.
-#   stow    null, or {state: "stowed", cause, roles, since, i} from the latest stowed with no
-#           launch after it.
+#   stow    null, or the task's stow since its latest launch, as {state, cause, roles, since, i}:
+#           state stowing from a stowing (a stow under way, its cause and roles the stowing's),
+#           stowed from a stowed (its cause and roles), or failed from a stow-failed, which keeps
+#           the stowing's cause and roles and adds reason, read as stowed for the resume; since
+#           and i the event's ts and index.
 #   counts  each park kind's events so far, for the next park's id.
 #   seen    the events folded so far, the next event's index.
 def lifecycle_start:
@@ -500,7 +503,8 @@ def lifecycle_review_phase($ts): lifecycle_review_phase($ts; ["building", "in-re
 # phase, a review's or a rewrite's from building, in-review or awaiting-merge, a rewrite's only
 # when the task has a PR, since no review is under way without one), merge (its PR
 # merged; with none open, merged-part when it names a non-empty phases_left, else merged; else the
-# review phase), ask, settle, park, resume and stowed (as the state's fields say).
+# review phase), ask, settle, park, resume, stowing, stowed and stow-failed (as the state's fields
+# say).
 def lifecycle_step($e):
   (lifecycle_table.kinds[$e.event // ""].effect // null) as $effect
   | .seen as $i
@@ -562,8 +566,13 @@ def lifecycle_step($e):
           session: ($e.session // null), ask: ($e.ask // null), since: ($e.since // $e.ts), ts: $e.ts, i: $i, passed: false}]
     elif $effect == "resume" then
       .parks |= map(select(lifecycle_resume_ends($e) | not))
+    elif $effect == "stowing" then
+      .stow = {state: "stowing", cause: ($e.cause // null), roles: ($e.roles // []), since: $e.ts, i: $i}
     elif $effect == "stowed" then
       .stow = {state: "stowed", cause: ($e.cause // null), roles: ($e.roles // []), since: $e.ts, i: $i}
+    elif $effect == "stow-failed" then
+      (if .stow.state == "stowing" then .stow else {cause: null, roles: []} end) as $stowing
+      | .stow = {state: "failed", cause: $stowing.cause, roles: $stowing.roles, since: $e.ts, i: $i, reason: ($e.reason // null)}
     else . end;
 
 # The task's state: its events, in ledger order, folded from lifecycle_start.
@@ -609,8 +618,9 @@ def launch_refusal($task; $role; $past): launch_refusal($task; $role; $past; fal
 # (a kind of effect park) with no cause, naming the causes the table gives its kind, a held while
 # Daniel's hold (a park of cause daniel-hold) stands, and a resumed whose id names no standing
 # park, an ask's wait, or Daniel's hold with no discord_message: every resumed id= the fold would
-# not end; and a launch lifecycle_launch_refusal refuses, by its role and past_ask, so the guard
-# and the table cannot disagree. A kind the table does not list takes default.
+# not end; a launch lifecycle_launch_refusal refuses, by its role and past_ask, so the guard and
+# the table cannot disagree; and a stowing while one stands, or a stowed or stow-failed with no
+# stowing standing. A kind the table does not list takes default.
 def lifecycle_problems($e):
   lifecycle_table as $t
   | ($t.kinds[$e.event] // {}) as $row
@@ -638,7 +648,10 @@ def lifecycle_problems($e):
            "\($e.id) is Daniel's hold, which only a resumed with discord_message, Daniel's word, lifts"
          else empty end
      else empty end),
-    (if $e.event == "launch" then lifecycle_launch_refusal($e.task; $e.role // ""; $e.past_ask // []) else empty end)
+    (if $e.event == "launch" then lifecycle_launch_refusal($e.task; $e.role // ""; $e.past_ask // []) else empty end),
+    (if $e.event == "stowing" and .stow.state == "stowing" then "\($e.task) is stowing already, since \(.stow.since)"
+     elif IN($e.event; "stowed", "stow-failed") and .stow.state != "stowing" then "\($e.event) with no stowing of \($e.task) standing"
+     else empty end)
   elif .status == "closed" then "\($e.task) is closed, and a closed task takes no \($e.event)"
   elif IN(.status; "unknown", "legacy") then
     "\($e.task) is not opened (no opened event), and it takes only \(kinds_taken(.status) | listed("and")) before its opened, not \($e.event)"
@@ -693,6 +706,9 @@ def phase: lifecycle | lifecycle_phase;
 # The state's latest standing park of $kind, or null.
 def lifecycle_park($kind): [.parks[] | select(.kind == $kind)] | last;
 
+# The state's stow under way, {since, cause} of its stowing while one stands, or null.
+def lifecycle_stowing: .stow | if . != null and .state == "stowing" then {since, cause} else null end;
+
 # The state's standing parks as team-state shows them, in the order logged, each {id, kind, cause
 # (its own, else legacy_cause's), on, reason, since, passed}.
 def lifecycle_parks: [.parks[] | {id, kind, cause, on, reason, since, passed}];
@@ -738,9 +754,10 @@ def latest_stowed: latest_index("stowed");
 def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch");
 
 # Whether the task is stowed, waiting to resume: its latest stowed, for the level or a handoff (cause
-# level or handoff, or none, as before team-stow), names roles to relaunch and no launch follows
-# it, so it waits for the resume or for room at the team's level to be relaunched here.
-def lifecycle_stowed_awaiting_resume: .stow != null and .stow.state == "stowed" and .stow.roles != [];
+# level or handoff, or none, as before team-stow), or a stow-failed, which keeps its stowing's
+# roles, names roles to relaunch and no launch follows it, so it waits for the resume or for room
+# at the team's level to be relaunched here. A stowing (a stow under way) is not.
+def lifecycle_stowed_awaiting_resume: .stow != null and IN(.stow.state; "stowed", "failed") and .stow.roles != [];
 def stowed_awaiting_resume: lifecycle | lifecycle_stowed_awaiting_resume;
 
 # What keeps a task's parked work, parked at its event of index <since>, from being launched, as
@@ -1069,13 +1086,13 @@ def task_state($sessions; $home):
      path: $opened.path, phase: ($state | lifecycle_phase), worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
      workers: $workers, last_event: last, pending_asks: ($state | lifecycle_pending_asks),
-     waiting: ($state | lifecycle_waiting), parks: ($state | lifecycle_parks), walk: qc_walk,
+     waiting: ($state | lifecycle_waiting), parks: ($state | lifecycle_parks), stowing: ($state | lifecycle_stowing), walk: qc_walk,
      rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null,
      progress: progress($workers)};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands
-# and the brief it is on, then the tickets done, the latest review, the PR and the words on it, and
-# last the standing parks:
+# and the brief it is on, then the tickets done, the latest review, the PR and the words on it, the
+# walk, a stow under way, and last the standing parks:
 # T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7 | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
 def state_line:
   .task as $task
@@ -1123,6 +1140,7 @@ def state_line:
        else " | standing word does not cover it: \(.reasons[0])"
          + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end)
   + (if .walk == null then "" else " | walk on since \(.walk.since)" end)
+  + (if .stowing == null then "" else " | stowing since \(.stowing.since)" end)
   + (.parks // [] | if . == [] then ""
      else " | parks: " + (map("\(.id) \(.cause) since \(.since): \(.reason)" + if .passed then " (passed by a launch)" else "" end) | join("; ")) end);
 
@@ -1192,6 +1210,16 @@ def merge_due_finding($standing; $sessions; $covered):
           + ", with no ask open";
           "run team-merge \($task); on a refusal, ask Daniel for the per-head word with team-ask")
     else empty end;
+
+# team-sweep's stowing finding, over a task's events, or nothing: its stowing (a stow under way)
+# has stood 30 minutes with no stowed or stow-failed, whatever parks the task, since the worker
+# that answered its STOW parked it.
+def stowing_finding:
+  .[0].task as $task
+  | lifecycle.stow
+  | select(. != null and .state == "stowing" and now - (.since | fromdate) >= 1800)
+  | finding($task; "stowing"; null; null; "stowing since \(.since) (\(.cause)), with no stowed";
+      "run team-stow \($task), which finishes the stow or logs stow-failed");
 
 # A duration in seconds as <h>h<mm>m, or <m>m under an hour.
 def duration:
@@ -1428,8 +1456,8 @@ def activity_finding:
 
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
-# takes it): each open task's merge-due (under a plan-time word or a standing word of any task's),
-# else its findings unless it is parked, then the stray sessions (named like a team worker whose
+# takes it): each open task's stowing finding, then its merge-due (under a plan-time word or a
+# standing word of any task's), else its findings unless it is parked, then the stray sessions (named like a team worker whose
 # task is closed or not in the ledger, never the load check's T0, whose session the coordinator
 # waits on for up to 30 minutes), in task number order; then the activity, level, retro-due and
 # health findings. $covered is the projects a standing word may cover, as merge_due_finding takes
@@ -1438,9 +1466,10 @@ def sweep($sessions; $plan; $activity; $covered; $health):
   . as $events
   | by_task as $tasks
   | [.[] | select(.event == "merge-standing" or .event == "merge-standing-withdrawn")] as $standing
-  | ([($tasks[] | select(is_open) | [merge_due_finding($standing; $sessions; $covered)] as $due
-        | if $due != [] then $due[] elif parked then empty
-          else task_findings($sessions; $activity) end),
+  | ([($tasks[] | select(is_open) | stowing_finding,
+        ([merge_due_finding($standing; $sessions; $covered)] as $due
+         | if $due != [] then $due[] elif parked then empty
+           else task_findings($sessions; $activity) end)),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";
@@ -1454,9 +1483,11 @@ def sweep($sessions; $plan; $activity; $covered; $health):
 # What team-capacity plan reads of the ledger, over every ledger event as one array, with the
 # session list <sessions>: one {task, opened (its opened's time, else its first event's),
 # finished ([{session, role}]: the idle live sessions whose work is handed on, handed_on_launches
-# with no new launch), stowed (while it is stowed_awaiting_resume, {at, roles} of its latest
-# stowed and hold, stow_hold's, else null), stowed_since (its latest stowed's time when no launch
-# follows it, else null), refused (refused_launches')} per open task, in task number order.
+# with no new launch), stowing ({since, cause} of its stowing while that stands, a stow under way,
+# else null), stowed (while it is stowed_awaiting_resume, {at, roles} of its latest stowed or
+# stow-failed and hold, stow_hold's, else null), stowed_since (that stowed's or stow-failed's time
+# when no launch follows it, else null), refused (refused_launches')} per open task, in task number
+# order.
 def plan_tasks($sessions):
   [by_task | to_entries[] | select(.value | is_open) | .key as $task | .value as $events
    | ($events | lifecycle) as $state
@@ -1467,7 +1498,8 @@ def plan_tasks($sessions):
       stowed: (if $state | lifecycle_stowed_awaiting_resume
                then $state.stow | {at: .since, roles, hold: ($state | lifecycle_stow_hold)}
                else null end),
-      stowed_since: ($state.stow | if . != null and .state == "stowed" then .since else null end),
+      stowing: ($state | lifecycle_stowing),
+      stowed_since: ($state.stow | if . != null and IN(.state; "stowed", "failed") then .since else null end),
       refused: ($state | lifecycle_refused_launches)}]
   | by_task_number;
 

@@ -109,6 +109,13 @@ stowed_events() {
   jq -c 'select(.event == "stowed") | del(.ts)' "$TEAM_HOME/ledger.jsonl"
 }
 
+# The ledger's stowing, stowed and stow-failed events as "<task> <event>", a stow-failed's with
+# ": <reason>", one per line.
+stow_kinds() {
+  jq -r 'select(.event | IN("stowing", "stowed", "stow-failed"))
+    | "\(.task) \(.event)" + if .event == "stow-failed" then ": \(.reason)" else "" end' "$TEAM_HOME/ledger.jsonl"
+}
+
 # The stowed <task> gets on home-pc with its worktree in slot <n> at <head>, the builder's.
 stowed_of() {
   jq -cn --arg task "$1" --arg branch "feat/$1-work$2" --arg head "$3" --arg cause "${4:-level}" '{task: $task,
@@ -138,6 +145,8 @@ untouched_state() {
   run_bin -0 --separate-stderr team-stow T1 T2
   assert_equal "$stderr" ""
   assert_contains "$output" "lease: home-pc holds the lease, epoch 1"
+  # With no stowing standing, the run logs each task's before its sessions step.
+  [[ $output =~ "stowing: T1 since "[^$'\n']+$'\n'"stowing: T2 since "[^$'\n']+$'\n'"sessions: T1: " ]]
   assert_contains "$output" "sessions: T1: stopped and removed T1-builder (a1a1a1a1)
 sessions: T2: stopped and removed T2-builder (a2a2a2a2)
 stacks: T1 home: stackfix-1 is stopped, its data kept
@@ -165,6 +174,12 @@ $head2"
   run -1 git -C "$home_origin" rev-parse -q --verify feat/T3-work3
   assert_equal "$(stowed_events)" "$(stowed_of T1 1 "$head1")
 $(stowed_of T2 2 "$head2")"
+  assert_equal "$(stow_kinds)" "T1 stowing
+T2 stowing
+T1 stowed
+T2 stowed"
+  assert_equal "$(jq -c 'select(.event == "stowing") | del(.ts)' "$TEAM_HOME/ledger.jsonl" | head -n 1)" \
+    '{"task":"T1","event":"stowing","machine":"home-pc","cause":"level","roles":["builder"]}'
   # The lease and the heartbeat stay: nothing is released.
   assert_equal "$(lease_json | jq -r .state)" held
   assert_equal "$(jq -r '.[].name' "$BATS_TEST_TMPDIR/sessions.json" | paste -sd ' ')" "coordinator T3-builder my-T1-builder"
@@ -242,6 +257,61 @@ stack_exists() {
 rm a2a2a2a2"
   assert_equal "$(running_stacks | paste -sd ' ')" "stackfix-1 stackfix-3"
   assert_equal "$(stowed_events)" "$(stowed_of T2 2 "$head2")"
+  # Refused before the run logged its stowing: none for T1.
+  assert_equal "$(stow_kinds)" "T2 stowing
+T2 stowed"
+}
+
+@test "--begin logs a stowing for each open task with none standing, and a run then stows it with no second" {
+  run_bin -0 --separate-stderr team-stow --begin T1
+  assert_equal "$stderr" ""
+  local since
+  since=$(jq -r 'select(.event == "stowing") | .ts' "$TEAM_HOME/ledger.jsonl")
+  assert_equal "$output" "stowing: T1 since $since"
+  assert_equal "$(jq -c 'select(.event == "stowing") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" \
+    '{"task":"T1","event":"stowing","machine":"home-pc","cause":"level","roles":["builder"]}'
+  # It does nothing else: no session or stack stopped.
+  assert_equal "$(stops_and_removes)" ""
+  assert_equal "$(running_stacks | paste -sd ' ')" "stackfix-1 stackfix-2 stackfix-3"
+
+  # Again, it says so and logs nothing; a task that is not open is refused, and the others are
+  # still logged, with the cause given; --all takes every open task.
+  run_bin -1 --separate-stderr team-stow --begin T1 T9 T2 --cause handoff
+  assert_contains "$output" "stowing: T1 already since $since"
+  assert_contains "$output" "stowing: T2 since "
+  assert_equal "$stderr" "team-stow: T9 is not stowing: it is not an open task"
+  run_bin -0 team-stow --all --begin
+  assert_contains "$output" "stowing: T3 since "
+  assert_equal "$(jq -r 'select(.event == "stowing") | "\(.task) \(.cause)"' "$TEAM_HOME/ledger.jsonl")" "T1 level
+T2 handoff
+T3 level"
+
+  # The run finds T1's stowing standing and logs no second.
+  run_bin -0 team-stow T1
+  assert_contains "$output" "stowing: T1 already since $since"
+  assert_equal "$(stow_kinds)" "T1 stowing
+T2 stowing
+T3 stowing
+T1 stowed"
+}
+
+@test "a branch refused after the stowing --begin logged gives its stow-failed, and the others still stow" {
+  run_bin -0 team-stow --begin T1 T2
+  git -C "$wt1" push -q origin feat/T1-work1
+  git -C "$wt1" reset -q --hard HEAD~1
+  echo "b" >"$wt1/b.txt"
+  git -C "$wt1" add b.txt
+  git -C "$wt1" commit -q -m "feat: b"
+
+  run_bin -1 --separate-stderr team-stow T1 T2
+  assert_contains "$stderr" "team-stow: T1 is not stowed: feat/T1-work1 (home) has diverged from origin"
+  assert_equal "$(stow_kinds)" "T1 stowing
+T2 stowing
+T2 stowed
+T1 stow-failed: feat/T1-work1 (home) has diverged from origin: 1 commits here and 1 there"
+  # T1's builder still runs: its stow failed before its session stopped.
+  assert_equal "$(stops_and_removes)" "stop a2a2a2a2
+rm a2a2a2a2"
 }
 
 @test "a session that will not stop refuses its task, which logs no stowed" {
@@ -249,6 +319,9 @@ rm a2a2a2a2"
   run_bin -1 --separate-stderr team-stow T1
   assert_contains "$stderr" "team-stow: T1 is not stowed: could not stop T1-builder (a1a1a1a1): cannot stop a1a1a1a1"
   assert_equal "$(stowed_events)" ""
+  # Refused after its stowing, so its stow-failed names the refusal.
+  assert_equal "$(stow_kinds)" "T1 stowing
+T1 stow-failed: could not stop T1-builder (a1a1a1a1): cannot stop a1a1a1a1"
   assert_equal "$(running_stacks | paste -sd ' ')" "stackfix-1 stackfix-2 stackfix-3"
 }
 
@@ -262,11 +335,16 @@ rm a2a2a2a2"
   assert_equal "$(stops_and_removes)" "stop a1a1a1a1
 rm a1a1a1a1"
   assert_equal "$(jq -c .stopped "$HOME/.local/state/agent-team/stow.json")" '{"T1":["T1-builder"]}'
+  assert_equal "$(stow_kinds | sed 's/: cannot push feat\/T1-work1: .*/: cannot push feat\/T1-work1/')" "T1 stowing
+T1 stow-failed: cannot push feat/T1-work1"
 
+  # The run again logs a stowing of its own, the stow-failed having ended the first.
   rm "$home_origin/hooks/pre-receive"
   run_bin -0 team-stow T1
   assert_contains "$output" "sessions: T1: no live session"
   assert_equal "$(stowed_events)" "$(stowed_of T1 1 "$head1")"
+  assert_equal "$(stow_kinds | sed 1,2d)" "T1 stowing
+T1 stowed"
   [[ ! -e $HOME/.local/state/agent-team/stow.json ]]
 }
 
@@ -278,6 +356,13 @@ rm a1a1a1a1"
   run_bin -1 --separate-stderr team-stow T1
   [[ $stderr =~ "team-stow: checkpoint: T1 home: cannot push wip/home/T1 to the team home's origin: "[^$'\n']+$'\n'"team-stow: checkpoint: T2 home: cannot push wip/home/T2 to the team home's origin: "[^$'\n']+$'\n'"team-stow: checkpoint: T3 home: cannot push wip/home/T3 to the team home's origin: "[^$'\n']+$'\n'"team-stow: checkpoint: failed; fix what each line above names and run team-stow again"$ ]]
   assert_equal "$(stowed_events)" ""
+  # The run stopped after T1's sessions did: its exit trap logs T1's stow-failed with the run's
+  # last error line, and the plan reads it as stowed, its builder in the resume list.
+  assert_equal "$(stow_kinds)" "T1 stowing
+T1 stow-failed: the run stopped: checkpoint: failed; fix what each line above names and run team-stow again"
+  assert_contains "$output" "stow-failed: T1: the run stopped: checkpoint: failed"
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '[.resume[] | [.task, .roles]]' <<<"$output")" '[["T1",["builder"]]]'
 }
 
 @test "a stack that will not stop is said, and its task still stows (exit 1)" {
@@ -294,6 +379,8 @@ rm a1a1a1a1"
   run_bin -1 --separate-stderr team-stow T9 T2
   assert_contains "$stderr" "team-stow: T9 is not stowed: it is not an open task"
   assert_equal "$(stowed_events)" "$(stowed_of T2 2 "$head2")"
+  assert_equal "$(stow_kinds)" "T2 stowing
+T2 stowed"
 }
 
 # Run a heavy run of <task> that sleeps until it is stopped, as team-heavy.bats' stoppable does,
@@ -364,10 +451,14 @@ $wt2 axi"
 
 @test "it refuses a malformed command line" {
   run_bin -2 team-stow
-  assert_equal "$output" "team-stow: usage: team-stow (T<n>... | --all) [--down] [--cause level|handoff] [--json] | team-stow (T<n>... | --all) --stop-runs"
+  assert_equal "$output" "team-stow: usage: team-stow (T<n>... | --all) [--down] [--cause level|handoff] [--json] | team-stow (T<n>... | --all) --begin [--cause level|handoff] | team-stow (T<n>... | --all) --stop-runs"
   run_bin -2 team-stow T1 --all
   run_bin -2 team-stow 7
   run_bin -2 team-stow T1 --cause shutdown
   run_bin -2 team-stow T1 --stop-runs --down
   run_bin -2 team-stow T1 --frobnicate
+  run_bin -2 team-stow T1 --begin --down
+  run_bin -2 team-stow T1 --begin --json
+  run_bin -2 team-stow T1 --begin --stop-runs
+  run_bin -2 team-stow --begin
 }

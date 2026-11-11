@@ -41,6 +41,10 @@
 #                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
 #                  than Bash by its name, and ", and <n> more running" when others run; or " with no
 #                  tool call running". None for a session whose transcript cannot be found
+#   stowing        an open task whose stowing (a stow under way: team-stow --begin, or a team-stow
+#                  run, logged it) has stood 30 minutes with no stowed or stow-failed, whatever
+#                  parks it, with session null: "stowing since <its time> (<cause>), with no
+#                  stowed; next: run team-stow T<n>, which finishes the stow or logs stow-failed"
 #   merge-due      an open task in awaiting-merge with a plan-time merge approval not withdrawn (its
 #                  latest merge-preapproved of a project with no later merge-preapproval-withdrawn
 #                  of it) or a standing word of Daniel's on one of its projects (those of its

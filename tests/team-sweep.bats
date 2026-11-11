@@ -1608,6 +1608,42 @@ level_record() {
   assert_equal "$output" ""
 }
 
+@test "stowing: a stow under way 30 minutes with no stowed is named, whatever parks the task, and none at 29" {
+  # T7's builder answered its STOW (a paused, so the task is parked) and the run never came.
+  level_task T7 03:00 builder:7a7a7a7a
+  ledger_line --arg ts "$(date -u -d '30 minutes ago' +%FT%TZ)" '{ts: $ts, task: "T7", event: "stowing",
+    machine: "home-pc", cause: "level", roles: ["builder"]}'
+  event T7 paused '{reason: "stowed", cause: "stow"}'
+  local since
+  since=$(jq -r 'select(.event == "stowing") | .ts' "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T7 stowing: stowing since $since (level), with no stowed; next: run team-stow T7, which finishes the stow or logs stow-failed"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[] | [.task, .kind, .session, .name, .next]' <<<"$output")" \
+    '["T7","stowing",null,null,"run team-stow T7, which finishes the stow or logs stow-failed"]'
+
+  # At 29 minutes it is not named yet.
+  jq -c --arg ts "$(date -u -d '29 minutes ago' +%FT%TZ)" 'if .event == "stowing" then .ts = $ts else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger.next"
+  mv "$BATS_TEST_TMPDIR/ledger.next" "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+
+  # A stowed, or a stow-failed, ends it.
+  for kind in stowed stow-failed; do
+    jq -c --arg ts "$(date -u -d '40 minutes ago' +%FT%TZ)" 'if .event == "stowing" then .ts = $ts else . end' \
+      "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger.next"
+    mv "$BATS_TEST_TMPDIR/ledger.next" "$TEAM_HOME/ledger.jsonl"
+    cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+    ledger_line --arg kind "$kind" '{ts: "2026-10-22T04:00:00Z", task: "T7", event: $kind, machine: "home-pc",
+      worktrees: [], roles: [], reason: "x"}'
+    run_bin -0 --separate-stderr team-sweep
+    assert_equal "$output$stderr" ""
+    mv "$BATS_TEST_TMPDIR/ledger.before" "$TEAM_HOME/ledger.jsonl"
+  done
+}
+
 # held_pair [<T3 event>...] -- [<T3 event>...]: the ledger afresh, T3 stowed for the level at 04:00
 # with its planner and T4 at 05:00 with its builder, each paused stowed, with each T3 event
 # (<kind>:<jq object of more fields>) logged before T3's stow, or after it when it follows the --.

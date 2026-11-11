@@ -109,7 +109,7 @@ phase_of() {
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
-    waiting: null, parks: [], walk: null, rehome_failures: [], merge_preapproval: null, pr: null,
+    waiting: null, parks: [], stowing: null, walk: null, rehome_failures: [], merge_preapproval: null, pr: null,
     progress: {tickets: {done: [], total: 0}, on: [],
       reviews: {count: 0, verdict: null, head: null, sent_back: null}}}')"
   assert_equal "$(stub_calls gh)" ""
@@ -720,6 +720,26 @@ EOF
   assert_equal "$(jq -c .parks <<<"$output")" '[]'
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature building | no live worker"
+}
+
+@test "a stow under way shows as stowing since its time, in the JSON and on the line, until its stowed or stow-failed" {
+  open_task
+  ledger_line '{ts: "2026-10-22T03:00:00Z", task: "T14", event: "stowing", machine: "home-pc", cause: "level", roles: ["builder"]}'
+  ledger_line '{ts: "2026-10-22T03:01:00Z", task: "T14", event: "paused", reason: "stowed", cause: "stow"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .stowing <<<"$output")" '{"since":"2026-10-22T03:00:00Z","cause":"level"}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | stowing since 2026-10-22T03:00:00Z | parks: paused-1 stow since 2026-10-22T03:01:00Z: stowed"
+  for kind in stowed stow-failed; do
+    cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+    ledger_line --arg kind "$kind" '{ts: "2026-10-22T03:05:00Z", task: "T14", event: $kind, machine: "home-pc",
+      worktrees: [], roles: ["builder"], reason: "x"}'
+    run_bin -0 team-state T14 --json
+    assert_equal "$(jq -c .stowing <<<"$output")" null
+    run_bin -0 team-state T14
+    assert_equal "$output" "T14 proj feature building | no live worker | parks: paused-1 stow since 2026-10-22T03:01:00Z: stowed"
+    mv "$BATS_TEST_TMPDIR/ledger.before" "$TEAM_HOME/ledger.jsonl"
+  done
 }
 
 @test "an ask's wait a launch went past says so on the line" {

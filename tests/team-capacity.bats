@@ -1795,6 +1795,42 @@ plan_level() {
   assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
 }
 
+@test "plan: a task with a stow under way is in neither the stow list nor the resume or launch list, and frees what it holds" {
+  plan_machine
+  plan_level 60 minor
+  assert_equal "$(plan_steps | grep '"stow"')" '["stow","T3",4]'
+  # T3's stow is under way (team-stow --begin), its sessions still live: it is not named again,
+  # and its 4 GiB count as freed, so no other task is stowed in its place.
+  plan_event T3 13:00 stowing '{machine: "home-pc", cause: "level", roles: ["builder", "planner"]}'
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
+  assert_equal "$(plan_steps | grep -c '"stow"')" 0
+  # At none every other task with a live worker stows, never T3.
+  plan_level 30 none
+  assert_equal "$(plan_steps | grep '"stow"')" '["stow","T2",5]
+["stow","T1",1]'
+
+  # A stowed task whose next stow is under way (relaunched, then stowing again) is not in the
+  # resume list, nor one refused for room in the launch list, until the stow ends.
+  : >"$TEAM_HOME/ledger.jsonl"
+  : >"$TEAM_HOME/level.jsonl"
+  plan_task T5 08:00 builder:aaaa0051
+  plan_event T5 09:00 stowed '{machine: "home-pc", worktrees: [], roles: ["builder"], cause: "level"}'
+  plan_task T6 08:00 builder:aaaa0061
+  plan_event T6 10:00 paused '{reason: "no room for session:reviewer", cause: "room", role: "reviewer"}'
+  team_reading 8
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '[.resume[].task, .launch[].task]' <<<"$output")" '["T5","T6"]'
+  plan_event T5 09:30 launch "{role: \"builder\", session: \"aaaa0052\", worktree: \"$HOME/wt/T5\", toolkits: []}"
+  plan_event T5 10:00 stowing '{machine: "home-pc", cause: "level", roles: ["builder"]}'
+  plan_event T6 10:30 stowing '{machine: "home-pc", cause: "level", roles: ["builder"]}'
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '[.resume[].task, .launch[].task]' <<<"$output")" '[]'
+  # Its stow-failed brings it back to the resume list, with the stowing's roles.
+  plan_event T5 10:10 stow-failed '{machine: "home-pc", reason: "the run stopped: checkpoint: failed"}'
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '[.resume[] | [.task, .roles]]' <<<"$output")" '[["T5",["builder"]]]'
+}
+
 @test "plan: one over-budget reading is not confirmed, two in a row are, and a level change confirms at once" {
   plan_machine
   plan_level 60 minor

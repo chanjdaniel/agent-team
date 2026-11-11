@@ -193,7 +193,9 @@ branch-renamed team-log project branch
 failed team-log reason
 retro-schedule team-log every_hours discord_message
 retro-change team-log retro proposals
+stowing team-stow machine cause roles
 stowed team-stow machine worktrees roles
+stow-failed team-stow machine reason
 worktree-moved team-open project branch from worktree machine
 injection team-log role source text
 rehome-failed team-resume project branch machine reason
@@ -275,6 +277,8 @@ TABLE
   grep -Eq '^  retro-change +team-log +retro, proposals  \(the task it is logged on builds those proposals of retro T<m>, or, logged on T<m> itself, records were changed in place for them; .*team-retro digest.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-stow +machine, worktrees \(list\), roles \(list\); optional sessions \(list\), cause \(level\|handoff\)  \(one per task team-stow stows, every open task at a handoff .*unfinished_roles.*\)$' <<<"$output"
+  grep -Eq '^  stowing +team-stow +machine, cause \(level\|handoff\), roles \(list\)  \(a stow of the task under way on machine, logged by team-stow --begin .*stands until the task.s stowed or stow-failed, or a launch.*\)$' <<<"$output"
+  grep -Eq '^  stow-failed +team-stow +machine, reason  \(a stow of the task under way .*the run stopped: <its last error line>.*read as stowed with the stowing.s roles.*\)$' <<<"$output"
   grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }

@@ -6,6 +6,7 @@
     "kinds gives each kind the statuses it is taken in (status) and the phases (phases, null for any), each defaulting to default's, and its effect, the fold's step for it; a kind it does not list takes default, and no effect. A refusal of a task not opened lists the kinds it takes in this order.",
     "causes gives each park cause (a held, blocked, waiting or paused's cause field) the kinds it is logged on (kinds); what a launch does to it (launch: any, any launch ends it; role, a launch of the park's role ends it, or any launch when the park names no role; never); whether a resumed id=<park> ends it (resume: id; daniel, only with discord_message, Daniel's word; never, as an ask's wait, which only its ask's answer ends); whether resumed all=true ends it (all); and the team-time class of its time (class, a phase of bin/lib/time.jq's time_phases), class_by_on true when an on the line names is read as park_class reads it, the class standing for a line with none.",
     "Who logs each: daniel-hold team-log, a held with discord_message; ask team-ask, a waiting with ask=<id>; daniel and outside team-log, a waiting on Daniel or on any other; task and denial team-log, a blocked on a task or for a denial; worker a worker's BLOCKED, NEED or other PAUSED (team-log --from-message), or team-log by hand; room team-worker, its exit 75; stow, coordinator-hold and offline a worker's PAUSED stowed, held or offline; limit, machine and shutdown team-log, the usage limit, the machine's load or Docker, the machine off or handed over.",
+    "A stow under way is a stowing, ended by the task's stowed or stow-failed (or a launch); the fold's lifecycle_problems names a stowing while one stands, and a stowed or stow-failed with none standing, which team-stow, a writer that acts first, logs anyway and team-log --check-lifecycle names.",
     "refusing_writers are the scripts whose events are their own records, logged before anything else happens, whose events the table may refuse from lifecycle_from on (null: never, warn only); every other writer acts first and logs after."
   ],
   "lifecycle_from": null,
@@ -38,7 +39,9 @@
     "waiting": {"effect": "park"},
     "paused": {"effect": "park"},
     "resumed": {"effect": "resume"},
-    "stowed": {"effect": "stowed"}
+    "stowing": {"effect": "stowing"},
+    "stowed": {"effect": "stowed"},
+    "stow-failed": {"effect": "stow-failed"}
   },
   "causes": {
     "daniel-hold": {"kinds": ["held"], "launch": "never", "resume": "daniel", "all": false, "class": "wait:daniel"},

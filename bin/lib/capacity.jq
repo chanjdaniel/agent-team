@@ -811,8 +811,8 @@ def task_words: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.
 # The stow plan and the resume plan, team-capacity plan's object, from $in: {settings, current
 # (level_current's {mode, level, last_change}), readings (the stored readings, oldest first), costs
 # (capacity_costs' array), heavy, admitted, now (as capacity_reservations takes them), tasks
-# (ledger.jq's plan_tasks: each open task's opened, finished sessions and stowed), sessions (the
-# session list, claude agents --json's)}:
+# (ledger.jq's plan_tasks: each open task's opened, finished sessions, stowing and stowed),
+# sessions (the session list, claude agents --json's)}:
 #   budget     the memory budget at the level, from the newest reading (0 at none, null with no
 #              reading above none)
 #   reserved   what the newest reading reserves (capacity_reservations' total)
@@ -827,13 +827,15 @@ def task_words: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.
 #                  that no busy session (interactive ones too) works in, its worktree or below
 #   stow           [{task, opened, frees}]: the open tasks with a live worker or reservations left,
 #                  the most recently opened first, until what is left fits the budget; at none
-#                  every one
+#                  every one. A task with a stow under way (its stowing standing) is never named,
+#                  and what it holds counts as freed already, so no other task stows in its place
 # and the resume plan, whatever the budget: resume [{task, stowed, roles, needs, fits, hold}], each
-# task stowed, waiting to resume (for the level or a handoff), oldest stow first, needs its roles'
-# session estimates, fits whether needs fits beside what is reserved now (never at none), and hold
-# what keeps it from being relaunched (ledger.jq's stow_hold), or null; and launch [{task,
-# refused, roles, needs, fits, hold}] alike, each task whose launches were refused for room
-# (ledger.jq's refused_launches), oldest refusal first. Each step list is [] when not confirmed.
+# task stowed, waiting to resume (for the level or a handoff, or its stow failed), oldest stow
+# first, needs its roles' session estimates, fits whether needs fits beside what is reserved now
+# (never at none), and hold what keeps it from being relaunched (ledger.jq's stow_hold), or null;
+# and launch [{task, refused, roles, needs, fits, hold}] alike, each task whose launches were
+# refused for room (ledger.jq's refused_launches), oldest refusal first; neither lists a task with
+# a stow under way. Each step list is [] when not confirmed.
 def capacity_plan($in):
   $in.settings as $s | $in.current as $current
   | ($in.readings | .[-1]) as $r
@@ -871,8 +873,10 @@ def capacity_plan($in):
      | select(.class == "team" and .kind == "dev" and $open[.task // ""] != null and .worktree != null
               and (.task | IN($gone[]) | not))
      | . as $stack | select(all($busy[]; within($stack.worktree) | not))] as $idle
+  | [$in.tasks[] | select(.stowing != null) | .task] as $stowing
   | def stowable($rest):
       [$open[] | .task as $task
+       | select(.stowing == null)
        | select(any($live[]; .task == $task and (.id as $id | any($finished[]; .session == $id) | not))
                 or any($rest[]; .task == $task and .part != "spike_allowance"))]
       | sort_by(.opened, (.task[1:] | tonumber)) | reverse;
@@ -900,6 +904,7 @@ def capacity_plan($in):
            (.rest | drop(.part == "stacks" and .name == $st.name)) as $after
            | .stacks += [{task: $st.task, name: $st.name, worktree: $st.worktree,
                           frees: ((.rest | reserved_total) - ($after | reserved_total))}] | .rest = $after)
+       | .rest |= drop((.task // "") | IN($stowing[]))
        | reduce stowable(.rest)[] as $t (. + {stow: []};
            if $current.level != "none" and (.rest | reserved_total) <= $budget then .
            else (.rest | drop(.task == $t.task)) as $after
@@ -910,10 +915,10 @@ def capacity_plan($in):
      share: ($current.level | level_share($s)), budget: $budget,
      reserved: $reserved, over: $over, confirmed: $confirmed,
      stop_sessions: $steps.sessions, stop_stacks: $steps.stacks, stow: $steps.stow,
-     resume: [$in.tasks[] | select(.stowed != null) | .stowed.hold as $hold
+     resume: [$in.tasks[] | select(.stowed != null and .stowing == null) | .stowed.hold as $hold
               | {task, stowed: .stowed.at, roles: .stowed.roles} | needs_fits | .hold = $hold]
              | sort_by(.stowed, (.task[1:] | tonumber)),
-     launch: [$in.tasks[] | select(.refused != null) | .refused.hold as $hold
+     launch: [$in.tasks[] | select(.refused != null and .stowing == null) | .refused.hold as $hold
               | {task, refused: .refused.at, roles: .refused.roles} | needs_fits | .hold = $hold]
              | sort_by(.refused, (.task[1:] | tonumber))};
 

@@ -16,11 +16,11 @@ on() {
     '{ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1", event: $e} + ('"${2:-{\}}"')')")
 }
 
-# fold_read <filter>: the filter's output over the events so far, with ledger.jq's definitions and
-# the contract as $contract, compact, strings raw.
+# fold_read <filter>: the filter's output over the events so far, with ledger.jq's definitions, the
+# contract as $contract and the sandbox's HOME as $home, compact, strings raw.
 fold_read() {
   printf '%s\n' "${events[@]}" | jq -L "$REPO_ROOT/bin/lib" -scr --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" \
-    "include \"ledger\"; \$contract[0] as \$contract | $1"
+    --arg home "$HOME" "include \"ledger\"; \$contract[0] as \$contract | $1"
 }
 
 # opened <path>: T1 opened on <path>.
@@ -350,7 +350,8 @@ problems() {
 @test "the table test: every contract kind, in every status and phase, is refused exactly where lifecycle.json does not take it" {
   # Generated from lifecycle.json, so a new row is tested by being written: each case a state of
   # that status and phase, and a T1 event of the kind, whose retro is T1 for closed-own-retro and
-  # T2 otherwise, a park carrying its kind's first cause; taken when the kind's status (or default's) names the status, a closed task's
+  # T2 otherwise, a park carrying its kind's first cause, a stowed or stow-failed meeting a stowing
+  # that stands; taken when the kind's status (or default's) names the status, a closed task's
   # own retro taken where it names closed too, and its phases (or default's) are null or name it.
   run fold_read 'lifecycle_table as $t
     | [$contract.kinds | keys[] as $kind | lifecycle_statuses[] as $status | $t.phases[] as $phase
@@ -360,7 +361,9 @@ problems() {
        | ((($statuses | index([$status])) or ($status == "closed-own-retro" and ($statuses | index(["closed"]))))
           and ($phases == null or ($phases | index([$phase])))) as $taken
        | (lifecycle_start | .status = (if $status == "closed-own-retro" then "closed" else $status end)
-          | .phase = $phase | .since = "2026-11-01T00:00:00Z" | .opened_at = "2026-11-01T00:00:00Z") as $state
+          | .phase = $phase | .since = "2026-11-01T00:00:00Z" | .opened_at = "2026-11-01T00:00:00Z"
+          | .stow = (if IN($kind; "stowed", "stow-failed")
+                     then {state: "stowing", cause: "level", roles: [], since: "2026-11-01T00:00:00Z", i: 0} else null end)) as $state
        | {ts: "2026-11-01T00:01:00Z", task: "T1", event: $kind, retro: (if $status == "closed-own-retro" then "T1" else "T2" end)}
          + (first($t.causes | to_entries[] | select(.value.kinds | index([$kind])) | {cause: .key}) // {}) as $e
        | [$state | lifecycle_problems($e)] as $problems
@@ -671,4 +674,45 @@ refusal() {
   on asked '{id: "q1", text: "which import?"}'
   on paused '{reason: "no room for session:reviewer", cause: "room", role: "reviewer"}'
   assert_equal "$(fold_read refused_launches.hold)" "unanswered ask q1: which import?"
+}
+
+@test "a stowing stands until its stowed or stow-failed, and a stow-failed reads as stowed with the stowing's roles until a launch" {
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on stowing '{machine: "m1", cause: "level", roles: ["builder"]}'
+  # A stow under way is no stow to resume, and plan_tasks names it.
+  assert_equal "$(fold_read '[lifecycle.stow, stowed_awaiting_resume]')" \
+    '[{"state":"stowing","cause":"level","roles":["builder"],"since":"2026-11-01T00:03:00Z","i":3},false]'
+  assert_equal "$(fold_read '[plan_tasks([])[] | [.stowing, .stowed, .stowed_since]]')" \
+    '[[{"since":"2026-11-01T00:03:00Z","cause":"level"},null,null]]'
+  on stowed '{machine: "m1", worktrees: [], roles: ["builder"], cause: "level"}'
+  assert_equal "$(fold_read '[lifecycle.stow.state, stowed_awaiting_resume, (plan_tasks([])[] | .stowing)]')" '["stowed",true,null]'
+
+  # A failed stow keeps the stowing's roles and cause, so the plan resumes it as a stowed one.
+  events=()
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on stowing '{machine: "m1", cause: "handoff", roles: ["builder"]}'
+  on stow-failed '{machine: "m1", reason: "the run stopped: checkpoint: failed"}'
+  assert_equal "$(fold_read '[lifecycle.stow, stowed_awaiting_resume]')" \
+    '[{"state":"failed","cause":"handoff","roles":["builder"],"since":"2026-11-01T00:04:00Z","i":4,"reason":"the run stopped: checkpoint: failed"},true]'
+  assert_equal "$(fold_read '[plan_tasks([])[] | [.stowing, .stowed.roles, .stowed_since]]')" \
+    '[[null,["builder"],"2026-11-01T00:04:00Z"]]'
+  builder_launch b2
+  assert_equal "$(fold_read '[lifecycle.stow, stowed_awaiting_resume]')" '[null,false]'
+}
+
+@test "a stowing while one stands, and a stowed or stow-failed with none standing, break the table" {
+  opened feature
+  assert_equal "$(problems stowed '{machine: "m1", worktrees: [], roles: []}')" "stowed with no stowing of T1 standing"
+  assert_equal "$(problems stow-failed '{machine: "m1", reason: "x"}')" "stow-failed with no stowing of T1 standing"
+  assert_equal "$(problems stowing '{machine: "m1", cause: "level", roles: []}')" ""
+  on stowing '{machine: "m1", cause: "level", roles: []}'
+  assert_equal "$(problems stowing '{machine: "m1", cause: "level", roles: []}')" "T1 is stowing already, since 2026-11-01T00:01:00Z"
+  assert_equal "$(problems stowed '{machine: "m1", worktrees: [], roles: []}')" ""
+  assert_equal "$(problems stow-failed '{machine: "m1", reason: "x"}')" ""
+  on stow-failed '{machine: "m1", reason: "x"}'
+  assert_equal "$(problems stow-failed '{machine: "m1", reason: "x"}')" "stow-failed with no stowing of T1 standing"
 }

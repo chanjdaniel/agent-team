@@ -31,12 +31,12 @@ You stay up at every level, outside the share.
 
 ## Stowing tasks
 
-1. **STOW.** Send `T<n> STOW` to each live worker of the named tasks (`team-state T<n>` lists them), but never to an ops session (`T<n>-ops`), which `team-stow` ends.
+1. **STOW.** First run `team-stow <tasks> --begin`, which logs each task's `stowing`, so a compaction or restart before step 4 does not plan the same stow again; then send `T<n> STOW` to each live worker of the named tasks (`team-state T<n>` lists them), but never to an ops session (`T<n>-ops`), which `team-stow` ends.
 2. **Stop runs.** For Daniel's manual change only, run `team-stow <tasks> --stop-runs` right after: it stops each task's heavy run and aborts its active gate run, so a worker blocked in one returns and reads the STOW.
 3. **Wait.** Wait up to 10 minutes for each `T<n> PAUSED stowed`, logging each with `team-log T<n> --from-message '<the message>'`, never `team-next`, which would launch a fix round's builder.
 4. **Run.** `team-stow <tasks>`: it stops the tasks' sessions and stacks, checkpoints, pushes their branches and logs one `stowed` per task, with cause level.
    A worker that had not answered is stopped as it stands; the checkpoint keeps its uncommitted work.
-   Exit 1 names each task it refused (a diverged branch, a session that would not stop): fix what it names, then run it again, which stows only what is left.
+   Exit 1 names each task it refused (a diverged branch, a session that would not stop), each logged `stow-failed`: fix what it names, then run it again, which stows only what is left.
    Exit 75: GitHub is unreachable or another `team-stow` runs; run it again once that clears.
 5. **Post.** In each task's thread: stowed for the level, and who did not answer STOW.
 

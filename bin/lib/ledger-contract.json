@@ -223,11 +223,21 @@
       "about": "the task it is logged on builds those proposals of retro T<m>, or, logged on T<m> itself, records were changed in place for them; proposals as Daniel's answer names them; team-retro digest reads when each landed, for the next retro to judge",
       "required": {"retro": "string", "proposals": "string"}
     },
+    "stowing": {
+      "writer": "team-stow",
+      "about": "a stow of the task under way on machine, logged by team-stow --begin before the coordinator sends its workers STOW (the level and handoff skills), or by a team-stow run that finds none standing, after its branches check and before it stops any session: cause level or handoff, as the run's; roles the task's unfinished work then (ledger.jq's unfinished_roles), which a stow-failed keeps for the resume; it stands until the task's stowed or stow-failed, or a launch, and team-sweep names one standing 30 minutes",
+      "required": {"machine": "string", "cause": ["level", "handoff"], "roles": "array"}
+    },
     "stowed": {
       "writer": "team-stow",
       "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",
       "required": {"machine": "string", "worktrees": "array", "roles": "array"},
       "optional": {"sessions": "array", "cause": ["level", "handoff"]}
+    },
+    "stow-failed": {
+      "writer": "team-stow",
+      "about": "a stow of the task under way (its stowing) that team-stow did not finish on machine: reason the refusal of the task by a step after the stowing (a diverged branch, a session that would not stop, a push), or \"the run stopped: <its last error line>\" when a step stopped the run (a checkpoint that failed, exit 1 or 75); the task is then read as stowed with the stowing's roles, so the resume relaunches them, until a launch",
+      "required": {"machine": "string", "reason": "string"}
     },
     "worktree-moved": {
       "writer": "team-open",
