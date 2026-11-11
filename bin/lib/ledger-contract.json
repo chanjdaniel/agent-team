@@ -191,25 +191,29 @@
     "merge-preapproved": {
       "writer": "team-log",
       "push": true,
-      "about": "Daniel's plan-time word on the task's PR in project, its discord_message an answer to the task's latest asked of id ask, sent no earlier than it, which it settles; scope the repository paths the plan may change, each a file or a directory ending in /; it stands until a later merge-preapproval-withdrawn of project, and the latest of a project is the one read",
+      "retired": "T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn",
+      "about": "Retired (T276): Daniel's plan-time word on the task's PR in project, an answer to the task's asked of id ask, over scope, the paths the plan might change; team-log refuses a new one, and the lines logged before are read only for history: each still settles the ask of its id (settles in bin/lib/ledger.jq) and puts a passing review in merging in team-time",
       "required": {"project": "string", "ask": "string", "discord_message": "id", "scope": "array"}
     },
     "merge-preapproval-withdrawn": {
       "writer": "team-log",
       "push": true,
-      "about": "Daniel withdrew the task's latest merge-preapproved of project, in discord_message",
+      "retired": "T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn",
+      "about": "Retired (T276): Daniel withdrew the task's latest merge-preapproved of project, in discord_message; team-log refuses a new one, and only team-time reads the lines logged before, for history",
       "required": {"project": "string", "discord_message": "id"}
     },
     "merge-standing": {
       "writer": "team-log",
       "push": true,
-      "about": "Daniel's standing word that the team may merge a ready PR of project, never the team's own (own_project), which team-log refuses, or of every other project when project is all, with no ask, said in discord_message in discord_channel, #coordinator's channel or the task's thread; read across the whole ledger, the task only naming the thread: for a project, the latest merge-standing or merge-standing-withdrawn whose project is that project or all decides, and the word stands when that is a merge-standing",
+      "retired": "T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn",
+      "about": "Retired (T276): Daniel's standing word that the team might merge a ready PR of project, or of every project but the team's own when project is all, said in discord_message in discord_channel; team-log refuses a new one, and no script reads the lines logged before, which --check still passes",
       "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
     },
     "merge-standing-withdrawn": {
       "writer": "team-log",
       "push": true,
-      "about": "Daniel withdrew the standing word on project, or on every project but the team's own when project is all, in discord_message in discord_channel; read with merge-standing across the whole ledger, so a withdrawal of one project leaves a word on all standing for the others, and a later merge-standing stands again",
+      "retired": "T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn",
+      "about": "Retired (T276): Daniel withdrew the standing word on project, or on every project when project is all, in discord_message in discord_channel; team-log refuses a new one, and no script reads the lines logged before, which --check still passes",
       "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
     },
     "merge-default-withdrawn": {

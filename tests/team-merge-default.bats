@@ -213,7 +213,6 @@ discord_has() {
 
 @test "a task with only the retired plan-time and standing words, and no approved plan, merges nothing unattended" {
   jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  sed -i 's|^toolkits = \[\]$|toolkits = []\nmerge_with_plan = true|' "$TEAM_HOME/projects.toml"
   passed
   event T14 asked '{id: "plan-T14", text: "Approve the plan, and the merge with it?"}'
   event T14 merge-preapproved '{project: "proj", ask: "plan-T14", discord_message: "1562661774950400000", scope: ["src/"]}'

@@ -23,17 +23,16 @@ assert_ledger_empty() {
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
-# One project of the registry, at ~/projects/<name>, as TOML: plan_project <name> <merge_with_plan> [<repo>]
+# One project of the registry, at ~/projects/<name>, as TOML: plan_project <name> [<repo>]
 plan_project() {
   cat <<TOML
 [$1]
-repo = "${3:-owner/$1}"
+repo = "${2:-owner/$1}"
 path = "projects/$1"
 base = "dev"
 delivery = "direct-pr"
 merge_method = "merge"
 required_checks = []
-merge_with_plan = $2
 task_dir = ".scratch/task"
 docs = []
 toolkits = []
@@ -41,25 +40,14 @@ pool = { provider = "git", slots = ["slots/$1/1"] }
 TOML
 }
 
-# A registry of proj, which opts in to a plan-time merge approval, conv, which does not, and the
-# projects given as more TOML: plan_registry [<TOML>]
+# A registry of proj and conv, and the projects given as more TOML: plan_registry [<TOML>]
 plan_registry() {
   {
-    plan_project proj true
+    plan_project proj
     echo
-    plan_project conv false
+    plan_project conv
     [[ -z ${1:-} ]] || printf '\n%s\n' "$1"
   } >"$TEAM_HOME/projects.toml"
-}
-
-# A code checkout of tools, at owner/tools, for run_bin to run team-log from, so the team's own
-# project is mirror by its repo and tools by its path: own_by_repo_and_path <merge_with_plan>
-own_by_repo_and_path() {
-  export CODE_CHECKOUT
-  CODE_CHECKOUT=$(make_repo tools dev)
-  copy_bin "$CODE_CHECKOUT/bin"
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Tools.git
-  plan_registry "$(plan_project mirror "$1" owner/tools && echo && plan_project tools false owner/elsewhere)"
 }
 
 # A project of the task, as team-open logs it: opened <task> <project> [worktree-added]
@@ -82,11 +70,6 @@ COORDINATOR=1562486564871995482
 thread() {
   jq -cn --arg task "$1" --arg id "$2" '{ts: (now | todate), task: $task, event: "thread", discord_thread: $id}' \
     >>"$TEAM_HOME/ledger.jsonl"
-}
-
-# The standing words and withdrawals logged, one "<event> <project>" per line.
-standing_events() {
-  jq -r 'select(.event | startswith("merge-standing")) | "\(.event) \(.project)"' "$TEAM_HOME/ledger.jsonl"
 }
 
 # --from-message: a worker's message, whole.
@@ -259,10 +242,10 @@ TABLE
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree; optional story  \(story is the backlog story .*team-merge marks done\)$' <<<"$output"
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\), widening \(list of whole numbers\), memory  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*widening: the numbers of the new findings that sit in what the last fix added for an earlier finding, so reverting that fix would end them, as a rereview marks them; empty for none; memory: the file in the task directory of the memories.*\)$' <<<"$output"
-  grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\); pushed at once  \(Daniel.s plan-time word .*\)$' <<<"$output"
-  grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\); pushed at once  \(.*withdr.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
+  local retired
+  for retired in merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn; do
+    grep -Eq "^  $retired +team-log +.*; pushed at once  \\(Retired \\(T276\\): .*team-log refuses a new one.*\\)$" <<<"$output"
+  done
   grep -Eq '^  merge-default-withdrawn +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew the default merge word.*task, the task the line is logged under.*the latest of the two whose scope covers it .*decides.*\)$' <<<"$output"
   grep -Eq '^  merge-default-restored +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel gave the default merge word back.*team-merge holds it only when Discord shows the message .*from an allowFrom author.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|default\|plan\|standing\), phases_left \(list of whole numbers\); pushed at once  \(approval: .*\)$' <<<"$output"
@@ -501,9 +484,8 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 }
 
 @test "every kind team-log writes is appended with its required fields and a note" {
-  # merge-preapproved names a project of the task that opts in, and an ask it logged before;
-  # branch-renamed a new branch of it that names the task; merge-standing #coordinator's channel,
-  # and merge-standing-withdrawn, after it, the word it logged; retro-change a retro Daniel answered;
+  # The retired kinds, which team-log refuses, are left out; branch-renamed names a new branch of
+  # the task's project that names the task; retro-change a retro Daniel answered;
   # a kind with one_of sets the first field of each (a question its text); a paused its cause, a
   # held Daniel's message and a resumed all=true, which team-log requires of each; plan-approved
   # the coordinator's, of the task's plan, and plan-approval-withdrawn, after it, its withdrawal;
@@ -528,8 +510,8 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
-  done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
-  assert_equal "$count" "28"
+  done < <(jq -r '.kinds | to_entries[] | select(([.value.writer] | flatten | index("team-log")) and (.value.retired | not)) | .key' "$CONTRACT")
+  assert_equal "$count" "24"
   run_bin -0 team-log --check
 }
 
@@ -939,146 +921,35 @@ sha() {
   assert_equal "$output" "$BATS_TEST_TMPDIR/fixtures.jsonl: 12 lines meet the ledger contract"
 }
 
-@test "merge-preapproved records Daniel's plan-time word on a project of the task, with the ask it answers and the scope" {
-  plan_registry
-  opened T14 conv
-  opened T14 proj worktree-added
-  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan, and its merge?'
-  local message
-  message=$(soon)
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$message" \
-    'scope=["src/", "README.md", ".github/x/y.yml", "a/b-c_d.e"]'
-  assert_equal "$output" ""
-  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
-    "{\"task\":\"T14\",\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"$message\",\"scope\":[\"src/\",\"README.md\",\".github/x/y.yml\",\"a/b-c_d.e\"]}"
-  run_bin -0 team-log --check
-}
-
-@test "merge-preapproved is refused for a project that is not the task's, does not opt in now, or is the team's own" {
-  plan_registry
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: proj is not a project of T14's opened or worktree-added events; it has none"
-  opened_task T14
-  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
-  opened T14 conv worktree-added
-  opened T15 other
-  run_bin -1 team-log T14 merge-preapproved project=other ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: other is not a project of T14's opened or worktree-added events: proj, conv"
-  run_bin -1 team-log T14 merge-preapproved project=conv ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: conv does not opt in to a plan-time merge approval: its merge_with_plan in projects.toml is false"
-  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
-
-  # agent-team by name, even when the registry says true (which team-project --check refuses).
-  plan_registry "$(plan_project agent-team true)"
-  opened T14 agent-team worktree-added
-  run_bin -1 team-log T14 merge-preapproved project=agent-team ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
-
-  # By repo, which --check does not read, the key set to true; and by path, at the code checkout.
-  own_by_repo_and_path true
-  opened T14 mirror worktree-added
-  opened T14 tools worktree-added
-  run_bin -1 team-log T14 merge-preapproved project=mirror ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: mirror is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
-  run_bin -1 team-log T14 merge-preapproved project=tools ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: tools is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
-  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
-}
-
-@test "merge-preapproved names an ask the task logged, and a Discord message sent no earlier than it" {
-  opened_task T15
+@test "the retired plan-time and standing words are refused, logging nothing, naming the default word in their place" {
   plan_registry
   opened T14 proj
-  run_bin -0 team-log T15 asked id=plan 'text=Approve?'
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: T14 logged no asked with id plan, so merge-preapproved answers no ask of it"
-  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
-  local asked
-  asked=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
-  # 1562661774950400000 is 2026-10-22T03:00:00Z, before the ask logged now.
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=1562661774950400000 'scope=["src/"]'
-  assert_equal "$output" "team-log: Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the asked plan at $asked, so it is not Daniel's answer to that ask"
-  local message
-  for message in 0 01563 15630000000000001234567; do
-    run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=$message 'scope=["src/"]'
-    assert_equal "$output" "team-log: discord_message $message is not a Discord id"
+  local before kind
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  local -A args=(
+    [merge-preapproved]="project=proj ask=plan discord_message=$(soon) scope=src/"
+    [merge-preapproval-withdrawn]="project=proj discord_message=$(soon)"
+    [merge-standing]="project=proj discord_message=$(soon) discord_channel=$COORDINATOR"
+    [merge-standing-withdrawn]="project=all discord_message=$(soon) discord_channel=$COORDINATOR"
+  )
+  for kind in merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn; do
+    # shellcheck disable=SC2086 # each kind's pairs, split on blanks
+    run_bin -1 team-log T14 "$kind" ${args[$kind]}
+    assert_equal "$output" "team-log: $kind is retired by T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn"
+    run_bin -1 team-log T14 "$kind" 'not a pair'
+    assert_equal "$output" "team-log: $kind is retired by T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn"
   done
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=m1563 'scope=["src/"]'
-  assert_contains "$output" "discord_message must be a Discord id"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan 'scope=["src/"]'
-  assert_contains "$output" "merge-preapproved needs discord_message"
-  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-}
-
-@test "merge-preapproved's scope is a list of clean repository paths, each a file or a directory ending in /" {
-  plan_registry
-  opened T14 proj
-  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=[]'
-  assert_equal "$output" "team-log: scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=none
-  assert_equal "$output" "team-log: scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope={"src/":1}'
-  assert_contains "$output" "scope must be a list, got an object"
-  # A comma list is checked as its JSON form is.
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=src/,/etc/x
-  assert_equal "$output" "team-log: scope holds entries that are not clean repository paths:
-  \"/etc/x\": a leading /"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" \
-    'scope=["src/", "/etc/x", "/", "./a", "a/./b", "a/..", "..", "a//b", "src/*.py", "a?", "b[1]", "a b", "a\tb", "", 7]'
-  assert_equal "$output" "team-log: scope holds entries that are not clean repository paths:
-  \"/etc/x\": a leading /
-  \"/\": a leading /
-  \"./a\": a . or .. segment
-  \"a/./b\": a . or .. segment
-  \"a/..\": a . or .. segment
-  \"..\": a . or .. segment
-  \"a//b\": an empty segment
-  \"src/*.py\": a glob character
-  \"a?\": a glob character
-  \"b[1]\": a glob character
-  \"a b\": whitespace
-  \"a\\tb\": whitespace
-  \"\": an empty segment
-  7: not a string"
-  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=src/,docs/README.md
-  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c .scope)" '["src/","docs/README.md"]'
-}
-
-@test "merge-preapproval-withdrawn needs a merge-preapproved of its project not withdrawn, and a new one may follow it" {
-  plan_registry "$(plan_project web true)"
-  opened T14 proj
-  opened T14 web worktree-added
-  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no merge-preapproved of proj left to withdraw"
-  # Another task's approval is its own.
-  opened T15 proj
-  run_bin -0 team-log T15 asked id=plan 'text=Approve?'
-  run_bin -0 team-log T15 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=web discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no merge-preapproved of web left to withdraw"
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj
-  assert_contains "$output" "merge-preapproval-withdrawn needs discord_message"
-  run_bin -0 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no merge-preapproved of proj left to withdraw"
-  # A later approval, on a new ask, grants it again, and may be withdrawn in turn.
-  run_bin -0 team-log T14 asked id=plan-2 'text=Approve again?'
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan-2 discord_message="$(soon)" 'scope=["src/", "docs/"]'
-  run_bin -0 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  assert_equal "$(jq -r 'select(.task == "T14" and (.event | startswith("merge-pre"))) | "\(.event) \(.project)"' "$TEAM_HOME/ledger.jsonl")" "$(
-    cat <<'LINES'
-merge-preapproved proj
-merge-preapproval-withdrawn proj
-merge-preapproved proj
-merge-preapproval-withdrawn proj
-LINES
-  )"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # The contract keeps the four kinds, retired, so the ledgers that hold them still check; retired
+  # is the one reason team-log gives.
+  assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.retired) | .key] | join(" ")' "$CONTRACT")" \
+    "merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn"
+  printf '%s\n' \
+    "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"1563000000000000002\",\"scope\":[\"src/\"]}" \
+    "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"merge-preapproval-withdrawn\",\"project\":\"proj\",\"discord_message\":\"1563000000000000003\"}" \
+    "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"merge-standing\",\"project\":\"all\",\"discord_message\":\"1563000000000000004\",\"discord_channel\":\"$COORDINATOR\"}" \
+    "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"merge-standing-withdrawn\",\"project\":\"all\",\"discord_message\":\"1563000000000000005\",\"discord_channel\":\"$COORDINATOR\"}" \
+    >>"$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-log --check
 }
 
@@ -1156,7 +1027,7 @@ merge-default-restored T14 all"
 }
 
 @test "merge-default-restored needs a withdrawal standing that its scope covers, the latest that covers a PR deciding" {
-  plan_registry "$(plan_project web false)"
+  plan_registry "$(plan_project web)"
   opened_task T14
   opened_task T15
   opened T16 conv
@@ -1202,145 +1073,6 @@ merge-default-restored T14 web
 merge-default-restored T16 task
 merge-default-withdrawn T15 task
 merge-default-restored T14 all"
-}
-
-@test "merge-standing records Daniel's standing word on a project or every project, said in #coordinator or the task's thread" {
-  plan_registry
-  opened_task T14
-  thread T14 1563000000000000001
-  local message
-  message=$(soon)
-  run_bin -0 team-log T14 merge-standing project=proj discord_message="$message" discord_channel=$COORDINATOR
-  assert_equal "$output" ""
-  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
-    "{\"task\":\"T14\",\"event\":\"merge-standing\",\"project\":\"proj\",\"discord_message\":\"$message\",\"discord_channel\":\"$COORDINATOR\"}"
-  # Every project, and a project none of the task's events name, which the word needs not.
-  run_bin -0 team-log T14 merge-standing project=all discord_message="$(soon)" discord_channel=$COORDINATOR
-  run_bin -0 team-log T14 merge-standing project=conv discord_message="$(soon)" discord_channel=1563000000000000001
-  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .discord_channel)" 1563000000000000001
-  assert_equal "$(standing_events)" "merge-standing proj
-merge-standing all
-merge-standing conv"
-  run_bin -0 team-log --check
-}
-
-@test "merge-standing and its withdrawal are refused for an unknown project, a message no Discord id, or a channel neither #coordinator nor the task's thread" {
-  plan_registry
-  local kind message channel
-  for kind in merge-standing merge-standing-withdrawn; do
-    run_bin -1 team-log T14 $kind project=web discord_message="$(soon)" discord_channel=$COORDINATOR
-    assert_equal "$output" "team-log: web is neither all, for every project, nor a project projects.toml names: proj, conv"
-    for message in 0 01566 15660000000000001234567; do
-      run_bin -1 team-log T14 $kind project=proj discord_message=$message discord_channel=$COORDINATOR
-      assert_equal "$output" "team-log: discord_message $message is not a Discord id"
-    done
-    run_bin -1 team-log T14 $kind project=proj discord_message="$(soon)" discord_channel=1563000000000000009
-    assert_equal "$output" "team-log: discord_channel 1563000000000000009 is neither #coordinator's channel, $COORDINATOR, nor T14's thread: it has none"
-  done
-  # The task's latest thread, never an earlier one or another task's.
-  opened_task T14
-  thread T14 1563000000000000001
-  thread T14 1563000000000000002
-  thread T15 1563000000000000003
-  for kind in merge-standing merge-standing-withdrawn; do
-    for channel in 1563000000000000001 1563000000000000003; do
-      run_bin -1 team-log T14 $kind project=all discord_message="$(soon)" discord_channel=$channel
-      assert_equal "$output" "team-log: discord_channel $channel is neither #coordinator's channel, $COORDINATOR, nor T14's thread, 1563000000000000002"
-    done
-  done
-  run_bin -1 team-log T14 merge-standing project=proj discord_message="$(soon)"
-  assert_contains "$output" "merge-standing needs discord_channel"
-  # A project named all is refused by the registry, so all always says every project.
-  plan_registry "$(plan_project all false)"
-  run_bin -1 team-log T14 merge-standing project=all discord_message="$(soon)" discord_channel=$COORDINATOR
-  assert_contains "$output" "all: the name is reserved for the default merge word's withdrawals, whose scope=all is every project"
-  assert_equal "$(standing_events)" ""
-  plan_registry
-  run_bin -0 team-log T14 merge-standing project=proj discord_message="$(soon)" discord_channel=1563000000000000002
-}
-
-@test "merge-standing and its withdrawal are refused for the team's own project, by name, by repo and by path, and all is logged beside it" {
-  opened_task T14
-  local kind said=(discord_message="$(soon)" discord_channel="$COORDINATOR")
-  plan_registry "$(plan_project agent-team false)"
-  for kind in merge-standing merge-standing-withdrawn; do
-    run_bin -1 team-log T14 $kind project=agent-team "${said[@]}"
-    assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
-  done
-
-  # By repo, the origin of the code checkout team-log runs from; and by path, at that checkout.
-  own_by_repo_and_path false
-  for kind in merge-standing merge-standing-withdrawn; do
-    run_bin -1 team-log T14 $kind project=mirror "${said[@]}"
-    assert_equal "$output" "team-log: mirror is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
-    run_bin -1 team-log T14 $kind project=tools "${said[@]}"
-    assert_equal "$output" "team-log: tools is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
-  done
-  assert_equal "$(standing_events)" ""
-
-  # Every project, and a project not the team's own, are logged as before.
-  run_bin -0 team-log T14 merge-standing project=all "${said[@]}"
-  run_bin -0 team-log T14 merge-standing project=proj "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
-  assert_equal "$(standing_events)" "merge-standing all
-merge-standing proj
-merge-standing-withdrawn proj
-merge-standing-withdrawn all"
-}
-
-@test "merge-standing-withdrawn needs a standing word for its project, or for any project when it withdraws all" {
-  opened_task T14
-  opened_task T15
-  plan_registry "$(plan_project web false)"
-  local said=(discord_message="$(soon)" discord_channel="$COORDINATOR")
-  run_bin -1 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for proj, so merge-standing-withdrawn withdraws nothing"
-  run_bin -1 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for any project, so merge-standing-withdrawn withdraws nothing"
-  # A word on one project stands for it alone, whichever task logged it.
-  run_bin -0 team-log T15 merge-standing project=proj "${said[@]}"
-  run_bin -1 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for conv, so merge-standing-withdrawn withdraws nothing"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
-  run_bin -1 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
-  # A word on every project, withdrawn for one, stands for the others.
-  run_bin -0 team-log T14 merge-standing project=all "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
-  run_bin -1 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for conv, so merge-standing-withdrawn withdraws nothing"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=web "${said[@]}"
-  # A word given after a withdrawal stands again.
-  run_bin -0 team-log T14 merge-standing project=conv "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
-  # A withdrawal of all ends every word, and none is left to withdraw.
-  run_bin -0 team-log T14 merge-standing project=web "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
-  local project
-  for project in all proj conv web; do
-    run_bin -1 team-log T14 merge-standing-withdrawn project=$project "${said[@]}"
-  done
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for web, so merge-standing-withdrawn withdraws nothing"
-  # A word on a project no longer registered still stands, and a withdrawal of all ends it.
-  run_bin -0 team-log T14 merge-standing project=web "${said[@]}"
-  plan_registry
-  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
-  assert_equal "$(standing_events)" "$(
-    cat <<'LINES'
-merge-standing proj
-merge-standing-withdrawn proj
-merge-standing all
-merge-standing-withdrawn conv
-merge-standing-withdrawn web
-merge-standing conv
-merge-standing-withdrawn conv
-merge-standing web
-merge-standing-withdrawn all
-merge-standing web
-merge-standing-withdrawn all
-LINES
-  )"
-  run_bin -0 team-log --check
 }
 
 @test "branch-renamed records the task's new branch for one of its projects, which names the task and is not its branch now" {
@@ -2454,11 +2186,11 @@ origin_subject() {
     else
       assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
     fi
-  done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
+  done < <(jq -r '.kinds | to_entries[] | select(([.value.writer] | flatten | index("team-log")) and (.value.retired | not)) | .key' "$CONTRACT")
   # The answered among them is one given at the terminal, with no discord_message, and the
   # plan-approved the coordinator's, which the plan-approval-withdrawn after it withdraws, and the
   # merge-default-restored gives back the task's default word the merge-default-withdrawn withdrew.
-  assert_equal "${pushed[*]}" "answered plan-approved plan-approval-withdrawn merge-approved merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn merge-default-withdrawn merge-default-restored retro-schedule"
+  assert_equal "${pushed[*]}" "answered plan-approved plan-approval-withdrawn merge-approved merge-default-withdrawn merge-default-restored retro-schedule"
   [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
 }
 

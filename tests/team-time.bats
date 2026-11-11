@@ -441,7 +441,7 @@ logged_at() {
     '{"building":1,"gate":0.333,"wait:daniel":2.667}'
 }
 
-@test "a plan ask settled by a merge-preapproved naming its id leaves no wait on Daniel after it" {
+@test "a plan ask settled by a merge-preapproved naming its id, a kind retired by T276 read for history, leaves no wait on Daniel after it" {
   assert_equal "$(t90_hours 06:00 '01:00 done {role: "builder", session: "s1"}' \
     '01:00 asked {id: "plan", text: "approve the plan, and its merge?"}' \
     '03:00 merge-preapproved {project: "p", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}' \

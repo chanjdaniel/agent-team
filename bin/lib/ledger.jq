@@ -178,7 +178,8 @@ def path_problem:
   elif . == "" or any(rtrimstr("/") | split("/")[]; . == "") then "an empty segment"
   else empty end;
 
-# How a merge-preapproved's scope, a list, holds entries that are not clean repository paths.
+# How a plan's scope, a list (scope.txt's lines, on a plan-approved), holds entries that are not
+# clean repository paths.
 def scope_problems: .[] | path_problem as $problem | "\(tojson): \($problem)";
 
 # What a line in an existing ledger must meet: legacy lines (before strict_from) only the basics.
@@ -327,9 +328,9 @@ def pr_heads($url):
 # $head may be sent.
 def head_logged($url; $head): first(pr_heads($url)[] | select(same_head(.head; $head))) // null;
 
-# Whether this event, logged after the ask $ask (an asked event), settles it: the answered or the
-# merge-preapproved with its id, or a merge-approved whose url (a trailing slash aside) the ask's
-# text names, not followed by a digit, since the coordinator logs a merge answer as merge-approved
+# Whether this event, logged after the ask $ask (an asked event), settles it: the answered with its
+# id, or for history a merge-preapproved with it (a kind retired by T276), or a merge-approved
+# whose url (a trailing slash aside) the ask's text names, not followed by a digit, since the coordinator logs a merge answer as merge-approved
 # alone as often as not.
 def settles($ask):
   (.event == "answered" and .id == $ask.id)
@@ -949,8 +950,8 @@ def progress($workers):
 def live_session_ids($sessions):
   [.[] | select(.event == "launch") | live_session(.session; $sessions) | .sessionId // empty | strings] | unique;
 
-# The latest asked of id $id among the task's events, or null: the ask a merge-preapproved of
-# that id answers.
+# The latest asked of id $id among the task's events, or null: the ask a plan-approved of that id
+# answers.
 def latest_asked($id): [.[] | select(.event == "asked" and .id == $id)] | last;
 
 # The task's plan approval, from its latest plan-approved or plan-approval-withdrawn, or null when
@@ -1053,38 +1054,6 @@ def scope_reasons($scope):
   select($scope != null) | .[] | .path as $p
   | select(any($scope[]; . as $entry | if endswith("/") then $p | startswith($entry) else $p == $entry end) | not)
   | "\(name) is outside the approved plan's scope: \($scope | join(", "))";
-
-# The retired plan-time and standing words (T276), read by team-log's checks of their kinds alone,
-# which go with these three defs once team-log refuses those kinds; no other reader calls them.
-# The task's latest merge-preapproved of $project, or null, with withdrawn: the first
-# merge-preapproval-withdrawn of $project logged after it, or null while it stands.
-def merge_preapproval($project):
-  ([to_entries[] | select(.value.event == "merge-preapproved" and .value.project == $project)] | last) as $latest
-  | if $latest == null then null
-    else $latest.value + {withdrawn: (first(.[$latest.key + 1:][]
-      | select(.event == "merge-preapproval-withdrawn" and .project == $project)) // null)} end;
-
-# Daniel's standing merge word on $project, over every ledger event as an array (never one task's),
-# or null when no merge-standing or merge-standing-withdrawn names $project or all: the latest of
-# those decides, so {stands: whether it is a merge-standing, word: the latest merge-standing that
-# applies, withdrawn: the latest event when it is a withdrawal, else null}, each as {project (as
-# logged), task, ts, discord_message, discord_channel}, word null when no merge-standing applies.
-def standing_word($project):
-  def said: {project, task, ts, discord_message, discord_channel};
-  [.[] | select((.event == "merge-standing" or .event == "merge-standing-withdrawn")
-    and (.project == $project or .project == "all"))] as $applying
-  | ($applying | last) as $latest
-  | if $latest == null then null
-    else {stands: ($latest.event == "merge-standing"),
-          word: ([$applying[] | select(.event == "merge-standing")] | last | if . == null then null else said end),
-          withdrawn: (if $latest.event == "merge-standing-withdrawn" then $latest | said else null end)} end;
-
-# The projects of the list $projects a standing word stands for, over every ledger event as an
-# array, in the list's order, each as {project, word} (standing_word's word).
-def standing_words($projects):
-  . as $events
-  | [$projects[] | . as $project | $events | standing_word($project)
-     | select(. != null and .stands) | {project: $project, word}];
 
 # The head whose review stands for $head: $head itself when a review of it is logged, or, when a
 # caught-up event of the task names $head (by the shorter prefix) as the merge team-catch-up made,

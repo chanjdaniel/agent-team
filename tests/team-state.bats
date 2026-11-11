@@ -130,7 +130,7 @@ phase_of() {
   assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["merge-12","again"]'
 }
 
-@test "an ask is settled by a later merge-preapproved naming its id, as by an answered" {
+@test "an ask is settled by a later merge-preapproved naming its id, a kind retired by T276 read for history, as by an answered" {
   open_task
   event T14 asked '{id: "plan", text: "Approve the plan, and its merge?"}'
   event T14 asked '{id: "name", text: "Which name?"}'
