@@ -366,6 +366,23 @@ team-ci-wait: every check passed on a1b2c3d: test passed, lint passed, docs skip
 team-ci-wait: every check passed on a1b2c3d: test passed, lint passed"
 }
 
+@test "an earlier review's failed agent-review, with no link, is the PR's unless --no-agent-review leaves it out" {
+  # A rereview or verify of a head an earlier review failed: the status GitHub shows is that
+  # review's own, set by team-review-status with no link, which the wait would name as the PR's.
+  local review
+  review=$(jq -cn '{name: "agent-review", state: "FAILURE", bucket: "fail", link: "", workflow: ""}')
+  checks 0 "$(check test SUCCESS 7001)" "$(check lint SUCCESS 7001)" "$review"
+  run_bin team-ci-wait "$url" "$head"
+  assert_equal "$status" 1
+  assert_contains "$output" "
+  the PR's: agent-review failed: no link"
+  echo 0 >"$GH_DIR/look"
+  run_bin team-ci-wait --no-agent-review "$url" "$head"
+  assert_equal "$status" 0
+  assert_equal "$output" "team-ci-wait: waiting on the checks of owner/proj#217 at a1b2c3d
+team-ci-wait: every check passed on a1b2c3d: test passed, lint passed"
+}
+
 @test "--no-agent-review ends the wait on CI's own checks, with agent-review still pending or the only check" {
   checks 0 "$(check test SUCCESS 7001)" "$(check agent-review PENDING)"
   run_bin team-ci-wait --no-agent-review "$url"

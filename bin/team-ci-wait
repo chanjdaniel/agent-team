@@ -6,7 +6,8 @@
 #   --no-agent-review
 #           leave the agent-review check out of every look, as though GitHub had not reported it:
 #           a builder's wait, which runs while the reviewer reads and may see the reviewer's own
-#           status, ends on CI's checks alone and leaves the review to the coordinator's round
+#           status, ends on CI's checks alone and leaves the review to the coordinator's round, and
+#           a rereview's or verify's, whose head may carry an earlier review's, ends the same way
 #   --json  print one JSON object instead of the text, on every end but a refused command line
 #           (below); the exit code is as without it
 #   --look  take one readable look at <sha> and end, with no wait (below)
