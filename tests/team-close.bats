@@ -531,7 +531,7 @@ rehome_ledger() {
   stub_reply claude "[]"
   run_bin -0 team-state T1 --json
   assert_equal "$(jq -c .worktrees <<<"$output")" "$(jq -cn --arg wt "$slot" \
-    '[{project: "home", branch: "feat/T1-work", worktree: $wt, returned: true}]')"
+    '[{project: "home", branch: "feat/T1-work", worktree: $wt, ticket: null, returned: true}]')"
 }
 
 # open_home_task: T1 open in the first home slot with a builder launched and live, its task

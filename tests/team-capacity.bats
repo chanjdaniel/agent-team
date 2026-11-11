@@ -654,6 +654,24 @@ team_reading() {
   assert_equal "$(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -c .heavy)" null
 }
 
+@test "sample: a ticket worktree is its task's, logged or half open on its ticket branch" {
+  sample_machine
+  # agent-team's primary checkout, with T9's ticket worktrees of tickets 02 (logged) and 03 (on
+  # its ticket branch, not logged yet: half open).
+  local primary=$HOME/agent-team wt2=$HOME/agent-team/.claude/worktrees/3 wt3=$HOME/agent-team/.claude/worktrees/4
+  git init -q -b dev "$primary"
+  git -C "$primary" commit -q --allow-empty -m "chore: start"
+  git -C "$primary" worktree add -q -b feat/T9-work--02 "$wt2"
+  git -C "$primary" worktree add -q -b feat/T9-work--03 "$wt3"
+  jq -cn --arg wt "$wt2" '{ts: "2026-11-01T10:05:00Z", task: "T9", event: "worktree-added", project: "agent-team",
+    branch: "feat/T9-work--02", base: "feat/T9-work", base_sha: "abc1234", worktree: $wt, ticket: "02"}' >>"$TEAM_HOME/ledger.jsonl"
+  proc 200 1 300 40 "$wt2"
+  proc 201 1 100 10 "$wt3"
+  run_bin -0 team-capacity sample
+  assert_equal "$(jq -c --argjson mib "$MIB" '.tasks | map([.task, ((.memory - ([.stacks[].memory] | add // 0)) / $mib)])' \
+    "$STATE_DIR/readings.jsonl")" '[["T7",0],["T9",400]]'
+}
+
 @test "sample: a user manager or a session list that does not answer is said in the reading, and the processes count by directory" {
   sample_machine
   proc 100 99 512 60 "$T7_WT" "$(user_cgroup agent-team-T7-a1b2c3d4.scope agent-team-T7.slice)"

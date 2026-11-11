@@ -275,31 +275,36 @@ def local_worktree($home):
     | if has("from") then .from |= local_path($home) else . end
   else . end;
 
-# The open worktrees among a stream of ledger events: one {task, project, branch, worktree} per
-# opened or worktree-added event with no later worktree-returned of the same task, project and
-# worktree, in the order they were added; a worktree-moved gives the task's open worktree in its
-# project its new path, and a branch-renamed its new branch. Worktrees are paths on this machine
-# (local_worktree).
+# The open worktrees among a stream of ledger events: one {task, project, branch, worktree, ticket}
+# per opened or worktree-added event with no later worktree-returned of the same task, project,
+# ticket and worktree, in the order they were added, ticket the two-digit number of a ticket
+# worktree (team-open --ticket) and null for the task's own worktree in its project; a
+# worktree-moved gives the open worktree of its task, project and ticket its new path, and a
+# branch-renamed, which names no ticket, the task's own worktree in its project its new branch.
+# Worktrees are paths on this machine (local_worktree). A caller that means the task's worktree in
+# a project takes the one whose ticket is null; one that walks every worktree takes all.
 def open_worktrees(events; $home):
   reduce (events | local_worktree($home)) as $e ([];
     if $e.event == "opened" or $e.event == "worktree-added" then
-      . + [$e | {task, project, branch, worktree}]
+      . + [$e | {task, project, branch, worktree, ticket}]
     elif $e.event == "worktree-moved" then
-      map(if [.task, .project] == [$e.task, $e.project] then .worktree = $e.worktree else . end)
+      map(if [.task, .project, .ticket] == [$e.task, $e.project, $e.ticket] then .worktree = $e.worktree else . end)
     elif $e.event == "branch-renamed" then
-      map(if [.task, .project] == [$e.task, $e.project] then .branch = $e.branch else . end)
+      map(if [.task, .project, .ticket] == [$e.task, $e.project, null] then .branch = $e.branch else . end)
     elif $e.event == "worktree-returned" then
-      map(select([.task, .project, .worktree] != [$e.task, $e.project, $e.worktree]))
+      map(select([.task, .project, .ticket, .worktree] != [$e.task, $e.project, $e.ticket, $e.worktree]))
     else . end)
   | .[];
 
 # A task's open worktrees (open_worktrees, over its events as an array), each with the folder
 # under tasks/T<n>/ its task directory is archived to: scratch for the project the task was
-# opened in, scratch-<project> for one added later.
+# opened in, scratch-<project> for one added later, and for a ticket worktree its task
+# worktree's folder with --NN after it (scratch--03, scratch-<project>--03).
 def archived_worktrees($home):
   (map(select(.event == "opened")) | first | .project) as $opened
   | open_worktrees(.[]; $home)
-  | . + {archive: (if .project == $opened then "scratch" else "scratch-\(.project)" end)};
+  | . + {archive: ((if .project == $opened then "scratch" else "scratch-\(.project)" end)
+      + if .ticket == null then "" else "--\(.ticket)" end)};
 
 # Whether two heads name the same commit: compared by the shorter one's prefix, which must be at
 # least 7 characters, since the ledger holds both short and full SHAs.
@@ -708,13 +713,15 @@ def unfinished_roles:
   | map(.i as $i | .role as $role | select(all($events[$i + 1:][]; ends_worker($role) | not)) | .role);
 
 # Every worktree the task was given (opened or added), at its latest path (worktree-moved) and on
-# its latest branch (branch-renamed), and whether it was returned since.
+# its latest branch (branch-renamed), and whether it was returned since, each event matched by
+# project and ticket (null for the task's own worktree in its project, so a branch-renamed, which
+# names no ticket, renames only that one), ticket the number of a ticket worktree.
 def worktree_list:
   . as $events
   | [to_entries[] | select(.value.event == "opened" or .value.event == "worktree-added")
     | .key as $i | .value as $w
-    | reduce ($events[$i + 1:][] | select(.project == $w.project)) as $e
-        ($w | {project, branch, worktree, returned: false};
+    | reduce ($events[$i + 1:][] | select(.project == $w.project and .ticket == $w.ticket)) as $e
+        ($w | {project, branch, worktree, ticket, returned: false};
          if .returned then .
          elif $e.event == "worktree-moved" then .worktree = $e.worktree
          elif $e.event == "branch-renamed" then .branch = $e.branch
@@ -722,9 +729,10 @@ def worktree_list:
          else . end)];
 
 # The task's branch in <project>, over the task's events as an array: the latest opened,
-# worktree-added or branch-renamed of the project names it; null when none does.
+# worktree-added or branch-renamed of the project with no ticket names it (a ticket worktree's
+# branch is never the task's); null when none does.
 def task_branch($project):
-  [.[] | select((.event | IN("opened", "worktree-added", "branch-renamed")) and .project == $project)]
+  [.[] | select((.event | IN("opened", "worktree-added", "branch-renamed")) and .project == $project and .ticket == null)]
   | last | .branch // null;
 
 # Why PR #$number, from the branch $branch, is not task $task's own PR for $project, over the

@@ -129,11 +129,12 @@ check_leases() {
   problems=$(ledger_jq 'ledger_events as $events | ($events | by_task) as $tasks
     | [open_worktrees($events[] | select($tasks[.task] | is_open); $home) | select(.project == $project)] as $open
     | $leases[] | select(.holder != "") | . as $slot
-    | ($tasks[.holder] // null) as $held
+    | (.holder | capture("^(?<task>T[1-9][0-9]*)(--(?<ticket>[0-9]{2}))?$") // {task: ., ticket: null}) as $by
+    | ($tasks[$by.task] // null) as $held
     | (.path | if startswith($home + "/") then "~" + .[($home | length):] else . end) as $shown
     | if $held == null then "\($shown) is leased to \(.holder), no task of the ledger"
       elif ($held | is_open | not) then "\($shown) is leased to \(.holder), which is closed"
-      elif any($open[]; .task == $slot.holder and .worktree == $slot.path) | not then
+      elif any($open[]; .task == $by.task and .ticket == $by.ticket and .worktree == $slot.path) | not then
         "\($shown) is leased to \(.holder), whose worktree in \($project) is not there"
       else empty end
     | [., $slot.path] | @tsv' -nRr --arg project "$project" --argjson leases "$(jq -s . <<<"$leases")" \

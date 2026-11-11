@@ -156,14 +156,14 @@ done
 
 # The task must be open, and the brief is for one of its open worktrees.
 events=$(open_task_events "$task")
-# In one jq run over its events: its opened event's title and path, its open worktrees (as
-# task_worktrees has them, as one array), its latest thread and interview thread, and its latest
+# In one jq run over its events: its opened event's title and path, its own open worktrees (as
+# task_worktrees has them, as one array, but for a ticket worktree), its latest thread and interview thread, and its latest
 # review (null when none), with that review's head (empty when none) and the findings it sent back
 # as a list ("3, 5 and 6"; empty when none).
 title='' path='' worktrees='' thread='' interview='' review='' review_head='' sent_list=''
 json_vars --ledger title='map(select(.event == "opened")) | first | .title | tostring' \
   path='map(select(.event == "opened")) | first | .path | tostring' \
-  worktrees='[open_worktrees(.[]; $home)] | tojson' \
+  worktrees='[open_worktrees(.[]; $home) | select(.ticket == null)] | tojson' \
   thread='map(select(.event == "thread")) | last | .discord_thread // empty' \
   interview='map(select(.event == "interview-thread")) | last | .discord_thread // empty' \
   review='map(select(.event == "review")) | last | tojson' \

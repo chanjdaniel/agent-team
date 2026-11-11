@@ -338,10 +338,11 @@ hand_off() {
   echo "launched $task-$role $id"
 }
 
-# project_worktree <project>: the task's open worktree in <project>, or a refusal.
+# project_worktree <project>: the task's own open worktree in <project> (never a ticket worktree),
+# or a refusal.
 project_worktree() {
   local worktree
-  worktree=$(ledger_jq '[open_worktrees(.[]; $home) | select(.project == $p)] | last
+  worktree=$(ledger_jq '[open_worktrees(.[]; $home) | select(.project == $p and .ticket == null)] | last
       | select(. != null) | .worktree | tostring' -r --arg p "$1" <<<"$events")
   [[ -n $worktree ]] || die "$task has no open worktree in $1"
   echo "$worktree"

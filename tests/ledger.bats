@@ -357,6 +357,61 @@ awaiting() {
     '[["proj","feat/T1-x-fresh"],["lib","feat/T1-lib"]]'
 }
 
+@test "ticket worktrees: each is keyed by project and ticket, so a move, rename or return touches only its own" {
+  local events='{"event": "opened", "project": "proj", "branch": "feat/T1-x", "worktree": "/w/1", "path": "feature"}
+{"event": "worktree-added", "project": "lib", "branch": "feat/T1-lib", "worktree": "/w/2"}
+{"event": "worktree-added", "project": "proj", "branch": "feat/T1-x--02", "base": "feat/T1-x", "worktree": "/w/3", "ticket": "02"}
+{"event": "worktree-added", "project": "proj", "branch": "feat/T1-x--03", "base": "feat/T1-x", "worktree": "/w/4", "ticket": "03"}'
+  local lib=(jq -L "$REPO_ROOT/bin/lib" -sc)
+  open() { "${lib[@]}" 'include "ledger"; map({task: "T1"} + .) | [open_worktrees(.[]; "/home/x") | [.project, .ticket, .branch, .worktree]]'; }
+  listed() { "${lib[@]}" 'include "ledger"; [worktree_list[] | [.project, .ticket, .branch, .worktree, .returned]]'; }
+  archived() { "${lib[@]}" 'include "ledger"; map({task: "T1"} + .) | [archived_worktrees("/home/x") | [.ticket, .archive]]'; }
+  assert_equal "$(open <<<"$events")" \
+    '[["proj",null,"feat/T1-x","/w/1"],["lib",null,"feat/T1-lib","/w/2"],["proj","02","feat/T1-x--02","/w/3"],["proj","03","feat/T1-x--03","/w/4"]]'
+  assert_equal "$(archived <<<"$events")" '[[null,"scratch"],[null,"scratch-lib"],["02","scratch--02"],["03","scratch--03"]]'
+  # The task's branch is never a ticket branch, though a ticket worktree-added is the latest.
+  assert_equal "$("${lib[@]}" 'include "ledger"; [task_branch("proj"), task_branch("lib")]' <<<"$events")" '["feat/T1-x","feat/T1-lib"]'
+
+  # A rename names no ticket: only the task's own worktree in proj takes it.
+  events+=$'\n''{"event": "branch-renamed", "project": "proj", "branch": "feat/T1-x-fresh"}'
+  # A move of ticket 03's worktree moves only it, and a move with no ticket only the task's.
+  events+=$'\n''{"event": "worktree-moved", "project": "proj", "branch": "feat/T1-x--03", "from": "/w/4", "worktree": "/w/5", "ticket": "03"}'
+  events+=$'\n''{"event": "worktree-moved", "project": "proj", "branch": "feat/T1-x-fresh", "from": "/w/1", "worktree": "/w/6"}'
+  assert_equal "$(open <<<"$events")" \
+    '[["proj",null,"feat/T1-x-fresh","/w/6"],["lib",null,"feat/T1-lib","/w/2"],["proj","02","feat/T1-x--02","/w/3"],["proj","03","feat/T1-x--03","/w/5"]]'
+  assert_equal "$(listed <<<"$events")" \
+    '[["proj",null,"feat/T1-x-fresh","/w/6",false],["lib",null,"feat/T1-lib","/w/2",false],["proj","02","feat/T1-x--02","/w/3",false],["proj","03","feat/T1-x--03","/w/5",false]]'
+  assert_equal "$("${lib[@]}" 'include "ledger"; task_branch("proj")' <<<"$events")" '"feat/T1-x-fresh"'
+
+  # A return of ticket 02's worktree returns only it; one that names its path with no ticket
+  # returns nothing, since the task's own worktree in proj is elsewhere.
+  events+=$'\n''{"event": "worktree-returned", "project": "proj", "worktree": "/w/3"}'
+  assert_equal "$(open <<<"$events" | jq -c 'map(.[1])')" '[null,null,"02","03"]'
+  events+=$'\n''{"event": "worktree-returned", "project": "proj", "worktree": "/w/3", "ticket": "02"}'
+  assert_equal "$(open <<<"$events" | jq -c 'map(.[1])')" '[null,null,"03"]'
+  assert_equal "$(listed <<<"$events" | jq -c 'map([.[1], .[4]])')" '[[null,false],[null,false],["02",true],["03",false]]'
+  assert_equal "$(archived <<<"$events")" '[[null,"scratch"],[null,"scratch-lib"],["03","scratch--03"]]'
+}
+
+@test "a ticket on worktree-added, worktree-returned, worktree-moved, rehomed and rehome-failed meets the contract" {
+  opened_task T7
+  local at='"ts":"2026-10-31T02:00:00Z","task":"T7"'
+  append_as team-open "{$at,\"event\":\"worktree-added\",\"project\":\"proj\",\"branch\":\"feat/T7-x--02\",\"base\":\"feat/T7-x\",\"base_sha\":\"abc1234\",\"worktree\":\"/w/2\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-close "{$at,\"event\":\"worktree-returned\",\"project\":\"proj\",\"worktree\":\"/w/2\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-open "{$at,\"event\":\"worktree-moved\",\"project\":\"proj\",\"branch\":\"feat/T7-x--02\",\"from\":\"/w/2\",\"worktree\":\"/w/3\",\"machine\":\"m\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-open "{$at,\"event\":\"rehomed\",\"project\":\"proj\",\"branch\":\"feat/T7-x--02\",\"worktree\":\"/w/3\",\"machine\":\"m\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-resume "{$at,\"event\":\"rehome-failed\",\"project\":\"proj\",\"branch\":\"feat/T7-x--02\",\"machine\":\"m\",\"reason\":\"r\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-open "{$at,\"event\":\"worktree-added\",\"project\":\"proj\",\"branch\":\"b\",\"base\":\"b\",\"base_sha\":\"abc1234\",\"worktree\":\"/w/4\",\"ticket\":2}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "ticket must be a string"
+  run_bin -0 team-log --check
+}
+
 @test "a branch-renamed meets the contract, written by team-log" {
   opened_task T7
   local at='"ts":"2026-10-31T02:00:00Z","task":"T7"'

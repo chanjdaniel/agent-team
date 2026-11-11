@@ -159,6 +159,14 @@ ledger_opened() {
   fix="cd ~/projects/Conventioner && ~/projects/Conventioner/scripts/th-return.sh"
   assert_equal "$(line_of 'leases conventioner')" "WARN leases conventioner: ~/$pool/1/Conventioner is leased to T1, which is closed; ~/$pool/3/Conventioner is leased to T2, whose worktree in conventioner is not there; ~/$pool/4/Conventioner is leased to agent, no task of the ledger; fix: once nothing in it is needed, Daniel returns each in their own terminal, which asks before discarding changes: $fix ~/$pool/1/Conventioner; $fix ~/$pool/3/Conventioner; $fix ~/$pool/4/Conventioner"
 
+  # A ticket worktree's lease is held as T<n>--NN, the open worktree of that ticket.
+  jq -cn --arg wt "$HOME/$pool/6/Conventioner" '{ts: "2026-10-24T11:30:00Z", task: "T2", event: "worktree-added",
+    project: "conventioner", branch: "feat/T2-work--03", base: "feat/T2-work", base_sha: "0000000", worktree: $wt,
+    ticket: "03"}' >>"$TEAM_HOME/ledger.jsonl"
+  leased_slots "$pool/2/Conventioner" T2 "$pool/6/Conventioner" T2--03 "$pool/7/Conventioner" T2--04
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "WARN leases conventioner: ~/$pool/7/Conventioner is leased to T2--04, whose worktree in conventioner is not there; fix: once nothing in it is needed, Daniel returns each in their own terminal, which asks before discarding changes: $fix ~/$pool/7/Conventioner"
+
   # A worktree-moved to the leased slot makes it the task's again.
   jq -cn --arg from "$HOME/$pool/2/Conventioner" --arg wt "$HOME/$pool/3/Conventioner" '{ts: "2026-10-24T12:00:00Z",
     task: "T2", event: "worktree-moved", project: "conventioner", branch: "feat/T2-work", from: $from, worktree: $wt,

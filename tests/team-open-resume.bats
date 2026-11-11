@@ -278,7 +278,7 @@ restored_from() {
   stub_reply claude "[]"
   run_bin -0 team-state T1 --json
   assert_equal "$(jq -c '.worktrees' <<<"$output")" "$(jq -cn --arg b "$branch" --arg wt "$moved" \
-    '[{project: "home", branch: $b, worktree: $wt, returned: false}]')"
+    '[{project: "home", branch: $b, worktree: $wt, ticket: null, returned: false}]')"
   run_bin -1 team-open --task T1 --add home feat more
   assert_contains "$output" "T1 already has an open worktree in home: $moved ($branch)"
 

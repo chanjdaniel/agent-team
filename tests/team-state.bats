@@ -104,8 +104,8 @@ phase_of() {
     schema: "team-state/1", task: "T14", title: "The tooling", project: "proj", path: "feature",
     phase: "building",
     worktrees: [
-      {project: "proj", branch: "feat/T14-tooling", worktree: "/w/1", returned: false},
-      {project: "conv", branch: "feat/T14-x", worktree: "/t/2", returned: true}],
+      {project: "proj", branch: "feat/T14-tooling", worktree: "/w/1", ticket: null, returned: false},
+      {project: "conv", branch: "feat/T14-x", worktree: "/t/2", ticket: null, returned: true}],
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],

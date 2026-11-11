@@ -21,8 +21,9 @@
     },
     "worktree-added": {
       "writer": "team-open",
-      "about": "team-open --add",
-      "required": {"project": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"}
+      "about": "team-open --add, or team-open --ticket with ticket, the two-digit number of the ticket the worktree is given to, branch its ticket branch <task branch>--NN, base the task branch and base_sha the task branch's tip it was cut from",
+      "required": {"project": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"},
+      "optional": {"ticket": "string"}
     },
     "thread": {
       "writer": "team-thread",
@@ -42,8 +43,9 @@
     },
     "worktree-returned": {
       "writer": "team-close",
+      "about": "ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
       "required": {"project": "string", "worktree": "string"},
-      "optional": {"branch": "string"}
+      "optional": {"branch": "string", "ticket": "string"}
     },
     "closed": {
       "writer": "team-close",
@@ -225,14 +227,15 @@
     },
     "stowed": {
       "writer": "team-stow",
-      "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",
+      "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin, and ticket, the two-digit number of a ticket worktree's ticket; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",
       "required": {"machine": "string", "worktrees": "array", "roles": "array"},
       "optional": {"sessions": "array", "cause": ["level", "handoff"]}
     },
     "worktree-moved": {
       "writer": "team-open",
-      "about": "team-open --resume, when this machine's worktree for the task in project is not the recorded one",
-      "required": {"project": "string", "branch": "string", "from": "string", "worktree": "string", "machine": "string"}
+      "about": "team-open --resume, when this machine's worktree for the task in project is not the recorded one; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "from": "string", "worktree": "string", "machine": "string"},
+      "optional": {"ticket": "string"}
     },
     "injection": {
       "writer": "team-log",
@@ -241,13 +244,15 @@
     },
     "rehome-failed": {
       "writer": "team-resume",
-      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project",
-      "required": {"project": "string", "branch": "string", "machine": "string", "reason": "string"}
+      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "machine": "string", "reason": "string"},
+      "optional": {"ticket": "string"}
     },
     "rehomed": {
       "writer": "team-open",
-      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it",
-      "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"}
+      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"},
+      "optional": {"ticket": "string"}
     },
     "walk": {
       "writer": "team-ui",
