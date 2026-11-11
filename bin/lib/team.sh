@@ -1858,7 +1858,7 @@ ticket_graph_dir() {
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
   local events=$1 state pr dir session_id context contexts=() out plan_project plan_projects opted_in own standing
-  local task tickets
+  local task tickets graph_dir html png fresh page_digest
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
@@ -1889,11 +1889,24 @@ task_state_json() (
     state=$(jq -c --argjson opted_in "$opted_in" --argjson own "$own" \
       '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
   fi
-  # The ticket total: the ticket files team-tickets reads, null when it refuses them.
+  # The ticket total: the ticket files team-tickets reads, null when it refuses them. The graph:
+  # the page team-tickets --graph wrote in the task directory of the first ticket, fresh while it
+  # was drawn from the tickets as they stand and its PNG is no older than it; null with no page.
   if tickets=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json 2>/dev/null </dev/null) &&
     out=$(jq -cn 'input as $tickets | input | .progress.tickets.total = ($tickets | length)' 2>/dev/null \
       <<<"$tickets"$'\n'"$state"); then
     state=$out
+    graph_dir=$(ticket_graph_dir <<<"$tickets") || exit 1
+    if [[ -n $graph_dir && -f $graph_dir/tickets.html ]]; then
+      html=$graph_dir/tickets.html png=$graph_dir/tickets.png fresh=false
+      page_digest=$(sed -n 's/.*<meta name="team-tickets-digest" content="\([0-9a-f]\{64\}\)">.*/\1/p;T;q' "$html")
+      if [[ -n $page_digest && $page_digest == "$(tickets_digest <<<"$tickets")" && -f $png && ! $png -ot $html ]]; then
+        fresh=true
+      fi
+      [[ -f $png ]] || png=
+      state=$(jq -c --arg html "$html" --arg png "$png" --argjson fresh "$fresh" \
+        '.progress.tickets.graph = {html: $html, png: (if $png == "" then null else $png end), fresh: $fresh}' <<<"$state") || exit 1
+    fi
   fi
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1

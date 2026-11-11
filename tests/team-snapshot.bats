@@ -654,7 +654,7 @@ $line"
   assert_equal "  $output" "$line"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c '.tasks[0] | [.progress.tickets, .progress.reviews.sent_back, .pr.behind_by]' <<<"$output")" \
-    '[{"done":["01","02","03"],"total":7},[5,6],16]'
+    '[{"done":["01","02","03"],"total":7,"graph":null},[5,6],16]'
 }
 
 @test "a waiting task says what it waits on" {
