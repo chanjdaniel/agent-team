@@ -28,7 +28,12 @@
 #         (TEAM_HEAVY_RECHECK_SECONDS), taking the lock again first, within the same --wait, then
 #         exits 75 with the reason and what makes room ("no room for heavy:<kind>: the team is at
 #         level none: nothing starts; room comes when Daniel raises the level" at none). An
-#         admission that fails otherwise fails the run with its reason (exit 1).
+#         admission that fails otherwise fails the run with its reason (exit 1). The admission's
+#         id is admit's first line, and team-heavy releases it (team-capacity release <id>) at
+#         every end of the run, success, failure and a stop included, so admitted.json keeps no
+#         finished run; a release that fails is one line on stderr, "team-heavy: warning: could
+#         not release admission <id>: <reason>; it ends 10 minutes after it was made", and the
+#         exit status stays the run's.
 #         The command runs in a process group of its own, its stdin /dev/null when team-heavy's is
 #         a terminal (a background group reading one would stop). On Linux it also runs in a
 #         transient scope, agent-team-heavy-<team-heavy's pid>.scope, in the task's slice
@@ -205,15 +210,23 @@ sample_peak() {
 
 # Whether the run of <kind> for <task> ("" for none) fits the level's budget, asking team-capacity
 # admit while this run holds the lock on <fd>, with no team home always; the reason it does not in
-# ROOM_WHY. An admission that fails otherwise fails the run.
+# ROOM_WHY; the id of the admission it gets in ADMISSION, admit's first line, which the exit
+# handler releases. An admission that fails otherwise fails the run.
 room_for() {
-  local kind=$1 task=$2 fd=$3 rc=0 err
+  local kind=$1 task=$2 fd=$3 rc=0 err out
   local -a args=(admit --kind "heavy:$kind")
   ROOM_WHY=''
   [[ -z $TEAM_HOME_PROBLEM && -n $TEAM_HOME && -d $TEAM_HOME ]] || return 0
   [[ -z $task ]] || args+=(--task "$task")
-  err=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-capacity" "${args[@]}" 2>&1 >/dev/null {fd}>&-) || rc=$?
-  ((rc == 0)) && return 0
+  [[ -n $ADMIT_ERRORS ]] || ADMIT_ERRORS=$(mktemp)
+  out=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-capacity" "${args[@]}" 2>"$ADMIT_ERRORS" {fd}>&-) || rc=$?
+  err=$(<"$ADMIT_ERRORS")
+  if ((rc == 0)); then
+    [[ ${out%%$'\n'*} =~ ^[0-9a-f]{12}$ ]] ||
+      die "team-capacity admit gave no admission id for heavy:$kind: $(grep -m1 . <<<"$out" || echo "it printed nothing")"
+    ADMISSION=${out%%$'\n'*}
+    return 0
+  fi
   ((rc == 75)) || die "team-capacity admit failed for heavy:$kind (exit $rc): $(grep . <<<"$err" | tail -n 1 || echo "no reason given")"
   ROOM_WHY=$(grep . <<<"$err" | tail -n 1)
   return 1
@@ -235,6 +248,24 @@ write_cost() {
 # and whether a stop was asked.
 child='' unit='' stopping=0
 
+# The run's state, for the exit handler: its admission's id, the file of admit's stderr and the
+# run's temporary directory, each empty until it is made.
+ADMISSION='' ADMIT_ERRORS='' tmp=''
+
+# The one exit handler, on every end of a run, success included: the admission released (a
+# heavy run's reserves only while its lock is held, so this keeps admitted.json from holding
+# finished runs; a release that fails is one line on stderr, the exit status the run's), then
+# its files removed.
+run_exit() {
+  local out
+  if [[ -n $ADMISSION ]] &&
+    ! out=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-capacity" release "$ADMISSION" 2>&1 >/dev/null); then
+    echo "${0##*/}: warning: could not release admission $ADMISSION: $(grep . <<<"$out" | tail -n 1 || echo "team-capacity release failed"); it ends 10 minutes after it was made" >&2
+  fi
+  [[ -z $ADMIT_ERRORS ]] || rm -f -- "$ADMIT_ERRORS"
+  [[ -z $tmp ]] || rm -rf -- "$tmp"
+}
+
 # Stop the command's whole tree: its scope, then TERM to its process group.
 stop_tree() {
   stopping=1
@@ -255,7 +286,7 @@ end_group() {
 
 cmd_run() {
   local wait=${TEAM_HEAVY_WAIT_MINUTES:-180} label='' kind='' fd rc=0 task='' slice=agent-team.slice why=''
-  local tmp started start peak cpu status sampler='' deadline left said_lock='' said_room='' wait_seconds
+  local started start peak cpu status sampler='' deadline left said_lock='' said_room='' wait_seconds
   while (($#)); do
     case $1 in
       --wait)
@@ -293,6 +324,7 @@ cmd_run() {
   if [[ -z $kind ]]; then kind=${label%%[[:space:]]*} && kind=${kind##*/}; fi
   if [[ ${AGENT_TEAM_TASK:-} =~ ^T[0-9]+$ ]]; then task=$AGENT_TEAM_TASK slice=agent-team-$AGENT_TEAM_TASK.slice; fi
   mkdir -p "${LOCK%/*}"
+  trap run_exit EXIT
   # Read-write, so opening it never empties the holder's line a waiting run reads.
   exec {fd}<>"$LOCK"
   deadline=$((EPOCHSECONDS + wait_seconds))
@@ -331,8 +363,6 @@ cmd_run() {
   done
 
   tmp=$(mktemp -d)
-  # shellcheck disable=SC2064 # the path is fixed now
-  trap "rm -rf '$tmp'" EXIT
   trap stop_tree INT TERM HUP
   started=$tmp/started
   if [[ $(uname -s) == Linux ]]; then

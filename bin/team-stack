@@ -69,7 +69,11 @@
 #           so an instance is reserved beside the task's own stack), given the sum of the
 #           stack's mem_limits (--seed-bytes) for a stack it has no estimate of (0 admits, 75
 #           refuses with its reason, which the refusal says without its "no room for", anything
-#           else fails up).
+#           else fails up). The admission's id is admit's first line: up releases it (team-capacity
+#           release <id>) on every exit before its up -d --wait has returned 0, a TERM included,
+#           then writes it to the stack's record as admission, which stop and down release. A
+#           release that fails is one line on stderr, "team-stack: warning: could not release
+#           admission <id>: <reason>; it ends 10 minutes after it was made", and changes nothing else.
 #           With no room, it says once on stderr that it waits and why, re-checks every 30 seconds
 #           (the lock let go between checks) up to wait_minutes from that first refusal, then exits
 #           75 naming the failing check with its numbers.
@@ -94,13 +98,16 @@
 #           seed running while it runs, then done or failed. A seed that fails, in up or seed, is
 #           exit 1, "the seed command <seed> failed (exit <n>) for <name>; the next team-stack up
 #           or team-stack seed seeds it again".
-# stop      docker compose -p <project> stop: the containers stopped, their data kept.
+# stop      docker compose -p <project> stop: the containers stopped, their data kept; then the
+#           admission its record names released (as up's) and taken out of the record.
 # down      Saves the last 1 MiB of each log_services service's log (docker compose -p <project>
 #           logs --no-color --timestamps <service>) to
 #           <worktree>/<task_dir>/stack-logs/<project>-<service>.log, then runs docker compose -p
-#           <project> down -v --remove-orphans and docker volume rm on each anonymous volume its
-#           containers mounted that is still there, and fails naming each container, volume and
-#           network of the stack left, and removes the stack's record. A worktree with
+#           <project> down -v --remove-orphans, after which it releases the admission the
+#           stack's record names (as up's; the reaper and up's takedown do too), and docker
+#           volume rm on each anonymous volume its containers mounted that is still there, and
+#           fails naming each container, volume and network of the stack left, and removes the
+#           stack's record. A worktree with
 #           no stack is told so, exit 0 (as for stop). Without --instance, it first takes down
 #           the worktree's instances in name order, each as it takes down a stack, with a line
 #           each: the team stacks whose Compose project is <stack>-<anything> and whose worktree
@@ -158,7 +165,8 @@
 #
 # The stack record, ~/.local/state/agent-team/stacks/<Compose project>.json, holds what Docker
 # cannot tell of a team stack: {schema: "team-stack/1", seed: {state, at, commit, pid, exit},
-# last_busy}, each key optional. Its seed's state is pending (owed since an up started a new
+# admission: {id, at}, last_busy}, each key optional; admission is the one the stack was started
+# on, and when it was made. Its seed's state is pending (owed since an up started a new
 # stack), running (pid the team-stack running it), done, failed (exit the seed command's
 # status) or skipped (a new stack started with --no-seed); at is when it took that state, in
 # UTC, and commit the worktree's HEAD when the seed started (null when git cannot say, and for
@@ -218,7 +226,26 @@ GATE_WORKTREES=${TEAM_STACK_GATE_WORKTREES:-$HOME/.no-mistakes/worktrees}
 
 # Docker's answers go through files: a machine's hundreds of volumes are too long for an argument.
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+
+# The admission an up holds until its stack runs (room_check's, admit's first line), else empty:
+# the exit handler releases it, so an up that fails or is ended before its up -d --wait returns 0
+# frees its room at once; once the stack runs it is the stack's, named in its record.
+ADMISSION='' ADMISSION_AT=''
+
+# Release the admission <id> with team-capacity release; a release that fails is one line on
+# stderr, and never changes what the caller does: release_admission <id>
+release_admission() {
+  local out
+  out=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-capacity" release "$1" 2>&1 >/dev/null) ||
+    echo "${0##*/}: warning: could not release admission $1: $(grep . <<<"$out" | tail -n 1 || echo "team-capacity release failed"); it ends 10 minutes after it was made" >&2
+}
+
+# The one exit handler: the pending admission released, then the work directory removed.
+on_exit() {
+  if [[ -n $ADMISSION ]]; then release_admission "$ADMISSION"; fi
+  rm -rf "$WORK"
+}
+trap on_exit EXIT
 DOCKER_ERR=$WORK/stderr
 
 # Run a read-only docker call, its output in DOCKER_OUT; a failure dies naming the call and
@@ -660,6 +687,17 @@ claim_seed() {
   fi
 }
 
+# Release the admission the record of the stack STACK_NAME names, if any, for stop and teardown;
+# a release that fails is release_admission's warning. Prints the id it released or tried.
+release_recorded() {
+  local id
+  id=$(jq -rs 'if length == 1 then .[0] else null end | objects | .admission | objects | .id | strings
+    | select(test("^[0-9a-f]{12}$"))' "$STATE/stacks/$STACK_NAME.json" 2>/dev/null) || id=''
+  [[ -n $id ]] || return 0
+  release_admission "$id" >&2
+  echo "$id"
+}
+
 # Take the stack down: the log of each service in LOG_SERVICES that has a container saved (the
 # last 1 MiB, as <dir>/<prefix><project>-<service>.log; none when <dir> is empty), then docker
 # compose down with its volumes, then the anonymous volumes its containers mounted that are
@@ -678,6 +716,8 @@ teardown() {
   mapfile -t anonymous < <(jq -r '.anonymous[]' "$WORK/stack.json")
   docker compose -p "$STACK_NAME" down -v --remove-orphans >"$WORK/down.log" 2>&1 ||
     die "docker compose down of $STACK_NAME failed: $(last_reason "$WORK/down.log" "no reason given")"
+  # Its containers gone, its admission goes too.
+  release_recorded >/dev/null
   mapfile -t left < <(volumes_left "${anonymous[@]}")
   if ((${#left[@]})) && ! docker volume rm "${left[@]}" >/dev/null 2>"$DOCKER_ERR"; then
     echo "${0##*/}: docker volume rm failed: $(last_reason "$DOCKER_ERR" "no reason given")" >&2
@@ -787,9 +827,17 @@ room_check() {
   limits=$(jq '[.services[]?.mem_limit // 0 | tonumber] | add // 0 | floor' "$WORK/config.json") ||
     die "could not read the mem_limits of $STACK_NAME"
   ((limits == 0)) || args+=(--seed-bytes "$limits")
-  TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-capacity" "${args[@]}" >/dev/null 2>"$WORK/capacity.err" {LOCK_FD}>&- || rc=$?
+  TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-capacity" "${args[@]}" >"$WORK/capacity.out" 2>"$WORK/capacity.err" {LOCK_FD}>&- || rc=$?
   case $rc in
-    0) return 0 ;;
+    0)
+      ADMISSION=$(head -n 1 "$WORK/capacity.out")
+      ADMISSION_AT=$(date -u +%FT%TZ)
+      [[ $ADMISSION =~ ^[0-9a-f]{12}$ ]] || {
+        ADMISSION=''
+        die "team-capacity admit --kind stack:$PROJECT gave no admission id: $(grep -m1 . "$WORK/capacity.out" || echo "it printed nothing")"
+      }
+      return 0
+      ;;
     75)
       REASONS=("$(last_reason "$WORK/capacity.err" "team-capacity refused it")")
       REASONS=("${REASONS[0]#no room for }")
@@ -905,6 +953,12 @@ cmd_up() {
       --arg state "$([[ -n $seed ]] && echo pending || echo skipped)"
   fi
   wrapper up -d --wait >&2 || die "${WRAPPER#"$WT/"} up -d --wait failed for $STACK_NAME (exit $?)"
+  # The stack runs: its admission is its own, in its record, which stop and down release.
+  if [[ -n $ADMISSION ]]; then
+    record_update "$STACK_NAME" '.schema = "team-stack/1" | .admission = {id: $id, at: $at}' \
+      --arg id "$ADMISSION" --arg at "$ADMISSION_AT"
+    ADMISSION=''
+  fi
   if [[ -n $LOCK_FD ]]; then exec {LOCK_FD}>&-; fi
   level_cpus
   # Seed when the record says the seed is owed; another team-stack moving the record first
@@ -1268,6 +1322,8 @@ stack_command() {
     stop)
       docker compose -p "$STACK_NAME" stop >"$WORK/stop.log" 2>&1 ||
         die "docker compose stop of $STACK_NAME failed: $(last_reason "$WORK/stop.log" "no reason given")"
+      # Stopped, it reserves nothing: its admission released, and its record names none.
+      if [[ -n $(release_recorded) ]]; then record_update "$STACK_NAME" 'del(.admission)'; fi
       echo "${0##*/}: $STACK_NAME is stopped, its data kept"
       ;;
     down)

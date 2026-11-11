@@ -232,8 +232,8 @@ Who asks:
 | Caller | Kind | With no room |
 | - | - | - |
 | `team-worker` | `session:<role>`, once it has stopped the task's finished sessions, which `--freed` leaves out, since the reading still holds them; it logs the id on its `launch` as `admission`, and releases the admission on any end before that launch is logged | exits 75 with the reason, launching nothing; T0 and ops are never asked |
-| `team-stack up` | `stack:<project>`, once the disk floor holds | waits within `wait_minutes`, re-checking every 30 seconds, then exits 75 (`sops/docker.md`, "Admission") |
-| `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
+| `team-stack up` | `stack:<project>`, once the disk floor holds; it releases the admission on any end before its `up -d --wait` has returned 0, then keeps its id in the stack's record, which `stop` and `down` release (`sops/docker.md`, "Admission") | waits within `wait_minutes`, re-checking every 30 seconds, then exits 75 (`sops/docker.md`, "Admission") |
+| `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock; it releases the admission at every end of the run, success included | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
 
 An admission that fails for another reason (a malformed `capacity.json`, no reading to size the budget by) fails the caller with its reason.
 The coordinator logs a worker's 75 as `paused` with its line, and launches it again on `team-sweep`'s `level-launch` finding ("Shrinking and growing back"); a worker that gets a stack's 75 reports `PAUSED` with it.

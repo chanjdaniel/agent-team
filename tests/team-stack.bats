@@ -884,6 +884,7 @@ team-stack: no room for $PROJECT: stack:shop: the team is at level none: nothing
   checks=$(stub_calls df | wc -l)
   ((checks >= 2 && checks <= 3))
   assert_equal "$(waits_log | jq -c '[.admitted, .reasons]')" '[false,["stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level"]]'
+  assert_equal "$(admissions)" ""
   assert_equal "$(ups)" 0
 }
 
@@ -955,9 +956,11 @@ free"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
   assert_equal "$(docker_calls | tail -n "+$((before + 1))" | grep -cE '^info( |$)' || true)" 0
   assert_equal "$(admissions | wc -l)" 1
+  # Stopped, its admission is released, and its up is counted as new.
   run_bin -0 team-stack stop --worktree "$STACK_WORKTREE"
+  assert_equal "$(admissions)" ""
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT: stack:shop at full (90%): 0.1 GiB of 0.0 GiB reserved, a stack of shop needs 0.1 GiB; room comes when the team's work shrinks or the level rises"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: stack:shop at full (90%): 0.0 GiB of 0.0 GiB reserved, a stack of shop needs 0.1 GiB; room comes when the team's work shrinks or the level rises"
 }
 
 @test "an admission that fails for another reason fails up" {
@@ -1001,6 +1004,127 @@ free"
   # Every key, of the right types, is accepted.
   stack_settings '{"stack_cap": 6, "memory_floor_gib": 6, "disk_floor_gb": 30, "wait_minutes": 15, "idle_minutes": 30, "heartbeat_sweep": false, "heartbeat_janitor": false}'
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+}
+
+# An up's admission: released on every exit until its up -d --wait has returned 0, then the
+# stack's, named in its record, and released by stop and down.
+
+# The ids of the admissions team-capacity keeps, one per line.
+admission_ids() {
+  jq -r '.[].id' "$HOME/.local/state/agent-team/capacity/admitted.json" 2>/dev/null || true
+}
+
+# What team-capacity status --json reserves for stacks, one compact [part, kind, admission] per line.
+stack_reservations() {
+  "$REPO_ROOT/bin/team-capacity" status --json |
+    jq -c '.reserved.items[] | select((.kind // "") | startswith("stack:")) | [.part, .kind, .admission]'
+}
+
+@test "an up whose up -d --wait fails releases its admission at once, so nothing is reserved for it (E-admission-outlives-up)" {
+  open_task T22
+  unhealthy_wrapper
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "${stderr##*$'\n'}" "team-stack: scripts/compose.sh up -d --wait failed for $PROJECT (exit 1)"
+  [[ -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
+  assert_equal "$(admissions)" ""
+  assert_equal "$(stack_reservations)" ""
+  assert_equal "$(record 'has("admission")')" false
+}
+
+@test "an up killed with TERM while its up -d --wait runs releases its admission" {
+  open_task T22
+  # The wrapper's up says it started, with its pid, and waits.
+  mv "$STACK_WORKTREE/scripts/compose.sh" "$STACK_WORKTREE/scripts/compose-real.sh"
+  cat >"$STACK_WORKTREE/scripts/compose.sh" <<SH
+#!/usr/bin/env bash
+if [[ \${1:-} == up ]]; then echo \$\$ >"$BATS_TEST_TMPDIR/upping"; exec sleep 60; fi
+exec "\$(dirname "\$0")/compose-real.sh" "\$@"
+SH
+  chmod +x "$STACK_WORKTREE/scripts/compose.sh"
+  "$REPO_ROOT/bin/team-stack" up --worktree "$STACK_WORKTREE" >"$BATS_TEST_TMPDIR/out" 2>"$BATS_TEST_TMPDIR/err" 3>&- &
+  local up=$! i status=0
+  for ((i = 0; i < 200; i++)); do
+    [[ ! -s $BATS_TEST_TMPDIR/upping ]] || break
+    sleep 0.1
+  done
+  [[ -s $BATS_TEST_TMPDIR/upping ]]
+  assert_equal "$(admissions)" "[\"stack:shop\",\"T22\",$((64 * MIB))]"
+  kill -TERM "$up"
+  wait "$up" || status=$?
+  kill "$(cat "$BATS_TEST_TMPDIR/upping")" 2>/dev/null || true
+  ((status != 0))
+  assert_equal "$(admissions)" ""
+  assert_equal "$(stack_reservations)" ""
+}
+
+@test "a successful up keeps its admission in the stack's record, a seed that fails after it included, and stop and down release it" {
+  open_task T22
+  failing_seed
+  run_bin -1 team-stack up --worktree "$STACK_WORKTREE"
+  local id
+  id=$(admission_ids)
+  [[ $id =~ ^[0-9a-f]{12}$ ]]
+  assert_equal "$(record .admission.id -r)" "$id"
+  [[ $(record .admission.at -r) =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  assert_equal "$(record .seed.state -r)" failed
+  assert_equal "$(stack_reservations)" "[\"admissions\",\"stack:shop\",\"$id\"]"
+  # stop releases it, and its record no longer names it.
+  run_bin -0 --separate-stderr team-stack stop --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT is stopped, its data kept"
+  assert_equal "$stderr" ""
+  assert_equal "$(admission_ids)" ""
+  assert_equal "$(record '[has("admission"), .seed.state]')" '[false,"failed"]'
+  # The up of the stopped stack is admitted again, and down releases that admission.
+  fixed_seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  id=$(admission_ids)
+  [[ $id =~ ^[0-9a-f]{12}$ ]]
+  assert_equal "$(record .admission.id -r)" "$id"
+  run_bin -0 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" ""
+  assert_equal "$(admission_ids)" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/$PROJECT.json ]]
+  # A re-up of the running stack asks for no admission and keeps the record's.
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  id=$(admission_ids)
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$(admission_ids)" "$id"
+  assert_equal "$(record .admission.id -r)" "$id"
+}
+
+@test "a release that fails in stop or down is a warning naming team-stack, and the stop or down goes on" {
+  open_task T22
+  local capacity=$HOME/.local/state/agent-team/capacity id
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  id=$(admission_ids)
+  chmod a-w "$capacity"
+  run_bin -0 --separate-stderr team-stack stop --worktree "$STACK_WORKTREE"
+  chmod u+w "$capacity"
+  assert_equal "$output" "team-stack: $PROJECT is stopped, its data kept"
+  [[ $stderr == "team-stack: warning: could not release admission $id: "*"Permission denied; it ends 10 minutes after it was made" ]]
+  assert_equal "$(grep -c . <<<"$stderr")" 1
+  assert_equal "$(admission_ids)" "$id"
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  id=$(admission_ids | tail -n 1)
+  chmod a-w "$capacity"
+  run_bin -0 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
+  chmod u+w "$capacity"
+  assert_equal "$output" "team-stack: $PROJECT is removed, its logs in $STACK_WORKTREE/.scratch/task/stack-logs"
+  [[ $stderr == "team-stack: warning: could not release admission $id: "*"Permission denied; it ends 10 minutes after it was made" ]]
+  assert_equal "$(stack_left)" ""
+}
+
+@test "up's takedown of another task's stack releases that stack's admission" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  local old
+  old=$(admission_ids)
+  task_event T22 closed
+  open_task T23
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(admissions)" "[\"stack:shop\",\"T23\",$((64 * MIB))]"
+  [[ $(admission_ids) != "$old" ]]
+  assert_equal "$(record .admission.id -r)" "$(admission_ids)"
 }
 
 # session <cwd> <status> [<kind>]: one live session as claude agents --json lists it.

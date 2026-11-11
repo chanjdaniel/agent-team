@@ -90,11 +90,12 @@ Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command
 
 ## The stack record
 
-Each team stack has one record of what Docker cannot tell, `~/.local/state/agent-team/stacks/<Compose project>.json`: `{"schema": "team-stack/1", "seed": {...}, "last_busy": ...}`, each key optional.
+Each team stack has one record of what Docker cannot tell, `~/.local/state/agent-team/stacks/<Compose project>.json`: `{"schema": "team-stack/1", "seed": {...}, "admission": {...}, "last_busy": ...}`, each key optional.
 Running and stopped stay Docker's, and ownership stays in the labels.
 
 - The seed's `state` is `pending`, `running`, `done`, `failed` or `skipped`, with `at`, when it took that state (UTC), and `commit`, the worktree's `HEAD` when the seed started (null when git cannot say, and for `pending` and `skipped`).
   A `running` seed also has `pid`, the `team-stack` running it, and a `failed` one `exit`, the seed command's status.
+- `admission` is `{id, at}`, the admission the stack was started on ("Admission"), and when it was made.
 - A record with no `seed` (every file from before the record), a missing one for a stack that exists, and a file that is not a JSON object read as `unknown`, and are left alone, so a stack that holds Daniel's or a builder's data is never seeded on a guess.
 - Only `team-stack` writes it, each write under an exclusive `flock` on `~/.local/state/agent-team/stacks/records.lock`, a temporary file moved into place, so the sweep's `last_busy` and an `up`'s seed never overwrite each other.
 
@@ -151,6 +152,12 @@ A browser-driving agent gets its own the same way: `~/agent-team/bin/team-stack 
   - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`; on macOS the home directory's, below) at least `disk_floor_gb` GB, `team-stack`'s own;
   - **budget**: this checkout's `team-capacity admit --kind stack:<registered project> --task T<n>` admits it to the level's memory budget beside what the team's work reserves, given the sum of the stack's `mem_limit`s (`--seed-bytes`; a Conventioner stack is about 2.75 GiB) for a stack it has no estimate of yet: 0 admits, 75 refuses with its reason, anything else fails `up`.
   A disk short of room never asks `team-capacity`, so no admission is kept for a stack that does not start.
+- The admission's id is `admit`'s first line, and `up` releases it (`team-capacity release <id>`) on every exit before the wrapper's `up -d --wait` has returned 0, a TERM included, so a stack that fails to start frees its room at once; only a KILL leaves it to its 10 minutes.
+  Once the stack runs, the id is written to its record as `admission` ("The stack record"), so a seed that fails afterwards leaves it reserved for the running stack.
+- `stop` (`team-level`'s stop of an idle stack included, which runs it) and `down` release the admission the record names, so a stack stopped or removed within its 10 minutes frees its room at once; so do the reaper's removal of a team stack, `up`'s takedown of another task's stack and the takedown of instances.
+  `stop` then takes `admission` out of the record.
+  A release that fails is one line on stderr, "team-stack: warning: could not release admission <id>: <reason>; it ends 10 minutes after it was made", and the stop or down goes on.
+  The sweep's stop releases nothing, since it stops only a stack idle for `idle_minutes`, long past its admission's 10 minutes.
 - With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes` from that first refusal, and then exits 75 naming the failing check with its numbers, for example `team-stack: no room for conventioner-1: stack:conventioner at minor (30%): 8.9 GiB of 9.2 GiB reserved, a stack of conventioner needs 2.8 GiB; room comes when the team's work shrinks or the level rises`, or `team-stack: no room for conventioner-1: stack:conventioner: the team is at level none: nothing starts; room comes when Daniel raises the level`.
   An agent that gets 75 reports `PAUSED` with that line rather than fighting for room.
 - Gate runs never call `team-stack`, so they are never held back; a running gate stack is reserved in the budget all the same, and their own turn-taking is Conventioner's end-to-end lock.
