@@ -354,7 +354,7 @@ probe_denies() {
 @test "every writer of a push kind calls ledger_push" {
   local contract=$REPO_ROOT/bin/lib/ledger-contract.json writer missing=()
   assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.push == true) | .key] | sort | join(" ")' "$contract")" \
-    "answered closed merge-approved merge-preapproval-withdrawn merge-preapproved merge-standing merge-standing-withdrawn merged plan-approved ran retro-schedule"
+    "answered closed merge-approved merge-preapproval-withdrawn merge-preapproved merge-standing merge-standing-withdrawn merged plan-approval-withdrawn plan-approved ran retro-schedule"
   for writer in $(jq -r '[.kinds[] | select(.push == true) | .writer] | flatten | unique[]' "$contract"); do
     grep -qE '^[[:space:]]*ledger_push$' "$REPO_ROOT/bin/$writer" || missing+=("$writer")
   done

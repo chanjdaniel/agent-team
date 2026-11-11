@@ -213,6 +213,70 @@ merged"
   assert_equal "$(after_opened | wc -l)" "4"
 }
 
+@test "a plan approval meets the contract: by Daniel, with their ask and message, or the coordinator, with neither; a withdrawal names a message" {
+  opened_task T7
+  local at='"ts":"2026-11-11T02:00:00Z","task":"T7"'
+  local plan='"plan":{"tasks/T7/plan.md":"ab12"},"scope":["src/"]'
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"Daniel\",\"ask\":\"plan\",\"discord_message\":\"1563\",$plan}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"coordinator\",$plan}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"plan-approval-withdrawn\",\"discord_message\":\"1564\"}"
+  assert_equal "$status" "0"
+  assert_equal "$(after_opened | jq -r .event)" "plan-approved
+plan-approved
+plan-approval-withdrawn"
+
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"daniel\"}"
+  assert_contains "$output" "by must be one of Daniel, coordinator"
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"coordinator\",\"ask\":\"plan\",\"discord_message\":\"1563\"}"
+  assert_contains "$output" "ask"
+  assert_contains "$output" "discord_message"
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"coordinator\",\"plan\":[\"tasks/T7/plan.md\"],\"scope\":\"src/\"}"
+  assert_contains "$output" "plan must be an object, got a list; scope must be a list, got a string"
+  append_as team-log "{$at,\"event\":\"plan-approval-withdrawn\"}"
+  assert_contains "$output" "plan-approval-withdrawn needs discord_message"
+  append_as team-merge "{$at,\"event\":\"plan-approval-withdrawn\",\"discord_message\":\"1564\"}"
+  assert_contains "$output" "plan-approval-withdrawn events are written by team-log, not team-merge"
+  assert_equal "$(after_opened | wc -l)" "3"
+}
+
+# plan_approval and the phase over the events read from stdin, one JSON object per line, each of
+# T1, from an opened feature task, a minute apart: approval_of
+approval_of() {
+  jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger";
+    [{event: "opened", path: "feature", project: "proj", worktree: "/w/1"}] + . | to_entries
+    | map(.key as $n | {ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1"} + .value)
+    | [plan_approval, phase]'
+}
+
+@test "plan_approval reads the latest approval or withdrawal, an approval with no plan as the coordinator's and legacy, and the phase builds only while it is approved" {
+  local daniel='{"event": "plan-approved", "by": "Daniel", "ask": "plan", "discord_message": "1563", "plan": {"tasks/T1/plan.md": "ab12"}, "scope": ["src/"]}'
+  local coordinator='{"event": "plan-approved", "by": "coordinator", "plan": {"tasks/T1/plan.md": "cd34"}}'
+  local legacy='{"event": "plan-approved", "by": "Daniel", "discord_message": "1565"}'
+  local withdrawn='{"event": "plan-approval-withdrawn", "discord_message": "1564"}'
+  local launch='{"event": "launch", "role": "builder", "session": "b1"}'
+  assert_equal "$(approval_of </dev/null)" '[null,"planning"]'
+  assert_equal "$(approval_of <<<"$daniel")" \
+    '[{"state":"approved","by":"Daniel","ask":"plan","discord_message":"1563","plan":{"tasks/T1/plan.md":"ab12"},"scope":["src/"],"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
+  assert_equal "$(approval_of <<<"$coordinator")" \
+    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":null,"plan":{"tasks/T1/plan.md":"cd34"},"scope":null,"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
+  # A line from before T276 has no plan: never Daniel's read-back word, whatever its by.
+  assert_equal "$(approval_of <<<"$legacy")" \
+    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":"1565","plan":null,"scope":null,"ts":"2026-11-01T00:01:00Z","legacy":true},"building"]'
+  # A withdrawal takes the building task back to planning, where no builder launch or ticket-done
+  # moves it, until the plan is approved again.
+  assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" | approval_of)" \
+    '[{"state":"withdrawn","by":null,"ask":null,"discord_message":"1564","plan":null,"scope":null,"ts":"2026-11-01T00:02:00Z","legacy":false},"planning"]'
+  assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" "$launch" '{"event": "ticket-done", "ticket": "01", "commits": ["a1b2c3d"]}' | approval_of | jq -c '[.[0].state, .[1]]')" \
+    '["withdrawn","planning"]'
+  assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" "$coordinator" | approval_of | jq -c '[.[0].state, .[0].by, .[1]]')" \
+    '["approved","coordinator","building"]'
+  # A withdrawal once the PR is up leaves the review phase as it is.
+  assert_equal "$(printf '%s\n' "$daniel" "$launch" '{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d"}' "$withdrawn" \
+    | approval_of | jq -c '[.[0].state, .[1]]')" '["withdrawn","in-review"]'
+}
+
 @test "a standing merge word and its withdrawal meet the contract, each naming a project, a message and its channel" {
   opened_task T7
   local at='"ts":"2026-11-01T02:00:00Z","task":"T7"' said='"discord_message":"1566","discord_channel":"1562"'

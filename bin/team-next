@@ -25,7 +25,10 @@
 # hold ("T<n> is on Daniel's hold since <since> (<id>): <reason>; only Daniel's word lifts it:
 # ..."), and has no ask to Daniel that nothing settled and no launch went past ("T<n> has an
 # unanswered ask, <id>, since <ts>"); it takes no --past-ask, so a message refused for an ask is
-# logged with team-log --from-message, as the manual says.
+# logged with team-log --from-message, as the manual says. Before that guard, and for every
+# hand-off below, a task whose plan approval stands withdrawn (plan_approval in bin/lib/ledger.jq)
+# is refused naming it ("T<n>'s plan approval was withdrawn at <ts> in Discord message <id>, so no
+# <hand-off> hand-off; approve the plan again first (step 3 of the manual)").
 # Then it logs, through team-log, each of the message's events that the ledger does not already
 # hold since the sending worker's launch (the session its events name, else the task's latest
 # launch): a ticket-done of the same ticket, a done of the same session and report (an ops
@@ -285,6 +288,15 @@ case $handoff in
   verdict) if [[ $kind == "DONE findings" ]]; then launch_role=builder; else launch_role=''; fi ;;
   *) launch_role='' ;;
 esac
+# A withdrawn plan approval stops the build until the plan is approved again, named before the
+# launch guard, which reads a feature task's withdrawn plan as no plan: plan_withdrawn_refusal
+plan_withdrawn_refusal() {
+  local withdrawn
+  withdrawn=$(ledger_jq 'plan_approval | select(.state == "withdrawn") | "\(.ts) in Discord message \(.discord_message)"' -r <<<"$events")
+  [[ -z $withdrawn ]] ||
+    die "$task's plan approval was withdrawn at $withdrawn, so no $handoff hand-off; approve the plan again first (step 3 of the manual)"
+}
+[[ -z $launch_role ]] || plan_withdrawn_refusal
 refusal=''
 json_vars --ledger refusal='[launch_refusal($task; $role; [])] | join("; ")' -- --arg task "$task" --arg role "$launch_role" <<<"$events"
 [[ -z $refusal ]] || die "$refusal"
@@ -369,7 +381,8 @@ if [[ $handoff == none ]]; then
   exit 0
 fi
 
-jq -e 'any(.[]; .event == "plan-approved")' <<<"$events" >/dev/null ||
+plan_withdrawn_refusal
+ledger_jq 'plan_approval != null' -e <<<"$events" >/dev/null ||
   die "$task has no plan-approved, so no $handoff hand-off; approve the plan first (step 3 of the manual)"
 
 # "3, 5 and 6" from a JSON list.

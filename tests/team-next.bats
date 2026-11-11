@@ -288,6 +288,22 @@ launched T7-builder c0000001"
   refused "T7 is closed" T7 -- "T7 DONE 01 $sha done"
 }
 
+@test "refused with nothing changed while the plan approval is withdrawn, naming the withdrawal, until the plan is approved again" {
+  event plan-approval-withdrawn '{discord_message: "1563000000000000047"}'
+  local named="T7's plan approval was withdrawn at 2026-11-01T10:00:00Z in Discord message 1563000000000000047"
+  refused "team-next: $named, so no ticket hand-off; approve the plan again first (step 3 of the manual)" T7 -- "T7 DONE 01 $sha done"
+  refused "team-next: $named, so no review hand-off; approve the plan again first (step 3 of the manual)" T7 -- "T7 DONE review-ready $sha"
+  # A message that launches no one meets the same refusal once it would hand off.
+  launched r0000001 brief-review '[]' reviewer
+  refused "team-next: $named, so no verdict hand-off; approve the plan again first (step 3 of the manual)" T7 --from r0000001 -- \
+    "T7 DONE pass $sha findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none"
+  # A message that hands nothing off is logged as before.
+  run_bin -0 team-next T7 --from b0000001 -- "T7 QUESTION which way? | options: a, b"
+  event plan-approved '{by: "coordinator", plan: {"tasks/T7/plan.md": "ab12"}}'
+  run_bin -0 team-next T7 -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "launched T7-builder c0000001"
+}
+
 # The manual: a message team-next refuses for an open ask is logged with team-log --from-message,
 # and team-next runs on it once the ask is settled, logging nothing twice.
 @test "a DONE logged by team-log --from-message while an ask was open is handed off once it is answered, logged once" {

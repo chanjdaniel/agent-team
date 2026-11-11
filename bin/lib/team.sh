@@ -10,7 +10,7 @@
 # TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append, ledger_push,
-# task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
+# task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, plan_task_dir, plan_files, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, claude_cache_dir, tool_dirs,
 # team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, memory_setting, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
@@ -399,6 +399,42 @@ machine_level() {
 task_worktrees() {
   [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||
     ledger_jq 'open_worktrees(inputs | select(.task == $task); $home)' -nc --arg task "$1" "$TEAM_HOME/ledger.jsonl"
+}
+
+# The task directory of a task's open worktree in its first project (its opened's project; the
+# latest of that project's open worktrees, task_worktrees), as <worktree>/<task_dir>, with
+# <task_dir>, the registry's, after a tab; nothing when the task has no opened, or no open worktree
+# there that is a directory on this machine. Fails when the registry has no task_dir for that
+# project: plan_task_dir T<n>
+plan_task_dir() {
+  local project worktree dir
+  project=$(task_event_array "$1" | jq -r 'first(.[] | select(.event == "opened") | .project | strings) // empty')
+  [[ -n $project ]] || return 0
+  worktree=$(task_worktrees "$1" | jq -r --arg p "$project" 'select(.project == $p) | .worktree | strings' | tail -n 1)
+  [[ -n $worktree && -d $worktree ]] || return 0
+  dir=$(team_project "$project" task_dir) || return 1
+  dir=${dir%/}
+  printf '%s\t%s\n' "$worktree/$dir" "$dir"
+}
+
+# The files of a task's plan, as one compact JSON object of each file's path to its sha256, in
+# this order, each one only when it exists: tasks/T<n>/plan.md in the team home, by that path, and
+# spec.md and scope.txt in its task directory (plan_task_dir), by their paths in the repository
+# (<task_dir>/spec.md). team-log records them on a plan-approved, and team-merge compares them at
+# the merge, so both read the same files the same way. Fails as plan_task_dir does: plan_files T<n>
+plan_files() {
+  local task=$1 found file
+  local -a pairs=()
+  [[ ! -f $TEAM_HOME/tasks/$task/plan.md ]] ||
+    pairs+=("tasks/$task/plan.md" "$(sha256sum -- "$TEAM_HOME/tasks/$task/plan.md" | cut -d' ' -f1)")
+  found=$(plan_task_dir "$task") || return 1
+  if [[ -n $found ]]; then
+    for file in spec.md scope.txt; do
+      [[ ! -f ${found%%$'\t'*}/$file ]] ||
+        pairs+=("${found#*$'\t'}/$file" "$(sha256sum -- "${found%%$'\t'*}/$file" | cut -d' ' -f1)")
+    done
+  fi
+  jq -nc '$ARGS.positional as $p | reduce range(0; $p | length; 2) as $i ({}; .[$p[$i]] = $p[$i + 1])' --args "${pairs[@]}"
 }
 
 # Why team-run-approved would never run the script at <path>, a file, for <task>, or fail when it

@@ -349,7 +349,7 @@ def lifecycle_statuses: ["unknown", "legacy", "open", "closed", "closed-own-retr
 
 # The effects lifecycle_step implements, each named by a kind of the table.
 def lifecycle_effects:
-  ["open", "close", "approve", "launch", "build", "done", "pr", "review", "rewrite", "merge", "ask",
+  ["open", "close", "approve", "withdraw", "launch", "build", "done", "pr", "review", "rewrite", "merge", "ask",
    "settle", "park", "resume", "stowing", "stowed", "stow-failed"];
 
 # The cause of a park event (held, blocked, waiting, paused) that carries none, as an old line
@@ -398,6 +398,8 @@ def park_role:
 #   phase   the work phase, one of the table's phases: planning before an opened, then the table's
 #           start for its path (planning for a path it lacks), moved by lifecycle_step's effects.
 #   since   the ts of the event that set the phase.
+#   approval null before a plan-approved, then approved, or withdrawn after a plan-approval-withdrawn
+#           until the next plan-approved: while it is withdrawn nothing moves the phase to building.
 #   prs     the task's PRs, one per repo, in the order of their latest pr events, as {url, repo,
 #           head, number, merged, verdict}: a later pr in the repo replaces its PR (keeping merged
 #           for the same url), a history-rewritten moves heads (from its old_head, or every PR's
@@ -429,7 +431,7 @@ def park_role:
 #   counts  each park kind's events so far, for the next park's id.
 #   seen    the events folded so far, the next event's index.
 def lifecycle_start:
-  {status: "unknown", path: null, opened_at: null, phase: "planning", since: null, prs: [], reviews: [], parks: [],
+  {status: "unknown", path: null, opened_at: null, phase: "planning", since: null, approval: null, prs: [], reviews: [], parks: [],
    asks: [], stow: null, counts: {}, seen: 0};
 
 # Whether the merged event $e names the PR (the input, one of the state's or task_prs' PRs) among
@@ -495,9 +497,10 @@ def lifecycle_review_phase($ts): lifecycle_review_phase($ts; ["building", "in-re
 
 # The state after the event $e: its status (legacy once it has an event), then the effect the
 # table gives its kind: open (an opened of an unknown or legacy task: open, its path, the start
-# phase), close, approve (planning to building), launch (a builder's moves planning, merged-part
-# or merged to building; every launch ends the parks a launch ends, and the stow, and marks passed
-# each ask its past_ask names and each standing wait on one), build (a
+# phase), close, approve (approval approved, planning to building), withdraw (approval withdrawn,
+# building to planning), launch (a builder's moves planning, merged-part or merged to building
+# unless the approval is withdrawn; every launch ends the parks a launch ends, and the stow, and
+# marks passed each ask its past_ask names and each standing wait on one), build (a
 # ticket-done: the same moves), done (a builder's whose report starts review-ready or merged moves
 # building to in-review), pr, review and rewrite (the PRs, then the review phase: a pr's from any
 # phase, a review's or a rewrite's from building, in-review or awaiting-merge, a rewrite's only
@@ -517,15 +520,20 @@ def lifecycle_step($e):
       else . end
     elif $effect == "close" then .status = "closed"
     elif $effect == "approve" then
-      if .phase == "planning" then lifecycle_move("building"; $e.ts) else . end
+      .approval = "approved"
+      | if .phase == "planning" then lifecycle_move("building"; $e.ts) else . end
+    elif $effect == "withdraw" then
+      .approval = "withdrawn"
+      | if .phase == "building" then lifecycle_move("planning"; $e.ts) else . end
     elif $effect == "launch" then
       ($e.past_ask // []) as $past
-      | (if $e.role == "builder" and IN(.phase; "planning", "merged-part", "merged") then lifecycle_move("building"; $e.ts) else . end)
+      | (if $e.role == "builder" and IN(.phase; "planning", "merged-part", "merged") and .approval != "withdrawn"
+         then lifecycle_move("building"; $e.ts) else . end)
       | .asks |= map(if IN(.id; $past[]) then .passed = true else . end)
       | .parks |= map(select(lifecycle_launch_ends($e) | not) | if .ask != null and IN(.ask; $past[]) then .passed = true else . end)
       | .stow = null
     elif $effect == "build" then
-      if IN(.phase; "planning", "merged-part", "merged") then lifecycle_move("building"; $e.ts) else . end
+      if IN(.phase; "planning", "merged-part", "merged") and .approval != "withdrawn" then lifecycle_move("building"; $e.ts) else . end
     elif $effect == "done" then
       if $e.role == "builder" and .phase == "building" and ($e.report // "" | tostring | test("^(review-ready|merged) "))
       then lifecycle_move("in-review"; $e.ts) else . end
@@ -587,7 +595,7 @@ def lifecycle: reduce .[] as $e (lifecycle_start; lifecycle_step($e));
 #   3. for every role but ops, an open ask neither $past nor an earlier launch's past_ask names,
 #      and each $past id that is no open ask;
 #   4. a builder or reviewer of a feature task still planning (its work phase planning: no
-#      plan-approved, builder launch or ticket-done yet).
+#      plan-approved, builder launch or ticket-done yet, or its plan approval withdrawn).
 def lifecycle_launch_refusal($task; $role; $past; $hint):
   if .status == "closed" then "\($task) is closed"
   elif .status != "open" then "\($task) is not open: the ledger has no opened event for it"
@@ -942,6 +950,21 @@ def live_session_ids($sessions):
 # The latest asked of id $id among the task's events, or null: the ask a merge-preapproved of
 # that id answers.
 def latest_asked($id): [.[] | select(.event == "asked" and .id == $id)] | last;
+
+# The task's plan approval, from its latest plan-approved or plan-approval-withdrawn, or null when
+# it has neither, as {state, by, ask, discord_message, plan, scope, ts, legacy}: state approved
+# or withdrawn; by, ask, plan and scope the approval's (null on a withdrawal), discord_message and
+# ts the latest event's; legacy true for an approval logged before T276, with no plan, which is
+# read as the coordinator's whatever its by says, so no old line is Daniel's read-back word.
+def plan_approval:
+  [.[] | select(.event == "plan-approved" or .event == "plan-approval-withdrawn")] | last
+  | if . == null then null
+    elif .event == "plan-approval-withdrawn" then
+      {state: "withdrawn", by: null, ask: null, discord_message, plan: null, scope: null, ts, legacy: false}
+    else
+      (.plan == null) as $legacy
+      | {state: "approved", by: (if $legacy then "coordinator" else .by end), ask: (.ask // null),
+         discord_message: (.discord_message // null), plan: (.plan // null), scope: (.scope // null), ts, legacy: $legacy} end;
 
 # The task's latest merge-preapproved of $project, or null, with withdrawn: the first
 # merge-preapproval-withdrawn of $project logged after it, or null while it stands.

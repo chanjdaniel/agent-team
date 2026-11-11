@@ -297,6 +297,17 @@ $WORKER_INSTRUCTIONS"
   grep -qF 'Messages sent while no coordinator listened are never delivered to you, only readable: on a resume, read `#coordinator` and each open task'"'"'s thread back to your own last message' "$manual"
 }
 
+@test "the manual logs each plan approval as who gave it, Daniel's with their ask and message, and the withdrawal that stops the build" {
+  local approve
+  approve=$(grep '^3\. \*\*Approve\.\*\*' "$manual")
+  grep -qF 'approve a small plan yourself with `team-log T<n> plan-approved by=coordinator`' <<<"$approve"
+  grep -qF 'the ask listing `scope.txt` and saying the approval is the merge word' <<<"$approve"
+  grep -qF 'log their yes with `team-log T<n> plan-approved by=Daniel ask=<id> discord_message=<id>`, which records the plan'"'"'s files and scope itself' <<<"$approve"
+  grep -qF 'for agent-team only Daniel'"'"'s is a merge word, yours starting the build alone' <<<"$approve"
+  grep -qF 'their withdrawal, `team-log T<n> plan-approval-withdrawn discord_message=<id>`, stops the build until the plan is approved again.' <<<"$approve"
+  ! grep -qF 'merge-preapproved' <<<"$approve"
+}
+
 @test "the manual's plan ask attaches the ticket graph, and a building task's graph is remade when stale and posted" {
   local approve build
   approve=$(grep '^3\. \*\*Approve\.\*\*' "$manual")
@@ -304,7 +315,6 @@ $WORKER_INSTRUCTIONS"
   grep -qF '`team-tickets T<n> --graph`' <<<"$approve"
   grep -qF '`team-ask T<n> plan --file <question> --attach <png>`' <<<"$approve"
   grep -qF 'goes without the image when `--graph` made none' <<<"$approve"
-  grep -qF 'for a project that opts in, the ask lists `scope.txt` and offers a plan-time merge approval' <<<"$approve"
   grep -qF '`team-tickets T<n> --graph`' <<<"$build"
   grep -qF '`team-state` says `graph stale`' <<<"$build"
   grep -qF '`team-post T<n> --file <text> --attach <png>`' <<<"$build"
@@ -312,8 +322,6 @@ $WORKER_INSTRUCTIONS"
 
 @test "the manual says the plan-time merge: the rule, the offer and its log, the merge with no ask, the refusal, the withdrawal and a failed post" {
   grep -qF 'A PR merges only on Daniel'"'"'s recorded word: per head; at plan time, for a project that opts in (`merge_with_plan`); or on their standing word; the last two unasked, never for agent-team or on' "$manual"
-  grep -qF 'for a project that opts in, the ask lists `scope.txt` and offers a plan-time merge approval' "$manual"
-  grep -qF '`team-log T<n> merge-preapproved project=<p> ask=<id> discord_message=<id> scope=<scope.txt as a JSON list>`' "$manual"
   grep -qF 'or when `team-state` says `merge pre-approved` or `standing word covers it`, run `team-merge T<n>` with no ask' "$manual"
   grep -qF 'on a refusal of the plan-time or standing word, ask Daniel for the per-head word with `team-ask`, its text naming the PR'"'"'s URL' "$manual"
   grep -qF 'a plan-time or standing word holds for any head whose review passed until Daniel withdraws it;' "$manual"
@@ -568,7 +576,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 26410 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 26540 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -600,10 +608,11 @@ $WORKER_INSTRUCTIONS"
   # a hold, an open ask unless --past-ask, and a feature task's build before its plan, 26280
   # once the plan ask and the build step named the ticket graph and its PNG, 26290 once the
   # block on another task named on=T<m> and the BLOCKED row the launch of its role that clears it,
-  # and 26410 once the review step named the gate parks a builder approves itself, in the review
-  # rules and in DONE gate's approved=).
+  # 26410 once the review step named the gate parks a builder approves itself, in the review
+  # rules and in DONE gate's approved=, and 26540 once the plan step named how Daniel's and the
+  # coordinator's plan approvals are logged, which is a merge word, and the withdrawal).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 26410))
+  (($(wc -c <"$manual") <= 26540))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

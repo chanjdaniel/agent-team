@@ -31,7 +31,19 @@
 # answered that names a discord_message, whatever its value, since only team-answer logs one,
 # having read the message and checked it is Daniel's (an answered with no message, given at the
 # terminal, is logged), and an answered that names an item, the waiting list's number, since only
-# team-answer --item logs one, having checked the message names it. A
+# team-answer --item logs one, having checked the message names it. A plan-approved
+# (by=Daniel ask=<id> discord_message=<id>, or by=coordinator) records plan, each of the plan's
+# files that exists (tasks/T<n>/plan.md, and the task directory's spec.md and scope.txt; plan_files
+# in bin/lib/team.sh) to its sha256, and scope, scope.txt's non-blank lines, when it exists; it is
+# refused for a by but Daniel or coordinator; Daniel's with no ask or discord_message, an ask the
+# task never logged, or a message that is no Discord id or was sent before the latest asked of
+# that id; the coordinator's with either; a plan or scope given, which team-log records itself; a
+# closed task; no tasks/T<n>/plan.md; a scope.txt that lists no path or holds a line that is no
+# clean repository path (as a merge-preapproved's scope, below); and a second approval whose by and
+# plan equal the one standing (plan_approval in bin/lib/ledger.jq). A plan-approval-withdrawn
+# (discord_message=<id>, Daniel's message, which team-log takes as named, since a withdrawal only
+# stops work) is refused for a closed task, a message that is no Discord id, and when no approval
+# stands. A
 # merge-preapproved is refused when its project is not one of the task's opened or worktree-added
 # events, is the team's own (own_project, whatever the registry says), or does not opt in now
 # (team-project's merge_with_plan); when its ask names no asked of the task; when its
@@ -81,7 +93,7 @@
 # A retro-change is refused when its retro names a
 # task with no opened event of path retro, or a retro with no answered of id retro.
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
-# merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
+# plan-approval-withdrawn, merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
 # merge-standing-withdrawn, retro-schedule) is committed and pushed to the team home's origin
 # before team-log ends (ledger_push in bin/lib/team.sh), in either form; a push that fails, or
 # one not tried while the team holds offline, is one line on stderr, and the exit stays 0.
@@ -347,6 +359,63 @@ if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
     ((sent >= $(date -ud "${logged% *}" +%s))) ||
       die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the ${logged#* } event that first logged head ${seen[head]} at ${logged% *}, so it is not Daniel's word on that head"
   fi
+fi
+
+# A plan approval says who approved which plan: Daniel, answering an ask the task logged in a
+# message sent no earlier than it, or the coordinator, with neither; team-log records the plan's
+# files (plan_files in bin/lib/team.sh) and scope.txt's lines itself, refuses an approval of a
+# closed task or of no plan, and a second one by the same approver of the same files. A withdrawal
+# needs an approval standing (plan_approval in bin/lib/ledger.jq).
+if [[ $event == plan-approved || $event == plan-approval-withdrawn ]]; then
+  task_events_once
+  [[ $(ledger_jq 'task_status' -r <<<"$TASK_EVENTS") != closed ]] ||
+    die "$task is closed, so it takes no $event"
+fi
+if [[ $event == plan-approval-withdrawn ]]; then
+  message=${seen[discord_message]:-}
+  [[ ! $message =~ ^[0-9]+$ || $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
+  ledger_jq 'plan_approval | . != null and .state == "approved"' -e <<<"$TASK_EVENTS" >/dev/null ||
+    die "$task has no plan approval standing, so plan-approval-withdrawn withdraws nothing"
+fi
+if [[ $event == plan-approved ]]; then
+  for key in plan scope; do
+    [[ -z ${seen[$key]:-} ]] ||
+      die "$key is recorded by team-log itself, from the plan's files and scope.txt: give by=Daniel ask=<id> discord_message=<id>, or by=coordinator"
+  done
+  by=${seen[by]:-}
+  [[ $by == Daniel || $by == coordinator ]] ||
+    die "by names who approved the plan, Daniel or coordinator, got '$by'"
+  if [[ $by == Daniel ]]; then
+    [[ -n ${seen[ask]:-} && -n ${seen[discord_message]:-} ]] ||
+      die "Daniel's approval names the ask it answers and their message: team-log $task plan-approved by=Daniel ask=<id> discord_message=<id>"
+    asked=$(ledger_jq 'latest_asked($id) | .ts // empty' -r --arg id "${seen[ask]}" <<<"$TASK_EVENTS")
+    [[ -n $asked ]] || die "$task logged no asked with id ${seen[ask]}, so the plan approval answers no ask of it"
+    message=${seen[discord_message]}
+    [[ $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
+    # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+    sent=$(((10#$message >> 22) / 1000 + 1420070400))
+    ((sent >= $(date -ud "$asked" +%s))) ||
+      die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the asked ${seen[ask]} at $asked, so it is not Daniel's answer to that ask"
+  else
+    for key in ask discord_message; do
+      [[ -z ${seen[$key]:-} ]] || die "the coordinator's approval takes no $key, which only Daniel's names: team-log $task plan-approved by=coordinator"
+    done
+  fi
+  [[ -f $TEAM_HOME/tasks/$task/plan.md ]] || die "$task has no plan at tasks/$task/plan.md, so there is no plan to approve"
+  plan=$(plan_files "$task") || die "cannot read $task's plan files"
+  found=$(plan_task_dir "$task") || die "cannot read $task's task directory"
+  scope=null
+  if [[ -n $found && -f ${found%%$'\t'*}/scope.txt ]]; then
+    scope=$(jq -Rnc '[inputs | select(test("\\S"))]' <"${found%%$'\t'*}/scope.txt")
+    problem=$(ledger_jq 'if . == [] then "\($file) lists no path: list every path the plan may change, each a file or a directory ending in /, or remove it for no scope"
+      else [scope_problems] | select(. != []) | "\($file) holds lines that are not clean repository paths:" + (map("\n  " + .) | add) end' \
+      -r --arg file "${found#*$'\t'}/scope.txt" <<<"$scope")
+    [[ -z $problem ]] || die "$problem"
+  fi
+  standing=$(ledger_jq 'plan_approval | select(.state == "approved" and .by == $by and .plan == $plan) | .ts' \
+    -r --arg by "$by" --argjson plan "$plan" <<<"$TASK_EVENTS")
+  [[ -z $standing ]] || die "$task's plan is approved already by $by, at $standing, with the same files, so a second approval means nothing"
+  typed=$(jq -c --argjson plan "$plan" --argjson scope "$scope" '.plan = $plan | if $scope == null then . else .scope = $scope end' <<<"$typed")
 fi
 
 # Daniel's plan-time word is on the task's PR in one of its projects, which opts in now and is not

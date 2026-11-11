@@ -273,7 +273,7 @@ level_reading() {
   ok team-open home feature feat tooling "The tooling"
   local wt
   wt=$(jq -r .worktree <<<"$output")
-  ok team-log T1 plan-approved by=Daniel
+  ok team-log T1 plan-approved by=coordinator
   ok team-brief T1 builder-ticket --set ticket=01 --name build-01
   local builder_brief=$output
   # A builder here has peaked at 10 GiB five times, so its learned estimate is 11 GiB; full's 20
@@ -366,7 +366,7 @@ level_reading() {
   # Its DONE logged, the next step is the coordinator's until a builder is at work.
   ok team-log T1 "done" role=planner session="$planner"
   step planning no-worker:"$planner"
-  ok team-log T1 plan-approved by=Daniel
+  ok team-log T1 plan-approved by=coordinator
   step building no-worker:"$planner"
 
   # 4. Build: one builder per ticket, one ticket in each project.
@@ -508,7 +508,7 @@ events_from() {
   ok team-next T1 -- "T1 DONE .scratch/task/spec.md"
   assert_equal "$output" "logged done role=planner session=$planner report=.scratch/task/spec.md
 no hand-off for DONE"
-  ok team-log T1 plan-approved by=Daniel
+  ok team-log T1 plan-approved by=coordinator
   step building no-worker:"$planner"
 
   # The first ticket's builder, launched by hand as the manual's step 4 says.
@@ -579,7 +579,7 @@ launched T1-reviewer 6c7d8e9f"
 opened
 launch planner brief
 done planner $planner
-plan-approved Daniel
+plan-approved coordinator
 launch builder brief-build-01
 ticket-done 01
 done builder $first

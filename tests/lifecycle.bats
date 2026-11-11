@@ -16,10 +16,11 @@ on() {
     '{ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1", event: $e} + ('"${2:-{\}}"')')")
 }
 
-# fold_read <filter>: the filter's output over the events so far, with ledger.jq's definitions, the
-# contract as $contract and the sandbox's HOME as $home, compact, strings raw.
+# fold_read <filter>: the filter's output over the events so far, with ledger.jq's definitions (from
+# FOLD_LIB when a test set it to a library of its own, else this checkout's), the contract as
+# $contract and the sandbox's HOME as $home, compact, strings raw.
 fold_read() {
-  printf '%s\n' "${events[@]}" | jq -L "$REPO_ROOT/bin/lib" -scr --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" \
+  printf '%s\n' "${events[@]}" | jq -L "${FOLD_LIB:-$REPO_ROOT/bin/lib}" -scr --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" \
     --arg home "$HOME" "include \"ledger\"; \$contract[0] as \$contract | $1"
 }
 
@@ -412,8 +413,16 @@ problems() {
 }
 
 @test "a kind the table takes only in some phases is refused in the others, naming them" {
+  # The table gives no kind phases now, so a table of the test's own gives plan-approved those it
+  # had before T276, when a re-approval of a changed plan was no step.
   opened feature
   on pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  assert_equal "$(problems plan-approved)" ""
+  FOLD_LIB=$BATS_TEST_TMPDIR/lib
+  mkdir -p "$FOLD_LIB"
+  cp "$REPO_ROOT/bin/lib/ledger.jq" "$FOLD_LIB/"
+  jq '.kinds["plan-approved"].phases = ["planning", "building", "merged-part", "merged"]' "$REPO_ROOT/bin/lib/lifecycle.json" \
+    >"$FOLD_LIB/lifecycle.json"
   assert_equal "$(problems plan-approved)" \
     "T1 is in-review since 2026-11-01T00:01:00Z, and plan-approved is taken only while it is planning, building, merged-part or merged"
   on review '{verdict: "pass", head: "a1b2c3d"}'

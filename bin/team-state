@@ -34,8 +34,9 @@
 # causes; team-log's header says what each resumed ends),
 # else the work phase the task's events moved it to: planning, building, in-review, awaiting-merge,
 # merged-part or merged. An opened starts a small or bug task in building and any other in planning;
-# a plan-approved moves planning to building; a builder's launch or a ticket-done moves planning,
-# merged-part or merged to building; a builder's done reporting review-ready or merged moves
+# a plan-approved moves planning to building, and a plan-approval-withdrawn building back to
+# planning; a builder's launch or a ticket-done moves planning, merged-part or merged to building,
+# except while the plan approval is withdrawn; a builder's done reporting review-ready or merged moves
 # building to in-review; a pr, and while building, in review or awaiting merge a review or (with a
 # PR logged) a history-rewritten, makes it awaiting-merge when it has a PR not merged and each such
 # PR's latest review on its head is a pass, else in-review; a merged that leaves no PR open makes it

@@ -118,7 +118,16 @@
     "plan-approved": {
       "writer": "team-log",
       "push": true,
-      "required": {"by": "string"}
+      "about": "the task's plan approved by Daniel, with ask the asked it answers and discord_message their message, which team-log requires of every new line of theirs, or by the coordinator, with neither; plan each file approved, the team home's tasks/T<n>/plan.md and the task directory's spec.md and scope.txt (plan_files in bin/lib/team.sh), to its sha256, and scope scope.txt's lines, both written by team-log itself; a line with no plan is from before T276, read as the coordinator's whatever its by (plan_approval in bin/lib/ledger.jq); it stands until a later plan-approval-withdrawn",
+      "required": {"by": ["Daniel", "coordinator"]},
+      "optional": {"ask": "string", "discord_message": "id", "plan": "object", "scope": "array"},
+      "field_when": {"ask": {"by": ["Daniel"]}, "discord_message": {"by": ["Daniel"]}}
+    },
+    "plan-approval-withdrawn": {
+      "writer": "team-log",
+      "push": true,
+      "about": "Daniel withdrew the task's standing plan approval in discord_message, which stops its build until the plan is approved again; team-log takes whatever message it names, since it only stops work",
+      "required": {"discord_message": "id"}
     },
     "paused": {
       "writer": ["team-log", "team-worker"],
