@@ -239,7 +239,8 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
    Give it an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is "rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes.": on a phase, this phase's part of it alone), under a Disclosure section put in its terms, since the gate drafts the PR's title and body from it.
    When the review step parks with no finding, only on "review coverage is incomplete", answer it yourself with `no-mistakes axi respond --action approve`, with no QUESTION: the team review reads this head, before the gate or after it. A finding, at any step, still goes to `coordinator` as a QUESTION.
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-6. When the gate's run ends `passed`, repeat step 1; if it merged anything, push, noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
+6. When the gate's run ends `passed`, repeat step 1; if it merged anything, push, noting each file that conflicted.
+   The gate runs again only for a commit that changes behaviour, such as the fix to a red check, and never for a merge of the base, clean or with its conflicts resolved in docs alone, or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI.
 7. Start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait --no-agent-review <full url> <the full sha the gate or step 6 pushed>`, run with Bash `run_in_background`, then send `T12 PR <full url>` to `coordinator` at once, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged, so the review reads while CI runs, and keep the wait going.
    `--no-agent-review` leaves out the reviewer's `agent-review` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round.
    Act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push the fix as step 8 says, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
@@ -694,6 +695,9 @@ EOF
   # brief names.
   assert_contains "$brief" 'A finding, at any step, still goes to `coordinator` as a QUESTION.'
   assert_contains "$brief" 'answer it yourself with `no-mistakes axi respond --action approve`, with no QUESTION'
+  # The gate runs again for a behaviour commit alone: never for a merge of the base, clean or
+  # resolved in docs alone, nor for a commit of docs, comments or the PR body.
+  grep -qxF "   The gate runs again only for a commit that changes behaviour, such as the fix to a red check, and never for a merge of the base, clean or with its conflicts resolved in docs alone, or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI." "$output"
   # No role, procedure or other template names a step the delivery dropped.
   if git -C "$REPO_ROOT" grep -nE 'stopped-green|returns checks-passed|stop the gate run|CI included' \
     -- roles sops templates plugins; then return 1; fi
@@ -1527,7 +1531,7 @@ odd_names_branch() {
       assert_contains "$brief" "7. Push each fix of a failed check at once, as you pushed the first head: repeat step 1, run step 4 on the new head"
     else
       assert_contains "$brief" "epeat step 1; if it merged anything"
-      assert_contains "$brief" "a merge of the base is re-reviewed and checked by CI, never re-gated"
+      assert_contains "$brief" "never for a merge of the base, clean or with its conflicts resolved in docs alone"
     fi
     assert_contains "$brief" "Never run a command that needs \`sudo\`; send \`$task BLOCKED <the command> needs sudo\` to \`coordinator\` instead."
     # The up-to-date check replaced the old refusal when the base moved.

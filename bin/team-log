@@ -66,6 +66,8 @@
 # than now and no earlier than the task's latest event, or it is refused naming both times; no
 # other kind takes since. A retro-change is refused when its retro names a
 # task with no opened event of path retro, or a retro with no answered of id retro.
+# A gate-run whose cause is base-merge and whose outcome is not aborted, in either form, is logged
+# with one line on stderr saying the gated delivery brief asks no gate run for a base merge.
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
 # merge-approved, merge-preapproved, merge-preapproval-withdrawn, merge-standing,
 # merge-standing-withdrawn, retro-schedule) is committed and pushed to the team home's origin
@@ -492,10 +494,18 @@ fi
 
 }
 
+# A gate run that re-gates a base merge, run to its end, is one the gated delivery brief asks for
+# none of: logged all the same, with one line on stderr saying so. base_merge_note <line>.
+base_merge_note() {
+  jq -r --arg task "$task" 'select(.event == "gate-run" and .cause == "base-merge" and .outcome != "aborted")
+    | "team-log: \($task) gate run \(.run) re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"' <<<"$1" >&2
+}
+
 if [[ $1 != --* ]]; then
   check_event "$@"
   # Stamped now, after the checks, so a park's since is never later than its ts.
   ledger_append "$(stamped "$typed")"
+  base_merge_note "$typed"
   ledger_push
   exit 0
 fi
@@ -615,5 +625,6 @@ fi
 for line in "${lines[@]}"; do
   line=$(stamped "$line")
   if [[ -n $print ]]; then printf '%s\n' "$line"; else ledger_append "$line"; fi
+  base_merge_note "$line"
 done
 ledger_push
