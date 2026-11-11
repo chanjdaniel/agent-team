@@ -847,23 +847,50 @@ coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-10-22T
   no_github
 }
 
-# Task <task>'s PR 5 of proj reviewed and passed at its head, with Daniel's plan-time word on proj
-# logged, answering the plan ask.
-preapproved_pr() {
-  event "$1" asked '{id: "plan", text: "Approve the plan, and its merge?"}'
-  event "$1" merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}'
-  event "$1" plan-approved '{by: "Daniel"}'
+# Task <task>'s PR 5 of proj reviewed and passed at its head, with no plan approved.
+passed_pr() {
   event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
 }
 
-@test "merge-due: an awaiting-merge task with Daniel's plan-time word not withdrawn and nothing else parking it" {
+# Task <task>'s plan approved by the coordinator, as team-log records it.
+approved() {
+  event "$1" plan-approved '{by: "coordinator", plan: {"tasks/T3/plan.md": "0000"}, scope: ["src/"]}'
+}
+
+# Task <task>'s PR 5 of proj reviewed and passed at its head, its plan approved: the default word
+# holds on the ledger.
+approved_pr() {
+  approved "$1"
+  passed_pr "$1"
+}
+
+# said <task> <kind> <scope> <message>: Daniel's withdrawal of the default word
+# (merge-default-withdrawn) or its giving back (merge-default-restored) for <scope> (task, a
+# project or all), logged under <task>, in #coordinator.
+said() {
+  event "$1" "$2" "{scope: \"$3\", discord_message: \"$4\", discord_channel: \"1562000000000000000\"}"
+}
+
+# Register <project> beside proj, at owner/<project>: register <project>
+register() {
+  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "direct-pr"' \
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
+    "[$1.pool]" 'provider = "git"' "slots = [\"slots/$1/1\"]" >>"$TEAM_HOME/projects.toml"
+}
+
+# T3's merge-due line for PR 5.
+due() {
+  echo "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on the default word, the approved plan, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+}
+
+@test "merge-due: an awaiting-merge task whose default word holds and nothing else parking it" {
   opened T3
   launch T3 reviewer 11111111
-  preapproved_pr T3
+  approved_pr T3
   sessions "$(session 11111111 T3-reviewer idle)"
   run_bin -1 team-sweep
-  assert_equal "$output" "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's plan-time word on proj, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+  assert_equal "$output" "$(due)"
   run_bin -1 team-sweep --json
   assert_equal "$(jq -c 'map([.task, .kind, .session, .name, .next])' <<<"$output")" \
     '[["T3","merge-due",null,null,"run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"]]'
@@ -885,7 +912,7 @@ preapproved_pr() {
 @test "merge-due: none while the latest review, a pass logged through team-log, sent findings back" {
   opened T3
   launch T3 builder 11111111
-  preapproved_pr T3
+  approved_pr T3
   local counts='findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0'
   run_bin -0 team-log T3 review verdict=pass head=a1b2c3d4e5 "$counts" sent_back=1 guarded=none
   # The builder's live session holds the fix round.
@@ -899,17 +926,21 @@ preapproved_pr() {
   no_github
 }
 
-@test "merge-due: none once the word is withdrawn, while another park stands, or before the review passed" {
+@test "merge-due: none with no plan approved or the approval withdrawn, while another park stands, or before the review passed" {
   opened T3
   launch T3 builder 11111111
-  preapproved_pr T3
-  run_bin -1 team-sweep
-  assert_contains "$output" "T3 merge-due"
-
-  # A withdrawn word leaves the task awaiting Daniel's per-head word: parked.
-  event T3 merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000002"}'
+  passed_pr T3
+  # No plan approved: the task waits on Daniel's per-head word.
   run_bin -0 team-sweep
-  event T3 merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000003", scope: ["src/"]}'
+  # A plan-approved logged before T276, with no plan, is the coordinator's and holds for proj.
+  event T3 plan-approved '{by: "Daniel"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
+
+  # A withdrawn approval leaves the task awaiting Daniel's per-head word: parked.
+  event T3 plan-approval-withdrawn '{discord_message: "1563000000000000002"}'
+  run_bin -0 team-sweep
+  approved T3
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
 
@@ -929,7 +960,7 @@ preapproved_pr() {
     event T3 resumed
   done
   run_bin -1 team-sweep
-  assert_equal "$output" "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's plan-time word on proj, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+  assert_equal "$output" "$(due)"
 
   # A new head under review is no merge yet: the task's worker findings come back.
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "b2c3d4e"}'
@@ -937,144 +968,96 @@ preapproved_pr() {
   assert_equal "$output" "T3 no-worker: no live session among its 1 launch (latest T3-builder 11111111); next: read claude logs 11111111 for how it ended, then launch the next worker with team-worker or log what is known with team-log"
 }
 
-# Task <task>'s PR 5 of proj reviewed and passed at its head, with no word of Daniel's on it.
-passed_pr() {
-  event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
-  event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
-}
-
-# standing <task> <kind> <project> <message>: Daniel's standing merge word (merge-standing) or its
-# withdrawal (merge-standing-withdrawn) on <project>, logged under <task>, in #coordinator.
-standing() {
-  event "$1" "$2" "{project: \"$3\", discord_message: \"$4\", discord_channel: \"1562000000000000000\"}"
-}
-
-# Register <project> beside proj, at owner/<project>: register <project>
-register() {
-  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "direct-pr"' \
-    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
-    "[$1.pool]" 'provider = "git"' "slots = [\"slots/$1/1\"]" >>"$TEAM_HOME/projects.toml"
-}
-
-standing_due() {
-  echo "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's $1, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
-}
-
-@test "merge-due: an awaiting-merge task with Daniel's standing word on its project, or on every project" {
+@test "merge-due: none while the default word is withdrawn for the task, its project or all, by any task, until it is given back" {
   opened T3
   launch T3 reviewer 11111111
-  passed_pr T3
+  approved_pr T3
   sessions "$(session 11111111 T3-reviewer idle)"
-  run_bin -0 team-sweep
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
 
-  # The word is team-wide: one logged under another task stands for this one.
-  standing T2 merge-standing proj 1563000000000000001
+  # A withdrawal of its project, logged under another task, holds it back.
+  said T2 merge-default-withdrawn proj 1563000000000000001
   event T2 closed
-  run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
-  run_bin -1 team-sweep --json
-  assert_equal "$(jq -c 'map([.task, .kind, .session, .name, .next])' <<<"$output")" \
-    '[["T3","merge-due",null,null,"run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"]]'
-
-  # Withdrawn, the task is parked awaiting Daniel's per-head word; a word on every project stands
-  # for it again, named by the task's projects (its opened and worktree-added events').
-  standing T3 merge-standing-withdrawn proj 1563000000000000002
   run_bin -0 team-sweep
+  # Given back for every project (T278's C3), it is due again.
+  said T3 merge-default-restored all 1563000000000000002
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
+  # Withdrawn for another project, or for another task, it still is.
   register conv
-  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
-  standing T3 merge-standing all 1563000000000000003
+  said T3 merge-default-withdrawn conv 1563000000000000003
+  said T2 merge-default-withdrawn task 1563000000000000004
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj, conv")"
-
-  # An every-project word withdrawn for one project still stands for the other.
-  standing T3 merge-standing-withdrawn proj 1563000000000000004
+  assert_equal "$output" "$(due)"
+  # Withdrawn for the task, then for all and given back for the project, it is held back, then due.
+  said T3 merge-default-withdrawn task 1563000000000000005
+  run_bin -0 team-sweep
+  said T3 merge-default-withdrawn all 1563000000000000006
+  said T3 merge-default-restored proj 1563000000000000007
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on conv")"
+  assert_equal "$output" "$(due)"
   no_github
 }
 
-@test "merge-due: none on the standing word for the team's own project, by name, repo or path, and still for another's" {
-  opened T3
-  launch T3 reviewer 11111111
-  passed_pr T3
-  sessions "$(session 11111111 T3-reviewer idle)"
-  standing T2 merge-standing all 1563000000000000001
+@test "merge-due: none for the team's own project, by name, repo or path, whoever approved the plan" {
+  # The queued note's case: an agent-team task with the coordinator's approval is never due.
   register agent-team
-  event T3 worktree-added '{project: "agent-team", branch: "feat/T3-work", worktree: "/w/2"}'
-  run_bin -1 --separate-stderr team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
-  assert_equal "$stderr" ""
-
-  # An old ledger's word on the team's own project by name is no word.
-  : >"$TEAM_HOME/ledger.jsonl"
   event T3 opened '{project: "agent-team", path: "feature", type: "feat", title: "Work",
     branch: "feat/T3-work", base: "main", base_sha: "0123456", worktree: "/w/1"}'
   launch T3 reviewer 11111111
-  passed_pr T3
-  standing T2 merge-standing agent-team 1563000000000000002
-  run_bin -0 team-sweep
-  standing T2 merge-standing all 1563000000000000003
+  approved_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  # Nor with Daniel's.
+  event T3 asked '{id: "plan", text: "Approve the plan?"}'
+  event T3 plan-approved '{by: "Daniel", ask: "plan", discord_message: "1563000000000000001", plan: {"tasks/T3/plan.md": "0000"}}'
   run_bin -0 team-sweep
 
   # proj is the team's own by the code checkout's repo, and conv by its path.
   : >"$TEAM_HOME/ledger.jsonl"
   opened T3
   launch T3 reviewer 11111111
-  passed_pr T3
-  standing T2 merge-standing all 1563000000000000001
-  register conv
-  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
+  approved_pr T3
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj, conv")"
+  assert_equal "$output" "$(due)"
   export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo proj)
+  copy_bin "$CODE_CHECKOUT/bin"
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  run_bin -0 team-sweep
+  # conv is, by its path, the code checkout, whose origin is no project's: its PR is never due,
+  # while proj's is.
+  register conv
   CODE_CHECKOUT=$(make_repo conv)
   copy_bin "$CODE_CHECKOUT/bin"
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
-  run_bin -0 team-sweep
+  assert_equal "$output" "$(due)"
+  event T3 pr '{url: "https://github.com/owner/conv/pull/7", head: "c3d4e5f", project: "conv"}'
+  event T3 review '{verdict: "pass", head: "c3d4e5f", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
 }
 
-@test "merge-due: with the registry unreadable, no standing word counts, and stderr says why" {
+@test "merge-due: with the registry unreadable, none, and stderr says why" {
   opened T3
   launch T3 reviewer 11111111
-  passed_pr T3
+  approved_pr T3
   sessions "$(session 11111111 T3-reviewer idle)"
-  standing T2 merge-standing proj 1563000000000000001
   rm "$TEAM_HOME/projects.toml"
   run_bin -0 --separate-stderr team-sweep
   assert_equal "$output" ""
-  assert_equal "$stderr" "team-sweep: counts no standing word of Daniel's, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
-  # Nor is it read with no standing word in the ledger.
-  : >"$TEAM_HOME/ledger.jsonl"
-  opened T3
-  launch T3 reviewer 11111111
-  passed_pr T3
-  run_bin -0 --separate-stderr team-sweep
-  assert_equal "$stderr" ""
-}
-
-@test "merge-due: the plan-time and standing words both named, the plan-time word alone as before" {
-  opened T3
-  launch T3 reviewer 11111111
-  preapproved_pr T3
-  sessions "$(session 11111111 T3-reviewer idle)"
-  run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "plan-time word on proj")"
-  standing T3 merge-standing all 1563000000000000002
-  run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "plan-time word on proj and standing word on proj")"
-  event T3 merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000003"}'
-  run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
+  assert_equal "$stderr" "team-sweep: finds no task merge-due, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
 }
 
 @test "merge-due: none for a head the word does not cover, as team-state reads it" {
   opened T3
   launch T3 reviewer 11111111
   sessions "$(session 11111111 T3-reviewer idle)"
-  standing T2 merge-standing proj 1563000000000000001
-  event T2 closed
+  approved T3
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
   # The reviewer found guarded areas, or logged none, or an earlier review counted a security
@@ -1086,20 +1069,19 @@ standing_due() {
   # A pass that names none is covered again, until a review that counted a security finding.
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: []}"
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
+  assert_equal "$output" "$(due)"
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: ($counts + {security: 1}), guarded: []}"
   run_bin -0 team-sweep
-  # The plan-time word is held to the same.
   : >"$TEAM_HOME/ledger.jsonl"
   opened T3
   launch T3 reviewer 11111111
-  preapproved_pr T3
+  approved_pr T3
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"secrets\"]}"
   run_bin -0 team-sweep
   # An area retired since (T276), which a review logged before may name, holds nothing back.
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"settings\", \"dependencies\"]}"
   run_bin -1 team-sweep
-  assert_contains "$output" "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's plan-time word on proj"
+  assert_equal "$output" "$(due)"
   no_github
 }
 
@@ -1108,8 +1090,7 @@ standing_due() {
   launch T3 builder 11111111
   launch T3 reviewer 22222222
   passed_pr T3
-  standing T2 merge-standing proj 1563000000000000001
-  event T2 closed
+  approved T3
   sessions "$(session 11111111 T3-builder idle)"
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
@@ -1144,8 +1125,7 @@ standing_due() {
   opened T3
   launch T3 reviewer 11111111
   sessions "$(session 11111111 T3-reviewer idle)"
-  standing T2 merge-standing proj 1563000000000000001
-  event T2 closed
+  approved T3
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d\", findings: $counts, guarded: []}"
@@ -1168,8 +1148,7 @@ standing_due() {
   opened T3
   launch T3 builder 11111111
   passed_pr T3
-  standing T2 merge-standing proj 1563000000000000001
-  event T2 closed
+  approved T3
   sessions "$(session 44444444 T3-builder busy)"
   ledger_line '{ts: "2026-10-22T02:30:00Z", task: "T3", event: "launch", role: "builder", session: "44444444", worktree: "/w/1",
     toolkits: [], project: "proj", branch: "feat/T3-work", brief: "brief-merge-base"}'
@@ -1180,18 +1159,14 @@ standing_due() {
   assert_contains "$output" "T3 merge-due"
 }
 
-@test "merge-due: none under a standing word withdrawn, on another project, or with another park" {
+@test "merge-due: under a withdrawal for another project, and parked by an ask, a pause, a wait or a withdrawal of all" {
   opened T3
   launch T3 builder 11111111
-  passed_pr T3
-
-  # A word on a project that is none of the task's leaves it parked.
+  approved_pr T3
   register conv
-  standing T3 merge-standing conv 1563000000000000001
-  run_bin -0 team-sweep
-  standing T3 merge-standing proj 1563000000000000002
+  said T3 merge-default-withdrawn conv 1563000000000000001
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
+  assert_equal "$output" "$(due)"
 
   # An ask nothing settled, a pause or a wait parks it.
   event T3 asked '{id: "q1", text: "Which name?"}'
@@ -1206,8 +1181,8 @@ standing_due() {
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
 
-  # A withdrawal of every word parks it.
-  standing T3 merge-standing-withdrawn all 1563000000000000003
+  # A withdrawal for every project parks it.
+  said T3 merge-default-withdrawn all 1563000000000000003
   run_bin -0 team-sweep
 }
 

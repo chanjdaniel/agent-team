@@ -556,10 +556,7 @@ if [[ $event == merge-default-withdrawn || $event == merge-default-restored ]]; 
   if [[ $event == merge-default-restored && -n $scope ]]; then
     ledger=$TEAM_HOME/ledger.jsonl
     [[ -e $ledger ]] || ledger=/dev/null
-    ledger_jq '[inputs | fromjson? | objects] as $all
-      | ([$all[] | select((.event == "opened" or .event == "worktree-added") and (.task | type) == "string")]
-         | group_by(.task) | map({key: .[0].task, value: (map(.project | strings) | unique)}) | from_entries) as $projects
-      | [$all[] | select(.event == "merge-default-withdrawn" or .event == "merge-default-restored")]
+    ledger_jq '[inputs | fromjson? | objects] | task_projects as $projects | default_events
       | default_restore_withdrawn({task: $task, scope: $scope}; $projects)' \
       -nRe --arg task "$task" --arg scope "$scope" <"$ledger" >/dev/null ||
       die "no withdrawal of the default word stands that scope=$scope of $task covers, so merge-default-restored gives nothing back"

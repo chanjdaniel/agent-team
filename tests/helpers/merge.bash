@@ -458,3 +458,12 @@ guarded_case() {
   assert_equal "$(grep -c 'is a guarded path' <<<"$stderr" || true)" "${#reasons[@]}"
   no_merge_call
 }
+
+# The default word, the plan the coordinator approved, beside Daniel's per-head word: default_word,
+# then the merge-approved again, naming <head> (none: a legacy one) in <message> (Daniel's
+# 1562661774950400000 at 03:00): both_words [<message>] [<head>]
+both_words() {
+  default_word
+  event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"${1:-1562661774950400000}\"}
+    + if \"${2:-}\" == \"\" then {} else {head: \"${2:-}\"} end"
+}

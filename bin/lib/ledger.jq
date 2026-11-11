@@ -865,8 +865,8 @@ def task_branch($project):
   | last | .branch // null;
 
 # Why PR #$number, from the branch $branch, is not task $task's own PR for $project, over the
-# task's events as an array (task_branch), one string, or none when it is: a word given on no head
-# (the plan-time and standing ones) holds only for the task's own branch.
+# task's events as an array (task_branch), one string, or none when it is: the default word, given
+# on no head, holds only for the task's own branch.
 def task_branch_reasons($task; $project; $branch; $number):
   task_branch($project) as $own
   | if $own == null then "\($task) logged no branch for \($project): no opened, worktree-added or branch-renamed event of it"
@@ -985,21 +985,77 @@ def default_cover($task; $project):
 # <name>" or "every project".
 def default_scope_text: if .scope == "task" then .task elif .scope == "all" then "every project" else "project \(.scope)" end;
 
+# Each task's projects, over every ledger event as an array: an object mapping each task an opened
+# or worktree-added names to the projects of those events, each once.
+def task_projects:
+  [.[] | select((.event == "opened" or .event == "worktree-added") and (.task | type) == "string")]
+  | group_by(.task) | map({key: .[0].task, value: (map(.project | strings) | unique)}) | from_entries;
+
+# The PRs, as {task, project} ("" for none), whose default word the merge-default-withdrawn and
+# merge-default-restored events (the input, every task's) and the events $extra may decide: each
+# task a scope task names with each of its projects in $projects (task_projects; none known: no
+# project), and no task with each project a scope or a task names, and with none.
+def default_prs($extra; $projects):
+  ([.[], $extra[] | select(.scope == "task") | .task] | unique) as $tasks
+  | ([(.[], $extra[] | .scope | select(. != "task" and . != "all")), ($tasks[] | $projects[.] // [] | .[])] | unique + [""]) as $names
+  | [($tasks[] | . as $t | ($projects[$t] // [] | if . == [] then [""] else . end) | .[] | {task: $t, project: .}),
+     ($names[] | {task: "", project: .})];
+
 # Whether a merge-default-restored of $restore ({task, scope}) would give the default word back
 # anywhere, over the ledger's merge-default-withdrawn and merge-default-restored events (an array,
-# every task's): whether some PR it covers has a withdrawal as the latest event covering it
-# (default_cover). $projects maps each task to the projects of its opened and worktree-added
-# events; the PRs tried are each task an event names with each of its projects (none known: no
-# project), and no task with each project an event or a task names (none: no project).
+# every task's): whether some PR it covers (default_prs) has a withdrawal as the latest event
+# covering it (default_cover). $projects is task_projects'.
 def default_restore_withdrawn($restore; $projects):
   . as $events
-  | ([$events[], $restore] | map(select(.scope == "task") | .task) | unique) as $tasks
-  | ([($events[], $restore | .scope | select(. != "task" and . != "all")), ($tasks[] | $projects[.] // [] | .[])] | unique + [""]) as $names
-  | any(($tasks[] | . as $t | ($projects[$t] // [] | if . == [] then [""] else . end) | .[] | {task: $t, project: .}),
-        ($names[] | {task: "", project: .});
+  | any(default_prs([$restore]; $projects)[];
       . as $pr | ($restore | default_covers($pr.task; $pr.project))
       and ($events | default_cover($pr.task; $pr.project) | .event == "merge-default-withdrawn"));
 
+# The withdrawals of the default word that stand, over the ledger's merge-default-withdrawn and
+# merge-default-restored events (an array, every task's), in ledger order: each that is still the
+# latest event covering some PR (default_prs, default_cover), so a giving back of all ends every
+# withdrawal before it, a project's ends that project's and its tasks', and a task's that task's,
+# and a withdrawal of all leaves no earlier one standing. $projects is task_projects'.
+def default_withdrawals($projects):
+  [to_entries[] | .value + {i: .key}] as $events
+  | [default_prs([]; $projects)[] | . as $pr | $events | default_cover($pr.task; $pr.project)
+     | select(.event == "merge-default-withdrawn")]
+  | unique_by(.i) | map(del(.i));
+
+# The ledger's merge-default-withdrawn and merge-default-restored events, over every ledger event
+# as an array, in ledger order, each giving back with thread, the latest thread of the task it was
+# logged under (a string, or null), where its message may be read back: merge_authority's
+# $withdrawals.
+def default_events:
+  . as $all
+  | [$all[] | select(.event == "merge-default-withdrawn" or .event == "merge-default-restored")
+     | if .event == "merge-default-restored" then
+         .task as $t | .thread = ([$all[] | select(.task == $t and .event == "thread") | .discord_thread | tostring] | last)
+       else . end];
+
+# Whether $project is the team's own, given $own, the registered projects own_project in team.sh
+# says are: agent-team by name always is.
+def own_in($own; $project): $project == "agent-team" or ($project | IN($own[]));
+
+# The project of the task's PR $url (a trailing slash aside), over the task's events: its latest
+# pr event's project, else the task's opened one's, else null.
+def pr_project($url):
+  ($url | rtrimstr("/")) as $url
+  | ([.[] | select(.event == "pr" and (.url | strings | rtrimstr("/")) == $url) | .project | strings] | last)
+    // (map(select(.event == "opened")) | first | .project);
+
+# Why the changed paths (the input, pr_file_reasons' PR_CHANGED: {path} and, for a rename's old
+# path, {path, renamed}) are not within the approved plan's scope $scope, one string per path
+# outside, none when $scope is null: an entry ending in / covers every path under it, any other
+# that path only.
+def scope_reasons($scope):
+  def name: if .renamed then "\(.path), renamed to \(.renamed)," else .path end;
+  select($scope != null) | .[] | .path as $p
+  | select(any($scope[]; . as $entry | if endswith("/") then $p | startswith($entry) else $p == $entry end) | not)
+  | "\(name) is outside the approved plan's scope: \($scope | join(", "))";
+
+# The retired plan-time and standing words (T276), read by team-log's checks of their kinds alone,
+# which go with these three defs once team-log refuses those kinds; no other reader calls them.
 # The task's latest merge-preapproved of $project, or null, with withdrawn: the first
 # merge-preapproval-withdrawn of $project logged after it, or null while it stands.
 def merge_preapproval($project):
@@ -1007,26 +1063,6 @@ def merge_preapproval($project):
   | if $latest == null then null
     else $latest.value + {withdrawn: (first(.[$latest.key + 1:][]
       | select(.event == "merge-preapproval-withdrawn" and .project == $project)) // null)} end;
-
-# The task's latest merge-preapproved, of any project, as team-state shows it, or null: its
-# project, ask, discord_message, scope and ts, withdrawn ({ts, discord_message} of the first
-# merge-preapproval-withdrawn of its project after it, or null while it stands), and opted_in and
-# own, null here, which task_state_json reads from the registry.
-def latest_merge_preapproval:
-  (map(select(.event == "merge-preapproved")) | last | .project) as $project
-  | if $project == null then null
-    else merge_preapproval($project)
-      | {project, ask, discord_message, scope, ts,
-         withdrawn: (.withdrawn | if . == null then null else {ts, discord_message} end),
-         opted_in: null, own: null} end;
-
-# The projects whose plan-time merge approval of the task stands: its latest merge-preapproved of
-# each has no withdrawal after it, in the order of their first merge-preapproved.
-def preapproved_projects:
-  . as $events
-  | reduce (.[] | select(.event == "merge-preapproved") | .project) as $project ([];
-      if IN(.[]; $project) then . else . + [$project] end)
-  | map(select(. as $project | $events | merge_preapproval($project) | .withdrawn == null));
 
 # Daniel's standing merge word on $project, over every ledger event as an array (never one task's),
 # or null when no merge-standing or merge-standing-withdrawn names $project or all: the latest of
@@ -1050,23 +1086,6 @@ def standing_words($projects):
   | [$projects[] | . as $project | $events | standing_word($project)
      | select(. != null and .stands) | {project: $project, word}];
 
-# Daniel's standing words from standing_words' list ({project, word}), one {projects, word} per
-# word event, the projects in the list's order, the words in the order they were logged.
-def standing_word_events:
-  group_by(.word) | map({projects: map(.project), word: .[0].word}) | sort_by(.word.ts, .word.discord_message);
-
-# A standing word's projects as text: "all", which only a word as logged names, is every project.
-def projects_text: map(if . == "all" then "every project" else . end) | join(", ");
-
-# Why Daniel's standing word on $project does not stand, over standing_word's answer ({stands,
-# word, withdrawn}, or null for no event), one string, or none while it stands: no word names
-# $project or all, or the latest event that applies withdrew it.
-def standing_word_reasons($project):
-  if .word == null then "no standing word of Daniel's names \($project) or every project"
-  elif .stands | not then
-    "Daniel's standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"
-  else empty end;
-
 # The head whose review stands for $head: $head itself when a review of it is logged, or, when a
 # caught-up event of the task names $head (by the shorter prefix) as the merge team-catch-up made,
 # the head it was made from, followed back the same way, the latest such event first, until a head
@@ -1080,7 +1099,7 @@ def reviewed_head($head):
         else back($up.from; $n - 1) end;
     back($head; $ups | length);
 
-# Why the task's reviews do not let a word given on no head (plan-time or standing) merge the PR's
+# Why the task's reviews do not let the default word, given on no head, merge the PR's
 # head $head unasked, one string per reason, none when they do, judged on the latest review of
 # reviewed_head($head), so a head team-catch-up made with no review of its own stands on the
 # review of the one it was made from (both named): no review of that head (by the shorter prefix)
@@ -1129,7 +1148,8 @@ def unattended_review_reasons($head):
 # default_cover, is a withdrawal), that the task logged no branch for $project, and
 # unattended_review_reasons($head). Its facts, null unless it applies: the approval's by, ts,
 # legacy, plan and scope, branch (task_branch), restored (that latest event when it is a giving
-# back, whose message team-merge reads back, else null), and for Daniel's approval its ask,
+# back, whose message team-merge reads back, else null), withdrawn (that latest event when it is a
+# withdrawal, else null), and for Daniel's approval its ask,
 # discord_message and asked (the latest asked of that id before the approval, or null).
 # A word holds on the ledger when it applies with no reason; team-merge checks what the ledger
 # cannot show (Discord, git, the plan's files and GitHub's) before it merges on one.
@@ -1163,7 +1183,8 @@ def merge_authority($url; $head; $project; $own; $withdrawals):
      facts: (if $plan.state != "approved" then null
              else {by: $plan.by, ts: $plan.ts, legacy: $plan.legacy, plan: $plan.plan, scope: $plan.scope,
                    branch: task_branch($project),
-                   restored: (if $cover.event == "merge-default-restored" then $cover else null end)}
+                   restored: (if $cover.event == "merge-default-restored" then $cover else null end),
+                   withdrawn: (if $cover.event == "merge-default-withdrawn" then $cover else null end)}
                + if $plan.by == "Daniel" then
                    {ask: $plan.ask, discord_message: $plan.discord_message, asked: ($events[:$at] | latest_asked($plan.ask))}
                  else {} end end)} as $default
@@ -1212,7 +1233,7 @@ def task_state($sessions; $home):
      thread: (map(select(.event == "thread") | .discord_thread) | last),
      workers: $workers, last_event: last, pending_asks: ($state | lifecycle_pending_asks),
      waiting: ($state | lifecycle_waiting), parks: ($state | lifecycle_parks), stowing: ($state | lifecycle_stowing), walk: qc_walk,
-     rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null,
+     rehome_failures: rehome_failures, pr: null,
      progress: progress($workers)};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands
@@ -1254,18 +1275,12 @@ def state_line:
      end)
   + (if (.rehome_failures // []) == [] then ""
      else " | not re-homed: " + (.rehome_failures | map("\(.project) on \(.machine): \(.reason)") | join("; ")) end)
-  + (.merge_preapproval // null
-     | if . == null then ""
-       elif .withdrawn != null then " | merge pre-approval withdrawn"
-       elif .own == true then " | merge pre-approved, but \(.project) is the team's own project"
-       elif .opted_in == false then " | merge pre-approved, but \(.project) does not opt in"
-       else " | merge pre-approved" end)
-  + (.pr.standing_word // null
-     | if . == null or .covers == null then ""
-       elif .withdrawn != null then " | standing word withdrawn"
-       elif .covers then " | standing word covers it"
-       else " | standing word does not cover it: \(.reasons[0])"
-         + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end)
+  + (if .phase != "awaiting-merge" then ""
+     else first((.pr.merge_authority // {} | .words // [])[] | select(.word == "default" and .applies)
+       | if .holds then " | default word covers it"
+         elif .facts.withdrawn != null then " | default word withdrawn"
+         else " | default word does not cover it: \(.reasons[0])"
+           + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end) // "" end)
   + (if .walk == null then "" else " | walk on since \(.walk.since)" end)
   + (if .stowing == null then "" else " | stowing since \(.stowing.since)" end)
   + (.parks // [] | if . == [] then ""
@@ -1300,41 +1315,40 @@ def merge_base_round($sessions):
       end
     end;
 
+# Whether the default word, the approved plan, holds on the ledger for the task's PR $pr (one of
+# task_prs) at the latest head the task logged for it (pr_heads, since no pr event logs a fix), as
+# merge_authority says it over the task's events (the input), $withdrawals (default_events') and
+# $own (the registered projects that are the team's own, own_in), the PR's project its latest pr
+# event's, else the task's opened one's.
+def default_holds($pr; $withdrawals; $own):
+  pr_project($pr.url) as $project
+  | $project != null
+    and (merge_authority($pr.url | rtrimstr("/"); pr_heads($pr.url) | last | .head // $pr.head; $project;
+          own_in($own; $project); $withdrawals)
+         | any(.words[]; .word == "default" and .holds));
+
 # team-sweep's merge-due finding, over a task's events and the session list, or nothing: the task
-# awaits merge, a plan-time approval of it stands or a standing word of Daniel's stands for one of
-# its projects (its opened and worktree-added events'), nothing else parks it (no ask nothing
-# settled, pause or wait), no merge-base round is in flight, and a PR not merged has no review-side
-# reason against a word given on no head on the latest head the task logged for it (pr_heads, since
-# no pr event logs a fix; unattended_review_reasons, as team-state and team-merge read them: the
-# sweep reads no GitHub, so a guarded path a reviewer did not name is team-merge's to find, and of
-# two open PRs the later review stands for both); only such PRs are named. $standing is the ledger's merge-standing and
-# merge-standing-withdrawn events, every task's, as standing_words reads them. The ledger names no
-# PR's project, so any word on one of the task's projects counts, and team-merge holds each PR to
-# its own project's. Only the task's projects in $covered, the projects a standing word may cover
-# (standing_projects in team.sh: every registered one but the team's own), count for a standing
-# word.
-def merge_due_finding($standing; $sessions; $covered):
+# awaits merge, nothing else parks it (no ask nothing settled, pause or wait), no merge-base round
+# is in flight, and a PR not merged has the default word holding on the ledger (default_holds,
+# merge_authority's word: the plan approved, on a project not the team's own, not withdrawn for the
+# task, its project or all, the task's branch logged, and no review-side reason, as team-state and
+# team-merge read them: the sweep reads no GitHub, so a guarded path a reviewer did not name, a plan
+# changed since its approval or Daniel's message not reading back is team-merge's to find, and of
+# two open PRs the later review stands for both); only such PRs are named. $withdrawals is
+# default_events' and $own the registered projects that are the team's own (own_in), or null when
+# the registry cannot be read, which raises none.
+def merge_due_finding($withdrawals; $sessions; $own):
   .[0].task as $task
   | . as $events
   | lifecycle as $state
-  | if ($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == [] then
-      preapproved_projects as $plan
-      | [($events | map(select(.event == "opened" or .event == "worktree-added") | .project)
-          | reduce .[] as $p ([]; if IN(.[]; $p) then . else . + [$p] end)
-          | map(select(IN($covered[]; .)))) as $projects
-         | $standing | standing_words($projects)[] | .project] as $words
-      | select($plan != [] or $words != [])
-      | select($events | merge_base_round($sessions) | not)
+  | if $own != null and ($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == [] then
+      select($events | merge_base_round($sessions) | not)
       | task_prs as $prs
       | [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
-         | select([$events | unattended_review_reasons(pr_heads($pr.url) | last | .head // $pr.head)] == []) | .url] as $due
+         | select($events | default_holds($pr; $withdrawals; $own)) | .url] as $due
       | select($due != [])
       | finding($task; "merge-due"; null; null;
-          "awaiting the merge of \($due | join(", "))"
-          + " on Daniel's "
-          + ([if $plan != [] then "plan-time word on \($plan | join(", "))" else empty end,
-              if $words != [] then "standing word on \($words | join(", "))" else empty end] | join(" and "))
-          + ", with no ask open";
+          "awaiting the merge of \($due | join(", ")) on the default word, the approved plan, with no ask open";
           "run team-merge \($task); on a refusal, ask Daniel for the per-head word with team-ask")
     else empty end;
 
@@ -1608,19 +1622,19 @@ def coordinator_twin_findings($self):
 
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
-# takes it): each open task's stowing finding, then its merge-due (under a plan-time word or a
-# standing word of any task's), else its findings unless it is parked, then the stray sessions (named like a team worker whose
+# takes it): each open task's stowing finding, then its merge-due (on the default word, judged with
+# every task's withdrawals), else its findings unless it is parked, then the stray sessions (named like a team worker whose
 # task is closed or not in the ledger, never the load check's T0, whose session the coordinator
 # waits on for up to 30 minutes), in task number order; then the coordinator-twin, activity,
-# level, retro-due and health findings. $covered is the projects a standing word may cover, as
-# merge_due_finding takes it, $health the health view, as health_findings takes it, and $self the
+# level, retro-due and health findings. $own is the registered projects that are the team's own,
+# or null, as merge_due_finding takes it, $health the health view, as health_findings takes it, and $self the
 # sweep's own session id, as coordinator_twin_findings takes it.
-def sweep($sessions; $plan; $activity; $covered; $health; $self):
+def sweep($sessions; $plan; $activity; $own; $health; $self):
   . as $events
   | by_task as $tasks
-  | [.[] | select(.event == "merge-standing" or .event == "merge-standing-withdrawn")] as $standing
+  | default_events as $withdrawals
   | ([($tasks[] | select(is_open) | stowing_finding,
-        ([merge_due_finding($standing; $sessions; $covered)] as $due
+        ([merge_due_finding($withdrawals; $sessions; $own)] as $due
          | if $due != [] then $due[] elif parked then empty
            else task_findings($sessions; $activity) end)),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
@@ -1678,13 +1692,12 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 
 # team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON in
 # task number order ($states; {task, error} for a task whose state could not be told), the team's
-# resource level ($level, team-level status --json's object or {error}), the registered projects
-# but the team's own a standing word of Daniel's stands for ($standing, standing_words' list), the
-# session list, each registered project's open PRs ($prs), the current items ($items) and the
+# resource level ($level, team-level status --json's object or {error}), the withdrawals of the
+# default merge word that stand ($withdrawn, default_withdrawals' list), the session list, each registered project's open PRs ($prs), the current items ($items) and the
 # production checks' last results ($production, team-uptime status --json's object or {error}). It
 # carries $level as level, the open tasks stowed, waiting to resume, as awaiting_resume, the
 # resources_line as resources (null when $level is {error}), and $production as production.
-def snapshot($tasks; $states; $level; $standing; $sessions; $prs; $items; $production):
+def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed
   | {schema: "team-snapshot/1",
@@ -1692,7 +1705,7 @@ def snapshot($tasks; $states; $level; $standing; $sessions; $prs; $items; $produ
      level: $level,
      awaiting_resume: $stowed,
      resources: resources_line($level; $stowed),
-     standing_words: $standing,
+     default_withdrawn: $withdrawn,
      production: $production,
      sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
@@ -1713,17 +1726,16 @@ def session_text:
 # team-snapshot's text form, one line per string, from its JSON. Lines are cut at 120 columns, so
 # ten open tasks fit one screen, but an open task's state, the resources line, the Production line
 # and a current item at 200, each being a whole thought (a task's progress and its PR part come
-# last on its line). The Production line, after the standing merge words, is team-uptime's status
-# line, or "Production unreadable: <error>", and there is none when no project has a check.
+# last on its line). After the resources line, one line per withdrawal of the default merge word
+# that stands. The Production line, after them, is team-uptime's status line, or "Production unreadable: <error>", and there is none when no project has a check.
 def snapshot_text:
   def section($title; $lines; $columns):
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
   def section($title; $lines): section($title; $lines; 120);
   section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]; 200),
   (.resources // "Resources unreadable: \(.level.error // "team-level said nothing")" | clip(200)),
-  ((.standing_words // []) | standing_word_events
-   | if . == [] then "Standing merge word: none"
-     else .[] | "Standing merge word: \(.projects | projects_text) (Discord message \(.word.discord_message), \(.word.ts), \(.word.task))" | clip(120) end),
+  ((.default_withdrawn // [])[]
+   | "Default merge word withdrawn for \(default_scope_text) since \(.ts) (Discord message \(.discord_message), \(.task))" | clip(120)),
   (.production // {}
    | if .line | type == "string" then .line | clip(200)
      elif .error != null then "Production unreadable: \(.error)" | clip(200)
@@ -1748,6 +1760,11 @@ def snapshot_text:
        if $items | length > 40 then "  and \($items | length - 40) more in tasks/current.md" else empty end
      end);
 
+# Whether the default word may hold for some PR, over every ledger event as an array: an open task
+# awaits merge with its plan approved. team-sweep and team-inbox read the registry for own_in only
+# then.
+def default_may_hold: by_task | any(.[]; is_open and phase == "awaiting-merge" and plan_approval.state == "approved");
+
 # The following defs serve team-inbox, a task's events as an array, then every ledger event as one.
 
 # Whether the task's latest interview thread still holds an interview: no planner's done and no
@@ -1758,36 +1775,30 @@ def interview_under_way:
 
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
 # awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
-# head, or at no head, as a legacy line, and whose repo (lowercased) is neither a key of
-# $plan_repos naming a project with a merge-preapproved of the task not withdrawn (the projects
-# that opt in to plan-time merges now and are not the team's own) nor a key of $standing_repos (the
-# projects a standing word of Daniel's stands for), each of which team-inbox reads from the
-# registry.
-def merge_ready_prs($plan_repos; $standing_repos):
+# head, or at no head, as a legacy line, and whose default word does not hold on the ledger
+# (default_holds over $withdrawals, default_events', and $own, the registered projects that are the
+# team's own; with $own null, as when the registry cannot be read, none holds).
+def merge_ready_prs($withdrawals; $own):
   . as $events
   | task_prs as $prs
   | if phase != "awaiting-merge" then []
     else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
       | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
           and (.head == null or same_head(.head; $pr.head))) | not)
-      | (first($pr.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // "") as $repo
-      | $plan_repos[$repo] as $project
-      | select(($project != null and ($events | merge_preapproval($project) | . != null and .withdrawn == null))
-          or $standing_repos[$repo] != null | not)] end;
+      | select($own != null and ($events | default_holds($pr; $withdrawals; $own)) | not)] end;
 
 # What waits on Daniel, over every ledger event, each open task's in task number order: {items,
-# standing}. items, each keyed as waiting_numbered reads it: the open asks ({key: "ask <task> <id>
+# withdrawn}. items, each keyed as waiting_numbered reads it: the open asks ({key: "ask <task> <id>
 # <the asked's ts>", kind: "ask", task, title, id, text (its first line), thread (the task's
 # thread when it was asked), message (the question's discord_message)}), then the PRs ready to
 # merge ({key: "pr <url, its trailing slash dropped>", kind: "pr", task, title, url}), as
-# merge_ready_prs has them, its standing repos being those of $repos (each repo, lowercased, to its
-# project) whose project a standing word stands for, then the interviews under way ({key:
-# "interview <task> <thread>", kind: "interview", task, title, thread}); standing:
-# standing_word_events of the projects $projects (standing_projects', in team-inbox) a standing
-# word stands for.
-def inbox_items($plan_repos; $repos; $projects):
-  standing_words($projects) as $standing
-  | ($repos | with_entries(select(.value as $project | any($standing[]; .project == $project)))) as $standing_repos
+# merge_ready_prs has them over $own (the registered projects that are the team's own, or null),
+# then the interviews under way ({key: "interview <task> <thread>", kind: "interview", task, title,
+# thread}); withdrawn: the withdrawals of the default merge word that stand (default_withdrawals),
+# in ledger order.
+def inbox_items($own):
+  default_events as $withdrawals
+  | ($withdrawals | default_withdrawals(task_projects)) as $withdrawn
   | [by_task | to_entries[] | select(.value | is_open)
     | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
   | by_task_number
@@ -1796,12 +1807,12 @@ def inbox_items($plan_repos; $repos; $projects):
            text: (.ask.text | tostring | split("\n")[0]),
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
            message: (.ask.discord_message | if . == null then null else tostring end)}]
-      + [.[] | . as $t | .events | merge_ready_prs($plan_repos; $standing_repos)[] | .url
+      + [.[] | . as $t | .events | merge_ready_prs($withdrawals; $own)[] | .url
         | {key: "pr \(rtrimstr("/"))", kind: "pr", task: $t.task, title: $t.title, url: .}]
       + [.[] | select(.events | interview_under_way)
         | (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring) as $thread
         | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread}]),
-     standing: ($standing | standing_word_events)};
+     withdrawn: [$withdrawn[] | {task, scope, ts, discord_message, discord_channel}]};
 
 # The items of inbox_items, in its order, each given its number n, from the previous waiting.json
 # $previous (null when there is none or it cannot be read): an item whose key $previous's items
@@ -1839,18 +1850,19 @@ def waiting_line($guild):
 
 # waiting.json from inbox_items' answer: the items numbered (waiting_numbered, from $previous), in
 # the order waiting.md shows them (the asks, the PRs, the interviews, each in number order), each
-# with its line (waiting_line, in guild $guild), the standing words as inbox_items has them, and
+# with its line (waiting_line, in guild $guild), the withdrawals as inbox_items has them, and
 # $previous's post, null until team-inbox --post records one.
 def waiting_list($previous; $guild):
   {schema: "team-waiting/1",
    items: (.items | waiting_numbered($previous)
      | sort_by(.kind as $kind | [(["ask", "pr", "interview"] | index($kind)), .n])
      | map({n} + . + {line: waiting_line($guild)})),
-   standing: .standing,
+   withdrawn: .withdrawn,
    posted: ($previous.posted // null)};
 
 # waiting.md from waiting_list's answer, with a final newline: its title; "Nothing waits on you."
-# or each section with items, its heading then its items' lines; and one line per standing word,
+# or each section with items, its heading then its items' lines; and one line per withdrawal of the
+# default merge word that stands,
 # linked to Daniel's message in its channel in guild $guild (named by its id and channel when the
 # guild is unknown).
 def waiting_text($guild):
@@ -1861,9 +1873,9 @@ def waiting_text($guild):
       as [$kind, $heading]
       | [$items[] | select(.kind == $kind) | .line] | select(. != []) | $heading, .[]]
     end
-  + [.standing[] | "-# Standing merge word on \(.projects | projects_text) since "
-      + if $guild != null then "<https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)>"
-        else "message \(.word.discord_message) in <#\(.word.discord_channel)>" end]
+  + [.withdrawn[] | "-# Default merge word withdrawn for \(default_scope_text) since "
+      + if $guild != null then "<https://discord.com/channels/\($guild)/\(.discord_channel)/\(.discord_message)>"
+        else "message \(.discord_message) in <#\(.discord_channel)>" end]
   | join("\n") + "\n";
 
 # The messages of team-inbox --post from its lines, an array: packed greedily in order, each line

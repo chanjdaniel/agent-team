@@ -494,6 +494,39 @@ preapproved_rounds() {
     '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
 }
 
+# The lines of a task whose plan was approved with the plan's files (as since T276), with the review
+# rounds of preapproved_rounds after it: the default word stands for the passing review at 03:00.
+default_rounds() {
+  printf '%s\n' '00:00 plan-approved {by: "coordinator", plan: {"tasks/T90/plan.md": "0000"}}'
+  preapproved_rounds | sed 1,2d
+}
+
+@test "a passing review while the default word stands starts merging, which runs to the merged" {
+  local rounds
+  mapfile -t rounds < <(default_rounds)
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}")" '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+
+  # A plan-approved logged before T276, with no plan, was no merge word: the review leaves the
+  # coordinator's turn.
+  assert_equal "$(t90_hours 06:00 '00:00 plan-approved {by: "Daniel"}' "${rounds[@]:1}")" \
+    '{"building":1.5,"review":1,"unattributed":3.5}'
+
+  # The approval withdrawn, or the default withdrawn for the task, before the review: no merging.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:8}" '02:45 plan-approval-withdrawn {discord_message: "1563000000000000002"}' \
+    "${rounds[@]:8}")" '{"building":1.5,"review":1,"unattributed":3.5}'
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:8}" \
+    '02:45 merge-default-withdrawn {scope: "task", discord_message: "1563000000000000002", discord_channel: "1562"}' \
+    "${rounds[@]:8}")" '{"building":1.5,"review":1,"unattributed":3.5}'
+  # Given back for the task before the review, it stands again; withdrawn after it, the merging ends.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:8}" \
+    '02:40 merge-default-withdrawn {scope: "task", discord_message: "1563000000000000002", discord_channel: "1562"}' \
+    '02:45 merge-default-restored {scope: "task", discord_message: "1563000000000000003", discord_channel: "1562"}' \
+    "${rounds[@]:8}")" '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:10}" \
+    '04:00 merge-default-withdrawn {scope: "task", discord_message: "1563000000000000002", discord_channel: "1562"}' \
+    "${rounds[@]:10}")" '{"building":1.5,"review":1,"merging":1,"unattributed":2.5}'
+}
+
 @test "a park logged after the fact with since is counted from since, and the usage limit is its own phase" {
   : >"$TEAM_HOME/ledger.jsonl"
   local d1=2026-10-25T d2=2026-10-26T task

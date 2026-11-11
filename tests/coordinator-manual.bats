@@ -359,13 +359,9 @@ $WORKER_INSTRUCTIONS"
   grep -qF '"(Daniel'"'"'s standing word does not hold: ask them for the per-head word on the head <short head> with team-ask, naming <url>)"' "$sop"
   grep -qF '(Daniel'"'"'s default word does not hold: ask them for the per-head word on $on with team-ask, naming $url)' "$REPO_ROOT/bin/team-merge"
   grep -qF '("Standing merge word on <projects> since <link>")' "$sop"
-  grep -qF '"-# Standing merge word on \(' "$REPO_ROOT/bin/lib/ledger.jq"
   # team-state's words, as the manual and the SOP quote them.
   grep -qF '`team-state T<n>` says `merge pre-approved` or `standing word covers it`' "$sop"
-  grep -qF '" | standing word covers it"' "$REPO_ROOT/bin/lib/ledger.jq"
   grep -qF '`team-next` prints "merge on the standing word: run team-merge T<n> for ..."' "$sop"
-  grep -qF '"merge on the standing word: run team-merge \($task) for \($facts)"' "$REPO_ROOT/bin/team-next"
-  grep -qF '" | merge pre-approved"' "$REPO_ROOT/bin/lib/ledger.jq"
   # Each merge kind the manual and the SOP name is a kind of the contract, written by team-log, but
   # merge-due, team-sweep's finding.
   grep -qF '`merge-due` finding' "$sop"

@@ -223,15 +223,9 @@ fi
 # The words, read from the ledger alone by merge_authority in bin/lib/ledger.jq, the one
 # derivation every reader shares, on the head GitHub shows (or, when GitHub cannot be read, the
 # PR's latest logged head); what the ledger cannot show is checked below, word by word.
-ledger=$TEAM_HOME/ledger.jsonl
-[[ -e $ledger ]] || ledger=/dev/null
 # The default word's withdrawals and givings back, every task's, each giving back with thread, the
 # latest thread of the task it was logged under, where its message may be read back.
-withdrawals=$(ledger_jq '[inputs | fromjson? | objects] as $all
-  | [$all[] | select(.event == "merge-default-withdrawn" or .event == "merge-default-restored")
-     | if .event == "merge-default-restored" then
-         .task as $t | .thread = ([$all[] | select(.task == $t and .event == "thread") | .discord_thread | tostring] | last)
-       else . end]' -nRc <"$ledger") || jq_failed $?
+withdrawals=$(default_events_json) || jq_failed $?
 team_own=false
 if own_project "$project"; then team_own=true; fi
 authority=$(ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)' -c --arg url "${url%/}" \
@@ -419,11 +413,9 @@ if ! jq -e .applies <<<"$head_word" >/dev/null || ((${#head_reasons[@]})); then
       default_reasons+=("${PR_FILE_REASONS[@]}")
       if ((rc == 0)); then files_read=1; fi
       if [[ -n $files_read ]]; then
-        add_reasons default_reasons --argjson scope "$(jq -c .facts.scope <<<"$default_word")" '
-          def name: if .renamed then "\(.path), renamed to \(.renamed)," else .path end;
-          select($scope != null) | .[] | .path as $p
-          | select(any($scope[]; . as $entry | if endswith("/") then $p | startswith($entry) else $p == $entry end) | not)
-          | "\(name) is outside the approved plan'"'"'s scope: \($scope | join(", "))"' <<<"$PR_CHANGED"
+        outside=$(ledger_jq 'scope_reasons($scope)' -r --argjson scope "$(jq -c .facts.scope <<<"$default_word")" <<<"$PR_CHANGED") ||
+          jq_failed $?
+        while IFS= read -r line; do if [[ -n $line ]]; then default_reasons+=("$line"); fi; done <<<"$outside"
       fi
     fi
   fi

@@ -29,10 +29,13 @@
 #   stands are settled, each by an answered or merge-preapproved with its id or a merge-approved
 #   whose url its text names, or a launch, resumed, another park or a merge-approved ends it;
 #   with no park, the last marker: a planner or ops launch planning, a builder's building, a
-#   reviewer's review, merge-approved merging, a passing review while a plan-time approval of the
-#   task stands (a merge-preapproved of a project with no later merge-preapproval-withdrawn of it)
-#   merging until the merged, or until a withdrawal leaves none standing with no merge-approved
-#   since that review, a review that sends notes back (sent_back) building (the builder's fix
+#   reviewer's review, merge-approved merging, a passing review while the default word stands
+#   (the task's latest plan-approved records its plan, as one logged since T276 does, with no
+#   plan-approval-withdrawn after it, and no merge-default-withdrawn of scope task stands in its
+#   events) merging until the merged or such a withdrawal, and for history a passing review while a
+#   plan-time approval of the task stands (a merge-preapproved of a project with no later
+#   merge-preapproval-withdrawn of it) merging until the merged, or until a withdrawal leaves none
+#   standing with no merge-approved since that review, a review that sends notes back (sent_back) building (the builder's fix
 #   round, which a reviewer's done leaves building, and in which a paused whose cause is stow
 #   (its own, or a reason starting with stowed) is
 #   building up to the fresh builder's launch, until a builder's done, pr or ticket-done, another

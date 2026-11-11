@@ -567,10 +567,11 @@ launched T1-reviewer 6c7d8e9f"
   agent_review_passes owner/home 7
   session_is "$rereviewer" idle working
 
-  # The pass: the merge ask's facts, and nothing posted or merged.
+  # The pass: the default word's merge line, the plan being approved, and nothing posted or merged.
   ok team-next T1 -- "T1 DONE pass $url findings=$zero before=none guarded=none"
-  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $fix, agent-review success, checks green"
-  step awaiting-merge
+  assert_equal "$(tail -n 1 <<<"$output")" "merge on the default word: run team-merge T1 for $url at $fix, agent-review success, checks green"
+  # The sweep sends the coordinator to that merge.
+  step awaiting-merge merge-due:-
   [[ $(git --git-dir "$BATS_TEST_TMPDIR/origin/home.git" rev-parse dev) != "$fix" ]]
 
   # The ledger holds every turn, each written by a script, and meets its contract.

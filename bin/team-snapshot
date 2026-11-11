@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Show everything open across the team: every open task's state, the team's resource level,
-# Daniel's standing merge words, the production checks' last results, the live team sessions and
+# Daniel's withdrawals of the default merge word, the production checks' last results, the live team sessions and
 # strays, the open PRs of every registered project, the asks waiting on Daniel, and the
 # coordinator's current items.
 #
@@ -12,13 +12,12 @@
 # team-inbox --post posts says it: "Resources: manual, minor (30%): 9.2 GiB and 3.6
 # cores for the team; 6.1 GiB reserved; T171 stowed, waiting to resume", from team-level status
 # --stored --json (it takes no reading), naming each open task whose latest stowed (for the level
-# or a handoff) names roles to relaunch and that no launch has followed. The standing merge words
-# are, for the projects in projects.toml but the team's own (standing_projects in
-# bin/lib/team.sh, since its PRs merge only on the per-head word), Daniel's words that stand (the
-# latest merge-standing or merge-standing-withdrawn naming the project or all is a
-# merge-standing), one line per word after the resources line: "Standing merge word: <projects>
-# (Discord message <id>, <ts>, <task>)", or "Standing merge word: none". The Production line
-# follows them, team-uptime status --json's line (it makes no request): "Production: all 2 checks
+# or a handoff) names roles to relaunch and that no launch has followed. After it, one line per
+# withdrawal of the default merge word that stands (it is still the latest merge-default-withdrawn
+# or merge-default-restored, of any task, covering some PR; default_withdrawals in
+# bin/lib/ledger.jq), in ledger order: "Default merge word withdrawn for <the task, project
+# <name> or every project> since <ts> (Discord message <id>, <the task it was logged under>)", and none
+# while no withdrawal stands. The Production line follows them, team-uptime status --json's line (it makes no request): "Production: all 2 checks
 # up, last checked 14:05", or each check not up, such as "Production: conventioner api down since
 # 13:40: HTTP 503; 1 more up, last checked 14:05", "Production unreadable: <error>" when
 # team-uptime fails, and no line when no project has a check. Live team sessions are
@@ -35,9 +34,8 @@
 # level (team-level status --stored --json's object, or {error} with the last line team-level said
 # when it fails, which the text says as "Resources unreadable: <error>"), awaiting_resume (the open
 # tasks stowed, waiting to resume, in task number order), resources (the resources line, null when
-# level is {error}), standing_words (one {project, word: {project as logged, task, ts,
-# discord_message, discord_channel}} per registered project but the team's own a standing word
-# stands for, in the registry's order), production (team-uptime status --json's object, its line
+# level is {error}), default_withdrawn (each withdrawal of the default merge word that stands, as
+# its merge-default-withdrawn event, in ledger order), production (team-uptime status --json's object, its line
 # null with no check, or {error} with the last line team-uptime said when it fails), sessions
 # ({task, role, name, session, status, state, logged}), strays (the same with task_state closed,
 # unknown or load-check instead of logged), prs ({project, repo, prs: [{number, title, url,
@@ -140,15 +138,12 @@ jq -cs . "${prs[@]}" </dev/null >"$tmp/prs"
 current=$TEAM_HOME/tasks/current.md
 [[ -f $current ]] || current=/dev/null
 ledger_jq 'current_items' -nRc "$current" >"$tmp/items"
-# The projects a standing word may cover, every registered one but the team's own, read only once
-# the ledger holds a merge-standing.
-standing=''
-if grep -qF merge-standing "$ledger"; then standing=$(standing_projects) || exit 1; fi
-ledger_jq 'ledger_events | standing_words($projects | split("\n") | map(select(. != "")))' -nRc \
-  --arg projects "$standing" "$ledger" >"$tmp/standing"
-snapshot=$(ledger_jq 'snapshot($tasks[0]; $states[0]; $level[0]; $standing[0]; $sessions; $prs[0]; $items[0]; $production[0])' -nc \
+# The withdrawals of the default merge word that stand.
+ledger_jq 'ledger_events | task_projects as $projects | default_events | default_withdrawals($projects)' -nRc \
+  "$ledger" >"$tmp/withdrawn"
+snapshot=$(ledger_jq 'snapshot($tasks[0]; $states[0]; $level[0]; $withdrawn[0]; $sessions; $prs[0]; $items[0]; $production[0])' -nc \
   --slurpfile tasks "$tmp/tasks" --slurpfile states "$tmp/states" --slurpfile production "$tmp/production" \
-  --slurpfile level "$tmp/level" --slurpfile standing "$tmp/standing" --argjson sessions "$LIVE_SESSIONS" \
+  --slurpfile level "$tmp/level" --slurpfile withdrawn "$tmp/withdrawn" --argjson sessions "$LIVE_SESSIONS" \
   --slurpfile prs "$tmp/prs" --slurpfile items "$tmp/items")
 
 if [[ -n $json ]]; then
