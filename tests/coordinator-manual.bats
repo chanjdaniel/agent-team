@@ -268,7 +268,7 @@ $WORKER_INSTRUCTIONS"
   steps=$(grep -oE '^[0-9]+\. \*\*[A-Za-z ]+\.\*\*' "$skill" | sed -E 's/^[0-9]+\. \*\*(.*)\.\*\*$/\1/' | paste -sd ,)
   assert_equal "$steps" "Check,Stow yourself,Post,STOW the workers,Run,Post the final message,Retire"
   grep -qF '`team-handoff --check`' "$skill"
-  grep -qF 'Send `T<n> STOW` to each live worker' "$skill"
+  grep -qF 'First run `team-stow --all --begin --cause handoff`, which logs each open task'"'"'s `stowing`; then send `T<n> STOW` to each live worker' "$skill"
   grep -qF 'up to 10 minutes' "$skill"
   grep -qF '`team-handoff --retire`' "$skill"
   grep -qF '`team-handoff` moves the team off this machine' "$manual"
@@ -287,7 +287,7 @@ $WORKER_INSTRUCTIONS"
   # A crashed task: the roles of its latest launches nothing ended, with the crash brief.
   grep -qF 'For each task whose `crashed` is not null, for each role of `crashed.roles`' "$skill"
   grep -qF '`team-brief T<n> resume-crash --name resume-<role> --force --set role=<role> --set brief=<that brief> --set machine=<crashed.machine> --set checkpoint=<crashed.checkpoint> --set snapshot=' "$skill"
-  grep -qF '`team-log T<n> resumed`' "$skill"
+  grep -qF '`team-log T<n> resumed all=true`' "$skill"
   # Each failed worktree is in the ledger, and every report of the day goes at the end.
   grep -qF 'Each failure is also a `rehome-failed` in the ledger' "$skill"
   grep -qF 'delete every report of the day, `tasks/resume-<date>-*.json`, the earlier runs'"'"' included' "$skill"
@@ -460,13 +460,16 @@ $WORKER_INSTRUCTIONS"
   local skill=$plugin/skills/level/SKILL.md
   grep -qF 'run `team-level <word> --message <id>`' "$skill"
   grep -qF 'Post that line in `#coordinator` word for word' "$skill"
-  grep -qF 'Send `T<n> STOW` to each live worker of the named tasks' "$skill"
+  grep -qF 'First run `team-stow <tasks> --begin`, which logs each task'"'"'s `stowing`' "$skill"
+  grep -qF 'then send `T<n> STOW` to each live worker of the named tasks' "$skill"
   grep -qF 'For Daniel'"'"'s manual change only, run `team-stow <tasks> --stop-runs` right after' "$skill"
   grep -qF 'Wait up to 10 minutes for each `T<n> PAUSED stowed`, logging each with `team-log T<n> --from-message '"'"'<the message>'"'"'`, never `team-next`' "$skill"
   grep -qF '**Run.** `team-stow <tasks>`' "$skill"
   grep -qF 'stow the tasks it names as "Stowing tasks" says, without `--stop-runs`' "$skill"
   grep -qF '`team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief>' "$skill"
-  grep -qF 'and leave it for the next `level-resume`' "$skill"
+  grep -qF 'and `team-worker` has logged its `paused cause=room` itself: leave it for the next `level-resume`' "$skill"
+  grep -qF 'refused with 75, which logs that refusal itself (`paused cause=room role=<role>`, with its line)' "$skill"
+  grep -qF 'It refuses a task on Daniel'"'"'s hold, one with an open ask unless `--past-ask <id>` names it, and a feature task'"'"'s build before its plan' "$skill"
   grep -qF '"Shut down" is not a level: follow the `handoff` skill'"'"'s same-machine case.' "$skill"
   grep -qF 'run the same `team-worker` command again, with the brief you wrote for it' "$skill"
   grep -qF '`team-sweep` finds `level-stow`, `level-resume` or `level-launch`: the `level` skill' "$manual"
@@ -565,10 +568,12 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25620 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 26410 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
-  # A worker's report is logged only by team-next or team-log --from-message.
-  found=$(grep -nE 'team-log T<n> (done|ticket-done|review|pr|paused|question|gate-run)\b' "${files[@]}" || true)
+  # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
+  # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
+  found=$(grep -nE 'team-log T<n> (done|ticket-done|review|pr|paused|question|gate-run)\b' "${files[@]}" |
+    grep -vE 'team-log T<n> paused cause=(limit|machine|shutdown)\b' || true)
   assert_equal "$found" ""
   found=$(grep -nE 'team-log T<n> failed\b' "$manual" || true)
   assert_equal "$found" ""
@@ -588,11 +593,17 @@ $WORKER_INSTRUCTIONS"
   # message of Daniel's each ops launch needs, 24590 once the ops line named the logging of its
   # answer as its length, with the pointer to its relay, 24640 once the load check's line named
   # team-drill status, 24690 once it named the probe form, and 117 lines and 25190 bytes once
-  # waiting.md, team-inbox --post and the reply by number replaced the Waiting on you message,
-  # 25280 once the heartbeat's line named team-uptime, and 25620 once the plan ask and the build
-  # step named the ticket graph and its PNG).
+  # waiting.md, team-inbox --post and the reply by number replaced the Waiting on you message, and
+  # 25280 once the heartbeat's line named team-uptime, 25680 once the message table and the
+  # park line named each park's cause, 25860 once they named resumed id= and all=true and
+  # what ends Daniel's hold and an ask's wait, 25930 once step 2 named team-worker's refusals of
+  # a hold, an open ask unless --past-ask, and a feature task's build before its plan, 26280
+  # once the plan ask and the build step named the ticket graph and its PNG, 26290 once the
+  # block on another task named on=T<m> and the BLOCKED row the launch of its role that clears it,
+  # and 26410 once the review step named the gate parks a builder approves itself, in the review
+  # rules and in DONE gate's approved=).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 25620))
+  (($(wc -c <"$manual") <= 26410))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

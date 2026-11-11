@@ -236,14 +236,17 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 3. Push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send `T12 DONE review-ready <the full sha of HEAD>` to `coordinator`, then wait: the team reviews that head before the gate runs, so the gate runs once.
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
 4. Run `/no-mistakes` with an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is "rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes.": on a phase, this phase's part of it alone), under a Disclosure section put in its terms, since the gate drafts the PR's title and body from it.
-   When the review step parks with no finding, only on "review coverage is incomplete", answer it yourself with `no-mistakes axi respond --action approve`, with no QUESTION: the team review reads this head, before the gate or after it. A finding, at any step, still goes to `coordinator` as a QUESTION.
+   A step that parks with no finding you approve yourself, with no QUESTION, only when the park is one of these kinds, named by its id:
+   - `review-coverage`: the review step parks on "review coverage is incomplete" alone, and the team review read every file it names at a head this branch contains: a head you or the builder before you sent as `DONE review-ready`, or one the coordinator names as reviewed, that `git merge-base --is-ancestor <that head> HEAD` passes for and whose `git diff --name-only origin/dev...<that head>` lists the file.
+   Approve it with `no-mistakes axi respond --action approve`, write a build note in `.scratch/task/build-notes/` naming the run, the step, the park's id and what the gate said, and put the ids of the parks the run approved in its `DONE gate` line as `approved=<ids, comma-separated>`.
+   Any other park, and a finding at any step, goes to `coordinator` as a QUESTION.
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
 6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks, noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
    Wait with `@CODE@/bin/team-ci-wait <full url> <the full sha you pushed>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
    The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
 7. Then send `T12 PR <full url>` to `coordinator`, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged.
 
-At each gate run's end (it pushed, went red, was aborted, or was stopped once its PR's checks were green), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted|stopped-green> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
+At each gate run's end (it pushed, went red, was aborted, or was stopped once its PR's checks were green), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted|stopped-green> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR, and `approved=<ids>` when you approved a park of it yourself, as step 4 says.
 
 Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
@@ -658,7 +661,7 @@ EOF
   assert_contains "$brief" "3. Push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send \`T12 DONE review-ready <the full sha of HEAD>\` to \`coordinator\`, then wait: the team reviews that head before the gate runs, so the gate runs once."
   assert_contains "$brief" "once they are fixed, or the coordinator says the review passed, go on."
   # The review comes before the gate.
-  [[ $(grep -n 'review-ready' <<<"$brief" | cut -d: -f1) -lt $(grep -n '/no-mistakes' <<<"$brief" | cut -d: -f1) ]]
+  [[ $(grep -n -m 1 'review-ready' <<<"$brief" | cut -d: -f1) -lt $(grep -n -m 1 '/no-mistakes' <<<"$brief" | cut -d: -f1) ]]
 }
 
 @test "a direct-PR project's builder pushes nothing under a Disclosure section until the review passes, then pushes, checks and opens the PR" {
@@ -1350,6 +1353,79 @@ odd_names_branch() {
   run_fake T12 x --force
   assert_equal "$status" 0
   assert_equal "$(<"$TEAM_HOME/tasks/T12/brief.md")" $'one\ngated T12\n\nthe rules of T12\n\ntwo'
+}
+
+# A gated builder approves the routine gate parks its brief names, records each approval, and
+# sends a QUESTION for any other park; the briefs that run the gate are the three that deliver.
+@test "each gated builder brief names the parks its builder approves, records each approval and sends any other park as a QUESTION" {
+  open_t12
+  local template brief
+  findings_files .treehouse/Conventioner-d4c77a/4/Conventioner .scratch/task review.md
+  for template in builder-fix builder-deliver builder-round; do
+    local args=(--set goal=g)
+    [[ $template == builder-fix ]] && args+=(--set read='- `AGENTS.md`.' --set commits=fix)
+    [[ $template == builder-round ]] && args+=(--set pr=none --set findings=1)
+    run_bin -0 team-brief T12 "$template" --name "$template" "${args[@]}"
+    brief=$(<"$TEAM_HOME/tasks/T12/brief-$template.md")
+    assert_contains "$brief" $'\n   A step that parks with no finding you approve yourself, with no QUESTION, only when the park is one of these kinds, named by its id:\n   - `review-coverage`: the review step parks on "review coverage is incomplete" alone, and the team review read every file it names at a head this branch contains: a head you or the builder before you sent as `DONE review-ready`, or one the coordinator names as reviewed, that `git merge-base --is-ancestor <that head> HEAD` passes for and whose `git diff --name-only origin/dev...<that head>` lists the file.\n   Approve it with `no-mistakes axi respond --action approve`, write a build note in `.scratch/task/build-notes/` naming the run, the step, the park\'s id and what the gate said, and put the ids of the parks the run approved in its `DONE gate` line as `approved=<ids, comma-separated>`.\n   Any other park, and a finding at any step, goes to `coordinator` as a QUESTION.\n'
+    assert_contains "$brief" '`cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR, and `approved=<ids>` when you approved a park of it yourself, as step 4 says.'
+    refute_grep -F 'gate-parks' "$TEAM_HOME/tasks/T12/brief-$template.md"
+  done
+  # A direct-PR project runs no gate, so its builder has no park to approve.
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -0 team-brief T14 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g
+  refute_grep -e 'approved=' -e 'gate-parks' -e 'review-coverage' "$TEAM_HOME/tasks/T14/brief.md"
+}
+
+@test "a project's review rules may name more gate parks, which reach its gated builder briefs and never its review briefs" {
+  open_t12
+  reviewed_branch T12 dev
+  local template brief
+  findings_files .treehouse/Conventioner-d4c77a/4/Conventioner .scratch/task review.md
+  mkdir -p "$TEAM_HOME/projects/conv"
+  printf '%s\n' '- Run the data check at `{{head}}`.' '' '## Gate parks' '' \
+    '- `lint-before`: the lint step parks only on a finding in a file `origin/{{base}}...HEAD` does not change.' \
+    '  It names the file and the rule.' \
+    '- `docs-wording`: the document step parks only on wording.' '' \
+    '## More rules' '' '- Read the PR body as Daniel will.' >"$TEAM_HOME/projects/conv/review-rules.md"
+  for template in builder-fix builder-deliver builder-round; do
+    local args=(--set goal=g)
+    [[ $template == builder-fix ]] && args+=(--set read='- `AGENTS.md`.' --set commits=fix)
+    run_bin -0 team-brief T12 "$template" --name "$template" "${args[@]}"
+    brief=$(<"$TEAM_HOME/tasks/T12/brief-$template.md")
+    # The project's parks come after the brief's own, at its indent, their placeholders filled.
+    assert_contains "$brief" $' lists the file.\n   - `lint-before`: the lint step parks only on a finding in a file `origin/dev...HEAD` does not change.\n     It names the file and the rule.\n   - `docs-wording`: the document step parks only on wording.\n   Approve it with'
+    # The review rules never reach a builder.
+    refute_grep -e 'data check' -e 'PR body as Daniel' -e '## Gate parks' "$TEAM_HOME/tasks/T12/brief-$template.md"
+  done
+  # The review briefs take every rule but the section of gate parks.
+  run_bin -0 team-brief T12 reviewer --name review --set head="$head" --set checks=c
+  brief=$(<"$TEAM_HOME/tasks/T12/brief-review.md")
+  assert_contains "$brief" $'\n\n- Run the data check at `'"$head"$'`.\n\n## More rules\n\n- Read the PR body as Daniel will.\n\n'
+  refute_grep -e 'Gate parks' -e 'lint-before' -e 'docs-wording' "$TEAM_HOME/tasks/T12/brief-review.md"
+  # Rules that are only gate parks leave a review brief none.
+  printf '%s\n' '## Gate parks' '- `docs-wording`: the document step parks only on wording.' >"$TEAM_HOME/projects/conv/review-rules.md"
+  run_bin -0 team-brief T12 reviewer --name review-parks --set head="$head" --set checks=c
+  rm "$TEAM_HOME/projects/conv/review-rules.md"
+  run_bin -0 team-brief T12 reviewer --name review-none --set head="$head" --set checks=c
+  assert_equal "$(<"$TEAM_HOME/tasks/T12/brief-review-parks.md")" "$(<"$TEAM_HOME/tasks/T12/brief-review-none.md")"
+}
+
+@test "a gate park the review rules name with no id, or twice, is refused naming it, and nothing is written" {
+  open_t12
+  mkdir -p "$TEAM_HOME/projects/conv"
+  local rules=$TEAM_HOME/projects/conv/review-rules.md
+  printf '%s\n' '## Gate parks' '- the lint step parks on an old file.' >"$rules"
+  run_bin -1 team-brief T12 builder-deliver --set goal=g
+  assert_equal "$output" "team-brief: each gate park in $rules starts \`- \`<id>\`: \`, the id in kebab case; got '- the lint step parks on an old file.'"
+  printf '%s\n' '## Gate parks' '- `lint-before`: one.' '- `lint-before`: two.' >"$rules"
+  run_bin -1 team-brief T12 builder-deliver --set goal=g
+  assert_equal "$output" "team-brief: $rules names the gate park lint-before twice"
+  # The brief's own park is the brief's: the rules cannot name it again.
+  printf '%s\n' '## Gate parks' '- `review-coverage`: any coverage park.' >"$rules"
+  run_bin -1 team-brief T12 builder-deliver --set goal=g
+  assert_equal "$output" "team-brief: $rules names the gate park review-coverage twice"
+  [[ -z $(task_files) ]]
 }
 
 @test "the retro brief renders from the task's facts alone, its digest first and read from team_bin" {

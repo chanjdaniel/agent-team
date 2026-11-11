@@ -249,16 +249,20 @@
 #          team-worker stops a task's own by, over every open task), stop each running team dev
 #          stack of an open task that no busy session (interactive ones too) works in, then stow
 #          open tasks with a live worker or a reservation left, the most recently opened first,
-#          until the rest fits; at none every one. Then the tasks stowed, waiting to resume
-#          (their latest stowed, for the level or a handoff, names roles to relaunch and no
-#          launch follows it), oldest stow first, each with the estimate of its roles to
-#          relaunch, whether that fits now (never at none) and what holds it, if anything (its
-#          latest held while it stands, or a waiting or blocked logged after its stow while it
-#          stands: stow_hold in bin/lib/ledger.jq), which keeps it from being relaunched until a
-#          resumed lifts it; then the tasks whose launches were refused for room and not
-#          launched or resumed since (refused_launches in bin/lib/ledger.jq), oldest refusal
-#          first, each with its roles' estimate, whether it fits and what holds it alike (a
-#          waiting or blocked logged after its latest refusal). Text: "Over budget at minor (30%): 14.5 GiB
+#          until the rest fits; at none every one. A task with a stow under way (a stowing
+#          standing, which team-stow --begin or a team-stow run logged, until its stowed or
+#          stow-failed) is never named to stow, what it holds counts as freed already, so no other
+#          task stows in its place, and it is in neither list below. Then the tasks stowed,
+#          waiting to resume (their latest stowed, for the level or a handoff, or stow-failed,
+#          which keeps its stowing's roles, names roles to relaunch and no launch follows it),
+#          oldest stow first, each with the estimate of its roles to
+#          relaunch, whether that fits now (never at none) and what holds it, if anything
+#          (Daniel's hold or an ask no launch went past, wherever logged, or a held, waiting or
+#          blocked logged after its stow, while it stands: stow_hold in bin/lib/ledger.jq), which
+#          keeps it from being relaunched until it ends; then the tasks whose launches were
+#          refused for room with the refusal standing (refused_launches in bin/lib/ledger.jq),
+#          oldest refusal first, each with its roles' estimate, whether it fits and what holds it
+#          alike (after its latest refusal in the stow's place). Text: "Over budget at minor (30%): 14.5 GiB
 #          reserved of 9.6 GiB.", then "  stop T1-reviewer aaaa0012, its work handed on: frees
 #          1.0 GiB", "  stop conventioner-3 of T3, no busy session in its worktree: frees
 #          3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed, waiting to resume, oldest stow first:"

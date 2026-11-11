@@ -36,9 +36,9 @@
     },
     "launch": {
       "writer": "team-worker",
-      "about": "request is the link to Daniel's Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on (team-worker refuses one that did), which only an ops launch carries; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there; admission is the id of the capacity admission the launch was made on (team-capacity admit's first line), absent on T0, ops and a launch from before 2026-11-11; ticket is the two-digit number of the ticket whose ticket worktree a builder launched in (team-open --ticket's), its session named T<n>-builder-NN and its branch the ticket branch, absent in a task worktree",
+      "about": "request is the link to Daniel's Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on (team-worker refuses one that did), which only an ops launch carries; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there; admission is the id of the capacity admission the launch was made on (team-capacity admit's first line), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past (team-worker --past-ask), which then park nothing, absent when it names none; ticket is the two-digit number of the ticket whose ticket worktree a builder launched in (team-open --ticket's), its session named T<n>-builder-NN and its branch the ticket branch, absent in a task worktree",
       "required": {"role": "string", "session": "string", "worktree": "string", "toolkits": "array"},
-      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "discord_message": "id", "brief": "string", "admission": "string", "ticket": "string"},
+      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "discord_message": "id", "brief": "string", "admission": "string", "past_ask": "array", "ticket": "string"},
       "field_when": {"discord_message": {"role": ["ops"]}, "ticket": {"role": ["builder"]}}
     },
     "worktree-returned": {
@@ -126,16 +126,16 @@
       "optional": {"parallel": "string"}
     },
     "paused": {
-      "writer": "team-log",
-      "about": "since: when the park began, when it is logged after the fact",
+      "writer": ["team-log", "team-worker"],
+      "about": "a worker's or the task's work paused; cause: why, a cause bin/lib/lifecycle.json gives paused, which team-log requires of every new line it logs; role and session: the paused worker's, when the line names one; brief: on team-worker's own room refusal (cause room, its role the launch's), the brief the refused launch named; since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
-      "optional": {"since": "string"}
+      "optional": {"cause": ["worker", "room", "stow", "coordinator-hold", "offline", "limit", "machine", "shutdown"], "role": "string", "session": "string", "brief": "string", "since": "string"}
     },
     "blocked": {
       "writer": "team-log",
-      "about": "a worker stopped by an obstacle; the next launch or resumed clears it; since: when the park began, when it is logged after the fact",
+      "about": "a worker stopped by an obstacle; it stands until a launch or a resumed id= or all=true ends it, by its cause's rules in bin/lib/lifecycle.json (a worker's block that names its role only at a launch of that role), an old line with no cause as before; cause: why, a cause bin/lib/lifecycle.json gives blocked, task when on names a task, else worker unless given; role and session: the blocked worker's, when the line names one; since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
-      "optional": {"since": "string"}
+      "optional": {"cause": ["task", "worker", "denial"], "role": "string", "session": "string", "since": "string"}
     },
     "denied": {
       "writer": ["team-log", "denial-log"],
@@ -145,21 +145,21 @@
     },
     "held": {
       "writer": "team-log",
-      "about": "since: when the park began, when it is logged after the fact",
+      "about": "Daniel's hold on the task; cause: daniel-hold; discord_message: Daniel's message saying so, which team-log requires of every new line; since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
-      "optional": {"head": "string", "since": "string"}
+      "optional": {"cause": ["daniel-hold"], "discord_message": "id", "head": "string", "since": "string"}
     },
     "waiting": {
       "writer": ["team-log", "team-ask"],
-      "about": "a task parked on Daniel or something outside the team; the next launch or resumed clears it; since: when the park began, when it is logged after the fact",
+      "about": "a task parked on Daniel or something outside the team; it stands until a launch or a resumed id= or all=true ends it, but team-ask's wait on its ask, which only that ask's answered ends, an old line with no cause as before; cause: why, a cause bin/lib/lifecycle.json gives waiting, daniel when on is Daniel (any case), else outside unless given, and ask for team-ask's wait on its ask, whose id ask names; since: when the park began, when it is logged after the fact",
       "required": {"on": "string", "reason": "string"},
-      "optional": {"since": "string"}
+      "optional": {"cause": ["ask", "daniel", "outside"], "ask": "string", "since": "string"}
     },
     "resumed": {
       "writer": ["team-log", "team-answer"],
-      "about": "clears held, blocked, paused and waiting; brief: the file name without .md of the brief the holder was sent, on a merge-base round, which holds team-sweep's merge-due",
+      "about": "ends standing parks, by bin/lib/lifecycle.json's causes: id, the park it ends (team-state's parks name each), Daniel's hold only with discord_message, Daniel's message lifting it, and an ask's wait never; all true, every park whose cause takes all; brief alone, the file name without .md of the brief the holder was sent, on a merge-base round, which holds team-sweep's merge-due, ends none; an old line with none of the three ended every park",
       "required": {},
-      "optional": {"brief": "string"}
+      "optional": {"id": "string", "all": "boolean", "discord_message": "id", "brief": "string"}
     },
     "pr": {
       "writer": "team-log",
@@ -173,9 +173,9 @@
     },
     "gate-run": {
       "writer": "team-log",
-      "about": "one per gate run, at its end: run is the gate's run id, head the commit it ran on, cause why it repeats an earlier run on the same PR, minutes each step's minutes as no-mistakes axi status --run prints them",
+      "about": "one per gate run, at its end: run is the gate's run id, head the commit it ran on, cause why it repeats an earlier run on the same PR, minutes each step's minutes as no-mistakes axi status --run prints them, approved the ids of the parks the builder approved itself in the run, each a kind its brief or the project's review rules name (team-time counts them), absent when it approved none",
       "required": {"run": "string", "head": "string", "outcome": ["pushed", "red", "aborted", "stopped-green"]},
-      "optional": {"cause": ["review", "notes", "gate-finding", "load", "tooling", "base-merge", "other"], "minutes": "object"}
+      "optional": {"cause": ["review", "notes", "gate-finding", "load", "tooling", "base-merge", "other"], "minutes": "object", "approved": "array"}
     },
     "merge-approved": {
       "writer": "team-log",
@@ -228,11 +228,21 @@
       "about": "the task it is logged on builds those proposals of retro T<m>, or, logged on T<m> itself, records were changed in place for them; proposals as Daniel's answer names them; team-retro digest reads when each landed, for the next retro to judge",
       "required": {"retro": "string", "proposals": "string"}
     },
+    "stowing": {
+      "writer": "team-stow",
+      "about": "a stow of the task under way on machine, logged by team-stow --begin before the coordinator sends its workers STOW (the level and handoff skills), or by a team-stow run that finds none standing, after its branches check and before it stops any session: cause level or handoff, as the run's; roles the task's unfinished work then (ledger.jq's unfinished_roles), which a stow-failed keeps for the resume; it stands until the task's stowed or stow-failed, or a launch, and team-sweep names one standing 30 minutes",
+      "required": {"machine": "string", "cause": ["level", "handoff"], "roles": "array"}
+    },
     "stowed": {
       "writer": "team-stow",
       "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin, and ticket, the two-digit number of a ticket worktree's ticket; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",
       "required": {"machine": "string", "worktrees": "array", "roles": "array"},
       "optional": {"sessions": "array", "cause": ["level", "handoff"]}
+    },
+    "stow-failed": {
+      "writer": "team-stow",
+      "about": "a stow of the task under way (its stowing) that team-stow did not finish on machine: reason the refusal of the task by a step after the stowing (a diverged branch, a session that would not stop, a push), or \"the run stopped: <its last error line>\" when a step stopped the run (a checkpoint that failed, exit 1 or 75); the task is then read as stowed with the stowing's roles, so the resume relaunches them, until a launch",
+      "required": {"machine": "string", "reason": "string"}
     },
     "worktree-moved": {
       "writer": "team-open",

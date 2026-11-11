@@ -104,6 +104,22 @@ def with_sender($task; $events; $from; $implied; f): with_sender($task; $events;
 # One event: {event, fields: [[key, raw value]...]}.
 def message_event($event; $fields): {event: $event, fields: $fields};
 
+# A worker's park, a blocked or a paused of cause $cause with reason $reason, carrying the sender's
+# role and session when message_sender names one, and neither when it cannot tell the sender (a
+# launch of any role then ends the park); a --from that names no launch is refused.
+def message_park($task; $events; $from; $kind; $cause; $reason):
+  message_sender($task; $events; $from; null) as $s
+  | if $s.problems and $from != "" then $s
+    else {events: [message_event($kind; [["reason", $reason], ["cause", $cause]]
+      + if $s.sender then [["role", $s.sender.role], ["session", $s.sender.session]] else [] end)]} end;
+
+# The cause of a worker's PAUSED <why>, by its first word (any case): stowed a stow, the answer to
+# STOW; held coordinator-hold, the answer to HOLD; offline offline, GitHub out of reach; any other
+# worker.
+def message_paused_cause:
+  (first(capture("^(?<w>\\w+)") | .w | ascii_downcase) // "") as $word
+  | {stowed: "stow", held: "coordinator-hold", offline: "offline"}[$word] // "worker";
+
 # A reviewer's DONE pass or findings: the review and the reviewer's done, the review carrying
 # widening=, the numbers of a rereview's new findings in what the last fix added, and memory=, the
 # file of memories the reviewer added for the coordinator to file, when it names them.
@@ -217,11 +233,11 @@ def parse_message($task; $events; $records; $from; $sent_back):
       with_sender($task; $events; $from; null;
         if .role == "ops" then message_ops("question"; .; $rest)
         else {events: [message_event("question"; [["role", .role], ["text", $rest]])]} end)
-    elif $m.kind == "BLOCKED" then {events: [message_event("blocked"; [["reason", $rest]])]}
+    elif $m.kind == "BLOCKED" then message_park($task; $events; $from; "blocked"; "worker"; $rest)
     elif $m.kind == "NEED" then
-      if ($rest | test("^toolkit\\s+\\S+$")) then {events: [message_event("blocked"; [["reason", "needs " + ($rest | sub("\\s+"; " "))]])]}
+      if ($rest | test("^toolkit\\s+\\S+$")) then message_park($task; $events; $from; "blocked"; "worker"; "needs " + ($rest | sub("\\s+"; " ")))
       else message_refused("NEED takes 'NEED toolkit <name>', got 'NEED \($rest)'") end
-    elif $m.kind == "PAUSED" then {events: [message_event("paused"; [["reason", $rest]])]}
+    elif $m.kind == "PAUSED" then message_park($task; $events; $from; "paused"; $rest | message_paused_cause; $rest)
     elif $m.kind == "PR" then
       ($rest | capture("^(?<url>\\S+)(?:\\s+merged\\s+\\S+\\s+conflicts:\\s*\\S.*)?$"; "s") // null) as $pr
       | if $pr == null or ($pr.url | message_pr_url | not) then

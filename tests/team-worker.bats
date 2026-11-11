@@ -54,11 +54,22 @@ thread() {
   ledger_line --arg t "$1" '{ts: (now | todate), task: $t, event: "thread", discord_thread: "1563"}'
 }
 
-# opened <task> <project> <branch> <worktree>
+# opened <task> <project> <branch> <worktree>: a feature task opened in <worktree>, its plan
+# approved, so its builders and reviewers launch.
 opened() {
   ledger_line --arg t "$1" --arg p "$2" --arg b "$3" --arg wt "$4" '{ts: (now | todate), task: $t,
     event: "opened", project: $p, path: "feature", type: "feat", title: "A task", branch: $b,
     base: "main", base_sha: "0123456", worktree: $wt}'
+  ledger_line --arg t "$1" '{ts: (now | todate), task: $t, event: "plan-approved", by: "coordinator"}'
+}
+
+# open_task <task>: <task>'s thread, then its open in proj's worktree, T8's $wt2 and any other's
+# $wt1, as team-open leaves a task.
+open_task() {
+  local wt=$wt1
+  [[ $1 != T8 ]] || wt=$wt2
+  thread "$1"
+  opened "$1" proj "feat/$1-task" "$wt"
 }
 
 # registry [--first <TOML line>] <project>...: a registry holding each project, a git pool of
@@ -115,6 +126,17 @@ ops_refused() {
   assert_equal "$(launches)" ""
 }
 
+# refused_launch <reason> <argument>...: the launcher run with those arguments exits 1 with
+# <reason>, starts no session and logs nothing.
+refused_launch() {
+  local calls logged
+  calls=$(bg_calls | wc -l) logged=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-worker "${@:2}"
+  assert_equal "$output" "team-worker: $1"
+  assert_equal "$(bg_calls | wc -l)" "$calls"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$logged"
+}
+
 # A copy of bin/ in a checkout with roles, settings and toolkits written by the test, so the
 # merge of settings and toolkits is checked against known inputs. Sets $code.
 fake_checkout() {
@@ -142,9 +164,9 @@ run_fake() {
 }
 
 @test "a malformed command line is a usage error, with nothing started or logged" {
-  thread T7
+  open_task T7
   run_bin -2 team-worker T7 builder
-  assert_contains "$output" "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] -- <first prompt>"
+  assert_contains "$output" "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] [--past-ask <id>]... -- <first prompt>"
   run_bin -2 team-worker 7 builder "$wt1" -- go
   assert_contains "$output" "task must look like T<n>, got '7'"
   run_bin -2 team-worker T7 builder "$wt1" go
@@ -170,13 +192,17 @@ run_fake() {
   assert_contains "$output" "--model needs a model alias or name"
   run_bin -2 team-worker T7 ops "$wt1" --toolkit prod-read --model sonnet --request https://discord.com/channels/1/2/3 -- go
   assert_contains "$output" "--model is not for the ops role, which runs on the default model"
+  run_bin -2 team-worker T7 builder "$wt1" --past-ask
+  assert_contains "$output" "--past-ask needs the id of an unanswered ask"
+  run_bin -2 team-worker T0 builder "$wt1" --past-ask q1 -- go
+  assert_contains "$output" "--past-ask is not for T0, the load check, which has no asks"
 
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
 }
 
 @test "the frontend toolkit, Daniel's own, is refused for every role and for the load check, with nothing started or logged" {
-  thread T7
+  open_task T7
   local role
   for role in planner builder reviewer ops; do
     run_bin -2 team-worker T7 "$role" "$wt1" --toolkit frontend -- go
@@ -193,14 +219,14 @@ run_fake() {
 @test "a task with no Discord thread is refused" {
   run_bin -1 team-worker T7 builder "$wt1" -- go
   assert_contains "$output" "T7 has no Discord thread; open one first with team-thread"
-  thread T8
+  open_task T8
   run_bin -1 team-worker T7 builder "$wt1" -- go
   assert_contains "$output" "T7 has no Discord thread"
   assert_equal "$(stub_calls claude)" ""
 }
 
 @test "a primary checkout or a directory outside git is refused" {
-  thread T7
+  open_task T7
   # From another directory, so git's relative answers would be read against the wrong one.
   cd "$HOME"
   run_bin -1 team-worker T7 builder "$primary" -- go
@@ -218,7 +244,7 @@ run_fake() {
 }
 
 @test "the session starts in the worktree with the role's settings, an empty MCP config and the prompt last" {
-  thread T7
+  open_task T7
   mkdir -p "$TEAM_HOME/tasks/T7"
   echo "the brief" >"$TEAM_HOME/tasks/T7/brief.md"
   run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- Read your brief "at $TEAM_HOME/tasks/T7/brief.md"
@@ -453,7 +479,7 @@ base_link() {
 }
 
 @test "a prompt naming a brief that is missing or unreadable, or saying 'your brief' with none, is refused: nothing started or logged" {
-  thread T7
+  open_task T7
   # The empty path a failed pipe into the prompt leaves.
   run_bin -1 team-worker T7 builder "$wt1" -- "Read your brief at "
   assert_contains "$output" "the prompt says 'your brief' but names no brief*.md file"
@@ -483,23 +509,24 @@ base_link() {
 }
 
 @test "a launch logs the brief its prompt names under the task's directory, and none for a prompt naming none" {
-  thread T7
+  open_task T7
   mkdir -p "$TEAM_HOME/tasks/T7"
   echo "the brief" >"$TEAM_HOME/tasks/T7/brief-rereview-3.md"
   run_bin -0 team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
   assert_equal "$output" "4f2a9c1e"
   assert_equal "$(bg_calls | jq -r last)" "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
   assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" --arg a "$(admitted_id)" '{task: "T7", event: "launch", role: "reviewer",
-    session: "4f2a9c1e", worktree: $wt, toolkits: [], machine: "home-pc", admission: $a, brief: "brief-rereview-3"}')"
+    session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-task", machine: "home-pc", admission: $a,
+    brief: "brief-rereview-3"}')"
   : >"$TEAM_HOME/ledger.jsonl"
-  thread T7
+  open_task T7
   # An ops-shaped prompt, the brief's own text, names no brief.
   run_bin -0 team-worker T7 builder "$wt1" -- "$(printf '# T7 brief (ops): a request\nAnswer the request, then stop.\n')"
   assert_equal "$(launches | jq -c 'has("brief")')" "false"
 }
 
 @test "a brief named with ~/, \$HOME or trailing punctuation is found; another task's brief launches with no brief logged" {
-  thread T7
+  open_task T7
   mkdir -p "$TEAM_HOME/tasks/T7" "$TEAM_HOME/tasks/T8"
   echo "seven" >"$TEAM_HOME/tasks/T7/brief-build-02.md"
   echo "eight" >"$TEAM_HOME/tasks/T8/brief.md"
@@ -509,23 +536,23 @@ base_link() {
   run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief at ~/$rel/tasks/T7/brief-build-02.md."
   assert_equal "$(launches | jq -r .brief)" "brief-build-02"
   : >"$TEAM_HOME/ledger.jsonl"
-  thread T7
+  open_task T7
   # shellcheck disable=SC2016 # the prompt names $HOME as written
   run_bin -0 team-worker T7 builder "$wt1" -- 'Read your brief ($HOME/'"$rel"'/tasks/T7/brief-build-02.md),'
   assert_equal "$(launches | jq -r .brief)" "brief-build-02"
   : >"$TEAM_HOME/ledger.jsonl"
-  thread T7
+  open_task T7
   run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief \`\${HOME}/$rel/tasks/T7/brief-build-02.md\`;"
   assert_equal "$(launches | jq -r .brief)" "brief-build-02"
   : >"$TEAM_HOME/ledger.jsonl"
-  thread T7
+  open_task T7
   run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief at \"$TEAM_HOME/tasks/T8/brief.md\"."
   assert_equal "$(launches | jq -c 'has("brief")')" "false"
   run_bin -0 team-log --check
 }
 
 @test "team-log --check accepts a launch's brief, and --help says what team-worker checks and logs" {
-  thread T7
+  open_task T7
   mkdir -p "$TEAM_HOME/tasks/T7"
   echo "the brief" >"$TEAM_HOME/tasks/T7/brief.md"
   run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief.md"
@@ -545,7 +572,7 @@ base_link() {
 
 @test "role settings are layered on the worker settings, permission and hook lists concatenated" {
   fake_checkout
-  thread T7
+  open_task T7
   run_fake T7 planner "$wt1" -- go
   assert_equal "$status" "0"
   assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" "$(jq -cnS --arg code "$code" --arg memory "$TEAM_HOME/memory/proj" '{
@@ -564,7 +591,7 @@ base_link() {
   jq '.autoMode = {environment: ["$defaults", "planner fact at @TEAM_CODE@"], allow: ["$defaults", "planner allow"]}' \
     "$code/settings/planner.json" >"$code/p.json"
   mv "$code/p.json" "$code/settings/planner.json"
-  thread T7
+  open_task T7
   run_fake T7 planner "$wt1" -- go
   assert_equal "$status" 0
   assert_equal "$(jq -cS .autoMode "$TEAM_HOME/tasks/T7/settings.planner.proj.json")" "$(jq -cnS --arg code "$code" '{
@@ -578,7 +605,7 @@ base_link() {
 }
 
 @test "every role's generated settings hold the worker settings' autoMode lines, \"\$defaults\" once per list" {
-  thread T7
+  open_task T7
   ops_stub
   local role settings
   for role in planner builder reviewer ops; do
@@ -614,7 +641,7 @@ docs = []
 toolkits = []
 pool = { provider = "git", slots = ["slots/third/1"] }
 TOML
-  thread T7
+  open_task T7
   run_bin -0 team-worker T7 builder "$wt1" -- go
   local settings=$TEAM_HOME/tasks/T7/settings.builder.proj.json
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Source control**"))' "$settings")" \
@@ -639,7 +666,7 @@ TOML
 }
 
 @test "every role's settings run the fence and command guard hooks on Bash; the planner's and reviewer's add the edit hook" {
-  thread T7
+  open_task T7
   local role settings
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
@@ -660,7 +687,7 @@ $REPO_ROOT/bin/hooks/command-guard"
 }
 
 @test "every role's generated settings keep onFailure block and the timeout on each PreToolUse hook" {
-  thread T7
+  open_task T7
   ops_stub
   local role settings expected
   for role in planner builder reviewer ops; do
@@ -690,7 +717,7 @@ command-guard block 10"
 
 @test "toolkits add their plugin directories and only their MCP servers" {
   fake_checkout
-  thread T7
+  open_task T7
   run_fake T7 planner "$wt1" --toolkit kit-a --toolkit kit-b --toolkit kit-c -- go
   assert_equal "$status" "0"
   assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" \
@@ -701,7 +728,7 @@ command-guard block 10"
 }
 
 @test "a session that started without its prompt, or printed no id, is refused and not logged" {
-  thread T7
+  open_task T7
   rm "$STUB_FIXTURES/claude.sh"
   stub_reply claude "Started background session 4f2a9c1e. It is waiting: send a prompt to start."
   run_bin -1 team-worker T7 builder "$wt1" -- go
@@ -716,7 +743,7 @@ command-guard block 10"
   stub_command uname
   stub_reply uname Linux
   fake_placement
-  thread T7
+  open_task T7
   run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
   assert_equal "$output" "4f2a9c1e"
   assert_equal "$stderr" ""
@@ -727,7 +754,7 @@ command-guard block 10"
   fake_process 4242 1 - claude --bg
   echo 4242 >"$STUB_FIXTURES/busctl-refuse"
   : >"$TEAM_HOME/ledger.jsonl"
-  thread T7
+  open_task T7
   run_bin -0 --separate-stderr team-worker T7 reviewer "$wt1" -- go
   assert_equal "$output" "4f2a9c1e"
   assert_equal "$stderr" "team-worker: warning: could not place T7-reviewer 4f2a9c1e (pid 4242) in agent-team-T7.slice: Call failed: Access denied; the launch stands"
@@ -756,13 +783,18 @@ command-guard block 10"
     { echo "claude's PATH: $(cat "$STUB_CALLS/claude.path")" >&2; return 1; }
 }
 
-@test "a legacy task with no opened event launches in any linked worktree, without project or branch" {
+@test "a task with no opened event is refused for every role, its thread or not, with nothing started or logged" {
   thread T7
-  run_bin -0 team-worker T7 builder "$wt2" -- go
-  assert_equal "$(launches)" \
-    "$(jq -cn --arg wt "$wt2" --arg a "$(admitted_id)" '{task: "T7", event: "launch", role: "builder", session: "4f2a9c1e", worktree: $wt, toolkits: [],
-      machine: "home-pc", admission: $a}')"
-  run_bin -0 team-log --check
+  local role
+  for role in planner builder reviewer; do
+    run_bin -1 team-worker T7 "$role" "$wt2" -- go
+    assert_equal "$output" "team-worker: T7 is not open: the ledger has no opened event for it"
+  done
+  ops_stub
+  run_bin -1 team-worker T7 ops "$wt2" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$output" "team-worker: T7 is not open: the ledger has no opened event for it"
+  assert_equal "$(bg_calls)" ""
+  assert_equal "$(launches)" ""
 }
 
 @test "an opened task launches in its own worktree, logging the project and branch" {
@@ -857,12 +889,12 @@ command-guard block 10"
   assert_equal "$(launches | jq -c '[.project, .model]')" $'["proj",null]\n["other","sonnet"]'
 }
 
-@test "--model launches on the model it names instead of the registry's, and logs it, for a legacy task or T0 too" {
+@test "--model launches on the model it names instead of the registry's, and logs it, for T0 too" {
   registry --first 'models = { reviewer = "sonnet" }' proj other
   thread T7
   opened T7 proj feat/T7-one "$wt1"
   run_bin -0 team-worker T7 reviewer "$wt1" --model opus -- Review it
-  thread T8
+  open_task T8
   run_bin -0 team-worker T8 builder "$wt2" --model 'sonnet[1m]' -- go
   run_bin -0 team-worker T0 planner "$wt1" --model haiku -- go
   assert_equal "$(bg_calls | jq -c '[(index("--model") // empty) as $i | .[$i + 1], .[-2], .[-1]]')" \
@@ -871,17 +903,15 @@ command-guard block 10"
   run_bin -0 team-log --check
 }
 
-@test "with no models key, a legacy task or T0, no model is passed or logged" {
+@test "with no models key, or for T0, no model is passed or logged" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"
   run_bin -0 team-worker T7 reviewer "$wt1" -- go
-  # A legacy task has no project to read a model from, whatever the registry says.
+  # T0 reads no model from the registry, whatever it says.
   registry --first 'models = { reviewer = "sonnet" }' proj other
-  thread T8
-  run_bin -0 team-worker T8 reviewer "$wt2" -- go
   run_bin -0 team-worker T0 reviewer "$wt1" -- go
-  assert_equal "$(bg_calls | jq -c 'index("--model")')" $'null\nnull\nnull'
-  assert_equal "$(launches | jq -c '[.task, has("model")]')" $'["T7",false]\n["T8",false]'
+  assert_equal "$(bg_calls | jq -c 'index("--model")')" $'null\nnull'
+  assert_equal "$(launches | jq -c '[.task, has("model")]')" '["T7",false]'
   run_bin -0 team-log --check
 }
 
@@ -932,7 +962,7 @@ command-guard block 10"
   run_bin -1 team-worker T7 builder "$wt1" -- go
   assert_contains "$output" "$wt1 is not one of T7's open worktrees: it has none"
   # The recorded events stay as they were written.
-  assert_equal "$(head -n 2 "$TEAM_HOME/ledger.jsonl")" "$(cat "$BATS_TEST_TMPDIR/before")"
+  assert_equal "$(head -n 3 "$TEAM_HOME/ledger.jsonl")" "$(cat "$BATS_TEST_TMPDIR/before")"
 }
 
 @test "after a worktree-moved the task launches in the new worktree, not the recorded one" {
@@ -976,7 +1006,7 @@ command-guard block 10"
 }
 
 @test "with GitHub unreachable it refuses: a worker never starts offline" {
-  thread T7
+  open_task T7
   cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
   git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 --separate-stderr team-worker T7 planner "$wt1" -- go
@@ -988,7 +1018,7 @@ command-guard block 10"
 }
 
 @test "with the lease released, or no team name for this machine, it refuses" {
-  thread T7
+  open_task T7
   run_bin -0 team-lease release
   run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
   assert_contains "$stderr" "team-lease: the lease is released (last held by home-pc, epoch 1)"
@@ -1018,7 +1048,7 @@ role_texts() {
 }
 
 @test "each role's settings parse, layer on the worker settings, and keep every tool and skill its prompt and briefs name" {
-  thread T7
+  open_task T7
   ops_stub
   local role settings worker=$REPO_ROOT/settings/worker.json texts
   for role in planner builder reviewer ops; do
@@ -1044,7 +1074,7 @@ role_texts() {
 }
 
 @test "every role's settings name its role in AGENT_TEAM_ROLE, print the gh-axi banner at session start and log each denial" {
-  thread T7
+  open_task T7
   ops_stub
   local role settings
   for role in planner builder reviewer ops; do
@@ -1064,7 +1094,7 @@ role_texts() {
 }
 
 @test "a launched worker's chrome-devtools-axi session is named for its task and role" {
-  thread T7
+  open_task T7
   local role
   for role in builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" --toolkit browser -- go
@@ -1073,7 +1103,7 @@ role_texts() {
 }
 
 @test "the browser toolkit adds its plugin directory and no MCP server" {
-  thread T7
+  open_task T7
   run_bin -0 team-worker T7 builder "$wt1" --toolkit browser -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/browser"]')"
@@ -1084,7 +1114,7 @@ role_texts() {
 # The Foldkit DevTools server's project root is the session's worktree, by its real path, so the
 # wrapper confines it to that worktree's dev servers (tests/toolkits/effect-devtools.test.mjs).
 @test "the effect toolkit adds its plugin directory and the Foldkit DevTools server, rooted at the worktree, for all but a planner" {
-  thread T7
+  open_task T7
   run_bin -0 team-worker T7 builder "$wt1" --toolkit effect -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/effect"]')"
@@ -1103,7 +1133,7 @@ role_texts() {
 }
 
 @test "the codegraph toolkit adds its plugin directory and no MCP server" {
-  thread T7
+  open_task T7
   run_bin -0 team-worker T7 builder "$wt1" --toolkit codegraph -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/codegraph"]')"
@@ -1112,7 +1142,7 @@ role_texts() {
 }
 
 @test "the spec-review toolkit adds its plugin directory and no MCP server" {
-  thread T7
+  open_task T7
   run_bin -0 team-worker T7 builder "$wt1" --toolkit spec-review -- go
   assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/spec-review"]')"
@@ -1186,23 +1216,15 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
   run_bin -0 team-log --check
 }
 
-@test "T0 and a task with no opened event take the registered project at the worktree's main checkout; a worktree of no registered project gets no toolkit" {
+@test "T0 takes the registered project at the worktree's main checkout; a worktree of no registered project gets no toolkit" {
   fixture_projects
   ops_stub
-  thread T8
   # proj, the setup's repository, is no project of the fixture's.
-  local task
-  for task in T8 T0; do
-    ops_refused "$(realpath "$wt1") is a worktree of $(realpath "$primary"), which is no registered project's primary checkout in projects.toml, so a worker there gets no toolkit (asked for: browser effect)" \
-      "$task" builder "$wt1" --toolkit browser --toolkit effect -- go
-  done
-  ops_refused "toolkit 'browser' is not one of conventioner's toolkits in projects.toml (prod-read, prod-write): $UNLISTED" \
-    T8 builder "$conv_wt" --toolkit browser -- go
-
-  run_bin -0 team-worker T8 ops "$conv_wt" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
-  assert_equal "$(launches | jq -c '{task, role, toolkits}')" '{"task":"T8","role":"ops","toolkits":["prod-read"]}'
-  run_bin -0 team-worker T8 builder "$wt1" -- go
+  ops_refused "$(realpath "$wt1") is a worktree of $(realpath "$primary"), which is no registered project's primary checkout in projects.toml, so a worker there gets no toolkit (asked for: browser effect)" \
+    T0 builder "$wt1" --toolkit browser --toolkit effect -- go
+  run_bin -0 team-worker T0 builder "$wt1" -- go
   run_bin -0 team-worker T0 ops "$conv_wt" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(bg_calls | wc -l)" 2
 }
 
 @test "T0 takes any toolkit but a production one whatever its worktree's project lists; a production one needs the project to list it" {
@@ -1240,7 +1262,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
 }
 
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
-  thread T7
+  open_task T7
   run_bin -0 team-worker T7 reviewer "$wt1" -- go
   local settings=$TEAM_HOME/tasks/T7/settings.reviewer.proj.json tool
   for tool in Artifact DesignSync ScheduleWakeup CronCreate RemoteTrigger SendFeedback AskUserQuestion EnterWorktree; do
@@ -1266,7 +1288,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
 }
 
 @test "every role's generated settings isolate peer machines" {
-  thread T7
+  open_task T7
   local role
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
@@ -1278,7 +1300,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
 # sender's message for an approval nobody gives unless crossSessionInbound accepts it: the
 # workers' own settings carry it, so no machine's user settings need to.
 @test "every role's generated settings accept the coordinator's messages" {
-  thread T7
+  open_task T7
   local role
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
@@ -1291,7 +1313,7 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
 # files in tests/repo.bats; here each role's generated deny list is proved to be those files', and
 # one command of each rule family checks that the generated file is the one read.
 @test "every role's generated deny list is settings/worker.json's then its role file's, placeholders filled, and denies one command of each rule family" {
-  thread T7
+  open_task T7
   local role settings command bin=$REPO_ROOT/bin
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
@@ -1324,7 +1346,7 @@ allowed_in() {
 }
 
 @test "a planner runs only its own task's interview post and wait, by its generated allow rules, and every role's settings name its task" {
-  thread T7
+  open_task T7
   local role settings command bin=$REPO_ROOT/bin
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
@@ -1349,7 +1371,7 @@ allowed_in() {
 
 # T177's builder was refused gh pr ready on its own draft PR, which no rule allowed.
 @test "a builder may mark a PR ready for review, never back to a draft, and no other role may" {
-  thread T7
+  open_task T7
   local role settings command
   run_bin -0 team-worker T7 builder "$wt1" -- go
   settings=$TEAM_HOME/tasks/T7/settings.builder.proj.json
@@ -1376,12 +1398,58 @@ allowed_in() {
   ledger_line '{ts: (now | todate), task: "T7", event: "closed", archive: [], returned: [], kept: []}'
   run_bin -1 team-worker T7 builder "$wt1" -- go
   assert_contains "$output" "T7 is closed"
-  thread T8
+  open_task T8
   ledger_line '{ts: "2026-10-01T00:00:00Z", task: "T8", event: "closed"}'
   run_bin -1 team-worker T8 builder "$wt2" -- go
   assert_contains "$output" "T8 is closed"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
+}
+
+@test "launch_refusal's rows refuse a launch with their texts, nothing started or logged: Daniel's hold, an open ask, a feature task's build before its plan" {
+  open_task T7
+  # Daniel's hold refuses every role but ops, naming the word that lifts it.
+  ledger_line '{ts: "2026-11-11T09:00:00Z", task: "T7", event: "held", reason: "Daniel: not before the release",
+    cause: "daniel-hold", discord_message: "1563000000000000044"}'
+  refused_launch "T7 is on Daniel's hold since 2026-11-11T09:00:00Z (held-1): Daniel: not before the release; only Daniel's word lifts it: team-log T7 resumed id=held-1 discord_message=<their message id>" \
+    T7 builder "$wt1" -- go
+  ops_stub
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+  assert_equal "$(launches | jq -r .role)" ops
+  : >"$TEAM_HOME/ledger.jsonl"
+  # An open ask refuses unless --past-ask names it; one naming no open ask is refused too.
+  open_task T7
+  ledger_line '{ts: "2026-11-11T09:30:00Z", task: "T7", event: "asked", id: "scope", text: "Which scope?"}'
+  refused_launch "T7 has an unanswered ask, scope, since 2026-11-11T09:30:00Z; launch past it with --past-ask scope" \
+    T7 reviewer "$wt1" -- go
+  refused_launch "--past-ask nope names no unanswered ask of T7" T7 reviewer "$wt1" --past-ask scope --past-ask nope -- go
+  run_bin -0 team-worker T7 reviewer "$wt1" --past-ask scope --past-ask scope -- go
+  assert_equal "$(launches | jq -c .past_ask)" '["scope"]'
+  run_bin -0 team-log --check
+  # A launch with no --past-ask logs none.
+  ledger_line '{ts: "2026-11-11T09:40:00Z", task: "T7", event: "answered", id: "scope", text: "This one.",
+    discord_message: "1563000000000000045"}'
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(launches | jq -c 'has("past_ask")')" $'true\nfalse'
+}
+
+@test "a feature task's builder or reviewer waits for its plan; its planner, and a research or small task's builder, go" {
+  thread T7
+  ledger_line --arg wt "$wt1" '{ts: (now | todate), task: "T7", event: "opened", project: "proj", path: "feature",
+    type: "feat", title: "A task", branch: "feat/T7-one", base: "main", base_sha: "0123456", worktree: $wt}'
+  local role
+  for role in builder reviewer; do
+    refused_launch "T7 is a feature task with no approved plan (no plan-approved), so it takes no $role yet" T7 "$role" "$wt1" -- go
+  done
+  run_bin -0 team-worker T7 planner "$wt1" -- go
+  local path
+  for path in research small; do
+    : >"$TEAM_HOME/ledger.jsonl"
+    thread T7
+    ledger_line --arg wt "$wt1" --arg path "$path" '{ts: (now | todate), task: "T7", event: "opened", project: "proj",
+      path: $path, type: "feat", title: "A task", branch: "feat/T7-one", base: "main", base_sha: "0123456", worktree: $wt}'
+    run_bin -0 team-worker T7 builder "$wt1" -- go
+  done
 }
 
 # The claude stub for an ops launch: claude agents --json lists $STUB_FIXTURES/agents.json (no
@@ -1456,7 +1524,7 @@ assert_prod_write_gated() {
 }
 
 @test "an ops launch on Daniel's message in the task's latest thread passes and logs it, one sent just inside the hour too" {
-  thread T7
+  open_task T7
   ops_stub
   local request
   request=$(ops_request 1563)
@@ -1469,7 +1537,7 @@ assert_prod_write_gated() {
 }
 
 @test "an ops --request that is not a Discord message link is a malformed command line" {
-  thread T7
+  open_task T7
   ops_stub
   local bad
   for bad in load-check 3 https://discord.com/channels/1/2 https://discord.com/channels/1/2/3/4 \
@@ -1485,7 +1553,7 @@ assert_prod_write_gated() {
 }
 
 @test "an ops request outside #coordinator and the task's latest thread is refused naming both; T0's outside #coordinator" {
-  thread T7
+  open_task T7
   ledger_line '{ts: (now | todate), task: "T7", event: "thread", discord_thread: "1564"}'
   ops_stub
   local request
@@ -1499,7 +1567,7 @@ assert_prod_write_gated() {
 }
 
 @test "an ops request Discord cannot show, or by an author not in allowFrom, is refused with its reason" {
-  thread T7
+  open_task T7
   ops_stub
   local request id
   request=$(ops_request "$OPS_COORDINATOR")
@@ -1515,7 +1583,7 @@ assert_prod_write_gated() {
 }
 
 @test "an ops request sent more than an hour before the launch is refused naming when, before Discord is read" {
-  thread T7
+  open_task T7
   ops_stub
   local request id sent
   grep -qx 'OPS_REQUEST_MAX_AGE=3600' "$REPO_ROOT/bin/lib/team.sh"
@@ -1528,8 +1596,8 @@ assert_prod_write_gated() {
 }
 
 @test "an ops request another ops launch used is refused naming that launch: in the ledger, an older launch's request, or T0's record" {
-  thread T7
-  thread T5
+  open_task T7
+  open_task T5
   ops_stub
   local request id at used
   request=$(ops_request "$OPS_COORDINATOR")
@@ -1588,7 +1656,7 @@ assert_prod_write_gated() {
 }
 
 @test "the generated ops MCP config starts the real prod-read launcher and holds no secret" {
-  thread T7
+  open_task T7
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   local mcp=$TEAM_HOME/tasks/T7/mcp.ops.json
@@ -1601,7 +1669,7 @@ assert_prod_write_gated() {
 }
 
 @test "the generated ops settings allow only prod-read, vercel-read and the answer file's edits, ask for every prod-write tool, and deny every outbound tool" {
-  thread T7
+  open_task T7
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   local s=$TEAM_HOME/tasks/T7/settings.ops.json rule
@@ -1744,7 +1812,7 @@ matcher_matches() {
 }
 
 @test "only the ops role is restricted" {
-  thread T7
+  open_task T7
   local role
   for role in planner builder reviewer; do
     : >"$STUB_CALLS/claude.log"
@@ -1754,7 +1822,7 @@ matcher_matches() {
 }
 
 @test "production toolkits, vercel-read among them, are refused for every role but ops, with nothing started or logged" {
-  thread T7
+  open_task T7
   ops_stub
   local role
   for role in planner builder reviewer; do
@@ -1775,7 +1843,7 @@ matcher_matches() {
   fake_checkout
   mkdir -p "$code/toolkits/prod-read" "$code/toolkits/prod-write" "$code/toolkits/vercel-read"
   cp "$REPO_ROOT/roles/ops.md" "$code/roles/" && cp "$REPO_ROOT/settings/ops.json" "$code/settings/"
-  thread T7
+  open_task T7
   ops_stub
   run_fake T7 ops "$wt1" --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_equal "$status" 1
@@ -1807,7 +1875,7 @@ matcher_matches() {
 }
 
 @test "an ops launch is refused while any task's ops session is listed" {
-  thread T7
+  open_task T7
   ops_stub '[{"id": "11111111", "name": "T7-builder"}, {"id": "22222222", "name": "T5-ops", "state": "done"}]'
   run_bin -1 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   assert_contains "$output" "an ops session is already listed: T5-ops (22222222); end it with team-ops-end first"
@@ -1822,7 +1890,7 @@ matcher_matches() {
 }
 
 @test "no placeholder is left in any role's generated settings and MCP config from this checkout" {
-  thread T7
+  open_task T7
   local role
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
@@ -1840,7 +1908,7 @@ matcher_matches() {
   echo '{"env": {"WHO": "@ROLE@", "WHERE": "@WORKTREE@"}, "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
     >"$code/settings/planner.json"
   echo '{"mcpServers": {"alpha": {"command": "@TEAM_CODE@/a", "args": ["--task", "@TASK@", "@TASK_DIR@", "@ROLE@"], "env": {"ROOT": "@WORKTREE@"}}}}' >"$code/toolkits/kit-a/.mcp.json"
-  thread T7
+  open_task T7
   # The worktree by its real path, though the launch names it through a symlink.
   ln -s "$wt1" "$HOME/slot-link"
   run_fake T7 planner "$HOME/slot-link" --toolkit kit-a -- go
@@ -1895,8 +1963,8 @@ SH
 # launched. The busy, handed-on builder is waited on for a second, the bound.
 finished_workers() {
   export TEAM_WORKER_IDLE_SECONDS=1
-  thread T8
-  thread T9
+  open_task T8
+  open_task T9
   log_lines <<LINES
 launch T9 planner 11111111 $wt1
 launch T9 builder 22222222 /Users/someone/slots/proj/1
@@ -1971,7 +2039,7 @@ stops() {
 }
 
 @test "a builder is handed on by a stow, and left while nothing of its own follows its launch" {
-  thread T9
+  open_task T9
   log_lines <<LINES
 launch T9 builder 2f2f2f2f $wt1
 LINES
@@ -1987,7 +2055,7 @@ LINES
 }
 
 @test "a paused for any reason but stowed leaves an idle reviewer, a resumed after it too" {
-  thread T9
+  open_task T9
   log_lines <<LINES
 launch T9 reviewer 6a6a6a6a $wt1
 T9 {event: "paused", reason: "offline"}
@@ -2004,7 +2072,9 @@ LINES
 }
 
 @test "a reviewer is handed on only by a done of its own session, never by another reviewer's review" {
-  thread T9
+  open_task T9
+  ledger_line --arg wt "$wt2" '{ts: (now | todate), task: "T9", event: "worktree-added", project: "proj",
+    branch: "feat/T9-second", base: "main", base_sha: "0123456", worktree: $wt}'
   log_lines <<LINES
 launch T9 reviewer 6b6b6b6b $wt1
 launch T9 reviewer 6c6c6c6c $wt2
@@ -2020,7 +2090,7 @@ LINES
 }
 
 @test "a stow hands a planner on once a later planner launch of its worktree follows it, a resumed between them or not" {
-  thread T9
+  open_task T9
   log_lines <<LINES
 launch T9 planner 6d6d6d6d $wt1
 T9 {event: "paused", reason: "stowed"}
@@ -2036,7 +2106,9 @@ LINES
 }
 
 @test "a stow hands on only the launches of the fresh worker's role and worktree, never another worktree's reviewer" {
-  thread T9
+  open_task T9
+  ledger_line --arg wt "$wt2" '{ts: (now | todate), task: "T9", event: "worktree-added", project: "proj",
+    branch: "feat/T9-second", base: "main", base_sha: "0123456", worktree: $wt}'
   log_lines <<LINES
 launch T9 reviewer 7a7a7a7a $wt1
 launch T9 builder 7b7b7b7b $wt2
@@ -2097,7 +2169,7 @@ LINES
 
 @test "a launch with no earlier worker to stop, and a T0 launch, do not read the session list before the launch" {
   finished_workers
-  thread T7
+  open_task T7
   run_bin -0 team-worker T0 builder "$wt1" -- go
   run_bin -0 team-worker T7 builder "$wt1" -- go
   assert_equal "$(claude_verbs)" "--bg --bg "
@@ -2108,19 +2180,30 @@ LINES
   opened T7 proj feat/T7-one "$wt1"
   : >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
   capacity_room $((256 * 1048576))
-  run_bin -75 --separate-stderr team-worker T7 reviewer "$wt1" -- go
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "the brief" >"$TEAM_HOME/tasks/T7/brief-review.md"
+  run_bin -75 --separate-stderr team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-review.md"
   assert_equal "$output" ""
   assert_equal "$stderr" "team-worker: no room for session:reviewer at full (90%): 0.0 GiB of 0.3 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises"
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
   [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.proj.json ]]
   [[ ! -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
+  # T278's A4b: the refusal is logged here, the task's room park, with the admission's line and
+  # the refused launch's brief, which the coordinator no longer logs.
+  assert_equal "$(jq -c 'select(.event == "paused") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" \
+    '{"task":"T7","event":"paused","cause":"room","role":"reviewer","reason":"no room for session:reviewer at full (90%): 0.0 GiB of 0.3 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team'"'"'s work shrinks or the level rises","brief":"brief-review"}'
+  run_bin -0 team-log --check
 
   # At none, nothing starts but the load check and an ops session.
   capacity_room $((16 * 1073741824)) none
   run_bin -75 --separate-stderr team-worker T7 builder "$wt1" -- go
   assert_equal "$stderr" "team-worker: no room for session:builder: the team is at level none: nothing starts; room comes when Daniel raises the level"
   assert_equal "$(bg_calls)" ""
+  # The plan's launch list names both refused roles, by their typed role, whatever the words.
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '.launch | map([.task, .roles])' <<<"$output")" '[["T7",["reviewer","builder"]]]'
+  assert_equal "$(jq -c 'select(.event == "paused") | [.role, has("brief")]' "$TEAM_HOME/ledger.jsonl")" $'["reviewer",true]\n["builder",false]'
   run_bin -0 team-worker T0 planner "$wt1" -- go
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
@@ -2147,7 +2230,7 @@ session_reading() {
 }
 
 @test "a launch that dies after its admission releases it, and the relaunch's session is reserved once (E-admission-double)" {
-  thread T7
+  open_task T7
   # The first launch's claude call fails once the launch is admitted; the relaunch's succeeds.
   stub_script claude <<'EOF'
 if [[ $* == "agents --json" ]]; then
@@ -2179,7 +2262,7 @@ EOF
 }
 
 @test "a release that fails is a warning, and the launch exits with its own failure" {
-  thread T7
+  open_task T7
   # The launch fails once admitted, and its admission's file can no longer be rewritten.
   stub_script claude <<'EOF'
 chmod a-w "$HOME/.local/state/agent-team/capacity"
@@ -2196,7 +2279,7 @@ EOF
 }
 
 @test "the task's finished sessions are stopped before the launch asks for room, and their use leaves the reservations" {
-  thread T9
+  open_task T9
   log_lines <<LINES
 launch T9 reviewer 6c6c6c6c $wt1
 T9 {event: "review", verdict: "findings", head: "abc1234"}
@@ -2260,7 +2343,7 @@ held_use() {
 }
 
 @test "a handed-on builder still busy is waited on until it goes idle, then stopped before the launch asks for room" {
-  thread T9
+  open_task T9
   log_lines <<LINES
 launch T9 builder 4a4a4a4a $wt1
 T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
@@ -2282,7 +2365,7 @@ LINES
 }
 
 @test "a handed-on builder that goes idle while waited on and cannot be stopped is a warning, its use kept, and the launch goes on" {
-  thread T9
+  open_task T9
   log_lines <<LINES
 launch T9 builder 4a4a4a4a $wt1
 T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
@@ -2306,7 +2389,7 @@ LINES
 }
 
 @test "a handed-on session still busy at the bound is left and the launch goes on; one that ends while waited on is freed" {
-  thread T9
+  open_task T9
   log_lines <<LINES
 launch T9 builder 4b4b4b4b $wt1
 launch T9 planner 4d4d4d4d $wt1
@@ -2337,7 +2420,7 @@ LINES
 }
 
 @test "a session list that cannot be read while waiting ends the wait with a warning, and the launch goes on" {
-  thread T9
+  open_task T9
   log_lines <<LINES
 launch T9 builder 4f4f4f4f $wt1
 T9 {event: "pr", url: "https://github.com/owner/proj/pull/1", head: "abc1234"}
@@ -2352,14 +2435,14 @@ LINES
 }
 
 @test "TEAM_WORKER_IDLE_SECONDS must be a whole number of seconds" {
-  thread T9
+  open_task T9
   TEAM_WORKER_IDLE_SECONDS=soon run_bin -2 team-worker T9 builder "$wt1" -- go
   assert_equal "$output" "team-worker: TEAM_WORKER_IDLE_SECONDS must be a whole number of seconds, not 'soon'"
   assert_equal "$(stub_calls claude)" ""
 }
 
 @test "an admission that fails for another reason stops the launch with it" {
-  thread T7
+  open_task T7
   mkdir -p "$HOME/.config/agent-team"
   echo '{"session_gib": 0}' >"$HOME/.config/agent-team/capacity.json"
   run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
@@ -2370,7 +2453,7 @@ LINES
 }
 
 @test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
-  thread T7
+  open_task T7
   worker_refused team-worker "launches no session" T7 builder "$wt1" -- go
   worker_refused team-worker "launches no session" T7 ops "$wt1" --toolkit prod-read --request x -- go
   AGENT_TEAM_ROLE=builder run_bin -0 team-worker --help

@@ -236,7 +236,7 @@ Who asks:
 | `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock; it releases the admission at every end of the run, success included | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
 
 An admission that fails for another reason (a malformed `capacity.json`, no reading to size the budget by) fails the caller with its reason.
-The coordinator logs a worker's 75 as `paused` with its line, and launches it again on `team-sweep`'s `level-launch` finding ("Shrinking and growing back"); a worker that gets a stack's 75 reports `PAUSED` with it.
+`team-worker` logs its own 75 as the task's park, `paused cause=room role=<role>` with the admission's line as its reason, and the coordinator launches it again on `team-sweep`'s `level-launch` finding ("Shrinking and growing back"); a worker that gets a stack's 75 reports `PAUSED` with it.
 
 ## Stowing
 
@@ -247,16 +247,22 @@ It runs on the lease holder, once each task's live workers have answered the coo
 `team-stow T<n>... [--down] [--cause level|handoff] [--json]`, or `--all` for every open task, takes these steps, one line per step and task, each safe to run again:
 
 1. branches: each task's branches checked against origin's before any of its sessions stops; a diverged branch refuses its task, naming it, and its workers keep running;
+   then stowing: a `stowing` logged for each task left, `{machine, cause, roles}` with its unfinished roles, unless one stands already (`team-stow --begin`'s) or the task is stowed from this machine already (a run again);
 2. sessions: `claude stop` then `claude rm` for each live `T<n>-<role>` session; an ops session is ended with `team-ops-end`, never carried; one that will not stop refuses its task;
 3. stacks: `team-stack stop --worktree <path>` for each worktree whose project has a stack block, its data kept (`team-stack down`, saving the logs, with `--down`); one that fails is said, and the task still stows;
 4. checkpoint: `team-checkpoint --force`, once per run, none when every task left was stowed already and no session was stopped;
 5. branches: each task branch pushed to its origin when strictly ahead, checked again first;
 6. stowed: one `stowed` per task, with `cause` `level` (the default) or `handoff`; none when the task's latest machine event is already a stowed from this machine with the same worktrees.
    Its `sessions` names the sessions this run stopped and those an earlier run of the same lease stopped without stowing the task (one interrupted, or whose push failed), which `~/.local/state/agent-team/stow.json` keeps until the task is stowed.
+   A `stowing` standing always gets its `stowed`, even for a task stowed already.
 
 A refused task is said on stderr with its reason, the others still stow, and the exit is 1; `--json` prints `{tasks: [{task, worktrees, roles, sessions, cause}], refused: [{task, reason}]}`.
 
-A task is stowed, waiting to resume, while its latest `stowed`, for the level or a handoff, names roles to relaunch and no launch follows it (`stowed_awaiting_resume` in `bin/lib/ledger.jq`); a stowed with no `cause`, as every line before `team-stow` has, is a handoff's.
+A stow under way is recorded, so a compaction or a restart between the STOW and the run never plans the same stow again: the level and handoff skills run `team-stow <tasks> --begin` (or `--all --begin --cause handoff`) before they send STOW, which only logs each open task's `stowing` with none standing, saying "stowing: T<n> since <ts>" (or "already since <ts>").
+A task refused after its `stowing` gets a `stow-failed` with the refusal as its `reason`, and a run that stops on a step (a checkpoint that fails, exit 1 or 75) logs, from its exit trap, a `stow-failed` with "the run stopped: <its last error line>" for each task whose `stowing` stands and that it did not stow.
+While a `stowing` stands, `team-capacity plan` never names the task to stow, resume or launch, and counts what it holds as freed already, so no other task stows in its place; `team-state` shows "stowing since <ts>", and `team-sweep` names one standing 30 minutes with no `stowed` or `stow-failed` ("T<n> stowing: stowing since <ts> (<cause>), with no stowed; next: run team-stow T<n>, which finishes the stow or logs stow-failed").
+
+A task is stowed, waiting to resume, while its latest `stowed`, for the level or a handoff, or its `stow-failed`, which keeps its `stowing`'s roles, names roles to relaunch and no launch follows it (`stowed_awaiting_resume` in `bin/lib/ledger.jq`); a stowed with no `cause`, as every line before `team-stow` has, is a handoff's.
 
 `team-stow T<n>... --stop-runs` does only this, on any machine: `team-heavy stop --task T<n>` ends the task's heavy run when it holds the machine's lock, and in each of the task's worktrees whose project delivers through no-mistakes, `no-mistakes axi abort` cancels the run `no-mistakes axi` shows active on its branch.
 A worker blocked in a foreground test or gate then returns and reads the STOW already sent; a manual drop runs it right after the STOWs, and an automatic one does not, so a running test or gate finishes.
@@ -276,20 +282,20 @@ While it is confirmed, the plan's steps, in order, each with what it frees (the 
 
 1. stop each finished session: idle, its work handed on, by the rule `team-worker` stops a task's own sessions by (`handed_on_launches` in `bin/lib/ledger.jq`), over every open task; with no new launch, a builder counts only once a later builder has launched in its worktree (its work handed on, as for `team-worker`, by a `ticket-done`, `pr` or `done` after its launch), since a builder whose PR is open still takes the review's findings;
 2. stop each running team stack of an open task (its worktree's own, kind `dev`) that no busy session, Daniel's own included, works in;
-3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested), until what is left fits; at none, every one.
+3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested), until what is left fits; at none, every one; a task whose `stowing` stands is never named, and what it holds counts as freed.
 
 The heartbeat's `level` step (`team-level tick`) takes steps 1 and 2 itself, since they lose nothing: `claude stop`, bounded 30 seconds, for each session, and `team-stack stop --worktree <path>`, its data kept, for each stack, one heartbeat log line each, such as "stopped T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB".
 Step 1 seldom finds a session: the heartbeat's `finished` step, before the `capacity` step's reading, stops the same finished sessions on every run, whatever the level and budget (`team-timers --help`), but for a planner whose task has no `plan-approved`, which it keeps since a refusal of its tickets goes back to it.
 So step 1 is left only that planner and the sessions that step could not stop.
-Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
+Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator runs `team-stow <tasks> --begin`, sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
 `team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
 
-A task is stowed, waiting to resume, while its latest `stowed` names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
+A task is stowed, waiting to resume, while its latest `stowed` (or `stow-failed`, with its `stowing`'s roles) names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
 The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate), whether that fits beside what is reserved now, and what holds it, if anything; at none nothing fits.
-A stowed task is on hold while its latest `held` stands, or while a `waiting` or `blocked` logged after its latest `stowed` stands (`stow_hold` in `bin/lib/ledger.jq`), and the plan's line for it ends ", on hold, not relaunched: <what holds it>".
-A wait or block logged before the stow does not hold it, since it was the stowed worker's own state (a planner interviewing Daniel), which its relaunch resumes, and neither does a `paused`, which every stow logs; a `resumed` lifts the hold.
+A stowed task is on hold while Daniel's hold (a park of cause `daniel-hold`) or an ask no launch went past (`team-worker --past-ask`) stands, wherever it was logged, or while a `held`, `waiting` or `blocked` logged after its latest `stowed` stands (`stow_hold` in `bin/lib/ledger.jq`), and the plan's line for it ends ", on hold, not relaunched: <what holds it>".
+Any other wait or block logged before the stow does not hold it, since it was the stowed worker's own state (a planner interviewing Daniel), which its relaunch resumes, and neither does a `paused`, which every stow logs; a `resumed id=<that park>` lifts the hold (Daniel's hold only with `discord_message=` of their word).
 `team-sweep`'s `level-resume` finding names the first that fits and is not on hold ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
-A launch refused with 75 for a task that is not stowed waits the same way: while a `paused` refusing it for room stands (its cause `room`, as `park_cause` in `bin/lib/ledger.jq` reads `team-worker`'s "no room for session:<role>" line, the role from its words), the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit and that is not on hold ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until the task's next launch or a `resumed` ends the refusal.
+A launch refused with 75 for a task that is not stowed waits the same way: while a `paused` refusing it for room stands (its cause `room` and its role, as `team-worker` logs them, or on an old line as `park_cause` in `bin/lib/ledger.jq` reads its "no room for session:<role>" words), the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit and that is not on hold ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until a launch of its role, a `resumed id=<its park>` or a `resumed all=true` ends the refusal.
 Such a task is on hold by the same rule, its latest refusal in the stow's place (`hold_since` in `bin/lib/ledger.jq`), and the plan's line for it ends ", on hold, not launched: <what holds it>".
 A `team-capacity plan` that fails is one `level` finding naming its reason, in their place.
 
