@@ -665,7 +665,7 @@ alert: checkpoint: the post to #coordinator failed (curl: (22) The requested URL
   jq -e '.state == "open"' <<<"$(open_alert checkpoint)"
 
   rm "$STUB_FIXTURES/inbox/fail"
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   checkpoint_due
   run_bin -0 team-timers run
   assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: ended before its post went through; closed"
@@ -856,7 +856,7 @@ alert: cannot judge the alerts: another writer held $lock for 1 s"
   checkpoint_due
   run_bin -1 team-timers run
   id=$(alerts_shown | tail -n 1 | jq -r .id)
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   before=$(alert_lines | wc -l)
   run -0 "$REPO_ROOT/bin/team-lease" release
   run_bin -0 team-timers run
@@ -900,7 +900,7 @@ edits_of() {
   lease_round_trip
   local id
   id=$(alerts_shown | jq -r .id)
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   checkpoint_due
   run_bin -0 team-timers run
   assert_equal "$(edits_of "$id")" 0
@@ -931,6 +931,43 @@ alert: checkpoint: posted to #coordinator (message $new)"
   checkpoint_due
   run_bin -1 team-timers run
   assert_equal "$(alerts_shown | wc -l)" 2
+}
+
+@test "an alert of a health.json from before the notice record, posted before this holding of the lease, whose problem has ended is closed with no edit" {
+  run_bin -0 team-timers run
+  local old=1569000000000000099 text="No coordinator session is live on home-pc since 09:00."
+  jq -n --arg text "$text" '{content: $text}' >"$STUB_FIXTURES/inbox/$old.json"
+  date_lease_record --take 1
+  old_alerts "{coordinator: {since: ago(70), text: \"$text\", posted: ago(60), message: \"$old\"}}"
+  run_bin -0 team-timers run
+  jq -e 'has("alerts") | not' "$record"
+  assert_equal "$(edits_of "$old")" 0
+  assert_equal "$(jq -r .content "$STUB_FIXTURES/inbox/$old.json")" "$text"
+  assert_equal "$(alert_lines)" \
+    "alert: coordinator: posted in an earlier holding of the lease, so it is closed without an edit (message $old)"
+  assert_equal "$(alerts_shown)" ""
+  assert_equal "$(open_alerts)" ""
+}
+
+@test "an alert of a health.json from before the notice record, posted before this holding of the lease, whose problem still stands is closed with no edit and posted afresh" {
+  run_bin -0 team-timers run
+  local old=1569000000000000099
+  echo '{"content": "Checkpoints are failing on home-pc since 09:00."}' >"$STUB_FIXTURES/inbox/$old.json"
+  date_lease_record --take 1
+  old_alerts "{checkpoint: {since: ago(70), text: \"Checkpoints are failing on home-pc since 09:00.\", posted: ago(60),
+    message: \"$old\"}}"
+  fail_checkpoint
+  TEAM_TIMERS_HEALTH_RUNS=1 run_bin -1 team-timers run
+  assert_equal "$(edits_of "$old")" 0
+  assert_equal "$(alerts_shown | wc -l)" 1
+  local id
+  id=$(alerts_shown | jq -r .id)
+  [[ $id != "$old" ]]
+  [[ $(alerts_shown | jq -r .content) == "Checkpoints are failing on home-pc since "* ]]
+  assert_equal "$(alert_lines)" \
+    "alert: checkpoint: posted in an earlier holding of the lease, so it is closed without an edit (message $old)
+alert: checkpoint: posted to #coordinator (message $id)"
+  assert_equal "$(open_alerts)" "checkpoint $id"
 }
 
 @test "a checkpoint alert is posted before the run's janitor step" {

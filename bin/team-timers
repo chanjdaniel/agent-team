@@ -306,10 +306,11 @@
 # the run made none), notices.json (the notice record, team-notices/1, bin/lib/notice.jq's: the
 # open alerts, the offline notice and the login-refused notice, each with since when, its text,
 # the holding of the lease it opened in, when it was posted and its message, the login refusal's
-# reason in its detail; written whole under notices.lock, through bin/lib/notices.sh; a run moves
-# health.json's open alerts, the offline flag's posted and the login-refused file from before it
-# there once, and strips an alerts key in health.json, a posted in the offline flag and a
-# login-refused file it finds), notices.lock (one writer of the notice record at a time),
+# reason in its detail; written whole under notices.lock, through bin/lib/notices.sh; its first
+# write moves health.json's open alerts, the offline flag's posted, the login-refused file and
+# uptime.json's outages from before it there once, and a run strips an alerts key in health.json,
+# a posted in the offline flag and a login-refused file it finds, uptime.json's alerts being
+# team-uptime run's to strip), notices.lock (one writer of the notice record at a time),
 # heartbeat.log ("<UTC time> <step>: <what happened>", kept to its last 1000 lines once it passes
 # 2000), heartbeat-failures.log (each
 # of its lines that reports a problem, the same line: a failed step, a warning, a failed or refused
@@ -1613,7 +1614,8 @@ run_heartbeat() {
     return
   fi
   # The open alerts of health.json, the offline flag's posted and the login-refused file, from
-  # before the notice record, moved into it once.
+  # before the notice record, moved into it once and stripped; the record's first write moves
+  # uptime.json's outages too, which team-uptime run strips.
   if notices_upgrade health offline login-refused 2>"$err"; then
     # A record set aside as not team-notices/1 is said; the notices start again from empty.
     ! grep -q . "$err" || problem alert "$(grep -m1 . "$err")"

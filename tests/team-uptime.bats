@@ -511,6 +511,27 @@ Production back: conventioner admin (<$base/admin>) answers again at $(clock "$b
   assert_equal "$(uptime_post_ids | wc -l)" 2
 }
 
+@test "an outage of an uptime.json from before the notice record, posted before this holding of the lease, is closed with no back post, and its check still down is posted down afresh" {
+  take_lease "$(date -u +%FT%TZ)"
+  api_check 503 ''
+  local at since posted
+  at=$(ago 3) since=$(ago 60) posted=$(ago 55)
+  mkdir -p "$(dirname "$state")"
+  jq -n --arg url "$base/api" --arg checked "$at" --arg since "$since" --arg posted "$posted" '
+    {schema: "team-uptime/1", written: $checked,
+     checks: {"conventioner/api": {project: "conventioner", name: "api", url: $url, expect: "\"status\":\"ok\"",
+       checked: $checked, ok: false, reason: "HTTP 503", failures: 3, since: $since,
+       alert: {since: $since, posted: $posted, reminded: null, message: "1568000000000000001", back: null}}}}' \
+    >"$state"
+  run_bin -0 team-uptime run
+  assert_equal "$output" "conventioner/api: failed: HTTP 503 (4 in a row, since $since)
+conventioner/api: its outage was posted in an earlier holding of the lease; closed without a post
+posted to #coordinator (message 1569000000000000001): down: conventioner/api"
+  assert_equal "$(uptime_posts)" "Production down: conventioner api (<$base/api>) since $(clock "$since"), 4 checks in a row from home-pc: HTTP 503."
+  assert_equal "$(uptime_state '.checks["conventioner/api"] | has("alert")')" false
+  assert_equal "$(outage conventioner/api '.message')" 1569000000000000001
+}
+
 @test "an outage left in uptime.json after its move brings nothing back" {
   api_check 503 ''
   run_bin -0 team-uptime run

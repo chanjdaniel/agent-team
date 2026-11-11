@@ -10,11 +10,13 @@
 # lease, checks nothing and exits 1 saying so ("team-uptime: <machine> does not hold the lease, so
 # it checks nothing"). One run at a time: while another holds ~/.local/state/agent-team/uptime.lock
 # it prints "another team-uptime run is checking; skipped" and exits 0. Once it holds that lock, it
-# first moves the open outages of an uptime.json from before the notice record into the notice
-# record, once (the record written, then each check's alert stripped from the state); a move that
-# fails says so on stderr ("team-uptime: cannot move the open outages of <state> into the notice
-# record <record>: <why>; they are moved at the next run") and fails nothing. With no check in the
-# registry it then makes no request, prints nothing, posts nothing and writes no state.
+# first strips each check's alert from an uptime.json from before the notice record. The first
+# write of the notice record by either script moves every old record's open notices into it, so
+# team-timers run's move has most often moved the outages already; when no write has yet, this run
+# writes the record first, then strips. A move that fails says so on stderr ("team-uptime: cannot
+# move the open outages of <state> into the notice record <record>: <why>; they are moved at the
+# next run") and fails nothing. With no check in the registry it then makes no request, prints
+# nothing, posts nothing and writes no state.
 #
 # Each check is one fetch, in turn, the same plain GET every time, with no curlrc (-q), no header,
 # cookie or credential of its own and no redirect followed:
@@ -262,7 +264,8 @@ run_round() {
   fi
   body=$(mktemp) err=$(mktemp)
   trap 'rm -f "$body" "$err"' EXIT
-  # The open outages of uptime.json from before the notice record, moved into it once.
+  # The open outages of uptime.json from before the notice record, moved into it once (by the
+  # record's first write, whichever script made it), then stripped from the state.
   if notices_upgrade uptime 2>"$err"; then
     notices_said
   else

@@ -18,9 +18,9 @@ include "notice";
 # ~/.local/state/agent-team/notices.json (bin/lib/notice.jq's header describes it): its since the
 # outage's start, posted and message its down post's, reminded its last still-down post's, and
 # ended when it answered again, its back post due. A check's alert key, from before the notice
-# record ({since, posted, reminded, message, back}), is the old record team-uptime run moves there
-# and strips. Keys it does not name are kept as they are. Times are UTC ISO 8601, as date -u +%FT%TZ
-# writes.
+# record ({since, posted, reminded, message, back}), is the old record the notice record's first
+# write moves there (bin/lib/notices.sh) and team-uptime run strips. Keys it does not name are
+# kept as they are. Times are UTC ISO 8601, as date -u +%FT%TZ writes.
 
 # The thresholds, each defined here once: a check that fails `down_runs` runs in a row is down; a
 # failure more than `gap_minutes` after the check's last counted result counts as the first again

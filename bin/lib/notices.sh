@@ -22,15 +22,20 @@
 #                                with each module of <modules> (space-separated) included in the
 #                                order given, the record as input; the program prints an object
 #                                whose record is the new record, which is written with written set
-#                                to now, and the whole object is printed as one line. A record that
+#                                to now, and the whole object is printed as one line. Since the
+#                                read folds every old record not yet upgraded, the first write by
+#                                any caller moves every source's old notices in and marks each
+#                                upgraded, whatever the caller judges. A record that
 #                                is not team-notices/1 is first set aside as <file>.bad (one file,
 #                                overwritten), saying so on stderr, and the program runs on
 #                                notice_empty with the folds. Fails, writing nothing and saying why
 #                                on stderr, when the lock is not had in time ("another writer held
 #                                <lock> for <n> s"), the program fails or the write fails.
-#   notices_upgrade <source>...  moves each named source's old record into the record, under the
-#                                lock: the record written first, its sources marked upgraded, then
-#                                the old field stripped (health: health.json's alerts; offline:
+#   notices_upgrade <source>...  moves the old records into the record, under the lock, unless it
+#                                lists each named source upgraded already: written as
+#                                notices_update writes, so every source not yet upgraded is moved
+#                                and marked, the named ones among them; then each named source's
+#                                old field is stripped (health: health.json's alerts; offline:
 #                                the offline flag rewritten as {since}, still the hold;
 #                                login-refused: the login-refused file removed; uptime: each
 #                                check's alert in uptime.json). Fails as notices_update
