@@ -246,9 +246,9 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
    The gate runs again only for a commit of yours that changes behaviour, such as the fix to a red check, and never for a merge of the base, however its conflicts were resolved (clean, in docs alone or in code), or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI.
 7. Start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait --no-agent-review <full url> <the full sha the gate or step 6 pushed>`, run with Bash `run_in_background`, then send `T12 PR <full url>` to `coordinator` at once, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged, so the review reads while CI runs, and keep the wait going.
    `--no-agent-review` leaves out the reviewer's `agent-review` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round.
-   Act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push the fix as step 8 says, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
-   The gate leaves Playwright to CI, so a red `e2e` check is a failed check like any other.
-8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new `PR`: the review in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
+   Act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each `the PR's:` failure it names on the branch and push the fix as step 8 says, and never a `roll-up:` line, whose shard's line names the failure; rerun each `infrastructure:` line's check once with the command its line gives and run this wait again on the same head, and when that wait names the same check as infrastructure again, send `T12 BLOCKED <the line>` to `coordinator`; or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
+   The gate leaves Playwright to CI, so a red `e2e` check is read by its class like any other.
+8. Push each fix of a `the PR's:` failure at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new `PR`: the review in flight counts that failure as a `blocking` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed.
 9. Once the wait on the head you last pushed ends with exit 0, the delivery is done: send nothing more, since a review's findings come back to you from the coordinator as a fix round.
 
 At each gate run's end (it pushed, went red, or was aborted), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, a run whose gate outcome is `passed` reported as `outcome=pushed`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR, and `approved=<ids>` when you approved a park of it yourself, as step 4 says.
@@ -687,9 +687,9 @@ EOF
   pr=$(grep -n 'send `T12 PR <full url>`' "$output" | cut -d: -f1)
   [[ -n $merge && $merge -lt $wait && $wait -le $pr ]]
   [[ $(grep -c 'PR <full url>` to `coordinator`' "$output") -eq 1 ]]
-  # A failed check's fix is the builder's, pushed with no new report.
+  # A fix of the PR's own failure is the builder's, pushed with no new report.
   # It re-gates only a fix that changes behaviour, as step 6 says: a docs-only fix is pushed as it is.
-  grep -qF "8. Push each fix of a failed check at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new \`PR\`" "$output"
+  grep -qF "8. Push each fix of a \`the PR's:\` failure at once: commit it, repeat step 1, and when the fix changes behaviour, as step 6 says, run the gate on it as step 4 says, whose push and pr steps update the PR, else push it yourself; then start step 7's wait on the head pushed, but send no new \`PR\`" "$output"
   # No line has the builder wait for checks-passed, stop a green run or report stopped-green.
   [[ $(grep -c 'checks-passed' "$output") -eq 1 ]]
   assert_contains "$brief" 'never wait for `checks-passed`, and never abort a run to end it.'
@@ -739,7 +739,7 @@ EOF
   [[ $hold -lt $(grep -n 'team-checks' "$output" | cut -d: -f1) ]]
   [[ $hold -lt $(grep -n 'gh pr create' "$output" | cut -d: -f1) ]]
   [[ $hold -lt $(grep -n 'team-ci-wait' "$output" | cut -d: -f1) ]]
-  grep -qF "7. Push each fix of a failed check at once, as you pushed the first head: repeat step 1, run step 4 on the new head" "$output"
+  grep -qF "7. Push each fix of a \`the PR's:\` failure at once, as you pushed the first head: repeat step 1, run step 4 on the new head" "$output"
   grep -qF "8. Once the wait on the head you last pushed ends with exit 0, the delivery is done" "$output"
 }
 
@@ -897,7 +897,7 @@ A change to one touches the `settings` guarded area, so name `settings` among th
 ## Check
 
 1. First start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 def5678`, run with Bash `run_in_background`, so the run and your reading overlap (a pass delivers only once it has ended; a verify that sends any finding back delivers as soon as `.work/task/rereview.md` is written, naming in its CI section the checks still running, and a wait that ends after it delivered needs nothing more), and run the project's local checks (none) on `def5678` with `@CODE@/bin/team-checks home def5678`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `.work/task/rereview.md` says which local checks passed (they set no GitHub status).
-   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding, while a stuck check or a head other than `def5678` goes to `coordinator` as `T14 BLOCKED <its message>`; exit 75, run it again, or report as its message says.
+   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, read each failure it names by its class: each `the PR's:` line is a `blocking` finding, a `roll-up:` line is never a finding, and an `infrastructure:` line (a stuck check's among them) is no finding but goes to `coordinator` as `T14 BLOCKED <the line>`, and a head other than `def5678` as `T14 BLOCKED <its message>`; exit 75, run it again, or report as its message says.
 2. Review what changed since the last review, `git diff abc1234 def5678`, and the commit messages of `origin/main..def5678`.
    Read nothing else: not the rest of the PR, the spec's or the story's acceptance list, or the knowledge graph; run the UI check only when that diff touches a UI file and your session lists `ui-check`, on the states it touched and their siblings.
    A round with no new commit (`abc1234` is `def5678`) edited only the PR body: read the body against the notes.
@@ -1608,7 +1608,7 @@ odd_names_branch() {
     # after a green run, whose head the review in flight reads (team-catch-up catches it up at the
     # pass); a gated one's merge is checked by CI, never re-gated.
     if [[ $task == T14 ]]; then
-      assert_contains "$brief" "7. Push each fix of a failed check at once, as you pushed the first head: repeat step 1, run step 4 on the new head"
+      assert_contains "$brief" "7. Push each fix of a \`the PR's:\` failure at once, as you pushed the first head: repeat step 1, run step 4 on the new head"
     else
       assert_contains "$brief" "epeat step 1; if it merged anything"
       assert_contains "$brief" "never for a merge of the base, however its conflicts were resolved"
@@ -1952,10 +1952,10 @@ after"
   files+=("$output")
   brief=$(<"$output")
   assert_contains "$brief" "6. $wait"
-  assert_contains "$brief" "   Act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push the fix as step 7 says, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says."
-  # A fix of a failed check is pushed at once with no new report: the review in flight counts that
-  # check as blocking, and its findings round brings the next PR.
-  assert_contains "$brief" "7. Push each fix of a failed check at once, as you pushed the first head: repeat step 1, run step 4 on the new head, bring the PR body's local checks line up to date (\`gh pr edit <full url> --body-file <file>\`), and start step 6's wait on the new head, but send no new \`PR\`: the review in flight counts the failed check as a \`blocking\` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed."
+  assert_contains "$brief" "   Act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each \`the PR's:\` failure it names on the branch and push the fix as step 7 says, and never a \`roll-up:\` line, whose shard's line names the failure; rerun each \`infrastructure:\` line's check once with the command its line gives and run this wait again on the same head, and when that wait names the same check as infrastructure again, send \`T14 BLOCKED <the line>\` to \`coordinator\`; or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says."
+  # A fix of the PR's own failure is pushed at once with no new report: the review in flight counts
+  # it as blocking, and its findings round brings the next PR.
+  assert_contains "$brief" "7. Push each fix of a \`the PR's:\` failure at once, as you pushed the first head: repeat step 1, run step 4 on the new head, bring the PR body's local checks line up to date (\`gh pr edit <full url> --body-file <file>\`), and start step 6's wait on the new head, but send no new \`PR\`: the review in flight counts that failure as a \`blocking\` finding, and its findings come back to you as a fix round, where you note that one as fixed at the head you pushed."
   assert_contains "$brief" "8. Once the wait on the head you last pushed ends with exit 0, the delivery is done: send nothing more, since a review's findings come back to you from the coordinator as a fix round."
   # Nothing sends the PR after the wait any more.
   refute_grep -e 'Then send `T14 PR' -e 'until every check passes' "$output"
@@ -1981,10 +1981,10 @@ after"
   done
   # The first review and the rereview start their own wait first, before any reading, and act on
   # each exit as verify does.
-  act="Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a \`blocking\` finding; on a head other than \`abc1234\`, read the runs of \`abc1234\` itself with \`gh run list --repo chanjdaniel/agent-team --commit abc1234\`, since the builder pushes its fix of a failed check at once: each failed run is a \`blocking\` finding, and only when none failed does the moved head, as a stuck check does, go to \`coordinator\` as \`T14 BLOCKED <its message>\`; exit 75, run it again, or report as its message says."
+  act="Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, read each failure it names by its class: each \`the PR's:\` line is a \`blocking\` finding, a \`roll-up:\` line is never a finding, and an \`infrastructure:\` line (a stuck check's among them) is no finding but goes to \`coordinator\` as \`T14 BLOCKED <the line>\`; on a head other than \`abc1234\`, read the runs of \`abc1234\` itself with \`gh run list --repo chanjdaniel/agent-team --commit abc1234\`, since the builder pushes its fix of a failed check at once: each failed run is a \`blocking\` finding, and only when none failed does the moved head, as an \`infrastructure:\` line does, go to \`coordinator\` as \`T14 BLOCKED <its message>\`; exit 75, run it again, or report as its message says."
   # A builder's fix of a failed check moves the PR past the reviewed head: the review still
   # delivers its findings, with no status and no BLOCKED.
-  moved="When a check failed, the PR has usually moved past \`abc1234\` by the time you deliver, and \`team-review-status\` refuses your head: post your comment as usual, set no status, and send your \`DONE findings\` with each failed check counted as \`blocking\`, which the coordinator takes on a moved head; that move is no \`BLOCKED\`."
+  moved="When a check failed as the PR's, the PR has usually moved past \`abc1234\` by the time you deliver, and \`team-review-status\` refuses your head: post your comment as usual, set no status, and send your \`DONE findings\` with each \`the PR's:\` line counted as \`blocking\`, which the coordinator takes on a moved head; that move is no \`BLOCKED\`."
   reviewed_branch T14 main
   run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head="$head" --set "checks=the checks"
   files+=("$output")
@@ -2013,6 +2013,43 @@ ${moved//abc1234/$head}
   refute_grep -- '--watch' "${files[@]}"
   # No review waits for CI's end to deliver its findings.
   refute_grep -F 'you deliver only once the wait has ended' "${files[@]}"
+}
+
+@test "each waiter on CI acts on a failed check by its class: the PR's is a finding or a fix, a roll-up nothing, infrastructure a BLOCKED or one rerun" {
+  open_t12
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  notes_fix_branch
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief name
+  # The reviewer, the rereview and verify count only the PR's own lines as blocking, never a roll-up,
+  # and send an infrastructure line to the coordinator as BLOCKED.
+  for name in reviewer rereview verify; do
+    case $name in
+      reviewer) run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head="$head" --set "checks=the checks" ;;
+      rereview) run_bin -0 team-brief T14 rereview --name rereview --set pr=$pr --set head="$head" --set reviewed="$reviewed" --set "since=the fix" ;;
+      verify) run_bin -0 team-brief T14 verify --name verify-2 --set pr=$pr --set head="$head" --set reviewed="$reviewed" --set findings="3 and 5" ;;
+    esac
+    brief=$(<"$output")
+    assert_contains "$brief" "exit 1, read each failure it names by its class: each \`the PR's:\` line is a \`blocking\` finding, a \`roll-up:\` line is never a finding, and an \`infrastructure:\` line (a stuck check's among them) is no finding but goes to \`coordinator\` as \`T14 BLOCKED <the line>\`"
+    refute_grep -F -e 'each failed check it names is a `blocking` finding' -e 'each failed check counted as `blocking`' -e 'while a stuck check' "$output"
+  done
+  # Both deliveries and the merge-base brief fix only the PR's own failures, never a roll-up, and
+  # rerun an infrastructure line's check once, sending BLOCKED when it fails so again.
+  for name in T14:deliver T12:deliver T14:merge-base; do
+    if [[ $name == *:deliver ]]; then
+      run_bin -0 team-brief "${name%%:*}" builder-deliver --set "goal=the goal"
+    else
+      run_bin -0 team-brief T14 builder-merge-base --name merge-base --set pr=$pr
+    fi
+    brief=$(<"$output")
+    assert_contains "$brief" "exit 1, fix each \`the PR's:\` failure it names"
+    assert_contains "$brief" "\`roll-up:\` line, whose shard's line names the failure; rerun each \`infrastructure:\` line's check once with the command its line gives and run this wait again on the same head, and when that wait names the same check as infrastructure again, send \`${name%%:*} BLOCKED <the line>\` to \`coordinator\`; or, on a head other than the one you pushed, do as its message says;"
+    assert_contains "$brief" "counts that failure as a \`blocking\` finding"
+    refute_grep -F -e 'fix each failed check it names' -e "follow a stuck check's message" -e 'counts the failed check as' "$output"
+  done
+  # The roles say the same.
+  grep -qF "each failure the wait names as \`the PR's:\` on your head is a \`blocking\` finding even after the builder pushed its fix, a \`roll-up:\` line is never a finding, and an \`infrastructure:\` line (a stuck check's among them), or a moved head with none failed on yours, is no finding but goes to the coordinator as \`BLOCKED <the line>\`." "$REPO_ROOT/roles/reviewer.md"
+  grep -qF "you push a fix of each failure the wait names as \`the PR's:\` at once with no new report" "$REPO_ROOT/roles/builder.md"
+  grep -qF "Never fix a \`roll-up:\` line, whose shard's line names the failure; rerun an \`infrastructure:\` line's check once with the command its line gives and wait again on the same head, and send \`BLOCKED <the line>\` when that wait names the same check as infrastructure again." "$REPO_ROOT/roles/builder.md"
 }
 
 @test "the merge-base brief merges the base, resolves, runs the local checks and names the conflicted files" {
@@ -2047,7 +2084,7 @@ Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `t
    Run no gate: the merge and the fixes of step 4 are re-reviewed, not re-gated.
 7. Start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait --no-agent-review https://github.com/chanjdaniel/agent-team/pull/9 <the full sha you pushed>`, run with Bash `run_in_background`, then send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator` at once, which has a fresh reviewer re-check the merge while CI runs, and keep the wait going.
    `--no-agent-review` leaves out the rereview's `agent-review` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round.
-   Act on how it ended: exit 0, every check passed or the head has none, and you are done; exit 1, fix each failed check it names, run step 5 on the new head, push as step 6 says and wait again on the new head, sending nothing new: the rereview in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round; follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
+   Act on how it ended: exit 0, every check passed or the head has none, and you are done; exit 1, fix each `the PR's:` failure it names, run step 5 on the new head, push as step 6 says and wait again on the new head, sending nothing new: the rereview in flight counts that failure as a `blocking` finding, and its findings come back to you as a fix round; never fix a `roll-up:` line, whose shard's line names the failure; rerun each `infrastructure:` line's check once with the command its line gives and run this wait again on the same head, and when that wait names the same check as infrastructure again, send `T14 BLOCKED <the line>` to `coordinator`; or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
 
 Never run a command that needs `sudo`; send `T14 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
