@@ -7,13 +7,18 @@
 # When the snapshot fails it prints the error and what to do by hand instead. Either way, while
 # the team holds (the offline flag, which team-lease status reads for offline_since, is there),
 # it then says so in one line, since the offline watch takes a hold already on as no change and
-# a compaction would otherwise lose it. It ends with the two standing watches to arm with Bash
-# run_in_background, each only if it is not already running (Claude Code lists the running
-# background commands, after a compaction too), with their exact commands: the sweep watch
-# (team-sweep --wait), which ends once a new finding has stood for three minutes or one already
-# there has stood for 30, and the offline watch (team-timers watch --once), which ends when the
-# hold starts or ends. Each wakes the coordinator once, even while idle, and is re-armed in the
-# turn it ends. Exit 0 either way.
+# a compaction would otherwise lose it. On a start, resume or clear (any source but compact, read
+# from the event's JSON on stdin, and when it cannot be read), it then asks for one ListAgents
+# call: a session named coordinator on another machine over Remote Control is in no list a
+# script reads (claude agents --json lists this machine's alone), and a coordinator re-hosted
+# after its machine went down left its old Remote Control row listed as one, so each new process
+# looks once; a compaction keeps the process, so it does not. It ends with the two standing
+# watches to arm with Bash run_in_background, each only if it is not already running (Claude
+# Code lists the running background commands, after a compaction too), with their exact
+# commands: the sweep watch (team-sweep --wait), which ends once a new finding has stood for
+# three minutes or one already there has stood for 30, and the offline watch (team-timers watch
+# --once), which ends when the hold starts or ends. Each wakes the coordinator once, even while
+# idle, and is re-armed in the turn it ends. Exit 0 either way.
 # Wired only in coordinator.settings.json.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
@@ -31,6 +36,18 @@ watch_lines() {
   echo "  offline watch, ends when the hold starts or ends: \"$bin/team-timers\" watch --once"
 }
 
+# The Remote Control twin check, one line, on any start but a compaction; nothing after one.
+twin_line() {
+  [[ $start_source != compact ]] || return 0
+  echo "Call ListAgents once now, since no script can list a Remote Control session: a row named" \
+    "coordinator but this session (the one ListAgents says you are) is a coordinator-twin, which" \
+    "makes the bare name ambiguous to every worker. One on this machine is team-sweep's finding;" \
+    "one over Remote Control is another machine's coordinator, which Daniel ends there" \
+    "(team-handoff --retire once that machine holds no lease), or your own row from before a" \
+    "re-host, which goes only when your session stops: post it in #coordinator and ask Daniel" \
+    "whether to restart you."
+}
+
 # The hold, one line, while the offline flag is there; nothing otherwise.
 hold_line() {
   local flag=$HOME/.local/state/agent-team/offline since
@@ -39,6 +56,10 @@ hold_line() {
   echo "GitHub unreachable since $since; the team is holding: hold each live worker and launch" \
     "nothing until the offline watch says GitHub answers again (Machines)."
 }
+
+event=''
+[[ -t 0 ]] || event=$(cat)
+start_source=$(jq -r '.source | strings' 2>/dev/null <<<"$event") || start_source=''
 
 status=0
 snapshot=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-snapshot" --json </dev/null 2>"$errors") ||
@@ -49,6 +70,7 @@ if [[ $status -ne 0 ]] || ! jq -e '.schema == "team-snapshot/1"' >/dev/null 2>&1
   echo "Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude agents," \
     "tasks/current.md)."
   hold_line
+  twin_line
   watch_lines
   exit 0
 fi
@@ -61,4 +83,5 @@ ledger_jq 'snapshot_text,
     + " the current items."' -r <<<"$snapshot" ||
   echo "The digest could not be printed; run team-snapshot by hand before taking new work."
 hold_line
+twin_line
 watch_lines

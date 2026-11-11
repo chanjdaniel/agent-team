@@ -925,11 +925,12 @@ def workers($sessions):
        context: $live.context, brief: (.brief // null)}];
 
 # Where the task is, over its events and its workers: tickets (done, the tickets with a
-# ticket-done, each once, and total, null here, which task_state_json reads from team-tickets),
+# ticket-done, each once, and total and graph, null here, which task_state_json reads from
+# team-tickets and the graph's page and PNG),
 # on (each live worker's role, session and brief) and reviews (the count of the task's reviews,
 # and the latest one's verdict, head and sent_back, each null when there is none).
 def progress($workers):
-  {tickets: {done: [.[] | select(.event == "ticket-done") | .ticket] | unique, total: null},
+  {tickets: {done: [.[] | select(.event == "ticket-done") | .ticket] | unique, total: null, graph: null},
    on: [$workers[] | select(.live) | {role, session, brief}],
    reviews: (map(select(.event == "review"))
      | {count: length} + (last // {} | {verdict, head, sent_back}))};
@@ -1097,9 +1098,10 @@ def task_state($sessions; $home):
      progress: progress($workers)};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands
-# and the brief it is on, then the tickets done, the latest review, the PR and the words on it, the
-# walk, a stow under way, and last the standing parks:
-# T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7 | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
+# and the brief it is on, then the tickets done, with the graph fresh or stale when there is one,
+# the latest review, the PR and the words on it, the walk, a stow under way, and last the standing
+# parks:
+# T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7, graph stale | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
 def state_line:
   .task as $task
   | ([.task, .project, .path, .phase] | map(select(. != null)) | join(" "))
@@ -1112,7 +1114,8 @@ def state_line:
   + (.progress.tickets // {} | (.done // [] | length) as $done
      | if (.total | type) == "number" and .total > 0 then " | tickets \($done)/\(.total)"
        elif $done > 0 then " | tickets \($done) done"
-       else "" end)
+       else "" end
+     + if .graph == null then "" elif .graph.fresh then ", graph fresh" else ", graph stale" end)
   + (.progress.reviews // {} | if (.count // 0) == 0 then ""
      else " | review \(.count) \(.verdict)"
        + (if (.sent_back | type) == "array" and .sent_back != [] then ", sent back \(.sent_back | map(tostring) | join(", "))" else "" end)
@@ -1460,15 +1463,41 @@ def activity_finding:
   | {task: null, kind: "activity", session: null, name: null, next: "fix what session-activity names",
      text: "activity: \(.error), so no busy worker is found stalled: fix what session-activity names"};
 
+# team-sweep's coordinator-twin findings, from the session list (this machine's, as claude agents
+# --json lists it) and the full session id of the session the sweep runs in ($self, "" when it is
+# not known): when more than one session is named coordinator, one finding for each of them but
+# $self's, session being its short id (an interactive one's, the first 8 characters of its session
+# id), and when $self names none of them, "one of <n> sessions" in place of "a second session" and
+# "if it is not you" before the next step; a session whose startedAt is not a number "started at
+# an unknown time". A background twin is stopped with claude stop; an interactive one is Daniel's
+# to end. A Remote Control row is not in the list: the coordinator's own ListAgents finds that one
+# (bin/hooks/session-digest).
+def coordinator_twin_findings($self):
+  [.[] | select(.name == "coordinator")] as $coordinators
+  | select(($coordinators | length) > 1)
+  | any($coordinators[]; $self != "" and .sessionId == $self) as $known
+  | $coordinators[] | select(($known | not) or .sessionId != $self)
+  | (.id // ((.sessionId // "")[:8])) as $short
+  | (if .kind == "interactive" then "ask Daniel to end it, an interactive session, pid \(.pid)"
+     else "read claude logs \($short) for anything left to log, then stop it with claude stop \($short)" end
+     | if $known then . else "if it is not you, " + . end) as $next
+  | {task: null, kind: "coordinator-twin", session: $short, name: "coordinator", next: $next,
+     text: "coordinator-twin: coordinator \($short) (\(.kind), \(.state // .status // "no state"), \(
+       if (.startedAt | type) == "number" then "started \(.startedAt / 1000 | floor | todate)"
+       else "started at an unknown time" end)) is \(
+       if $known then "a second session" else "one of \($coordinators | length) sessions" end
+       ) named coordinator on this machine; next: \($next)"};
+
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
 # takes it): each open task's stowing finding, then its merge-due (under a plan-time word or a
 # standing word of any task's), else its findings unless it is parked, then the stray sessions (named like a team worker whose
 # task is closed or not in the ledger, never the load check's T0, whose session the coordinator
-# waits on for up to 30 minutes), in task number order; then the activity, level, retro-due and
-# health findings. $covered is the projects a standing word may cover, as merge_due_finding takes
-# it, and $health the health view, as health_findings takes it.
-def sweep($sessions; $plan; $activity; $covered; $health):
+# waits on for up to 30 minutes), in task number order; then the coordinator-twin, activity,
+# level, retro-due and health findings. $covered is the projects a standing word may cover, as
+# merge_due_finding takes it, $health the health view, as health_findings takes it, and $self the
+# sweep's own session id, as coordinator_twin_findings takes it.
+def sweep($sessions; $plan; $activity; $covered; $health; $self):
   . as $events
   | by_task as $tasks
   | [.[] | select(.event == "merge-standing" or .event == "merge-standing-withdrawn")] as $standing
@@ -1481,6 +1510,7 @@ def sweep($sessions; $plan; $activity; $covered; $health):
             "\(.name) \(.session) is live but \(stray_reason)";
             "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]
      | by_task_number)
+    + [$sessions | coordinator_twin_findings($self)]
     + [$activity | activity_finding]
     + [$plan | level_findings]
     + [$events | retro_status | retro_due_finding]

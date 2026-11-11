@@ -4,11 +4,16 @@
 # once with the error, so supervision is never silently off.
 # Reads the Stop event's JSON on stdin; with stop_hook_active true (the turn was already kept
 # open once) it exits 0 at once. Otherwise it prints {"decision": "block", "reason": ...} to
-# block, or nothing. Exit 0 either way. Wired only in coordinator.settings.json.
+# block, or nothing. The event's session_id, when it has one, is the sweep's own session
+# (CLAUDE_CODE_SESSION_ID), so a coordinator-twin finding names only the other coordinator.
+# Exit 0 either way. Wired only in coordinator.settings.json.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 
-if jq -e '.stop_hook_active == true' >/dev/null 2>&1; then exit 0; fi
+event=$(cat)
+if jq -e '.stop_hook_active == true' >/dev/null 2>&1 <<<"$event"; then exit 0; fi
+own=$(jq -r '.session_id | strings' 2>/dev/null <<<"$event") || own=''
+[[ -z $own ]] || export CLAUDE_CODE_SESSION_ID=$own
 
 errors=$(mktemp)
 trap 'rm -f "$errors"' EXIT

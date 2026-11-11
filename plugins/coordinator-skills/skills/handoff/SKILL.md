@@ -37,4 +37,6 @@ The level recorded in `level.jsonl` holds across the restart; `team-resume` then
    A failure stops it before the release with the reason: fix what it names (a diverged branch goes back to its builder's word, or Daniel's), then run `team-handoff` again, which picks up where it stopped.
    Exit 75: GitHub went away; wait, then run it again.
 6. **Post the final message.** What `team-handoff` printed from `Released at` to its end goes in `#coordinator` word for word, with any worker that did not answer STOW.
-7. **Retire.** Run `team-handoff --retire` and end your turn: a few seconds later it stops and removes this session.
+7. **Retire.** Run `team-handoff --retire` right after the post, with nothing between, and end your turn: a few seconds later it stops and removes this session, and its Remote Control row with it.
+   The other machine's wait starts its coordinator once it has taken the lease, and until this session stops, every worker there meets two sessions named `coordinator`.
+   That coordinator's start asks for one `ListAgents` call, so a row of this session's still listed then is its `coordinator-twin` to raise.
