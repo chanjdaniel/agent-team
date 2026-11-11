@@ -15,8 +15,8 @@
 # number from 1, phase 1 without one (a blocker is in the ticket's phase or an earlier one):
 #   Phase: 2
 # and at most one Touches: line, the paths of the task directory's scope.txt the ticket changes,
-# each a file or a directory ending in /, with no leading /, no . or .. segment, no glob and no
-# space, joined by ", " (a ticket with none is never named for a shared path):
+# each a file or a directory ending in /, with no leading /, no . or .. segment, no glob, no
+# backtick and no space, joined by ", " (a ticket with none is never named for a shared path):
 #   Touches: bin/team-next, tests/team-next.bats, tests/fixtures/next/
 # The task directory's spec.md has at most one Parallel: line, the planner's proposed cap on the
 # tickets of each phase that build at once, one from 1 to 3 per phase in phase order, the last
@@ -104,10 +104,10 @@ done < <(ledger_jq 'open_worktrees(.[]; $home) | [.project, .worktree] | @tsv' -
 read_lines() {
   awk '
     # A Touches: path: a repository path, a directory ending in /, with no leading /, no . or ..
-    # segment, no empty one, no glob character, no comma and no space.
+    # segment, no empty one, no glob character, no backtick, no comma and no space.
     function good_path(p,   n, segs, i) {
       if (p == "" || substr(p, 1, 1) == "/" || p ~ /[[:space:]]/) return 0
-      if (index(p, "*") || index(p, "?") || index(p, "[") || index(p, ",")) return 0
+      if (index(p, "*") || index(p, "?") || index(p, "[") || index(p, "`") || index(p, ",")) return 0
       n = split(p, segs, "/")
       for (i = 1; i <= n; i++)
         if (segs[i] == "." || segs[i] == ".." || (segs[i] == "" && i < n)) return 0

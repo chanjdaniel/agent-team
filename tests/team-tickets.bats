@@ -345,13 +345,15 @@ touches_set() {
   ticket 14-second "Blocked by: None" "Touches: bin/team-a" "**Touches:** tests/team-a.bats"
   ticket 15-prose "Blocked by: None" "It reads the \`Touches:\` line." "- [ ] touches: every path" \
     '```' "Touches: /nowhere" '```' "Touches: docs/manual.md"
+  ticket 16-backtick "Blocked by: None" "Touches: \`bin/team-a\`, \`docs/manual.md\`"
   run_bin -1 --separate-stderr team-tickets T172 --check
   local n
-  for n in 01-lead 02-dots 03-dot 04-glob 05-question 06-bracket 07-comma 08-space 09-empty 10-listed 11-lower 12-double 13-trailing; do
+  for n in 01-lead 02-dots 03-dot 04-glob 05-question 06-bracket 07-comma 08-space 09-empty 10-listed 11-lower 12-double 13-trailing 16-backtick; do
     assert_contains "$stderr" "team-tickets: $tickets/$n.md:4: $form"
   done
   assert_contains "$stderr" "team-tickets: $tickets/14-second.md:5: a second Touches: line (the first is line 4)"
   [[ $stderr != *"15-prose"* ]]
+  [[ $stderr != *'`bin/team-a`'* ]]
   # A directory ending in / is a well-formed path.
   fresh_tickets
   printf '%s\n' bin/lib/ tests/team-a.bats >"$task_dir/scope.txt"
