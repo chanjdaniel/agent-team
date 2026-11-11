@@ -150,9 +150,10 @@
 #          total), sessions_use, spike_allowance, admissions, stacks, heavy_runs, gates (the bytes
 #          of each part, 0 with none), items: [{part, kind, task, name, estimate_bytes, use_bytes,
 #          bytes, and on an item that is an admission or stands for one, an admissions item or a
-#          stack or heavy run an admission names, admission: its id, null for one with none}]}, room: {mode, level (the team home's level.jsonl's, manual full with none),
-#          share, budget_bytes (the memory budget, as team-level says it), bytes (the budget less
-#          what is reserved, below 0 when over it); both null with no reading}}. What is reserved,
+#          stack or heavy run an admission names, admission: its id, null for one with none}]},
+#          room: {mode, level (the team home's level.jsonl's, manual full with none), share,
+#          budget_bytes (the memory budget, as team-level says it), bytes (the budget less what is
+#          reserved, below 0 when over it); both null with no reading}}. What is reserved,
 #          by part (the estimates are costs'):
 #            sessions_use     each live team session of the newest reading past its admission
 #                             window, at its use (its scope's working set, RAM only);
@@ -216,13 +217,13 @@
 #          name (a stack's, else null), bytes, pid (a heavy run's team-heavy, the lock's holder)},
 #          every earlier entry keeping its id), which reserves it for 10 minutes as status --json's
 #          admissions say (a heavy run's while its team-heavy holds the lock, a session's until its
-#          session stops), or until release ends it; else it exits 75 with the reason on
-#          stderr, printing no id, and what makes room, "no room for session:reviewer at minor (30%): 8.9 GiB of
-#          9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or
-#          the level rises", and at level none "no room for session:reviewer: the team is at level
-#          none: nothing starts; room comes when Daniel raises the level" ("when the level rises"
-#          in auto mode). CPU is never admitted: the slice's quota holds it. Above none, with no
-#          reading to size the budget by, exit 1 with the reason.
+#          session stops), or until release ends it; else it exits 75 with the reason on stderr,
+#          printing no id, and what makes room, "no room for session:reviewer at minor (30%): 8.9
+#          GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work
+#          shrinks or the level rises", and at level none "no room for session:reviewer: the team is
+#          at level none: nothing starts; room comes when Daniel raises the level" ("when the level
+#          rises" in auto mode). CPU is never admitted: the slice's quota holds it. Above none, with
+#          no reading to size the budget by, exit 1 with the reason.
 # release  Ends the admission <admission id> (admit's first line) at once: under the exclusive
 #          flock on capacity.lock (a lock still held after 2 minutes is exit 75, naming it), it
 #          removes the entry with that id from admitted.json, printing "released admission <id>:
