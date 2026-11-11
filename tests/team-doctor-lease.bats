@@ -167,6 +167,41 @@ FAIL salvage T2 site"
   assert_equal "$(worktree_salvage)" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
 }
 
+@test "on a fenced machine, a ticket worktree gets a salvage line and a salvage branch of its own beside its task worktree's" {
+  only_checks 230-salvage.sh
+  tools_at arch
+  # T1's task worktree and its ticket 02's, each with a commit on no origin branch (a ticket
+  # branch is never pushed).
+  local task_wt=$HOME/site-wt/1 ticket_wt=$HOME/site-wt/2 team_origin fix
+  git -C "$SITE" worktree add -q -b feat/T1-x "$task_wt" origin/main
+  git -C "$SITE" worktree add -q -b feat/T1-x--02 "$ticket_wt" feat/T1-x
+  jq -cn --arg wt "$task_wt" '{ts: "2026-10-23T09:00:00Z", task: "T1", event: "opened", project: "site",
+    path: "small", type: "feat", title: "x", branch: "feat/T1-x", base: "main", base_sha: "0000000", worktree: $wt}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  jq -cn --arg wt "$ticket_wt" '{ts: "2026-10-23T09:30:00Z", task: "T1", event: "worktree-added", project: "site",
+    branch: "feat/T1-x--02", base: "feat/T1-x", base_sha: "0000000", worktree: $wt, ticket: "02"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  git -C "$task_wt" commit -q --allow-empty -m "feat: the task's"
+  git -C "$ticket_wt" commit -q --allow-empty -m "feat: ticket 02's"
+
+  make_machine laptop
+  steal_lease laptop home-pc
+  "$REPO_ROOT/bin/team-timers" disable >/dev/null
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -1 team-doctor
+  team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
+  assert_equal "$(worktree_salvage)" \
+"FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push $team_origin HEAD:refs/heads/salvage/site/T1-home-pc
+FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git -C ~/site-wt/2 push $team_origin HEAD:refs/heads/salvage/site/T1--02-home-pc"
+
+  # Both fixes keep both heads, neither overwriting the other, and the line passes.
+  while IFS= read -r fix; do eval "$fix" >/dev/null 2>&1; done < <(grep '^FAIL salvage' <<<"$output" | sed 's/.*; fix: //')
+  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1-home-pc)" "$(git -C "$task_wt" rev-parse HEAD)"
+  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1--02-home-pc)" "$(git -C "$ticket_wt" rev-parse HEAD)"
+  run_bin -1 team-doctor
+  assert_equal "$(worktree_salvage)" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
+}
+
 @test "on a fenced machine, the team home's records origin lacks get a salvage records line, whose fix keeps them on a salvage branch" {
   only_checks 230-salvage.sh
   tools_at arch

@@ -29,7 +29,8 @@
 #               behind turns a pass into a warning.
 #   branches    Warns on each local branch with commits on no origin branch (no upstream and
 #               never pushed, or ahead of what was pushed; a checkpoint's wip/<project>/T<n>
-#               on the team home's origin is no branch), with their count.
+#               on the team home's origin is no branch), with their count; an open ticket
+#               worktree's branch, never pushed, is left out.
 #   changes     Warns while the primary checkout has changes to tracked files or untracked files.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # err, the doctor's
@@ -157,7 +158,7 @@ check_leases() {
 # The lines of the registered project <name> (see the header).
 check_project() {
   local project=$1 facts path shown repo url top common origin task_dir delivery provider return_cmd exclude out rc pool slot
-  local wrong=() registered=() unpushed=() found=() fields=() branch count
+  local wrong=() registered=() unpushed=() found=() fields=() branch count ticket_branches ledger
   project_registry "$project"
   facts=$registry_reply
   mapfile -d '' -t fields < <(jq --raw-output0 '.path, .repo, .task_dir, .delivery, .pool.provider, .pool.return' <<<"$facts")
@@ -248,8 +249,17 @@ check_project() {
   # branches: commits no remote-tracking branch of origin has, as of the last fetch. A checkpoint's
   # wip/<project>/T<n> is none, since the next checkpoint replaces it and team-close deletes it:
   # team-open --resume fetches it into refs/remotes/team-home/, and origin/wip/* is left out for a
-  # project whose origin is the team home's (or a snapshot from before they moved there).
+  # project whose origin is the team home's (or a snapshot from before they moved there). An
+  # open ticket worktree's branch (team-open --ticket's) is none either: it is never pushed, and
+  # its checkpoint keeps it as wip/<project>/T<n>--NN.
+  ledger=$TEAM_HOME/ledger.jsonl
+  [[ -f $ledger ]] || ledger=/dev/null
+  ticket_branches=$(ledger_jq 'ledger_events as $events | ($events | by_task) as $tasks
+    | open_worktrees($events[] | select($tasks[.task] | is_open); $home)
+    | select(.project == $project and .ticket != null) | .branch' \
+    -nRr --arg project "$project" "$ledger")
   while IFS= read -r branch; do
+    grep -qxF -e "$branch" <<<"$ticket_branches" && continue
     count=$(git -C "$path" rev-list --count "refs/heads/$branch" --not --exclude='origin/wip/*' --remotes=origin)
     ((count == 0)) || unpushed+=("$branch ($count commit$( ((count == 1)) || echo s))")
   done < <(git -C "$path" for-each-ref --format='%(refname:lstrip=2)' refs/heads)
