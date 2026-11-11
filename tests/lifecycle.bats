@@ -115,10 +115,10 @@ builder_launch() {
 
 @test "a builder's report of review-ready or merged puts the task in review, and no other done does" {
   opened small
-  on done '{role: "builder", session: "b1", report: "05"}'
-  on done '{role: "reviewer", session: "r1", report: "review-ready https://x"}'
+  on "done" '{role: "builder", session: "b1", report: "05"}'
+  on "done" '{role: "reviewer", session: "r1", report: "review-ready https://x"}'
   assert_equal "$(fold_read phase)" building
-  on done '{role: "builder", session: "b1", report: "review-ready https://github.com/owner/proj/pull/5"}'
+  on "done" '{role: "builder", session: "b1", report: "review-ready https://github.com/owner/proj/pull/5"}'
   assert_equal "$(fold_read phase)" in-review
 }
 
@@ -172,7 +172,7 @@ builder_launch() {
   assert_equal "$(fold_read phase)" merged
   builder_launch b2
   on ticket-done '{ticket: "05", commits: ["bbbbbbb2"]}'
-  on done '{role: "builder", session: "b2", report: "05"}'
+  on "done" '{role: "builder", session: "b2", report: "05"}'
   assert_equal "$(fold_read phase)" building
   run fold_read '[task_findings([{id: "b2", status: "idle", name: "T1-builder"}]; {sessions: {}})][0].text'
   assert_equal "$output" "T1 no-worker: every live worker is idle with a ledger event since its launch (latest T1-builder b2); next: send it its next step or launch the next worker with team-worker, or log why the task waits with team-log"
@@ -203,18 +203,111 @@ builder_launch() {
   on asked '{id: "merge", text: "merge https://github.com/owner/proj/pull/5 at 1111111?"}'
   on paused '{reason: "stowed, handoff written"}'
   on stowed '{machine: "m1", worktrees: [], roles: ["builder"], cause: "handoff"}'
-  assert_equal "$(fold_read 'lifecycle | [.parks[] | [.id, .kind, .on, .since, .i, .passed]]')" \
-    '[["waiting-1","waiting","Daniel","2026-10-31T00:00:00Z",1,false],["paused-1","paused",null,"2026-11-01T00:04:00Z",4,false]]'
+  # An old line's cause is legacy_cause's, and typed false.
+  assert_equal "$(fold_read 'lifecycle | [.parks[] | [.id, .kind, .cause, .typed, .on, .since, .i, .passed]]')" \
+    '[["waiting-1","waiting","daniel",false,"Daniel","2026-10-31T00:00:00Z",1,false],["paused-1","paused","stow",false,null,"2026-11-01T00:04:00Z",4,false]]'
   assert_equal "$(fold_read 'lifecycle | .asks | map(.id)')" '["door-data","merge"]'
   assert_equal "$(fold_read 'lifecycle.stow')" '{"state":"stowed","cause":"handoff","roles":["builder"],"since":"2026-11-01T00:05:00Z","i":5}'
   on answered '{id: "door-data", text: "the old data"}'
   on merge-approved '{url: "https://github.com/owner/proj/pull/5", head: "1111111", discord_message: "1"}'
   assert_equal "$(fold_read 'lifecycle | .asks')" '[]'
-  # A resumed naming only a merge-base round's brief ends no park; a launch ends the wait and the
-  # pause and the stow, and the next park's id counts on.
+  # The merge-approved also ended the old wait on Daniel (ticket 03's rule); a resumed naming only a
+  # merge-base round's brief ends no park; a launch ends the pause and the stow, and the next
+  # park's id counts on.
+  assert_equal "$(fold_read 'lifecycle | .parks | map(.id)')" '["paused-1"]'
   on resumed '{brief: "brief-merge-base"}'
-  assert_equal "$(fold_read 'lifecycle | .parks | map(.id)')" '["waiting-1","paused-1"]'
+  assert_equal "$(fold_read 'lifecycle | .parks | map(.id)')" '["paused-1"]'
   builder_launch b2
   on waiting '{on: "T31", reason: "its PR"}'
   assert_equal "$(fold_read 'lifecycle | [(.parks | map(.id)), .stow, .counts]')" '[["waiting-2"],null,{"waiting":2,"paused":1}]'
+}
+
+@test "T278's A4: a room refusal and a resumed after it agree in parked and refused_launches, which both clear" {
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  on launch '{role: "planner", session: "p1", worktree: "/w/1", toolkits: []}'
+  on paused '{reason: "no room for session:builder at full (90%)"}'
+  # The refusal is a standing park of cause room, its role read once from its reason.
+  assert_equal "$(fold_read 'lifecycle.parks | map([.id, .cause, .role])')" '[["paused-1","room","builder"]]'
+  assert_equal "$(fold_read '[parked, refused_launches]')" \
+    '[true,{"at":"2026-11-01T00:03:00Z","roles":["builder"],"hold":null}]'
+  on resumed
+  assert_equal "$(fold_read '[parked, refused_launches]')" '[false,null]'
+  # A room refusal whose words name no role parks the task, and refused_launches, which relaunches
+  # roles, has none to name.
+  on paused '{reason: "no room at full (90%): 17.9 GiB of 17.2"}'
+  assert_equal "$(fold_read '[parked, refused_launches, (lifecycle.parks | map([.cause, .role]))]')" '[true,null,[["room",null]]]'
+}
+
+@test "T278's A5 and D6: a PAUSED stowed with detail hands the stowed builder on, and launch_states calls it handed-on" {
+  local reason
+  for reason in "stowed" "stowed, handoff written" "stowed ad6520fc for shutdown; next: re-run the gate"; do
+    events=()
+    opened feature
+    builder_launch b1
+    on paused "{reason: \"$reason\"}"
+    builder_launch b2
+    assert_equal "$(fold_read 'handed_on_launches("builder"; "/home/x") | map([.session, .stowed, .handed_on])')" \
+      '[["b1",true,true],["b2",false,false]]'
+    assert_equal "$(fold_read 'handed_on_launches(""; "/home/x") | launch_states([{id: "b1", status: "idle"}]) | map([.session, .state])')" \
+      '[["b1","handed-on"]]'
+  done
+  # A paused that is no stow (its cause worker) is a wait the builder comes back from.
+  events=()
+  opened feature
+  builder_launch b1
+  on paused '{reason: "holding gate runs for the sudo fix"}'
+  builder_launch b2
+  assert_equal "$(fold_read 'handed_on_launches(""; "/home/x") | launch_states([{id: "b1", status: "idle"}]) | map([.session, .state])')" \
+    '[["b1","idle with no event of its own since its launch"]]'
+}
+
+@test "a merge-approved ends an old wait on Daniel, and no other park" {
+  opened feature
+  on waiting '{on: "Daniel", reason: "the merge of PR 5"}'
+  on waiting '{on: "daniel", reason: "ask merge"}'
+  on waiting '{reason: "a word on the plan"}'
+  on waiting '{on: "restart", reason: "machine shutdown; resume from the handoff"}'
+  on blocked '{reason: "Daniel to apply the settings change"}'
+  on paused '{reason: "machine load"}'
+  on held '{reason: "on hold by Daniel"}'
+  on merge-approved '{url: "https://github.com/owner/proj/pull/5", head: "1111111", discord_message: "1"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map(.id)')" '["waiting-4","blocked-1","paused-1","held-1"]'
+  assert_equal "$(fold_read 'waiting')" '{"on":"restart","reason":"machine shutdown; resume from the handoff","since":"2026-11-01T00:04:00Z"}'
+  # A wait whose line carries its own cause is not an old one, whatever it says.
+  on waiting '{on: "Daniel", cause: "daniel", reason: "an interview"}'
+  on merge-approved '{url: "https://github.com/owner/proj/pull/5", head: "1111111", discord_message: "2"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map([.id, .typed])')" \
+    '[["waiting-4",false],["blocked-1",false],["paused-1",false],["held-1",false],["waiting-5",true]]'
+}
+
+@test "legacy_cause gives every park line of an old ledger a cause, first match winning" {
+  run jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger";
+    map(select(.event | IN("held", "blocked", "waiting", "paused")) | legacy_cause)
+    | [length, (group_by(.) | map([.[0], length]))]' "$REPO_ROOT/tests/fixtures/ledger-2026-10-23.jsonl"
+  assert_equal "$status" 0
+  assert_equal "$output" '[30,[["daniel",8],["denial",9],["shutdown",6],["stow",3],["worker",4]]]'
+  # One line of each rule, in the order the rules are tried.
+  run jq -L "$REPO_ROOT/bin/lib" -nrc 'include "ledger";
+    {event: "paused", reason: "Stowed ad6520fc for shutdown"},
+    {event: "paused", reason: "team-worker: no room for session:reviewer at minor (30%)"},
+    {event: "waiting", on: "the weekly limit", reason: "until Monday"},
+    {event: "paused", reason: "the usage limit, stowed after it"},
+    {event: "waiting", on: "restart", reason: "machine shutdown 2026-10-22"},
+    {event: "held", reason: "OS update"},
+    {event: "held", reason: "on hold by Daniel"},
+    {event: "waiting", on: "Daniel", reason: "ask door-data"},
+    {event: "waiting", on: "daniel", reason: "walkthrough section B"},
+    {event: "waiting", reason: "a word on the plan"},
+    {event: "waiting", on: "GitHub Support", reason: "ticket 4412"},
+    {event: "blocked", on: "T31", reason: "its PR"},
+    {event: "blocked", reason: "auto mode denied git rm"},
+    {event: "blocked", reason: "the fixture server is down"},
+    {event: "paused", reason: "docker daemons need a restart"},
+    {event: "paused", reason: "holding gate runs for the sudo fix"},
+    {event: "paused", cause: "limit", reason: "stowed"}
+    | park_cause'
+  assert_equal "$status" 0
+  assert_equal "$(tr '\n' ' ' <<<"$output")" \
+    "stow room limit limit shutdown shutdown daniel-hold ask daniel daniel outside task denial worker machine worker limit "
 }

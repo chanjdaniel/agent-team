@@ -1721,9 +1721,15 @@ refused_t5() {
   run_bin team-sweep --json
   assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
   # A resumed lifts the hold.
-  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}'
+  refused_t5 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}' --
   run_bin team-sweep --json
   assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
+  # A resumed after the refusal ends the refusal too, since the refusal is a standing park and a
+  # resumed with no id, all or brief ends every park (T278's A4: parked and refused_launches
+  # agree), so nothing is named.
+  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
 }
 
 @test "level: a team-capacity plan that fails is one finding naming its reason, and the task findings still come" {

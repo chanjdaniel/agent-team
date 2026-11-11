@@ -352,6 +352,44 @@ def lifecycle_effects:
   ["open", "close", "approve", "launch", "build", "done", "pr", "review", "rewrite", "merge", "ask",
    "settle", "park", "resume", "stowed"];
 
+# The cause of a park event (held, blocked, waiting, paused) that carries none, as an old line
+# does, first match wins: a paused whose reason starts with the word stowed (any case) stow, a
+# worker's answer to a STOW; a reason holding no room room, a launch refused for room; a reason or
+# on naming a usage, token, weekly or session limit limit; a reason holding stowed, shutdown, OS
+# update or handoff shutdown; a held daniel-hold; a waiting whose reason is ask <id> ask; a
+# waiting on Daniel (any case) or on no one daniel, any other waiting outside; a blocked on a task
+# (T<m>) task, one whose reason names a denial (denied, refused, deny rule, denial, permission
+# prompt, auto mode) denial, any other worker; a paused naming load, memory, Docker, a daemon, a
+# restart or an outage machine; any other worker. It may name a cause the table does not list for
+# the kind (an old held for an OS update reads shutdown): the table's kinds bind new lines only.
+def legacy_cause:
+  (.reason // "" | tostring) as $reason
+  | (.on // "" | tostring) as $on
+  | ($on | ascii_downcase) as $who
+  | .event as $kind
+  | if $kind == "paused" and ($reason | test("^stowed\\b"; "i")) then "stow"
+    elif $reason | test("no room"; "i") then "room"
+    elif "\($reason) \($on)" | test("(usage|token|weekly|session) limit"; "i") then "limit"
+    elif $reason | test("stowed|shutdown|OS update|handoff"; "i") then "shutdown"
+    elif $kind == "held" then "daniel-hold"
+    elif $kind == "waiting" and ($reason | test("^ask \\S+$")) then "ask"
+    elif $kind == "waiting" and ($who == "daniel" or $who == "") then "daniel"
+    elif $kind == "waiting" then "outside"
+    elif $kind == "blocked" and ($who | test("^t[0-9]+$")) then "task"
+    elif $kind == "blocked" and ($reason | test("denied|refused|deny rule|denial|permission prompt|auto mode"; "i")) then "denial"
+    elif $kind == "blocked" then "worker"
+    elif $kind == "paused" and ("\($reason) \($on)" | test("load|memory|docker|daemon|restart|outage"; "i")) then "machine"
+    else "worker" end;
+
+# A park event's cause: its own, else legacy_cause's. Every reader that asks whether a park is a
+# stow or a room refusal reads this, never the park's words.
+def park_cause: .cause // legacy_cause;
+
+# A park event's role: its own, else for a room refusal the role its reason names after session:
+# ("no room for session:builder at ..."), else null.
+def park_role:
+  .role // (if park_cause == "room" then first(.reason | strings | capture("session:(?<r>[a-z]+)") | .r) // null else null end);
+
 # The state before a task's first event. The state's fields, which later readers add to rather
 # than fold again:
 #   status  unknown (no event), legacy (events but no opened), open, closed.
@@ -368,12 +406,14 @@ def lifecycle_effects:
 #   reviews each review's head and verdict, in the order logged, for a PR's verdict when its head
 #           moves.
 #   parks   the standing parks (held, blocked, waiting, paused) in the order logged, as {id, kind,
-#           cause, on, reason, role, session, since, ts, i, passed}: id <kind>-<n>, n the park's
-#           ordinal among the task's events of its kind; cause, on, reason, role and session its
-#           fields, or null; since its since field or its ts; i its index among the task's events;
-#           passed false. A launch ends every standing blocked, waiting and paused, never a held; a
+#           cause, typed, on, reason, role, session, since, ts, i, passed}: id <kind>-<n>, n the
+#           park's ordinal among the task's events of its kind; cause park_cause's, typed whether
+#           the line carries its own cause; role park_role's; on, reason and session its fields,
+#           or null; since its since field or its ts; i its index among the task's events; passed
+#           false. A launch ends every standing blocked, waiting and paused, never a held; a
 #           resumed with none of id, all and brief ends every park, and any other ends none (one
-#           with only brief is a merge-base round's holder brief).
+#           with only brief is a merge-base round's holder brief); a merge-approved ends every old
+#           wait on Daniel (lifecycle_old_wait_on_daniel).
 #   asks    the asks no later event settles (settles), as {id, text, ts, i, passed}, passed false.
 #   stow    null, or {state: "stowed", cause, roles, since, i} from the latest stowed with no
 #           launch after it.
@@ -401,6 +441,10 @@ def lifecycle_verdict($head): first(.reviews | reverse[] | select(same_head(.hea
 
 # The state's PRs not merged.
 def lifecycle_open_prs: [.prs[] | select(.merged | not)];
+
+# Whether a park of the state is an old (untyped) wait on Daniel, which a merge-approved ends, as
+# Daniel's word on a merge answers what the wait was for.
+def lifecycle_old_wait_on_daniel: .kind == "waiting" and (.typed | not) and IN(.cause; "daniel", "ask");
 
 # The review phase at $ts: awaiting-merge when the task has an open PR and every open PR's verdict
 # is pass, else in-review; applied only while the phase is one of $from.
@@ -470,10 +514,11 @@ def lifecycle_step($e):
       .asks += [{id: $e.id, text: $e.text, ts: $e.ts, i: $i, passed: false}]
     elif $effect == "settle" then
       .asks |= map(. as $ask | select($e | settles($ask) | not))
+      | if $e.event == "merge-approved" then .parks |= map(select(lifecycle_old_wait_on_daniel | not)) else . end
     elif $effect == "park" then
       .counts[$e.event] = ((.counts[$e.event] // 0) + 1)
-      | .parks += [{id: "\($e.event)-\(.counts[$e.event])", kind: $e.event, cause: ($e.cause // null),
-          on: ($e.on // null), reason: ($e.reason // null), role: ($e.role // null),
+      | .parks += [{id: "\($e.event)-\(.counts[$e.event])", kind: $e.event, cause: ($e | park_cause),
+          typed: ($e.cause != null), on: ($e.on // null), reason: ($e.reason // null), role: ($e | park_role),
           session: ($e.session // null), since: ($e.since // $e.ts), ts: $e.ts, i: $i, passed: false}]
     elif $effect == "resume" then
       if $e.id == null and $e.all == null and $e.brief == null then .parks = [] else . end
@@ -502,30 +547,28 @@ def pr_merged($events; $prs): . as $pr | any($events[]; . as $e | $pr | merged_n
 # The task's phase: closed when it is closed, else held while a held stands, else blocked while
 # a blocked stands, wherever either was logged, else the fold's work phase (planning, building,
 # in-review, awaiting-merge, merged-part or merged).
-def phase:
-  lifecycle
-  | if .status == "closed" then "closed"
-    elif any(.parks[]; .kind == "held") then "held"
-    elif any(.parks[]; .kind == "blocked") then "blocked"
-    else .phase end;
+def lifecycle_phase:
+  if .status == "closed" then "closed"
+  elif any(.parks[]; .kind == "held") then "held"
+  elif any(.parks[]; .kind == "blocked") then "blocked"
+  else .phase end;
+def phase: lifecycle | lifecycle_phase;
 
-# Whether the latest event of $kind stands: none of the kinds $clears after it.
-def standing($kind; $clears):
-  ([to_entries[] | select(.value.event == $kind) | .key] | last) as $i
-  | $i != null and all(.[$i + 1:][]; .event | IN($clears[]) | not);
+# The state's latest standing park of $kind, or null.
+def lifecycle_park($kind): [.parks[] | select(.kind == $kind)] | last;
 
-# Whether the latest event of $kind stands: no resumed after it.
-def standing($kind): standing($kind; ["resumed"]);
+# What the task is waiting on, from the fold's latest standing waiting, as {on, reason, since (its
+# ts)}, or null.
+def lifecycle_waiting: lifecycle_park("waiting") | if . == null then null else {on, reason, since: .ts} end;
+def waiting: lifecycle | lifecycle_waiting;
 
-# Whether the latest event of $kind stands until a worker is launched: no resumed and no launch
-# after it.
-def standing_until_launch($kind): standing($kind; ["resumed", "launch"]);
+# The asks put to Daniel that no later event settles yet, from the fold, as {id, text, ts}.
+def lifecycle_pending_asks: [.asks[] | {id, text, ts}];
+def pending_asks: lifecycle | lifecycle_pending_asks;
 
-# What the task is waiting on, from its latest waiting while it stands, or null.
-def waiting:
-  if standing_until_launch("waiting") then
-    map(select(.event == "waiting")) | last | {on, reason, since: .ts}
-  else null end;
+# The asked events no later event settles yet (the fold's asks), each as {k, ask}: its index among
+# the events and the event.
+def unsettled_asks: . as $events | [lifecycle.asks[] | {k: .i, ask: $events[.i]}];
 
 # The task's manual QC walk: {since} while it is on, since the ts of its latest walk event when
 # that says on, else null, as for a task with none or a closed one, whose walk ended with it. Read
@@ -557,47 +600,43 @@ def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch
 # Whether the task is stowed, waiting to resume: its latest stowed, for the level or a handoff (cause
 # level or handoff, or none, as before team-stow), names roles to relaunch and no launch follows
 # it, so it waits for the resume or for room at the team's level to be relaunched here.
-def stowed_awaiting_resume:
-  latest_stowed as $stowed
-  | $stowed >= 0 and (.[$stowed].roles // []) != [] and (any(.[$stowed + 1:][]; .event == "launch") | not);
+def lifecycle_stowed_awaiting_resume: .stow != null and .stow.state == "stowed" and .stow.roles != [];
+def stowed_awaiting_resume: lifecycle | lifecycle_stowed_awaiting_resume;
 
 # What keeps a task's parked work, parked at its event of index <since>, from being launched, as
-# text, or null: its latest held while it stands, wherever it falls ("held: <reason>"); else its
-# latest waiting ("waiting on <on>: <reason>") or blocked ("blocked: <reason>") while it stands
-# and was logged after <since>. A wait or block before it was the state the work was parked in,
-# which its launch resumes, and a paused never holds it, since every park logs one; a resumed
+# text, or null, from the fold's standing parks: its latest held, wherever it falls ("held:
+# <reason>"); else its latest waiting ("waiting on <on>: <reason>") or blocked ("blocked:
+# <reason>") logged after <since>. A wait or block before it was the state the work was parked
+# in, which its launch resumes, and a paused never holds it, since every park logs one; a resumed
 # lifts each.
-def hold_since($since):
-  def after($kind): standing_until_launch($kind) and latest_index($kind) > $since;
-  def latest($kind): map(select(.event == $kind)) | last;
-  if standing("held") then "held: \(latest("held").reason)"
-  elif after("waiting") then latest("waiting") | "waiting on \(.on): \(.reason)"
-  elif after("blocked") then "blocked: \(latest("blocked").reason)"
+def lifecycle_hold_since($since):
+  def after($kind): [.parks[] | select(.kind == $kind and .i > $since)] | last;
+  if lifecycle_park("held") != null then "held: \(lifecycle_park("held").reason)"
+  elif after("waiting") != null then after("waiting") | "waiting on \(.on): \(.reason)"
+  elif after("blocked") != null then "blocked: \(after("blocked").reason)"
   else null end;
+def hold_since($since): lifecycle | lifecycle_hold_since($since);
 
-# What keeps the task, stowed and waiting to resume, from being relaunched (hold_since its latest
-# stowed): a wait or block before the stow was the stowed worker's own state (a planner
+# What keeps the task, stowed and waiting to resume, from being relaunched (hold_since the fold's
+# stow): a wait or block before the stow was the stowed worker's own state (a planner
 # interviewing Daniel), which its relaunch resumes.
-def stow_hold: hold_since(latest_stowed);
+def lifecycle_stow_hold: lifecycle_hold_since(.stow.i // -1);
+def stow_hold: lifecycle | lifecycle_stow_hold;
 
-# The launches of the task refused for room and not launched since: the paused events after its
-# latest launch whose reason holds team-capacity admit's refusal of a session ("no room for
-# session:<role>", as team-worker's exit 75 says it and the coordinator logs it), as {at (the
-# latest refusal's time), roles (each role once, in the order refused), hold (hold_since the
-# latest refusal: a wait or block before it did not stop the launch tried then)}; null with none,
-# or while the task is stowed_awaiting_resume, whose resume relaunches its roles.
-def refused_launches:
-  if stowed_awaiting_resume then null
-  else latest_index("launch") as $launch
-    | . as $events
-    | [to_entries[$launch + 1:][] | .key as $i | .value | select(.event == "paused") | .ts as $at
-       | (.reason // "" | strings | capture("no room for session:(?<role>[a-z]+)")) | {at: $at, role, i: $i}]
-    | if . == [] then null
-      else .[-1].i as $last
-        | {at: .[-1].at, roles: (reduce .[].role as $r ([]; if index([$r]) then . else . + [$r] end)),
-           hold: ($events | hold_since($last))}
+# The launches of the task refused for room and not launched or resumed since: the fold's standing
+# parks whose cause (park_cause) is room and whose role (park_role) is known, as {at (the latest
+# refusal's time), roles (each role once, in the order refused), hold (hold_since the latest
+# refusal: a wait or block before it did not stop the launch tried then)}; null with none, or
+# while the task is stowed_awaiting_resume, whose resume relaunches its roles.
+def lifecycle_refused_launches:
+  if lifecycle_stowed_awaiting_resume then null
+  else [.parks[] | select(.cause == "room" and .role != null)] as $refused
+    | if $refused == [] then null
+      else {at: $refused[-1].ts, roles: (reduce $refused[].role as $r ([]; if index([$r]) then . else . + [$r] end)),
+            hold: lifecycle_hold_since($refused[-1].i)}
       end
   end;
+def refused_launches: lifecycle | lifecycle_refused_launches;
 
 # Whether the task's worktree in <project> resumes from the last checkpoint's snapshot: the task
 # crashed, or its latest stowed recorded that worktree with uncommitted changes, which the
@@ -667,8 +706,9 @@ def live_session($session; $sessions):
 # and every builder when the new worker is a builder (team-worker keeps those of its own worktree,
 # one builder holding a worktree's work at a time), or with no new launch every builder that a
 # later logged builder launch of its worktree follows. Handed on is a launch the ledger follows
-# with a done of its session, or for a builder a pr or ticket-done, or with a paused whose reason
-# is stowed and then a logged launch of its role and worktree (a stow carries no session, so it
+# with a done of its session, or for a builder a pr or ticket-done, or with a paused whose cause
+# is stow (park_cause: "stowed", "stowed, handoff written") and then a logged launch of its role
+# and worktree (a stow carries no session, so it
 # hands on only to the fresh worker that resumes the work, and a resumed does not undo it);
 # stowed is whether such a paused follows it, so team-worker can count itself as that fresh
 # worker. Any other paused is a wait the worker comes back from, and a review carries no session,
@@ -683,7 +723,7 @@ def handed_on_launches($role; $home):
              and if $role == "" then any($events[$i + 1:][]; .event == "launch" and .role == "builder"
                    and (.worktree | local_path($home)) == $wt)
                  else $role == "builder" end))
-     | [range($i + 1; $events | length) | select($events[.] | .event == "paused" and .reason == "stowed")] as $stows
+     | [range($i + 1; $events | length) | select($events[.] | .event == "paused" and park_cause == "stow")] as $stows
      | {session, role, worktree: $wt, stowed: ($stows != []),
         handed_on: (any($events[$i + 1:][]; (.event == "done" and .session == $l.session)
             or ((.event == "pr" or .event == "ticket-done") and $l.role == "builder"))
@@ -871,26 +911,18 @@ def numbered_parts:
     | range($parts | length) as $i
     | $parts[$i] | if .text == "" then .text = (first($parts[$i + 1:][] | .text | select(. != "")) // "") else . end];
 
-# The asked events no later event settles yet, each as {k, ask}: its index among the events and
-# the event.
-def unsettled_asks:
-  . as $events
-  | [range(length) as $k | $events[$k] | select(.event == "asked") | . as $ask
-     | select(any($events[$k + 1:][]; settles($ask)) | not) | {k: $k, ask: .}];
-
-# The asks put to Daniel that no later event settles yet.
-def pending_asks: [unsettled_asks[] | .ask | {id, text, ts}];
-
 # A task's state from its events and the session list, its worktrees as paths on this machine,
 # whose home directory is $home (local_worktree); team-state adds the pr part.
 def task_state($sessions; $home):
   map(local_worktree($home))
   | (map(select(.event == "opened")) | first) as $opened
   | workers($sessions) as $workers
+  | lifecycle as $state
   | {schema: "team-state/1", task: .[0].task, title: $opened.title, project: $opened.project,
-     path: $opened.path, phase: phase, worktrees: worktree_list,
+     path: $opened.path, phase: ($state | lifecycle_phase), worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
-     workers: $workers, last_event: last, pending_asks: pending_asks, waiting: waiting, walk: qc_walk,
+     workers: $workers, last_event: last, pending_asks: ($state | lifecycle_pending_asks),
+     waiting: ($state | lifecycle_waiting), walk: qc_walk,
      rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null,
      progress: progress($workers)};
 
@@ -945,11 +977,9 @@ def state_line:
   + (if .walk == null then "" else " | walk on since \(.walk.since)" end)
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
-# Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
-# merge, an ask nothing settled (settles), or a pause or a wait still standing.
-def parked:
-  IN(phase; "held", "blocked", "awaiting-merge") or pending_asks != [] or standing_until_launch("paused")
-  or waiting != null;
+# Whether a task is parked, waiting on something other than a worker, by the fold: awaiting merge,
+# a park standing (held, blocked, waiting or paused), or an ask nothing settled (settles).
+def parked: lifecycle | lifecycle_phase == "awaiting-merge" or .parks != [] or .asks != [];
 
 # One of team-sweep's findings: {task, kind, session, name, next, text}, text being its one line.
 def finding($task; $kind; $session; $name; $detail; $next):
@@ -991,8 +1021,8 @@ def merge_base_round($sessions):
 def merge_due_finding($standing; $sessions; $covered):
   .[0].task as $task
   | . as $events
-  | if phase == "awaiting-merge" and pending_asks == [] and (standing_until_launch("paused") | not)
-      and waiting == null then
+  | lifecycle as $state
+  | if ($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == [] then
       preapproved_projects as $plan
       | [($events | map(select(.event == "opened" or .event == "worktree-added") | .project)
           | reduce .[] as $p ([]; if IN(.[]; $p) then . else . + [$p] end)
@@ -1279,16 +1309,16 @@ def sweep($sessions; $plan; $activity; $covered; $health):
 # follows it, else null), refused (refused_launches')} per open task, in task number order.
 def plan_tasks($sessions):
   [by_task | to_entries[] | select(.value | is_open) | .key as $task | .value as $events
+   | ($events | lifecycle) as $state
    | {task: $task,
       opened: (first($events[] | select(.event == "opened") | .ts) // $events[0].ts),
       finished: [$events | handed_on_launches(""; $home) | launch_states($sessions)[]
         | select(.state == "handed-on") | {session, role}],
-      stowed: (if $events | stowed_awaiting_resume
-               then $events[$events | latest_stowed] | {at: .ts, roles: (.roles // []), hold: ($events | stow_hold)}
+      stowed: (if $state | lifecycle_stowed_awaiting_resume
+               then $state.stow | {at: .since, roles, hold: ($state | lifecycle_stow_hold)}
                else null end),
-      stowed_since: ($events | latest_stowed as $i
-        | if $i >= 0 and (any(.[$i + 1:][]; .event == "launch") | not) then .[$i].ts else null end),
-      refused: ($events | refused_launches)}]
+      stowed_since: ($state.stow | if . != null and .state == "stowed" then .since else null end),
+      refused: ($state | lifecycle_refused_launches)}]
   | by_task_number;
 
 # The ids of the open tasks stowed, waiting to resume (stowed_awaiting_resume), among every task's

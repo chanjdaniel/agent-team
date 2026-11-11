@@ -60,9 +60,9 @@ def park_class:
 # whose merge-preapproved no later merge-preapproval-withdrawn of theirs ended), until the merged or
 # a withdrawal that leaves none standing while the word is still plan, a review that sends notes
 # back (sent_back) building (the builder's fix round, fix, which a reviewer's done leaves building
-# and a paused reason=stowed in it does not park, so the stow up to the fresh builder's launch is
-# building; a builder's done, pr or ticket-done, another review, a merged or another role's launch
-# ends it),
+# and a paused whose cause is stow (park_cause) in it does not park, so the stow up to the fresh
+# builder's launch is building; a builder's done, pr or ticket-done, another review, a merged or
+# another role's launch ends it),
 # and a done (save one while the word plan merges), merged or other review unattributed (the
 # coordinator's turn, or a gate run the ledger did not see); with no park, an ask still open (open,
 # kept across launches) while the phase is unattributed is a wait on Daniel (idle_class). A park
@@ -90,7 +90,7 @@ def task_segments($end):
         elif $e.event == "resumed" then .park = null | .asks = null
         elif $e.event == "asked" and .park == null then .park = "wait:daniel" | .asks = [$e]
         elif $e.event == "asked" and .asks != null then .asks += [$e]
-        elif $e.event == "paused" and .fix and .phase == "building" and ($e.reason // "" | tostring | test("^stowed\\b"; "i")) then .
+        elif $e.event == "paused" and .fix and .phase == "building" and ($e | park_cause) == "stow" then .
         elif $e | is_park then .park = ($e | park_class) | .asks = null
         else
           (if .asks != null then
