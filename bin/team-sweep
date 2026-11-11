@@ -68,7 +68,19 @@
 #                  standing word counts and a line on stderr says why
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
-#   activity       after every task finding, with task and session null: session-activity
+#   coordinator-twin  after every task finding, with task null: one for each session named
+#                  coordinator in the session list but the one the sweep runs in
+#                  (CLAUDE_CODE_SESSION_ID's), when more than one is listed, with session its short
+#                  id: "coordinator-twin: coordinator <id> (<kind>, <state or status>, started
+#                  <time>) is a second session named coordinator on this machine; next: read claude
+#                  logs <id> for anything left to log, then stop it with claude stop <id>" ("ask
+#                  Daniel to end it, an interactive session, pid <pid>" for an interactive one, and
+#                  "started at an unknown time" for one whose startedAt is not a number); when
+#                  CLAUDE_CODE_SESSION_ID names none of them, each is "one of <n> sessions named
+#                  coordinator" and its next starts "if it is not you, ". The list is this
+#                  machine's: a Remote Control twin is the coordinator's own ListAgents check
+#                  (bin/hooks/session-digest)
+#   activity       after the coordinator-twin findings, with task and session null: session-activity
 #                  failed (a Python older than 3.11, say, or a session with a transcript whose
 #                  startedAt is not epoch milliseconds) or printed no JSON object, so no busy
 #                  worker can be found stalled: "activity: <its last line on stderr>, so no busy
@@ -255,9 +267,9 @@ look() {
   [[ -n $plan ]] || plan='{"error": "team-capacity plan printed nothing"}'
   [[ -n $health ]] || health='{"error": "team-timers health printed nothing"}'
   covered=$(standing_covered)
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $covered; $health)' -nRc \
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $covered; $health; $self)' -nRc \
     --argjson sessions "$sessions" --argjson plan "$plan" --argjson activity "$activity" --argjson covered "$covered" \
-    --argjson health "$health" "$ledger")
+    --argjson health "$health" --arg self "${CLAUDE_CODE_SESSION_ID:-}" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.
