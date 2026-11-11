@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Wait on a pull request's GitHub checks, and always end: the coordinator's checks wait after a
-# pass (team-next T<n> --ci) runs it as team-ci-wait --no-agent-review --json <url> <sha>, a worker
-# may run it by hand with Bash run_in_background, and each acts on how it ended.
+# Wait on a pull request's GitHub checks, and always end: a worker runs it with Bash
+# run_in_background and acts on how it ended; --json and --look are for a script that reads its end.
 #
 # Usage: team-ci-wait [--no-agent-review] [--json] [--look] <pr url> [<sha>]
 #   --no-agent-review
 #           leave the agent-review check out of every look, as though GitHub had not reported it:
-#           the coordinator's wait, whose reviewer set agent-review at its verdict, ends on CI's
-#           checks alone
+#           a builder's wait, which runs while the reviewer reads and may see the reviewer's own
+#           status, ends on CI's checks alone and leaves the review to the coordinator's round
 #   --json  print one JSON object instead of the text, on every end but a refused command line
 #           (below); the exit code is as without it
 #   --look  take one readable look at <sha> and end, with no wait (below)
@@ -28,15 +27,15 @@
 # (.../actions/runs/<run id>/job/<job id>, through gh api repos/<repo>/actions/runs/<run id>);
 # once, when the wait ends on a failure, it reads the Actions job of each failed or cancelled check
 # with an Actions job link that is not a roll-up (gh api repos/<repo>/actions/jobs/<job id>), for
-# its runner and steps: only reads of metadata, never a log or a check's output. A workflow run of the head that is not completed
-# holds the wait whatever the checks show, since in a re-run's or a push's first seconds gh pr checks
-# may list only another workflow's checks, and an earlier attempt's failure may yet be replaced.
+# its runner and steps: only reads of metadata, never a log or a check's output.
+# A workflow run of the head that is not completed holds the wait whatever the checks show, since
+# in a re-run's or a push's first seconds gh pr checks may list only another workflow's checks, and
+# an earlier attempt's failure may yet be replaced.
 # A run GitHub does not list yet holds nothing, so a reading of no check, or of every check passed,
 # counts only once it has stood for 2 minutes of looks (SETTLE_SECONDS), with no run open and no
 # new check listed: until then any of these restarts it. The project's required_checks are read
 # through team-project, and one still not listed when that reading has stood is a failure.
-# agent-review is never among them here: a reviewer sets it at its verdict, and the coordinator's
-# wait leaves it out with --no-agent-review.
+# agent-review is never among them here, since a reviewer delivers it after its wait ends.
 # Before each look, while the team holds offline (offline_hold), it ends at once with exit 75 and
 # the hold's text. Without --json or --look, it prints one line when it starts, naming the PR and
 # the short head of the first look, and its result when it ends, nothing in between; it ends at the
