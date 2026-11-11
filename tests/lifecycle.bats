@@ -561,3 +561,114 @@ LEDGER
   on resumed '{id: "held-1", discord_message: "3"}'
   assert_equal "$(problems resumed '{id: "held-1"}')" "T1 has no standing park held-1; its standing parks: none"
 }
+
+# refusal <role> [<past ids as JSON>]: launch_refusal's reasons over the events so far, one a line.
+refusal() {
+  fold_read "launch_refusal(\"T1\"; \"$1\"; ${2:-[]}; true)"
+}
+
+@test "launch_refusal refuses a closed or unopened task, Daniel's hold, an open ask and a feature task's build before its plan" {
+  # Not opened: every role, ops too.
+  on thread '{discord_thread: "1"}'
+  assert_equal "$(refusal builder)" "T1 is not open: the ledger has no opened event for it"
+  assert_equal "$(refusal ops)" "T1 is not open: the ledger has no opened event for it"
+  events=()
+  # A feature task's builder or reviewer waits for its plan; its planner, ops and a message do not.
+  opened feature
+  assert_equal "$(refusal builder)" "T1 is a feature task with no approved plan (no plan-approved), so it takes no builder yet"
+  assert_equal "$(refusal reviewer)" "T1 is a feature task with no approved plan (no plan-approved), so it takes no reviewer yet"
+  assert_equal "$(refusal planner)$(refusal ops)$(refusal '')" ""
+  on plan-approved '{by: "Daniel"}'
+  assert_equal "$(refusal builder)" ""
+  # Daniel's hold refuses every role but ops, naming the word that lifts it.
+  on held '{reason: "Daniel: not before the release", cause: "daniel-hold", discord_message: "1"}'
+  assert_equal "$(refusal builder)" "T1 is on Daniel's hold since 2026-11-01T00:02:00Z (held-1): Daniel: not before the release; only Daniel's word lifts it: team-log T1 resumed id=held-1 discord_message=<their message id>"
+  assert_equal "$(refusal '')" "$(refusal reviewer)"
+  assert_equal "$(refusal ops)" ""
+  on resumed '{id: "held-1", discord_message: "2"}'
+  # An open ask refuses unless the launch names it; an id that is no open ask is refused.
+  on asked '{id: "door-data", text: "Which door data?"}'
+  assert_equal "$(refusal builder)" "T1 has an unanswered ask, door-data, since 2026-11-01T00:04:00Z; launch past it with --past-ask door-data"
+  assert_equal "$(fold_read 'launch_refusal("T1"; ""; [])')" "T1 has an unanswered ask, door-data, since 2026-11-01T00:04:00Z"
+  assert_equal "$(refusal builder '["door-data"]')" ""
+  assert_equal "$(refusal builder '["door-data", "nope"]')" "--past-ask nope names no unanswered ask of T1"
+  assert_equal "$(refusal ops)" ""
+  # Closed: one reason, whatever stands.
+  on closed '{archive: [], returned: [], kept: []}'
+  assert_equal "$(refusal builder)" "T1 is closed"
+}
+
+@test "a research or small task's builder and reviewer go from its open" {
+  local both='[launch_refusal("T1"; "builder"; []), launch_refusal("T1"; "reviewer"; [])] | length'
+  opened research
+  assert_equal "$(fold_read "$both")" 0
+  events=()
+  opened small
+  assert_equal "$(fold_read "$both")" 0
+}
+
+@test "T278's A4b: team-worker's typed room refusal lists its role in refused_launches whatever its reason's words" {
+  opened small
+  builder_launch b1
+  on paused '{reason: "the level is full", cause: "room", role: "reviewer", brief: "brief-review"}'
+  assert_equal "$(fold_read '[parked, refused_launches.roles]')" '[true,["reviewer"]]'
+  on launch '{role: "reviewer", session: "r1", worktree: "/w/1", toolkits: []}'
+  assert_equal "$(fold_read refused_launches)" null
+}
+
+@test "the table's launch rule is launch_refusal's, by the launch's role and past_ask" {
+  opened feature
+  assert_equal "$(problems launch '{role: "builder", session: "b1", worktree: "/w/1", toolkits: []}')" \
+    "T1 is a feature task with no approved plan (no plan-approved), so it takes no builder yet"
+  on plan-approved '{by: "Daniel"}'
+  on asked '{id: "door-data", text: "Which door data?"}'
+  assert_equal "$(problems launch '{role: "builder", session: "b1", worktree: "/w/1", toolkits: []}')" \
+    "T1 has an unanswered ask, door-data, since 2026-11-01T00:02:00Z"
+  assert_equal "$(problems launch '{role: "builder", session: "b1", worktree: "/w/1", toolkits: [], past_ask: ["door-data"]}')" ""
+  assert_equal "$(problems launch '{role: "ops", session: "o1", worktree: "/w/1", toolkits: []}')" ""
+}
+
+@test "T278's B5: a launch past an open ask marks it and its wait passed, which park nothing, and later launches go" {
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on asked '{id: "q1", text: "which import?"}'
+  on waiting '{on: "Daniel", cause: "ask", ask: "q1", reason: "ask q1"}'
+  assert_equal "$(fold_read parked)" true
+  on launch '{role: "builder", session: "b2", worktree: "/w/1", toolkits: [], brief: "brief-build-13", past_ask: ["q1"]}'
+  assert_equal "$(fold_read '[parked, (pending_asks | map(.id)), (lifecycle | lifecycle_parks | map([.id, .passed]))]')" \
+    '[false,["q1"],[["waiting-1",true]]]'
+  assert_equal "$(fold_read 'lifecycle | lifecycle_hold_since(-1)')" "null"
+  # The next hand-off's launch need not name it again, and the answer still ends the wait.
+  assert_equal "$(refusal reviewer)" ""
+  on answered '{id: "q1", answer: "the new one"}'
+  assert_equal "$(fold_read '[parked, pending_asks, lifecycle.parks]')" '[false,[],[]]'
+}
+
+@test "Daniel's hold and an ask no launch passed hold a stow wherever they were logged; another park only after it" {
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on held '{reason: "Daniel: hold", cause: "daniel-hold", discord_message: "1"}'
+  on waiting '{on: "CI", cause: "outside", reason: "the runner"}'
+  on stowed '{machine: "m", cause: "level", roles: ["builder"], worktrees: []}'
+  assert_equal "$(fold_read stow_hold)" "held: Daniel: hold"
+  on resumed '{id: "held-1", discord_message: "2"}'
+  # The outside wait before the stow does not hold it (the stowed worker's own state).
+  assert_equal "$(fold_read stow_hold)" "null"
+  events=()
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on asked '{id: "q1", text: "which import?"}'
+  on stowed '{machine: "m", cause: "level", roles: ["builder"], worktrees: []}'
+  assert_equal "$(fold_read stow_hold)" "unanswered ask q1: which import?"
+  # A room refusal before the ask: the ask holds its relaunch too.
+  events=()
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on asked '{id: "q1", text: "which import?"}'
+  on paused '{reason: "no room for session:reviewer", cause: "room", role: "reviewer"}'
+  assert_equal "$(fold_read refused_launches.hold)" "unanswered ask q1: which import?"
+}

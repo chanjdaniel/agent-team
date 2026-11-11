@@ -269,10 +269,15 @@ launched T7-builder c0000001"
   refused "--next 02 is not ready once 01 is done: 02 running in session b0000002" T7 --next 02 -- "T7 DONE 01 $sha done"
 }
 
-@test "refused with nothing changed: a closed task, a held task, an unanswered ask, no plan-approved" {
+@test "refused with nothing changed, by launch_refusal's texts: a closed task, Daniel's hold, an unanswered ask; and no plan-approved" {
+  # An old held reads as Daniel's hold (legacy_cause), and a typed one is refused alike.
   event held '{reason: "Daniel paused it"}'
-  refused "T7 is held since 2026-11-01T10:00:00Z: Daniel paused it" T7 -- "T7 DONE 01 $sha done"
+  refused "T7 is on Daniel's hold since 2026-11-01T10:00:00Z (held-1): Daniel paused it; only Daniel's word lifts it: team-log T7 resumed id=held-1 discord_message=<their message id>" T7 -- "T7 DONE 01 $sha done"
   event resumed '{}'
+  event held '{reason: "Daniel: not now", cause: "daniel-hold", discord_message: "1563000000000000044"}'
+  # A message that launches nothing is refused too.
+  refused "T7 is on Daniel's hold since 2026-11-01T10:00:00Z (held-2): Daniel: not now" T7 -- "T7 QUESTION which way? | options: a, b"
+  event resumed '{id: "held-2", discord_message: "1563000000000000046"}'
   event asked '{id: "scope", text: "Which scope?"}'
   refused "T7 has an unanswered ask, scope, since 2026-11-01T10:00:00Z" T7 -- "T7 DONE 01 $sha done"
   event answered '{id: "scope", text: "This one.", discord_message: "1563000000000000045"}'

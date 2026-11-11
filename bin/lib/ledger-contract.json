@@ -35,9 +35,9 @@
     },
     "launch": {
       "writer": "team-worker",
-      "about": "request is the link to Daniel's Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on (team-worker refuses one that did), which only an ops launch carries; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there; admission is the id of the capacity admission the launch was made on (team-capacity admit's first line), absent on T0, ops and a launch from before 2026-11-11",
+      "about": "request is the link to Daniel's Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on (team-worker refuses one that did), which only an ops launch carries; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there; admission is the id of the capacity admission the launch was made on (team-capacity admit's first line), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past (team-worker --past-ask), which then park nothing, absent when it names none",
       "required": {"role": "string", "session": "string", "worktree": "string", "toolkits": "array"},
-      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "discord_message": "id", "brief": "string", "admission": "string"},
+      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "discord_message": "id", "brief": "string", "admission": "string", "past_ask": "array"},
       "field_when": {"discord_message": {"role": ["ops"]}}
     },
     "worktree-returned": {
@@ -122,9 +122,9 @@
     },
     "paused": {
       "writer": ["team-log", "team-worker"],
-      "about": "a worker's or the task's work paused; cause: why, a cause bin/lib/lifecycle.json gives paused, which team-log requires of every new line it logs; role and session: the paused worker's, when the line names one; since: when the park began, when it is logged after the fact",
+      "about": "a worker's or the task's work paused; cause: why, a cause bin/lib/lifecycle.json gives paused, which team-log requires of every new line it logs; role and session: the paused worker's, when the line names one; brief: on team-worker's own room refusal (cause room, its role the launch's), the brief the refused launch named; since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
-      "optional": {"cause": ["worker", "room", "stow", "coordinator-hold", "offline", "limit", "machine", "shutdown"], "role": "string", "session": "string", "since": "string"}
+      "optional": {"cause": ["worker", "room", "stow", "coordinator-hold", "offline", "limit", "machine", "shutdown"], "role": "string", "session": "string", "brief": "string", "since": "string"}
     },
     "blocked": {
       "writer": "team-log",

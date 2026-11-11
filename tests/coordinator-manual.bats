@@ -453,7 +453,9 @@ $WORKER_INSTRUCTIONS"
   grep -qF '**Run.** `team-stow <tasks>`' "$skill"
   grep -qF 'stow the tasks it names as "Stowing tasks" says, without `--stop-runs`' "$skill"
   grep -qF '`team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief>' "$skill"
-  grep -qF 'and leave it for the next `level-resume`' "$skill"
+  grep -qF 'and `team-worker` has logged its `paused cause=room` itself: leave it for the next `level-resume`' "$skill"
+  grep -qF 'refused with 75, which logs that refusal itself (`paused cause=room role=<role>`, with its line)' "$skill"
+  grep -qF 'It refuses a task on Daniel'"'"'s hold, one with an open ask unless `--past-ask <id>` names it, and a feature task'"'"'s build before its plan' "$skill"
   grep -qF '"Shut down" is not a level: follow the `handoff` skill'"'"'s same-machine case.' "$skill"
   grep -qF 'run the same `team-worker` command again, with the brief you wrote for it' "$skill"
   grep -qF '`team-sweep` finds `level-stow`, `level-resume` or `level-launch`: the `level` skill' "$manual"
@@ -552,7 +554,7 @@ $WORKER_INSTRUCTIONS"
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25860 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 25930 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -579,10 +581,11 @@ $WORKER_INSTRUCTIONS"
   # team-drill status, 24690 once it named the probe form, and 117 lines and 25190 bytes once
   # waiting.md, team-inbox --post and the reply by number replaced the Waiting on you message, and
   # 25280 once the heartbeat's line named team-uptime, 25680 once the message table and the
-  # park line named each park's cause, and 25860 once they named resumed id= and all=true and
-  # what ends Daniel's hold and an ask's wait).
+  # park line named each park's cause, 25860 once they named resumed id= and all=true and
+  # what ends Daniel's hold and an ask's wait, and 25930 once step 2 named team-worker's refusals of
+  # a hold, an open ask unless --past-ask, and a feature task's build before its plan).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 25860))
+  (($(wc -c <"$manual") <= 25930))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {
