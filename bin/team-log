@@ -14,8 +14,8 @@
 # and refused, logging nothing, from it on.
 # A list field (array, or numbers (a list of whole numbers), as sent_back and before are) takes
 # a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990,
-# sent_back=5,6, guarded=ci,secrets), each item trimmed, an empty item refused, and none is the
-# empty list (guarded=none).
+# sent_back=5,6, guarded=ci,secrets), each item trimmed, an empty item refused, and
+# none is the empty list (guarded=none).
 # A list of whole numbers stores each item of a comma list, and each numeric string of a JSON list, as a number, and refuses one that is no whole number, naming it.
 # An object field takes a JSON object, or key:value pairs separated by commas (findings=blocking:0,correctness:1,security:0,real-data:0,note-change:2,note-before:0),
 # each trimmed, a value a number when it reads as one; a list or object value that starts with [ or { is read only as JSON.
