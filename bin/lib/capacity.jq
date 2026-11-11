@@ -67,6 +67,28 @@ def stored_readings:
   map(select(test("\\S")) | try fromjson catch null | if well_formed_reading then . else null end)
   | {readings: (map(select(. != null)) | sort_by(.at | fromdateiso8601)), broken: (map(select(. == null)) | length)};
 
+# The gate stacks the stored readings <readings> (stored_readings' readings, oldest first) show
+# idle at the time <now> (seconds), for team-stack sweep: when the newest reading is at most 10
+# minutes old, each gate stack of it with in_use false, as {name, since}, since the time (its at)
+# of the earliest reading of the unbroken run of latest readings that each hold the stack by name,
+# as a gate stack with in_use false, each at most 10 minutes after the one before; else []. A
+# reading that lacks the stack (Docker did not answer, the stack was stopped) or shows it in use
+# breaks the run, and so does a gap of more than 10 minutes with no reading (the heartbeat off,
+# the machine asleep), so idleness is never counted across time nothing was read in.
+def gate_stacks_idle($readings; $now):
+  def idle_in($name): any(.stacks // [] | .[]; .name == $name and .class == "gate" and .in_use == false);
+  ($readings | reverse) as $newest_first
+  | if $newest_first == [] or ($newest_first[0].at | fromdateiso8601) < $now - 600 then []
+    else [$newest_first[0].stacks // [] | .[] | select(.class == "gate" and .in_use == false) | .name] | unique
+      | map(. as $name
+        | (first(range(0; $newest_first | length) as $i
+             | select(($newest_first[$i] | idle_in($name) | not)
+                 or ($i > 0 and ($newest_first[$i - 1].at | fromdateiso8601) - ($newest_first[$i].at | fromdateiso8601) > 600))
+             | $i)
+           // ($newest_first | length)) as $run
+        | {name: $name, since: $newest_first[$run - 1].at})
+    end;
+
 # <n> rounded to two decimal places.
 def hundredths: . * 100 | round / 100;
 
@@ -504,26 +526,34 @@ def kind_estimate($costs; $s; $kind; $seed):
     elif $kind | startswith("session:") then {bytes: ($s.session_gib * 1073741824 | round), source: "seed"}
     else {bytes: 0, source: "none"} end;
 
-# Whether an admission (an entry of capacity/admitted.json, {at, kind, task, name, bytes, pid}) still
+# Whether an admission (an entry of capacity/admitted.json, {id, at, kind, task, name, bytes, pid},
+# id absent on one made before admissions had ids) still
 # reserves at the time <now> (seconds), with the heavy-run lock <heavy> ({held, pid, label, task}):
 # one of the last 10 minutes, or a heavy run's while its team-heavy holds the lock.
 def admission_kept($heavy; $now):
   (.at | fromdateiso8601) >= $now - 600 or (.pid != null and $heavy.held and .pid == $heavy.pid);
 
 # The session each session admission (the input: admitted.json's entries, as admission_kept keeps
-# them) came to, from the ledger's launch events $launches: [{i, session}], i its index in the
-# input. Oldest admission first, each takes the first launch of its role and task at or after its
-# time that no earlier one took; one with no such launch has no pair, its session still starting
-# or its launch failed.
+# them) came to, from the ledger's launch events $launches: [{i, session, launched}], i its index
+# in the input, launched its launch's time. An admission with an id takes the launch whose
+# admission is that id, whatever their order. One with none, made before admissions had ids, takes
+# by time order among the launches with no admission field, so never a launch that names one:
+# oldest first, each the first such launch of its role and task at or after its time that no
+# earlier one took. One with no such launch has no pair, its session still starting or its launch
+# failed.
 def admission_launches($launches):
-  to_entries | map(select(.value.kind | startswith("session:"))) | sort_by(.value.at)
+  to_entries | map(select(.value.kind | startswith("session:")))
+  | ([.[] | select(.value.id | type == "string") | . as $a
+      | first($launches[] | select(.admission == $a.value.id)) // empty
+      | {i: $a.key, session: .session, launched: .ts}]) as $bound
+  | [.[] | select(.value.id | type != "string")] | sort_by(.value.at)
   | reduce .[] as $a ({taken: [], pairs: []};
       . as $state
       | (first($launches[]
-          | select(.task == $a.value.task and "session:\(.role)" == $a.value.kind and .ts >= $a.value.at
-              and (.session as $s | any($state.taken[]; . == $s) | not))) // null) as $l
+          | select((has("admission") | not) and .task == $a.value.task and "session:\(.role)" == $a.value.kind
+              and .ts >= $a.value.at and (.session as $s | any($state.taken[]; . == $s) | not))) // null) as $l
       | if $l == null then . else .taken += [$l.session] | .pairs += [{i: $a.key, session: $l.session, launched: $l.ts}] end)
-  | .pairs;
+  | $bound + .pairs | sort_by(.i);
 
 # Of admission_launches' pairs (the input), those whose session the session list $sessions (claude
 # agents --json's, read at $read_at, in seconds) no longer holds, by its short id or the start of
@@ -549,10 +579,12 @@ def stopped_admissions($sessions; $read_at):
 #   its time); one of a session kind together with a session the reading holds, which is then
 #   within its window, at the larger of that estimate and the session's use, so each session
 #   within 10 minutes of its admission is reserved at its use plus its gap: the session its
-#   admission's launch names (session) when the reading holds it, else a session of that kind and
-#   task the reading holds that no admission's session names (of several, the newest admissions
-#   take the ones using least, since a new session uses little yet), so an admission whose launch
-#   is not logged yet still reserves its session once;
+#   admission's launch names (session) when the reading holds it; an admission whose launch is
+#   logged but whose session the reading does not hold yet at its estimate alone, standing for no
+#   other session; an admission with no launch logged with a session of that kind and task the
+#   reading holds that no admission's session names (of several, the newest admissions take the
+#   ones using least, since a new session uses little yet), so an admission whose launch is not
+#   logged yet still reserves its session once;
 #   stacks: each running team or gate stack, at the larger of its kind's estimate (one with none:
 #   its mem_limits) and its use, but a gate stack in which no process works (in_use false, its
 #   gate run over) at its use; one an admission names (its kind, task and name, the newest such
@@ -565,6 +597,8 @@ def stopped_admissions($sessions; $read_at):
 #   which holds it itself, at the larger of its estimate and its use: its kind its admission's (the
 #   entry whose pid is its team-heavy's), else "heavy", its estimate heavy_gib's when its kind has
 #   none, its use the reading's when the reading saw that run, its name the holder's label.
+# Each item that is an admission or stands for one (an admissions item, a stack or heavy run an
+# admission names) has admission, that admission's id, null for one with none; no other item does.
 # A session's kind estimate is kind_estimate's, so a role costs does not list is at session_gib.
 def capacity_reservations($in):
   ($in.costs | map({key: .kind, value: .estimate_bytes}) | from_entries) as $estimate
@@ -585,7 +619,7 @@ def capacity_reservations($in):
   | ([$admitted[] | select((.session // null) as $s | $s != null and ($held[$s] // false)) | {key: .session, value: .}]
      | from_entries) as $own
   | [$admitted[] | select((.session // null) as $s | $s == null or ($own[$s] // null) == null)] as $kept
-  | ([$kept[] | select(.kind | startswith("session:"))] | ranked(.at | fromdateiso8601 | -.)
+  | ([$kept[] | select((.kind | startswith("session:")) and (.session // null) == null)] | ranked(.at | fromdateiso8601 | -.)
      | map({key, value: .}) | from_entries) as $windows
   | ([$live[] | select($own[.name] == null)] | ranked([.use, .name])
      | map({key: .name, value: $windows[.key]}) | from_entries) as $ranked
@@ -601,25 +635,31 @@ def capacity_reservations($in):
           {part: "sessions_use", kind, task, name, estimate_bytes: .estimate, use_bytes: .use, bytes: (.use // 0)}
         else
           {part: "admissions", kind, task, name, admitted: .admission.at, estimate_bytes: .admission.bytes, use_bytes: .use,
-           bytes: ([.admission.bytes, .use // 0] | max)}
+           bytes: ([.admission.bytes, .use // 0] | max), admission: (.admission.id // null)}
         end),
      (if $past == [] then empty
       else $past | map(. + {gap: ([.estimate - (.use // 0), 0] | max)}) | max_by(.gap)
         | {part: "spike_allowance", kind, task, name, estimate_bytes: .estimate, use_bytes: .use, bytes: .gap} end),
      ($stacks[] | .admission as $a | .idle as $idle | item("stacks"; .kind; .task; .name; .memory; .limits)
       | if $idle then .bytes = (.use_bytes // 0) else . end
-      | if $a == null then . else . + {admitted: $a.at, bytes: ([.bytes, $a.bytes] | max)} end),
+      | if $a == null then . else . + {admitted: $a.at, bytes: ([.bytes, $a.bytes] | max), admission: ($a.id // null)} end),
      (if $r.gate.running // false then item("gates"; "gate"; null; "gate"; $r.gate.memory; null) else empty end),
      (if $heavy.held and (($in.asking // "") | startswith("heavy:") | not) then
         (first($in.admitted[] | select(.pid != null and .pid == $heavy.pid)) // null) as $a
         | item("heavy_runs"; $a.kind // "heavy"; $heavy.task; $heavy.label;
                (if $heavy.pid != null and $r.heavy.pid == $heavy.pid then $r.heavy.memory else null end);
                ($a.bytes // ($in.settings.heavy_gib * 1073741824 | round)))
+        | if $a == null then . else . + {admission: ($a.id // null)} end
       else empty end),
-     ($kept | ranked(.at | fromdateiso8601 | -.) | .[]
+     ($kept | to_entries | map(.value + {k: .key})
+      | (map(select((.session // null) == null)) | ranked(.at | fromdateiso8601 | -.))
+        + map(select((.session // null) != null) | . + {rank: null})
+      | sort_by(.k) | .[]
       | if .kind | startswith("stack:") then select(. as $a | any($stacks[]; same_stack($a)) | not)
+        elif .rank == null then .
         else select(.rank >= ($taken["\(.kind) \(.task)"] // 0)) end
-      | {part: "admissions", kind, task, name: null, admitted: .at, estimate_bytes: .bytes, use_bytes: null, bytes})];
+      | {part: "admissions", kind, task, name: null, admitted: .at, estimate_bytes: .bytes, use_bytes: null, bytes,
+         admission: (.id // null)})];
 
 # The parts of what is reserved, in the order status --json and team-level say them.
 def reserved_parts: ["sessions_use", "spike_allowance", "admissions", "stacks", "heavy_runs", "gates"];
