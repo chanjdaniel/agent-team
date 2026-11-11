@@ -48,9 +48,11 @@
 # is then deleted when the task branch's local tip holds its tip, "deleted <branch> at <sha8>,
 # which <task branch> holds", else kept, "kept <branch> at <sha8>: the task branch does not hold
 # it", on stderr, one that cannot be deleted reported with the command that deletes it); the task's
-# wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, and its
-# copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
-# checkout, one that cannot be deleted reported on stderr with the command that deletes it; and
+# wip/<project>/T<n> and every wip/<project>/T<n>--NN of a ticket worktree (team-checkpoint's
+# snapshots) deleted on the team home's origin, as origin lists them, and their copies under
+# refs/remotes/team-home/ (team-open --resume's) in the project's primary checkout, one that
+# cannot be deleted, or an origin that cannot be read, reported on stderr with the command that
+# deletes it, failing nothing; and
 # closed with archive, returned and kept. Prints {task, stopped, removed, archive, returned, kept},
 # removed naming the ops session team-ops-end ended first.
 # Then the ledger, its closed and worktree-returned lines with it, is committed and pushed to the
@@ -76,7 +78,9 @@
 # close does: claude stop for each live one (then the changes check again), the worktree's stack
 # taken down, its task directory mirrored to tasks/T<n>/scratch--NN (scratch-<project>--NN for an
 # added project), claude rm for each of its sessions, the slot returned through its pool
-# with worktree-returned and the ticket branch's rule above. Prints {task, ticket, stopped,
+# with worktree-returned and the ticket branch's rule above, then the ticket's wip/<project>/T<n>--NN
+# deleted on the team home's origin and in the primary checkout, by the rule above (an origin
+# that cannot be reached is one line, and no failure). Prints {task, ticket, stopped,
 # removed, archive (null when nothing was archived), returned, branch, branch_deleted}. A failure
 # after the checks leaves it half returned: fix the cause and run it again.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
@@ -347,6 +351,41 @@ teardown_stacks() {
       die "cannot take down the stack of $path ($project); its reason is above"
   done
 }
+# Delete <project>'s work-in-progress snapshots of the task, team-checkpoint's on the team home's
+# origin, as origin lists them, and team-open --resume's copies under refs/remotes/team-home/ in
+# the project's primary checkout: <which> is a ticket NN for wip/<project>/T<n>--NN alone, or all
+# for wip/<project>/T<n> and every wip/<project>/T<n>--NN. A ref not there is fine; one that
+# cannot be deleted, or an origin that cannot be read, is one line on stderr with the command that
+# deletes it, and fails nothing: drop_wip <project> <which>
+drop_wip() {
+  local project=$1 base=wip/$1/$task primary ref refs name re named hand gone=()
+  if [[ $2 == all ]]; then
+    re='^(--[0-9]{2})?$' named="$base and each $base--NN"
+    hand="git -C $TEAM_HOME push origin --delete <each $base and $base--NN that git -C $TEAM_HOME ls-remote origin 'refs/heads/$base*' lists>"
+  else
+    re="^--$2\$" named=$base--$2 hand="git -C $TEAM_HOME push origin --delete $base--$2"
+  fi
+  primary=$(team_project "$project" | jq -r .path)
+  while IFS= read -r ref; do
+    name=${ref#refs/remotes/team-home/}
+    [[ $name == "$base"* && ${name#"$base"} =~ $re ]] || continue
+    git -C "$primary" update-ref -d "$ref" 2>"$scratch/error" ||
+      echo "team-close: cannot delete team-home/$name in $primary ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: git -C $primary update-ref -d $ref" >&2
+  done < <(git -C "$primary" for-each-ref --format='%(refname)' "refs/remotes/team-home/wip/$project/")
+  if ! refs=$(GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" ls-remote origin "refs/heads/$base*" 2>"$scratch/error"); then
+    echo "team-close: cannot delete $named on the team home's origin ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: $hand" >&2
+    return 0
+  fi
+  while read -r _ ref; do
+    name=${ref#refs/heads/}
+    [[ $name == "$base"* && ${name#"$base"} =~ $re ]] || continue
+    gone+=("$name")
+  done <<<"$refs"
+  ((${#gone[@]})) || return 0
+  GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" push -q origin --delete "${gone[@]}" 2>"$scratch/error" ||
+    echo "team-close: cannot delete ${gone[*]} on the team home's origin ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete $( ((${#gone[@]} == 1)) && echo it || echo them) by hand: git -C $TEAM_HOME push origin --delete ${gone[*]}" >&2
+}
+
 # team-close T<n> --ticket <NN>: return ticket NN's worktree alone, then exit.
 if [[ -n $ticket ]]; then
   wt=$(jq -c --arg t "$ticket" 'select(.ticket == $t)' <<<"$(printf '%s\n' "${worktrees[@]}")" | head -n 1)
@@ -414,6 +453,7 @@ if [[ -n $ticket ]]; then
   done
   returned=() branch_deleted=false
   return_worktree "$wt"
+  drop_wip "$project" "$ticket"
 
   jq -n --arg task "$task" --arg ticket "$ticket" --argjson stopped "$(jq -cn '$ARGS.positional' --args "${stopped[@]}")" \
     --argjson removed "$(jq -cn '$ARGS.positional' --args "${removed[@]}")" --arg archive "${archived[0]:-}" \
@@ -526,25 +566,15 @@ for wt in "${returning[@]}"; do
   return_worktree "$wt"
 done
 
-# Delete the task's work-in-progress snapshots, team-checkpoint's wip/<project>/T<n> on the team
-# home's origin and team-open --resume's copy of it in the primary checkout, now that nothing is
-# left to recover from them; a project without one is fine, and one that cannot be deleted is
-# reported and left.
+# Delete the task's work-in-progress snapshots, its task worktrees' and its ticket worktrees', now
+# that nothing is left to recover from them; a project without one is fine, and one that cannot be
+# deleted is reported and left.
 declare -A seen=()
 for wt in "${worktrees[@]}"; do
   project=$(field project "$wt")
   [[ -z ${seen[$project]:-} ]] || continue
   seen[$project]=1
-  wip=wip/$project/$task
-  primary=$(team_project "$project" | jq -r .path)
-  if git -C "$primary" rev-parse -q --verify "refs/remotes/team-home/$wip" >/dev/null &&
-    ! git -C "$primary" update-ref -d "refs/remotes/team-home/$wip" 2>"$scratch/error"; then
-    echo "team-close: cannot delete team-home/$wip in $primary ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: git -C $primary update-ref -d refs/remotes/team-home/$wip" >&2
-  fi
-  if ! refs=$(GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" ls-remote origin "refs/heads/$wip" 2>"$scratch/error") ||
-    { [[ -n $refs ]] && ! GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" push -q origin --delete "$wip" 2>"$scratch/error"; }; then
-    echo "team-close: cannot delete $wip on the team home's origin ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: git -C $TEAM_HOME push origin --delete $wip" >&2
-  fi
+  drop_wip "$project" all
 done
 
 # The arguments as a JSON list.

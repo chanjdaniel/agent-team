@@ -1583,3 +1583,66 @@ team-close: T1's ticket 03 worktree $twt is half returned; fix the cause above a
   [[ -d $twt && ! -e $TEAM_HOME/tasks/T1/scratch--03 ]]
   assert_equal "$(events worktree-returned)" ""
 }
+
+@test "--ticket deletes its ticket's wip ref on the team home's origin and in the primary checkout, and no other" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  integrate
+  local ref
+  # team-checkpoint's snapshots of the task worktree and two ticket worktrees, and team-open
+  # --resume's copies of them in the primary checkout.
+  for ref in wip/home/T1 wip/home/T1--02 wip/home/T1--03; do
+    git -C "$wt" push -q "$team_origin" "HEAD:refs/heads/$ref"
+    git -C "$home" update-ref "refs/remotes/team-home/$ref" "$(git -C "$wt" rev-parse HEAD)"
+  done
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 03
+  [[ $stderr != *"cannot delete"* ]]
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T1
+refs/heads/wip/home/T1--02"
+  assert_equal "$(git -C "$home" for-each-ref --format='%(refname)' refs/remotes/team-home/)" "refs/remotes/team-home/wip/home/T1
+refs/remotes/team-home/wip/home/T1--02"
+}
+
+@test "--ticket with the team home's origin unreachable says so in one line and still returns the worktree" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  integrate
+  git -C "$wt" push -q "$team_origin" HEAD:refs/heads/wip/home/T1--03
+  mv "$team_origin" "$team_origin.away"
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 03
+  mv "$team_origin.away" "$team_origin"
+  assert_equal "$(grep -c 'wip/home/T1--03' <<<"$stderr")" 1
+  assert_contains "$stderr" "team-close: cannot delete wip/home/T1--03 on the team home's origin ("
+  assert_contains "$stderr" "delete it by hand: git -C $TEAM_HOME push origin --delete wip/home/T1--03"
+  [[ ! -e $twt ]]
+  assert_equal "$(jq -r .returned <<<"$output")" "$twt"
+  assert_equal "$(events worktree-returned | jq -r .ticket)" "03"
+}
+
+@test "the close deletes every wip/<project>/T<n>--NN origin lists beside wip/<project>/T<n>, and no other task's" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  integrate
+  git -C "$wt" push -q origin HEAD
+  run_bin -0 team-close T1 --ticket 03
+  local ref
+  # Ticket 03's ref left behind (its return could not reach origin), ticket 05's whose worktree was
+  # returned on another machine, and T10's and T1's of another project, which stay.
+  for ref in wip/home/T1 wip/home/T1--03 wip/home/T1--05 wip/home/T10 wip/home/T10--03 wip/conv/T1--03; do
+    git -C "$wt" push -q "$team_origin" "HEAD:refs/heads/$ref"
+  done
+  git -C "$home" update-ref refs/remotes/team-home/wip/home/T1--05 "$(git -C "$wt" rev-parse HEAD)"
+  git -C "$home" update-ref refs/remotes/team-home/wip/home/T10--03 "$(git -C "$wt" rev-parse HEAD)"
+
+  run_bin -0 --separate-stderr team-close T1
+  [[ $stderr != *"cannot delete"* ]]
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/conv/T1--03
+refs/heads/wip/home/T10
+refs/heads/wip/home/T10--03"
+  assert_equal "$(git -C "$home" for-each-ref --format='%(refname)' refs/remotes/team-home/)" "refs/remotes/team-home/wip/home/T10--03"
+}
