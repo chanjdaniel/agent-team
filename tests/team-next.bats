@@ -1605,7 +1605,14 @@ nothing to launch: 06 waiting: PR 9; 07 blocked on 06"
   assert_contains "$output" "--fill is given twice"
   grep -v '"plan-approved"' "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger"
   cp "$BATS_TEST_TMPDIR/ledger" "$TEAM_HOME/ledger.jsonl"
+  # A builder launched once moves the task past planning, so --fill's own check refuses it.
   refused "T7 has no plan-approved, so no ticket is launched; approve the plan first (step 3 of the manual)" T7 --fill
+  # Still planning, with no builder launched, the shared guard refuses --fill as a builder's launch.
+  local planning=$BATS_TEST_TMPDIR/planning
+  cp "$TEAM_HOME/ledger.jsonl" "$planning"
+  grep -v '"event":"launch"' "$planning" >"$TEAM_HOME/ledger.jsonl"
+  refused "T7 is a feature task with no approved plan (no plan-approved), so it takes no builder yet" T7 --fill
+  cp "$planning" "$TEAM_HOME/ledger.jsonl"
   # Caps team-log would refuse, written by hand, refuse the fill and leave other messages as they are.
   event plan-approved '{by: "coordinator", parallel: "5"}'
   refused "T7's latest plan-approved has parallel '5', which is not a cap from 1 to 3 per phase joined by commas; log the approval again with team-log T7 plan-approved by=<who> parallel=<caps>" \
