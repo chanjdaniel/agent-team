@@ -8,23 +8,28 @@ Usage: python3 -I ticket_graph.py --task T<n> --title <text> --as-of <text> --di
 The page is one inline SVG, its size the page's (html, body { margin: 0 }), with no script, link,
 image, font or other network reference, every ticket's text escaped. It draws:
   - a header: "T<n> <title>" in bold, the counts of tickets, phases, levels and the widest level,
-    the serial total and the critical path, and "As of <as-of> UTC.", wrapped to the page;
+    the serial total and the critical path, how the tickets were weighed, and "As of <as-of>
+    UTC.", wrapped to the page;
   - a legend of the states' colours and the critical path's red border;
   - each phase, in ascending order, as a band headed "phase <n>", its rows its levels: a ticket's
     level is 0 with no blocker in its own phase, else one more than its same-phase blockers'
     highest, so a ticket blocked only by an earlier phase starts its phase; rows are labelled
     "level <k>", k counted from 1 down the whole page;
-  - each ticket as a 280-pixel box of class "ticket" with its number in bold, its state, its slug
-    (its "-" read as spaces) wrapped at 28 characters, and a waiting ticket's "waits for:" text in
-    italic, every box of a row as tall as the row's tallest, filled by its state's colour;
+  - each ticket as a 280-pixel box of class "ticket" with its number in bold, its state and,
+    right-aligned, its minutes ("<m> min" for a done ticket with minutes, "~<median> min" for the
+    others when there is a median), its slug (its "-" read as spaces) wrapped at 28 characters,
+    and a waiting ticket's "waits for:" text in italic, every box of a row as tall as the row's
+    tallest, filled by its state's colour;
   - one arrow per Blocked by: entry, an SVG path of class "edge" of M and L commands only, from a
     port on its blocker's bottom side to one on its ticket's top side (the ports spread evenly
     along each side, ordered by the x of the next item the edge reaches), running vertically
     through a 20-pixel slot of its own in each row it passes, so no edge crosses a box;
-  - the critical path, each ticket weighing 1: per phase, a ticket's length is its weight plus
-    its longest same-phase blocker's (ties to the lowest number), the phase's path ending at its
-    longest ticket (ties to the lowest number), the task's path the phases' in order, their
-    lengths summed; its boxes and edges red.
+  - the critical path, a done ticket with minutes weighing them and every other ticket their
+    median (the middle one, or the mean of the two middle ones, rounded half up), or, with no
+    ticket's minutes, every ticket 1 and the totals in tickets: per phase, a ticket's length is
+    its weight plus its longest same-phase blocker's (ties to the lowest number), the phase's path
+    ending at its longest ticket (ties to the lowest number), the task's path the phases' in
+    order, their lengths summed; its boxes and edges red.
 A row's items, its tickets by number then its slots by their edge's blocker and ticket, are
 ordered by 4 rounds of a pass down the rows and a pass up, each row stably sorted by the mean
 position of each item's neighbours in the row before (an item with none keeps its position), then
@@ -113,6 +118,9 @@ def read_tickets(stream):
             raise Unreadable(f"ticket {n}'s blocked_by is not a list of ticket numbers")
         if t.get("waits_for") is not None and not isinstance(t["waits_for"], str):
             raise Unreadable(f"ticket {n}'s waits_for is not text")
+        m = t.get("minutes")
+        if m is not None and not (isinstance(m, int) and not isinstance(m, bool) and m >= 1):
+            raise Unreadable(f"ticket {n}'s minutes are not a whole number from 1")
         by[n] = t
     for n, t in by.items():
         for b in t["blocked_by"]:
@@ -166,8 +174,21 @@ class Graph:
         self.rows = offset
 
     def weights(self):
-        self.weight = {n: 1 for n in self.ids}
-        self.unit = "ticket"
+        """A done ticket with minutes weighs them, every other ticket their median (rounded half
+        up); with no ticket's minutes every ticket weighs 1 and the totals count tickets."""
+        self.measured = {n: self.by[n]["minutes"] for n in self.ids
+                         if self.by[n]["state"] == "done" and self.by[n].get("minutes") is not None}
+        if not self.measured:
+            self.median = None
+            self.weight = {n: 1 for n in self.ids}
+            self.unit = "ticket"
+            return
+        values = sorted(self.measured.values())
+        mid = len(values) // 2
+        middle = values[mid] if len(values) % 2 else (values[mid - 1] + values[mid]) / 2
+        self.median = math.floor(middle + 0.5)
+        self.weight = {n: self.measured.get(n, self.median) for n in self.ids}
+        self.unit = "min"
 
     def critical_path(self):
         self.crit, self.crit_edges, self.phase_paths = set(), set(), []
@@ -241,6 +262,31 @@ def box_lines(t):
     return lines
 
 
+def amount(count, unit):
+    """A total in its unit: minutes as "<m> min", tickets counted as nouns."""
+    return f"{count:g} min" if unit == "min" else plural(count, unit)
+
+
+def weighed_text(g):
+    """The header's line saying how the tickets were weighed."""
+    done, other = len(g.measured), len(g.ids) - len(g.measured)
+    if not done:
+        return "No ticket has build minutes yet, so each weighs 1 and the totals count tickets."
+    if not other:
+        return "Every ticket weighs its build minutes from the ledger."
+    first = (f"{done} done ticket weighs its" if done == 1 else f"{done} done tickets weigh their")
+    rest = f"the other {other} " + ("weighs" if other == 1 else "weigh")
+    return f"{first} build minutes from the ledger; {rest} their median, {g.median}."
+
+
+def box_minutes(g, n):
+    """A box's minutes: measured for a done ticket that has them, "~" the median for the others,
+    none without a median."""
+    if n in g.measured:
+        return f"{g.measured[n]} min"
+    return f"~{g.median} min" if g.median is not None else ""
+
+
 def header_text(g, task):
     k, p, r = len(g.ids), len(g.phases), g.rows
     widest = max(sum(1 for it in g.items[row] if it[0] == "t") for row in range(r))
@@ -252,7 +298,8 @@ def header_text(g, task):
         path = "; ".join(f"phase {ph} {' → '.join(chain)} ({length:g})" for ph, length, chain in g.phase_paths)
     return [
         f"{plural(k, 'ticket')} in {plural(p, 'phase')}, {plural(r, 'level')}; widest level {plural(widest, 'ticket')}.",
-        f"Serial {plural(serial, g.unit)}; critical path {plural(total, g.unit)}: {path}.",
+        f"Serial {amount(serial, g.unit)}; critical path {amount(total, g.unit)}: {path}.",
+        weighed_text(g),
     ]
 
 
@@ -364,6 +411,9 @@ def draw_graph(g, svg, W, y, row_w, inner_w):
                    f'rx="6" fill="{COLOURS[t["state"]]}" stroke="{RED if red else BORDER}" stroke-width="{2.5 if red else 1}"/>')
         base = y0 + PAD + FONT
         svg.append(f'<text class="head" x="{num(x + PAD)}" y="{base}"><tspan font-weight="700">{n}</tspan> {t["state"]}</text>')
+        minutes = box_minutes(g, n)
+        if minutes:
+            svg.append(f'<text class="minutes" x="{num(x + w - PAD)}" y="{base}" text-anchor="end">{minutes}</text>')
         for i, (kind, line) in enumerate(lines[n], 1):
             italic = ' font-style="italic"' if kind == "waits" else ""
             svg.append(f'<text class="{kind}" x="{num(x + PAD)}" y="{base + i * LINE}"{italic}>{esc(line)}</text>')

@@ -45,24 +45,26 @@ TOML
     branch: "feat/T172-toil", base: "dev", base_sha: "aba9d074", worktree: $wt}')"
 }
 
-# event <task> <kind> '<jq object of the other fields>': append one ledger line.
+# event <task> <kind> '<jq object of the other fields>' [<ts>]: append one ledger line, at <ts>
+# when given, else at 2026-11-01T10:00:00Z.
 event() {
-  jq -cn --arg task "$1" --arg event "$2" "{ts: \"2026-11-01T10:00:00Z\", task: \$task, event: \$event} + $3" \
-    >>"$TEAM_HOME/ledger.jsonl"
+  jq -cn --arg task "$1" --arg event "$2" --arg ts "${4:-2026-11-01T10:00:00Z}" \
+    "{ts: \$ts, task: \$task, event: \$event} + $3" >>"$TEAM_HOME/ledger.jsonl"
 }
 
-# ticket_done <NN>...: a ticket-done of each.
+# ticket_done [--at <ts>] <NN>...: a ticket-done of each, at <ts> when given.
 ticket_done() {
-  local n
+  local n at=''
+  if [[ ${1:-} == --at ]]; then at=$2; shift 2; fi
   for n in "$@"; do
-    event T172 ticket-done "$(jq -cn --arg n "$n" '{ticket: $n, commits: ["1f2f4a1"]}')"
+    event T172 ticket-done "$(jq -cn --arg n "$n" '{ticket: $n, commits: ["1f2f4a1"]}')" "$at"
   done
 }
 
-# build_launch <NN> <session>: a builder's launch on brief-build-<NN>.
+# build_launch <NN> <session> [<ts>]: a builder's launch on brief-build-<NN>, at <ts> when given.
 build_launch() {
   event T172 launch "$(jq -cn --arg b "brief-build-$1" --arg s "$2" --arg wt "$wt" \
-    '{role: "builder", session: $s, worktree: $wt, toolkits: [], brief: $b}')"
+    '{role: "builder", session: $s, worktree: $wt, toolkits: [], brief: $b}')" "${3:-}"
 }
 
 # ticket <NN-slug> <lines>...: write a ticket file of those lines under a title.

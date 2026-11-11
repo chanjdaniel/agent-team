@@ -49,17 +49,22 @@ setup() {
   assert_contains "$output" "13 blocked team-next-review-launch: on 12"
 }
 
-@test "--json prints the same as a list of objects" {
-  ticket_done 01 02 03 04 05 06 07 08 09
+@test "--json prints the same as a list of objects, each done ticket with its build minutes" {
+  build_launch 01 0a0a0a0a 2026-11-01T09:00:00Z
+  ticket_done --at 2026-11-01T09:42:10Z 01
+  ticket_done 02 03 04 05 06 07 08 09
   build_launch 10 a1b2c3d4
   run_bin -0 --separate-stderr team-tickets T172 --json
   assert_equal "$(jq length <<<"$output")" 19
   assert_equal "$(jq -c '.[9]' <<<"$output")" "$(jq -cn --arg f "$tickets/10-team-tickets.md" \
     '{ticket: "10", slug: "team-tickets", state: "running", project: "proj", file: $f, phase: 1, blocked_by: ["04"],
-      waits_for: null, on: [], session: "a1b2c3d4"}')"
-  assert_equal "$(jq -c '.[11] | [.state, .blocked_by, .on, .waits_for, .session]' <<<"$output")" \
-    '["blocked",["03","05","07","10"],["10"],"T171 merged (both edit `roles/coordinator.md`).",null]'
-  assert_equal "$(jq -c '.[0] | [.state, .on, .session]' <<<"$output")" '["done",[],null]'
+      waits_for: null, on: [], session: "a1b2c3d4", minutes: null}')"
+  assert_equal "$(jq -c '.[11] | [.state, .blocked_by, .on, .waits_for, .session, .minutes]' <<<"$output")" \
+    '["blocked",["03","05","07","10"],["10"],"T171 merged (both edit `roles/coordinator.md`).",null,null]'
+  # Done after a launch: its minutes, last; done by hand with no launch: null.
+  assert_equal "$(jq -c '.[0] | [.state, .on, .session, .minutes]' <<<"$output")" '["done",[],null,42]'
+  assert_equal "$(jq -c '.[0] | keys_unsorted | last' <<<"$output")" '"minutes"'
+  assert_equal "$(jq -c '.[1] | [.state, .minutes]' <<<"$output")" '["done",null]'
 }
 
 @test "running needs a builder launch on brief-build-NN with no ticket-done of NN since" {

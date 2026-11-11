@@ -63,9 +63,13 @@ level 3"
   (($(box 01 y) < $(box 02 y) && $(box 02 y) < $(box 03 y)))
   assert_equal "$(box 01 stroke) $(box 02 stroke) $(box 03 stroke)" "#dc2626 #dc2626 #dc2626"
   assert_equal "$(edge 01-02 stroke) $(edge 02-03 stroke)" "#dc2626 #dc2626"
-  assert_equal "$(texts header | sed '$d')" "T172 toil
+  assert_equal "$(texts header | head -3)" "T172 toil
 3 tickets in 1 phase, 3 levels; widest level 1 ticket.
 Serial 3 tickets; critical path 3 tickets: 01 → 02 → 03."
+  # No ticket has minutes: each weighs 1, the header says so, and no box shows minutes.
+  assert_equal "$(texts header | sed '$d' | tail -n +4 | paste -sd' ')" \
+    "No ticket has build minutes yet, so each weighs 1 and the totals count tickets."
+  assert_equal "$(count 'class="minutes"')" 0
   [[ $(texts header | tail -1) =~ ^As\ of\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}\ UTC\.$ ]]
   assert_equal "$(count 'class="phase"')" 1
   assert_contains "$(cat "$page")" ">phase 1</text>"
@@ -201,6 +205,105 @@ critical path"
   local width
   width=$(grep -o '<svg [^>]*' "$page" | sed -E 's/.* width="([0-9]+)".*/\1/')
   ((width > 1000 && width < 1300))
+}
+
+# minutes: each ticket's minutes as --json prints them, one line.
+minutes() {
+  guard_sandbox || return 1
+  "$REPO_ROOT/bin/team-tickets" T172 --json | jq -c 'map(.minutes)'
+}
+
+@test "a done ticket's minutes run from its latest launch to its ticket-done, rounded half up, at least 1" {
+  ticket 01-one "Blocked by: None"
+  ticket 02-two "Blocked by: None"
+  ticket 03-three "Blocked by: None"
+  ticket 04-four "Blocked by: None"
+  # An earlier launch on the same brief (a stowed and relaunched builder) is ignored.
+  build_launch 01 11111111 2026-11-01T08:00:00Z
+  build_launch 01 22222222 2026-11-01T09:00:00Z
+  ticket_done --at 2026-11-01T09:29:30Z 01
+  build_launch 02 33333333 2026-11-01T09:00:00Z
+  ticket_done --at 2026-11-01T09:00:05Z 02
+  build_launch 03 44444444 2026-11-01T09:00:00Z
+  ticket_done --at 2026-11-01T09:29:29Z 03
+  # Done by hand, with no launch: no minutes.
+  ticket_done --at 2026-11-01T09:30:00Z 04
+  assert_equal "$(minutes)" "[30,1,29,null]"
+  # Relaunched after its ticket-done: running again, so no minutes until its next ticket-done.
+  build_launch 02 55555555 2026-11-01T10:00:00Z
+  assert_equal "$(minutes)" "[30,null,29,null]"
+  ticket_done --at 2026-11-01T10:12:00Z 02
+  assert_equal "$(minutes)" "[30,12,29,null]"
+}
+
+@test "build minutes weigh the critical path: done tickets their own, the others the median, the totals in minutes" {
+  ticket 01-top "Blocked by: None"
+  ticket 02-left "Blocked by: 01"
+  ticket 03-right "Blocked by: 01"
+  ticket 04-bottom "Blocked by: 02, 03"
+  build_launch 01 11111111 2026-11-01T09:00:00Z
+  ticket_done --at 2026-11-01T09:10:00Z 01
+  build_launch 02 22222222 2026-11-01T09:10:00Z
+  build_launch 03 33333333 2026-11-01T09:10:00Z
+  ticket_done --at 2026-11-01T09:15:00Z 02
+  ticket_done --at 2026-11-01T09:50:00Z 03
+  assert_equal "$(minutes)" "[10,5,40,null]"
+  draw
+  # Counted in tickets the path would go through 02, the lower number; 03's 40 minutes move it.
+  assert_contains "$(texts header)" "Serial 65 min; critical path 60 min: 01 → 03 → 04."
+  assert_contains "$(texts header | paste -sd' ')" \
+    "3 done tickets weigh their build minutes from the ledger; the other 1 weighs their median, 10."
+  assert_equal "$(box 03 stroke) $(box 02 stroke)" "#dc2626 #9ca3af"
+  assert_equal "$(edge 01-03 stroke) $(edge 03-04 stroke) $(edge 01-02 stroke)" "#dc2626 #dc2626 #9ca3af"
+  # Each box's minutes, right-aligned on its first line: measured, or "~" the median.
+  assert_equal "$(texts minutes)" "10 min
+5 min
+40 min
+~10 min"
+  assert_equal "$(grep -c '<text class="minutes"[^>]* text-anchor="end"' "$page")" 4
+  no_crossing
+}
+
+@test "the median of an even count rounds half up, and a done ticket with no minutes weighs it" {
+  ticket 01-one "Blocked by: None"
+  ticket 02-two "Blocked by: 01"
+  ticket 03-three "Blocked by: 02" "Phase: 2"
+  build_launch 01 11111111 2026-11-01T09:00:00Z
+  ticket_done --at 2026-11-01T09:10:00Z 01
+  build_launch 02 22222222 2026-11-01T09:10:00Z
+  ticket_done --at 2026-11-01T09:35:00Z 02
+  ticket_done 03
+  assert_equal "$(minutes)" "[10,25,null]"
+  draw
+  assert_equal "$(texts minutes)" "10 min
+25 min
+~18 min"
+  assert_contains "$(texts header | paste -sd' ')" \
+    "Serial 53 min; critical path 53 min: phase 1 01 → 02 (35); phase 2 03 (18)."
+  assert_contains "$(texts header | paste -sd' ')" \
+    "2 done tickets weigh their build minutes from the ledger; the other 1 weighs their median, 18."
+}
+
+@test "line 4 says one done ticket weighs its minutes, then that every ticket does" {
+  ticket 01-one "Blocked by: None"
+  ticket 02-two "Blocked by: 01"
+  ticket 03-three "Blocked by: 01"
+  build_launch 01 11111111 2026-11-01T09:00:00Z
+  ticket_done --at 2026-11-01T09:10:00Z 01
+  draw
+  assert_contains "$(texts header | paste -sd' ')" \
+    "1 done ticket weighs its build minutes from the ledger; the other 2 weigh their median, 10."
+  assert_contains "$(texts header | paste -sd' ')" "Serial 30 min; critical path 20 min: 01 → 02."
+  build_launch 02 22222222 2026-11-01T09:10:00Z
+  ticket_done --at 2026-11-01T09:13:00Z 02
+  build_launch 03 33333333 2026-11-01T09:13:00Z
+  ticket_done --at 2026-11-01T09:20:00Z 03
+  draw
+  assert_contains "$(texts header | paste -sd' ')" "Every ticket weighs its build minutes from the ledger."
+  assert_contains "$(texts header | paste -sd' ')" "Serial 20 min; critical path 17 min: 01 → 03."
+  assert_equal "$(texts minutes)" "10 min
+3 min
+7 min"
 }
 
 @test "graph-check names a segment that crosses a box" {
