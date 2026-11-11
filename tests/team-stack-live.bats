@@ -100,7 +100,7 @@ live_get() {
 
   # env reaches the stack: its port serves what the named volume holds.
   docker exec "$container" sh -c 'echo kept > /data/marker'
-  run_bin -0 team-stack env
+  run_bin -0 --separate-stderr team-stack env
   local exports=$output
   assert_equal "$(eval "$exports"; live_get "$TH_WEB_PORT" /marker)" kept
 
@@ -113,7 +113,7 @@ live_get() {
   assert_equal "$output" "team-stack: $LIVE_PROJECT is up for T22, not seeded: its database was there"
   # The same container, started again with its labels, and its data.
   assert_equal "$(docker ps --quiet --filter "$filter")" "$container"
-  run_bin -0 team-stack env
+  run_bin -0 --separate-stderr team-stack env
   assert_equal "$output" "$exports"
   assert_equal "$(eval "$output"; live_get "$TH_WEB_PORT" /marker)" kept
 
@@ -209,7 +209,7 @@ live_busy() {
   live_busy "$STACK_WORKTREE"
   run_bin -0 --separate-stderr team-stack sweep
   assert_equal "$output$stderr" ""
-  jq -e .last_busy "$HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json" >/dev/null
+  jq -e '.last_busy and .seed.state == "skipped"' "$HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json" >/dev/null
   # Idle, but busy less than idle_minutes (6 seconds) ago: kept.
   LIVE_IDLE=$STACK_WORKTREE
   live_busy
@@ -228,8 +228,10 @@ live_busy() {
   assert_equal "$(docker volume ls --quiet --filter "$filter")" "${LIVE_PROJECT}_data"
 
   run_bin -0 --separate-stderr team-stack up
-  assert_equal "$output" "team-stack: $LIVE_PROJECT is up for T22, not seeded: its database was there"
-  run_bin -0 team-stack env
+  local at
+  at=$(jq -r .seed.at "$HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json")
+  assert_equal "$output" "team-stack: $LIVE_PROJECT is up for T22, not seeded: it was started with --no-seed at $at and never seeded; team-stack seed seeds it"
+  run_bin -0 --separate-stderr team-stack env
   assert_equal "$(eval "$output"; live_get "$TH_WEB_PORT" /marker)" kept
   run_bin -0 team-stack down
   [[ ! -e $HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json ]]
@@ -247,7 +249,7 @@ live_busy() {
   echo '{"disk_floor_gb": 0, "wait_minutes": 0}' >"$HOME/.config/agent-team/stack.json"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
   # One request, which httpd -v logs, so the saved log has a line.
-  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE"
   (eval "$output"; live_get "$TH_WEB_PORT" / >/dev/null)
   # A gate run's stack past its expires, and a stack made by hand with no labels, both through the wrapper.
   (cd "$STACK_WORKTREE" && COMPOSE_PROJECT_NAME=$gate TH_PORTS=auto TH_DIR=$STACK_WORKTREE TEAM_KIND=gate \
@@ -323,10 +325,10 @@ live_busy() {
     anonymous[$project]=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Name}}{{end}}{{end}}' "$container")
     docker exec "$container" sh -c "echo $project > /data/marker"
   done
-  run_bin -0 team-stack env
+  run_bin -0 --separate-stderr team-stack env
   port[$own]=$(eval "$output"; echo "$TH_WEB_PORT")
   for project in a b; do
-    run_bin -0 team-stack env --instance "$project"
+    run_bin -0 --separate-stderr team-stack env --instance "$project"
     assert_equal "${lines[0]}" "export COMPOSE_PROJECT_NAME=$own-$project"
     assert_equal "${lines[2]}" "export TH_PORTS=auto"
     port[$own-$project]=$(eval "$output"; echo "$TH_WEB_PORT")
@@ -337,9 +339,9 @@ live_busy() {
   done
   # A hand-run wrapper call with an instance's exports reaches it and changes nothing.
   local instance=$own-a
-  run_bin -0 team-stack env --instance a
+  run_bin -0 --separate-stderr team-stack env --instance a
   assert_equal "$(eval "$output"; scripts/compose.sh ports | sed -n 2p)" "export TH_WEB_PORT=${port[$instance]}"
-  run_bin -0 team-stack env --instance a
+  run_bin -0 --separate-stderr team-stack env --instance a
   assert_contains "$output" "export TH_WEB_PORT=${port[$instance]}"
 
   run_bin -0 --separate-stderr team-stack down

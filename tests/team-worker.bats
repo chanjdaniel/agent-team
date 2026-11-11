@@ -92,6 +92,11 @@ launches() {
   jq -c 'select(.event == "launch") | del(.ts)' "$TEAM_HOME/ledger.jsonl"
 }
 
+# The id of the admission team-capacity admit made last, as admitted.json keeps it.
+admitted_id() {
+  jq -r '.[-1].id' "$HOME/.local/state/agent-team/capacity/admitted.json"
+}
+
 # generated <settings|mcp> <role>: the file team-worker generated for a T7 launch of <role> on a
 # worktree of proj, keyed by the project for every role but ops.
 generated() {
@@ -484,8 +489,8 @@ base_link() {
   run_bin -0 team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
   assert_equal "$output" "4f2a9c1e"
   assert_equal "$(bg_calls | jq -r last)" "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
-  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "reviewer",
-    session: "4f2a9c1e", worktree: $wt, toolkits: [], machine: "home-pc", brief: "brief-rereview-3"}')"
+  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" --arg a "$(admitted_id)" '{task: "T7", event: "launch", role: "reviewer",
+    session: "4f2a9c1e", worktree: $wt, toolkits: [], machine: "home-pc", admission: $a, brief: "brief-rereview-3"}')"
   : >"$TEAM_HOME/ledger.jsonl"
   thread T7
   # An ops-shaped prompt, the brief's own text, names no brief.
@@ -726,6 +731,9 @@ command-guard block 10"
   run_bin -0 --separate-stderr team-worker T7 reviewer "$wt1" -- go
   assert_equal "$output" "4f2a9c1e"
   assert_equal "$stderr" "team-worker: warning: could not place T7-reviewer 4f2a9c1e (pid 4242) in agent-team-T7.slice: Call failed: Access denied; the launch stands"
+  # Its admission, bound by the logged launch, stays: the failed placement releases nothing.
+  assert_equal "$(jq length "$HOME/.local/state/agent-team/capacity/admitted.json")" 2
+  assert_equal "$(launches | jq -r .admission)" "$(admitted_id)"
   assert_equal "$(launches | jq -r .role)" reviewer
 }
 
@@ -752,7 +760,8 @@ command-guard block 10"
   thread T7
   run_bin -0 team-worker T7 builder "$wt2" -- go
   assert_equal "$(launches)" \
-    "$(jq -cn --arg wt "$wt2" '{task: "T7", event: "launch", role: "builder", session: "4f2a9c1e", worktree: $wt, toolkits: [], machine: "home-pc"}')"
+    "$(jq -cn --arg wt "$wt2" --arg a "$(admitted_id)" '{task: "T7", event: "launch", role: "builder", session: "4f2a9c1e", worktree: $wt, toolkits: [],
+      machine: "home-pc", admission: $a}')"
   run_bin -0 team-log --check
 }
 
@@ -763,8 +772,8 @@ command-guard block 10"
   ln -s "$HOME/slots" "$HOME/link"
   cd "$HOME"
   run_bin -0 team-worker T7 builder link/proj/1 -- go
-  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "builder",
-    session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one", machine: "home-pc"}')"
+  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" --arg a "$(admitted_id)" '{task: "T7", event: "launch", role: "builder",
+    session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one", machine: "home-pc", admission: $a}')"
   run_bin -0 team-log --check
 }
 
@@ -820,9 +829,9 @@ command-guard block 10"
     "--settings", "\($t)/settings.reviewer.proj.json",
     "--append-system-prompt-file", "\($prompts)/reviewer.proj.md",
     "--permission-mode", "auto", "--model", "sonnet", "--name", "T7-reviewer", "Review it"]')"
-  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "reviewer",
+  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" --arg a "$(admitted_id)" '{task: "T7", event: "launch", role: "reviewer",
     session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one", machine: "home-pc",
-    model: "sonnet"}')"
+    admission: $a, model: "sonnet"}')"
   run_bin -0 team-log --check
 
   # Each role takes its own line; one the table does not name takes none.
@@ -2093,6 +2102,7 @@ LINES
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
   [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.proj.json ]]
+  [[ ! -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
 
   # At none, nothing starts but the load check and an ops session.
   capacity_room $((16 * 1073741824)) none
@@ -2102,13 +2112,75 @@ LINES
   run_bin -0 team-worker T0 planner "$wt1" -- go
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
-  assert_equal "$(launches | jq -r .role)" ops
+  assert_equal "$(launches | jq -c '[.role, has("admission")]')" '["ops",false]'
   [[ ! -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
 
-  # Room again: the launch is admitted and kept as reserved.
+  # Room again: the launch is admitted and kept as reserved, bound to its session by the id its
+  # launch logs.
   capacity_room $((16 * 1073741824)) full
   run_bin -0 team-worker T7 builder "$wt1" -- go
   assert_equal "$(jq -c 'map([.kind, .task])' "$HOME/.local/state/agent-team/capacity/admitted.json")" '[["session:builder","T7"]]'
+  assert_equal "$(launches | jq -r 'select(.role == "builder") | .admission')" "$(admitted_id)"
+}
+
+# session_reading <task> <role> <session>: the only stored reading, taken now with room for every
+# launch, holds <session> of <role> in <task>, using 0.25 GiB.
+session_reading() {
+  : >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  capacity_room $((16 * 1073741824))
+  jq -c --arg t "$1" --arg r "$2" --arg s "$3" '.tasks = [{task: $t, memory: 268435456, cpu: null, cpu_nsec: null, stacks: [],
+                    sessions: [{id: $s, role: $r, memory: 268435456, cpu_seconds: 1}]}]' \
+    "$HOME/.local/state/agent-team/capacity/readings.jsonl" >"$BATS_TEST_TMPDIR/reading"
+  mv "$BATS_TEST_TMPDIR/reading" "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+}
+
+@test "a launch that dies after its admission releases it, and the relaunch's session is reserved once (E-admission-double)" {
+  thread T7
+  # The first launch's claude call fails once the launch is admitted; the relaunch's succeeds.
+  stub_script claude <<'EOF'
+if [[ $* == "agents --json" ]]; then
+  jq -cn '[{id: "4f2a9c1e", name: "T7-builder", pid: 4242}]'
+  exit 0
+fi
+if [[ ! -e $STUB_FIXTURES/failed-once ]]; then
+  : >"$STUB_FIXTURES/failed-once"
+  exit 1
+fi
+echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
+EOF
+  run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c . "$HOME/.local/state/agent-team/capacity/admitted.json")" "[]"
+  assert_equal "$(launches)" ""
+
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$output" 4f2a9c1e
+  assert_equal "$(jq -c 'map([.kind, .task])' "$HOME/.local/state/agent-team/capacity/admitted.json")" '[["session:builder","T7"]]'
+  local id
+  id=$(admitted_id)
+  assert_equal "$(launches | jq -r .admission)" "$id"
+  # The session, once the reading holds it, is reserved by its own admission and nothing else.
+  session_reading T7 builder 4f2a9c1e
+  run_bin -0 --separate-stderr team-capacity status --json
+  assert_equal "$(jq -c '[.reserved.items[] | select(.part == "admissions") | [.kind, .task, .name, .admission]]' <<<"$output")" \
+    "[[\"session:builder\",\"T7\",\"4f2a9c1e\",\"$id\"]]"
+}
+
+@test "a release that fails is a warning, and the launch exits with its own failure" {
+  thread T7
+  # The launch fails once admitted, and its admission's file can no longer be rewritten.
+  stub_script claude <<'EOF'
+chmod a-w "$HOME/.local/state/agent-team/capacity"
+exit 1
+EOF
+  run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
+  chmod u+w "$HOME/.local/state/agent-team/capacity"
+  local id
+  id=$(admitted_id)
+  [[ $id =~ ^[0-9a-f]{12}$ ]]
+  [[ $stderr == "team-worker: warning: could not release admission $id: "*"Permission denied; it ends 10 minutes after it was made" ]]
+  assert_equal "$(grep -c . <<<"$stderr")" 1
+  assert_equal "$(launches)" ""
 }
 
 @test "the task's finished sessions are stopped before the launch asks for room, and their use leaves the reservations" {
@@ -2282,6 +2354,7 @@ LINES
   assert_equal "$stderr" "team-worker: team-capacity admit failed for T7-builder (exit 1): team-capacity: $HOME/.config/agent-team/capacity.json: session_gib must be a number above 0, not 0"
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
+  [[ ! -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
 }
 
 @test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
