@@ -13,8 +13,9 @@
 # reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
-# id, no merge-approved whose url its text names), or when its latest paused or waiting has no
-# later resumed or launch; an awaiting-merge task that nothing else parks is merge-due instead
+# id, no merge-approved whose url its text names), or when a park (held, blocked, waiting, paused)
+# stands in the ledger's lifecycle fold; an ask a launch went past (team-worker --past-ask) and its
+# wait park nothing, so that launch's worker is watched; an awaiting-merge task that nothing else parks is merge-due instead
 # while Daniel's plan-time or standing merge word stands. Findings, one line each with the task,
 # the session and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
@@ -40,6 +41,10 @@
 #                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
 #                  than Bash by its name, and ", and <n> more running" when others run; or " with no
 #                  tool call running". None for a session whose transcript cannot be found
+#   stowing        an open task whose stowing (a stow under way: team-stow --begin, or a team-stow
+#                  run, logged it) has stood 30 minutes with no stowed or stow-failed, whatever
+#                  parks it, with session null: "stowing since <its time> (<cause>), with no
+#                  stowed; next: run team-stow T<n>, which finishes the stow or logs stow-failed"
 #   merge-due      an open task in awaiting-merge with a plan-time merge approval not withdrawn (its
 #                  latest merge-preapproved of a project with no later merge-preapproval-withdrawn
 #                  of it) or a standing word of Daniel's on one of its projects (those of its
@@ -91,15 +96,15 @@
 #                  T171" (the coordinator sends their workers STOW, then runs team-stow)
 #   level-resume   after it, with task and session null: the first task stowed, waiting to
 #                  resume (for the level or a handoff), oldest stow first, whose roles' estimates
-#                  fit the budget again and that nothing holds (a held standing, or a waiting or
-#                  blocked logged after its stow standing, until a resumed): "level: T171 fits
-#                  again: relaunch its builder"
+#                  fit the budget again and that nothing holds (Daniel's hold or an ask no launch
+#                  went past, wherever logged, or a held, waiting or blocked logged after its stow
+#                  standing, until it ends): "level: T171 fits again: relaunch its builder"
 #   level-launch   after it, with task and session null: the first task whose launches were
-#                  refused for room (a standing paused of cause room, as park_cause reads
-#                  team-worker's "no room for session:<role>" line, which the task's next launch
-#                  or a resumed ends), oldest refusal first, whose
-#                  roles fit again and that nothing holds (a held standing, or a waiting or
-#                  blocked logged after its latest refusal standing, until a resumed): "level: T5
+#                  refused for room (a standing paused of cause room, which team-worker logs
+#                  with its role on its exit 75, an old line's role read from its "no room for
+#                  session:<role>" words, and which a launch of its role or a resumed naming it
+#                  or all=true ends), oldest refusal first, whose roles fit again and that nothing
+#                  holds (as for level-resume, after its latest refusal): "level: T5
 #                  has room again: launch its reviewer, refused for room at <time>"
 #   level          in their place, with task and session null: team-capacity plan failed:
 #                  "level: <its last line on stderr>: fix what team-capacity names"

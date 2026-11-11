@@ -8,8 +8,8 @@ description: The recovery ladder for a stuck worker. Use when a worker is silent
 Climb the ladder one rung at a time, and stop at the rung that frees the worker.
 Run `team-state T<n>` first, so you act on the task's state, not on the last message you remember.
 
-When one stop the ledger did not see ended several sessions at once (the usage limit, a crash, a reboot), first log each stopped task's park with when it began, the limit message's time when you have it, else the task's last event before the stop: `team-log T<n> blocked reason="usage limit: <what stopped it>" since=<ISO time>`.
-The relaunch then clears it, and `team-time` counts the stop as the usage limit (or the machine off), not as work.
+When one stop the ledger did not see ended several sessions at once (the usage limit, a crash, a reboot), first log each stopped task's park with when it began, the limit message's time when you have it, else the task's last event before the stop: `team-log T<n> paused cause=limit reason="usage limit: <what stopped it>" since=<ISO time>`, with `cause=shutdown` for a crash or a reboot.
+The relaunch then clears it, and `team-time` counts the stop as the usage limit (or the machine off), not as work, by its cause.
 
 1. **Read its log.** `claude logs <session id>` shows what the worker last did and where it stands.
    Often the answer is there: a prompt it is waiting on, a question it asked in the wrong place, a finished step it never reported.
