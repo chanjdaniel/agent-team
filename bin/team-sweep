@@ -20,7 +20,8 @@
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
 #                  ledger event since its launch, a denied aside, has handed the next step back);
-#                  merged is told to close
+#                  merged is told to close, and merged-part (a merged naming phases_left, phases
+#                  with a ticket not done) to launch the next phase's first ticket's builder
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
 #                  task after that session's latest launch but denied ones (one waiting for input
@@ -67,7 +68,19 @@
 #                  standing word counts and a line on stderr says why
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
-#   activity       after every task finding, with task and session null: session-activity
+#   coordinator-twin  after every task finding, with task null: one for each session named
+#                  coordinator in the session list but the one the sweep runs in
+#                  (CLAUDE_CODE_SESSION_ID's), when more than one is listed, with session its short
+#                  id: "coordinator-twin: coordinator <id> (<kind>, <state or status>, started
+#                  <time>) is a second session named coordinator on this machine; next: read claude
+#                  logs <id> for anything left to log, then stop it with claude stop <id>" ("ask
+#                  Daniel to end it, an interactive session, pid <pid>" for an interactive one, and
+#                  "started at an unknown time" for one whose startedAt is not a number); when
+#                  CLAUDE_CODE_SESSION_ID names none of them, each is "one of <n> sessions named
+#                  coordinator" and its next starts "if it is not you, ". The list is this
+#                  machine's: a Remote Control twin is the coordinator's own ListAgents check
+#                  (bin/hooks/session-digest)
+#   activity       after the coordinator-twin findings, with task and session null: session-activity
 #                  failed (a Python older than 3.11, say, or a session with a transcript whose
 #                  startedAt is not epoch milliseconds) or printed no JSON object, so no busy
 #                  worker can be found stalled: "activity: <its last line on stderr>, so no busy
@@ -82,8 +95,9 @@
 #                  blocked logged after its stow standing, until a resumed): "level: T171 fits
 #                  again: relaunch its builder"
 #   level-launch   after it, with task and session null: the first task whose launches were
-#                  refused for room (a paused, after its latest launch, whose reason is
-#                  team-worker's "no room for session:<role>" line), oldest refusal first, whose
+#                  refused for room (a standing paused of cause room, as park_cause reads
+#                  team-worker's "no room for session:<role>" line, which the task's next launch
+#                  or a resumed ends), oldest refusal first, whose
 #                  roles fit again and that nothing holds (a held standing, or a waiting or
 #                  blocked logged after its latest refusal standing, until a resumed): "level: T5
 #                  has room again: launch its reviewer, refused for room at <time>"
@@ -253,9 +267,9 @@ look() {
   [[ -n $plan ]] || plan='{"error": "team-capacity plan printed nothing"}'
   [[ -n $health ]] || health='{"error": "team-timers health printed nothing"}'
   covered=$(standing_covered)
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $covered; $health)' -nRc \
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $covered; $health; $self)' -nRc \
     --argjson sessions "$sessions" --argjson plan "$plan" --argjson activity "$activity" --argjson covered "$covered" \
-    --argjson health "$health" "$ledger")
+    --argjson health "$health" --arg self "${CLAUDE_CODE_SESSION_ID:-}" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.

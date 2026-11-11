@@ -304,6 +304,40 @@ t90_hours() {
     '02:40 done {role: "builder", session: "s1"}')" '{"building":1.333,"review":1,"unattributed":0.333,"wait:limit":0.333}'
 }
 
+@test "a fix round's PAUSED stowed, handoff written, or a paused whose cause is stow, is building up to the fresh builder" {
+  local paused
+  for paused in '02:10 paused {reason: "stowed, handoff written"}' '02:10 paused {cause: "stow", reason: "handoff written"}'; do
+    assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+      '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+      '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+      "$paused" \
+      '02:30 launch {role: "builder", session: "s3", worktree: "/w", toolkits: []}')" '{"building":2,"review":1}'
+  done
+}
+
+@test "a held that a launch follows stays a wait on Daniel until its resumed, as the lifecycle fold keeps it" {
+  # Before the fold, the launch at 02:00 ended the hold: building 3, wait:daniel 1.
+  assert_equal "$(t90_hours 05:00 '01:00 held {on: "Daniel", reason: "Daniel holds it"}' \
+    '02:00 launch {role: "builder", session: "s2", worktree: "/w", toolkits: []}' \
+    '03:00 resumed {}' \
+    '04:00 done {role: "builder", session: "s2"}')" '{"building":2,"unattributed":1,"wait:daniel":2}'
+}
+
+@test "a merge-approved ends an ask's wait whose text names no url of it, so the merge is merging" {
+  assert_equal "$(t90_hours 04:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 asked {id: "merge", text: "merge PR #30 at 0123456"}' \
+    '03:00 merge-approved {url: "https://github.com/chanjdaniel/agent-team/pull/30", discord_message: "1"}' \
+    '04:00 merged {pr: 30, merge: "m", head: "h", by: "team-merge"}')" '{"building":1,"merging":1,"wait:daniel":2}'
+}
+
+@test "a wait logged before the wait on Daniel that a merge-approved ends still stands, as the lifecycle fold keeps every park" {
+  # Before the fold, the later wait replaced the earlier one, and the hour after the word was merging.
+  assert_equal "$(t90_hours 04:00 '01:00 waiting {on: "reviewer", reason: "the rereview"}' \
+    '02:00 waiting {on: "Daniel", reason: "the merge word"}' \
+    '03:00 merge-approved {url: "https://github.com/chanjdaniel/agent-team/pull/30", discord_message: "1"}' \
+    '04:00 merged {pr: 30, merge: "m", head: "h", by: "team-merge"}')" '{"building":1,"wait:daniel":1,"wait:external":2}'
+}
+
 @test "a gate run in the fix round after a review that sends notes back is gate time taken from building" {
   assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
     '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \

@@ -110,13 +110,13 @@ The handoff and the steal need a second machine the team can run on.
   4. Daniel says "hand off" to the coordinator on Discord; the `handoff` skill stows the workers, runs `team-handoff`, posts "Released at ..." and retires.
   5. The wait on the second machine ends: it pulls, applies the config, takes the lease, enables the heartbeat, re-homes each open worktree, writes its report and starts the coordinator, which Daniel pins.
   6. On Daniel's word, the coordinator there relaunches only the trivial task's builder and leaves the other tasks stowed.
-  7. Check there: `team-lease status` names the second machine at an epoch one higher; the resume report has no failure; the builder's resume brief names the handoff; the builder makes one commit and pushes it; a message of Daniel's in `#coordinator` is answered from there; `team-timers health` is healthy after one heartbeat (5 minutes).
+  7. Check there: `team-lease status` names the second machine at an epoch one higher; the resume report has no failure; the builder's resume brief names the handoff; the builder makes one commit and pushes it; a message of Daniel's in `#coordinator` is answered from there; the coordinator there lists no other session named `coordinator` in its `ListAgents`; `team-timers health` is healthy after one heartbeat (5 minutes).
 - Back:
   8. On the PC, Daniel runs `team-resume --wait` and waits for "this machine is ready".
   9. Daniel says "hand off" to the coordinator on the second machine.
   10. The wait on the PC ends as in step 5; Daniel pins the coordinator.
   11. The coordinator's `resume` skill relaunches every stowed role.
-  12. Check on the PC: `team-lease status` names the PC at an epoch two higher than before the drill; `git log origin/lease` in the team home shows the two takes and no `stolen_from`; the resume report has no failure; each `worktree-moved` is expected; the trivial task's branch holds the commit made on the second machine; the second machine's heartbeat is disabled (`team-timers status` there) and its `team-doctor` shows it holds no lease.
+  12. Check on the PC: `team-lease status` names the PC at an epoch two higher than before the drill; `git log origin/lease` in the team home shows the two takes and no `stolen_from`; the resume report has no failure; each `worktree-moved` is expected; the trivial task's branch holds the commit made on the second machine; the second machine's heartbeat is disabled (`team-timers status` there) and its `team-doctor` shows it holds no lease; the coordinator on the PC lists no other session named `coordinator` in its `ListAgents`.
 - After:
   13. The coordinator lets the trivial task finish or closes it, and records: `team-drill record handoff --verdict pass --detail "to <machine> and back, epochs <a> to <b>"`, or `--verdict fail --detail "<the step that failed and why>"`.
   14. Each thing that broke becomes a task, and the coordinator posts the list.

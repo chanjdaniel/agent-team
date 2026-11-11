@@ -186,9 +186,10 @@ sandbox() {
   # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in, nor the
   # heavy run tests/run holds (team-heavy), nor the role and task of the session running the suite
   # (worker_refusal), nor the parallelism team-checks gives the suite (TEAM_JOBS), nor a bound on
-  # Docker's answers (TEAM_DOCKER_SECONDS), nor the heartbeat job's mark (TEAM_HEARTBEAT_JOB).
+  # Docker's answers (TEAM_DOCKER_SECONDS), nor the heartbeat job's mark (TEAM_HEARTBEAT_JOB), nor
+  # the id of the Claude session running the suite (CLAUDE_CODE_SESSION_ID, team-sweep's own).
   unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
-  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS TEAM_HEARTBEAT_JOB
+  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS TEAM_HEARTBEAT_JOB CLAUDE_CODE_SESSION_ID
   # The state and cache directories and Claude Code's config directory are HOME's, as the
   # sandbox's HOME is.
   unset XDG_STATE_HOME XDG_CACHE_HOME CLAUDE_CONFIG_DIR
@@ -260,6 +261,38 @@ code_checkout() {
     cp -R "$REPO_ROOT/$path" "$CODE_CHECKOUT/$path"
   done
   printf '/%s\n' bin roles settings templates plugins toolkits coordinator.settings.json >>"$exclude"
+}
+
+# with_lifecycle_from <time|null>: run_bin runs from a code checkout of the test's own whose
+# bin/lib/lifecycle.json is this checkout's with lifecycle_from set to <time> (refusing from it
+# on; 2026-01-01T00:00:00Z refuses every test event) or null (warning only), whatever the file
+# here says, so a test that asserts a mode holds through the cutover. It is CODE_CHECKOUT when a
+# test made one (code_checkout first, for a script that reads roles or settings), else a copy of
+# bin/ made here (copy_bin). The shared hard link is replaced, never written through.
+with_lifecycle_from() {
+  if [[ -z ${CODE_CHECKOUT:-} ]]; then
+    export CODE_CHECKOUT=$BATS_TEST_TMPDIR/lifecycle-code
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+  fi
+  local table=$CODE_CHECKOUT/bin/lib/lifecycle.json
+  jq --arg from "$1" '.lifecycle_from = (if $from == "null" then null else $from end)' \
+    "$REPO_ROOT/bin/lib/lifecycle.json" >"$table.new"
+  mv -f "$table.new" "$table"
+}
+
+# opened_task T<n> [<path>]: append the task's thread and opened (project proj, path <path>,
+# default feature) to the sandbox's ledger, as team-open logs them, so a test whose events a
+# refusing writer (bin/lib/lifecycle.json's refusing_writers) appends has the open task the
+# lifecycle table takes them on; the table is never loosened to fit a fixture. Both are dated
+# 2026-01-01T00:00:00Z, before every test event, so no rule that reads the task's latest ts (a
+# park's since, a Discord message's age) reads them.
+opened_task() {
+  jq -cn --arg task "$1" --arg path "${2:-feature}" '"2026-01-01T00:00:00Z" as $ts
+    | {ts: $ts, task: $task, event: "thread", discord_thread: "1563000000000000000"},
+      {ts: $ts, task: $task, event: "opened", project: "proj", path: $path, type: "feat", title: "X",
+       branch: "feat/\($task)-x", base: "dev", base_sha: "0000000000000000000000000000000000000000",
+       worktree: "/w/\($task)"}' >>"$TEAM_HOME/ledger.jsonl"
 }
 
 # Push a commit touching <path> to <origin>'s dev from a clone of its own, as another machine's
