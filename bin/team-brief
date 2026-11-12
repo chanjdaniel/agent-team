@@ -42,8 +42,9 @@
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
 # reading rereview's too; a gated project's first review reads the branch's local head before the
-# gate, with no pr), and wait (the first review's wait on the PR's GitHub checks, started before it
-# reads; with no PR, a line saying there are none). Before the PR (no --set pr, and no open PR in
+# gate, with no pr), and wait (the first review's GitHub checks: on a PR, a line saying the review
+# starts no wait, since the coordinator's waits on the checks of a pass; with no PR, that there are
+# none). Before the PR (no --set pr, and no open PR in
 # the project's repo: no pr event, or a merged event for its latest, as in a later phase) on a
 # gated project, or on a direct-PR one whose plan's ## Disclosure section holds text past its HTML
 # comments (its builder pushes nothing before the review passes), <name>/<delivery>-before-pr.md takes the place of <name>/<delivery>.md where it
