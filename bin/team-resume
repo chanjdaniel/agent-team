@@ -286,8 +286,8 @@ main() {
            | if . then {ts, machine, roles, sessions} + (if .note then {note} else {} end) else null end),
          crashed: ($tasks[$task] | if crashed($machine) then
            {machine: (map(select(.event == "launch")) | last | .machine), roles: unfinished_roles} else null end),
-         open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch, ticket}]
-           | map(select(.ticket == null)) + map(select(.ticket != null))}
+         open: ([$tasks[$task] | open_worktrees(.[]; $home) | {project, branch, ticket}]
+           | map(select(.ticket == null)) + map(select(.ticket != null)))}
       | .here = (.crashed == null and .stowed.machine == $machine)' \
       -nRc --arg machine "$machine" "$TEAM_HOME/ledger.jsonl")
   fi
