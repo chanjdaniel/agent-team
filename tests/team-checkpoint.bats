@@ -1131,3 +1131,87 @@ chore: ledger T1 plan-approved"
   run_bin -1 team-checkpoint
   assert_contains "$output" "this machine has no team name"
 }
+
+# Ticket worktrees (team-open --ticket), each kept apart from the task worktree and the others.
+
+# open_ticket <NN>: give T1's task worktree ($HOME/slots/home/1) a ticket NN and open its ticket
+# worktree with the real team-open --ticket, printing its path.
+open_ticket() {
+  local task_wt=$HOME/slots/home/1
+  mkdir -p "$task_wt/.scratch/task/tickets"
+  printf '# %s: t\n\nBlocked by: None\n' "$1" >"$task_wt/.scratch/task/tickets/$1-t.md"
+  TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-open" --task T1 --ticket "$1" | jq -r .worktree
+}
+
+@test "a task worktree and two ticket worktrees of one project are kept as wip/home/T1, wip/home/T1--02 and wip/home/T1--03, each mirrored apart under its own label" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local wt=$HOME/slots/home/1 t2 t3
+  t2=$(open_ticket 02)
+  t3=$(open_ticket 03)
+  assert_equal "$t2 $t3" "$HOME/slots/home/2 $HOME/slots/home/3"
+  echo "task spec" >"$wt/.scratch/task/spec.md"
+  echo "two" >"$t2/.scratch/task/build-notes.md"
+  echo "three" >"$t3/.scratch/task/build-notes.md"
+  echo "task change" >"$wt/change.txt"
+  echo "two change" >"$t2/change.txt"
+  # Ticket 03 committed its work and has nothing uncommitted: its branch head is kept.
+  echo "three change" >"$t3/change.txt"
+  git -C "$t3" add change.txt
+  git -C "$t3" commit -q -m "feat: three"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  local w1 w2
+  w1=$(git -C "$team_origin" rev-parse wip/home/T1) w2=$(git -C "$team_origin" rev-parse wip/home/T1--02)
+  assert_equal "$(grep -E '^T1 ' <<<"$output")" "T1 home: archived .scratch/task to tasks/T1/scratch
+T1 home: pushed wip/home/T1 ${w1:0:7} (uncommitted changes on $(git -C "$wt" rev-parse --short=7 HEAD))
+T1 home--02: archived .scratch/task to tasks/T1/scratch--02
+T1 home--02: pushed wip/home/T1--02 ${w2:0:7} (uncommitted changes on $(git -C "$t2" rev-parse --short=7 HEAD))
+T1 home--03: archived .scratch/task to tasks/T1/scratch--03
+T1 home--03: pushed wip/home/T1--03 $(git -C "$t3" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)"
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T1
+refs/heads/wip/home/T1--02
+refs/heads/wip/home/T1--03"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "task change"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1--02:change.txt)" "two change"
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1--02^)" "$(git -C "$t2" rev-parse HEAD)"
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1--03)" "$(git -C "$t3" rev-parse HEAD)"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "task spec"
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch/build-notes.md ]]
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch--02/build-notes.md")" "two"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch--03/build-notes.md")" "three"
+  assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)' refs/heads/)" "refs/heads/main"
+
+  # The next checkpoint finds each up to date, its own ref against its own worktree.
+  run_bin -0 --separate-stderr team-checkpoint --force
+  assert_equal "$(grep -E '^T1 .*wip' <<<"$output")" "T1 home: wip/home/T1 is up to date (${w1:0:7})
+T1 home--02: wip/home/T1--02 is up to date (${w2:0:7})
+T1 home--03: wip/home/T1--03 is up to date ($(git -C "$t3" rev-parse --short=7 HEAD), no uncommitted changes)"
+}
+
+@test "a ticket worktree off its recorded ticket branch is skipped under its own label, and checkpoint-first keeps ticket labels" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local t2 t3
+  t2=$(open_ticket 02)
+  t3=$(open_ticket 03)
+  git -C "$t3" switch -q -c other
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_contains "$output" "T1 home--03: skipped: $t3 is on other, not feat/T1-work--03"
+  [[ -z $(git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T1--03) ]]
+  git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T1--02 >/dev/null
+  git -C "$t3" switch -q feat/T1-work--03
+
+  # Past the deadline every worktree is skipped by its label, and kept so for the next checkpoint.
+  run_bin -1 --separate-stderr team-checkpoint --force --deadline 0
+  assert_contains "$stderr" "team-checkpoint: T1 home--02: skipped: the checkpoint has run"
+  assert_equal "$(cat "$state/checkpoint-first")" "T1 home
+T1 home--02
+T1 home--03"
+
+  # The next takes the ones it names first, a ticket worktree's by its label.
+  printf 'T1 home--03\n' >"$state/checkpoint-first"
+  run_bin -0 --separate-stderr team-checkpoint --force
+  assert_equal "$(grep -oE '^T1 home(--0[23])?: (pushed|wip/)' <<<"$output" | cut -d: -f1 | paste -sd ' ')" "T1 home--03 T1 home T1 home--02"
+  [[ ! -e $state/checkpoint-first ]]
+}

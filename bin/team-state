@@ -12,10 +12,11 @@
 # ", sent back <findings>" when the latest review sent any back (nothing before the first review),
 # and in the PR part "<n> behind <base>" when the base has commits the head lacks.
 # With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
-# worktrees (returned or not), thread, workers (every launch, live when claude agents --json
-# lists its session, with that session's status, state and context, the tokens its latest
-# main-conversation reply read, from its transcript, or null, and the brief its launch logged, or
-# null), last_event, pending_asks, waiting, parks, stowing, walk, rehome_failures, pr, and progress;
+# worktrees (returned or not, ticket the number of a ticket worktree, else null), thread,
+# workers (every launch, live when claude agents --json lists its session, with that session's
+# status, state and context, the tokens its latest main-conversation reply read, from its
+# transcript, or null, and the brief its launch logged, or null), last_event, pending_asks,
+# waiting, parks, stowing, walk, rehome_failures, pr, and progress;
 # pending_asks are the asks no later event settles, an answered or a
 # merge-preapproved with the ask's id or a merge-approved whose url its text names.
 # progress is where the task is: tickets (done, the ticket numbers with a ticket-done, each once,

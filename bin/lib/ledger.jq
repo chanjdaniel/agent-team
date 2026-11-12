@@ -278,31 +278,36 @@ def local_worktree($home):
     | if has("from") then .from |= local_path($home) else . end
   else . end;
 
-# The open worktrees among a stream of ledger events: one {task, project, branch, worktree} per
-# opened or worktree-added event with no later worktree-returned of the same task, project and
-# worktree, in the order they were added; a worktree-moved gives the task's open worktree in its
-# project its new path, and a branch-renamed its new branch. Worktrees are paths on this machine
-# (local_worktree).
+# The open worktrees among a stream of ledger events: one {task, project, branch, worktree, ticket}
+# per opened or worktree-added event with no later worktree-returned of the same task, project,
+# ticket and worktree, in the order they were added, ticket the two-digit number of a ticket
+# worktree (team-open --ticket) and null for the task's own worktree in its project; a
+# worktree-moved gives the open worktree of its task, project and ticket its new path, and a
+# branch-renamed, which names no ticket, the task's own worktree in its project its new branch.
+# Worktrees are paths on this machine (local_worktree). A caller that means the task's worktree in
+# a project takes the one whose ticket is null; one that walks every worktree takes all.
 def open_worktrees(events; $home):
   reduce (events | local_worktree($home)) as $e ([];
     if $e.event == "opened" or $e.event == "worktree-added" then
-      . + [$e | {task, project, branch, worktree}]
+      . + [$e | {task, project, branch, worktree, ticket}]
     elif $e.event == "worktree-moved" then
-      map(if [.task, .project] == [$e.task, $e.project] then .worktree = $e.worktree else . end)
+      map(if [.task, .project, .ticket] == [$e.task, $e.project, $e.ticket] then .worktree = $e.worktree else . end)
     elif $e.event == "branch-renamed" then
-      map(if [.task, .project] == [$e.task, $e.project] then .branch = $e.branch else . end)
+      map(if [.task, .project, .ticket] == [$e.task, $e.project, null] then .branch = $e.branch else . end)
     elif $e.event == "worktree-returned" then
-      map(select([.task, .project, .worktree] != [$e.task, $e.project, $e.worktree]))
+      map(select([.task, .project, .ticket, .worktree] != [$e.task, $e.project, $e.ticket, $e.worktree]))
     else . end)
   | .[];
 
 # A task's open worktrees (open_worktrees, over its events as an array), each with the folder
 # under tasks/T<n>/ its task directory is archived to: scratch for the project the task was
-# opened in, scratch-<project> for one added later.
+# opened in, scratch-<project> for one added later, and for a ticket worktree its task
+# worktree's folder with --NN after it (scratch--03, scratch-<project>--03).
 def archived_worktrees($home):
   (map(select(.event == "opened")) | first | .project) as $opened
   | open_worktrees(.[]; $home)
-  | . + {archive: (if .project == $opened then "scratch" else "scratch-\(.project)" end)};
+  | . + {archive: ((if .project == $opened then "scratch" else "scratch-\(.project)" end)
+      + if .ticket == null then "" else "--\(.ticket)" end)};
 
 # Whether $a is a full 40-hex SHA and $b the same one, the case aside: the match where a prefix
 # must not stand for a commit, as the reviewer App's check on a head.
@@ -838,33 +843,42 @@ def snapshot_due($project; $machine):
   crashed($machine) or (latest_stowed as $stowed | $stowed >= 0
     and any(.[$stowed].worktrees[]?; .project == $project and .uncommitted == true));
 
-# Whether the event ends the worker of <role>: its DONE, which the coordinator logs as a done of
-# that role, a review (a reviewer's), or a ticket-done or a pr (a builder's: a delivering
+# Whether the event ends the worker of the launch <launch> (a launch event, its role, session and
+# ticket): a launch with a ticket (a builder in that ticket's worktree) only by a done of its
+# session or a ticket-done of its ticket; any other by its DONE, which the coordinator logs as a
+# done of that role, a review (a reviewer's), or a ticket-done or a pr (a builder's: a delivering
 # builder's PR <url> is logged as a pr, not a done).
-def ends_worker($role):
-  (.event == "done" and .role == $role) or (.event == "review" and $role == "reviewer")
-  or ((.event == "ticket-done" or .event == "pr") and $role == "builder");
+def ends_launch($launch):
+  if $launch.ticket != null then
+    (.event == "done" and .session == $launch.session) or (.event == "ticket-done" and .ticket == $launch.ticket)
+  else
+    (.event == "done" and .role == $launch.role) or (.event == "review" and $launch.role == "reviewer")
+    or ((.event == "ticket-done" or .event == "pr") and $launch.role == "builder")
+  end;
 
-# The task's unfinished work: each role launched since its latest stowed whose latest launch no
-# later event ends (ends_worker), in the order of those launches. The roles a handoff's stowed
-# records and a crash relaunches. Never ops: an ops session runs only on Daniel's request, so on
-# the other machine Daniel asks again.
+# The task's unfinished work: each role launched since its latest stowed whose latest launch of a
+# ticket (or of none) no later event ends (ends_launch), named once, in the order of those
+# launches. The roles a handoff's stowed records and a crash relaunches. Never ops: an ops session
+# runs only on Daniel's request, so on the other machine Daniel asks again.
 def unfinished_roles:
   . as $events
   | latest_stowed as $stowed
   | [to_entries[] | select(.key > $stowed and .value.event == "launch" and .value.role != "ops")
-    | {i: .key, role: .value.role}]
-  | group_by(.role) | map(max_by(.i)) | sort_by(.i)
-  | map(.i as $i | .role as $role | select(all($events[$i + 1:][]; ends_worker($role) | not)) | .role);
+    | .value + {i: .key}]
+  | group_by([.role, .ticket]) | map(max_by(.i)) | sort_by(.i)
+  | map(. as $l | select(all($events[$l.i + 1:][]; ends_launch($l) | not)) | .role)
+  | reduce .[] as $role ([]; if index([$role]) then . else . + [$role] end);
 
 # Every worktree the task was given (opened or added), at its latest path (worktree-moved) and on
-# its latest branch (branch-renamed), and whether it was returned since.
+# its latest branch (branch-renamed), and whether it was returned since, each event matched by
+# project and ticket (null for the task's own worktree in its project, so a branch-renamed, which
+# names no ticket, renames only that one), ticket the number of a ticket worktree.
 def worktree_list:
   . as $events
   | [to_entries[] | select(.value.event == "opened" or .value.event == "worktree-added")
     | .key as $i | .value as $w
-    | reduce ($events[$i + 1:][] | select(.project == $w.project)) as $e
-        ($w | {project, branch, worktree, returned: false};
+    | reduce ($events[$i + 1:][] | select(.project == $w.project and .ticket == $w.ticket)) as $e
+        ($w | {project, branch, worktree, ticket, returned: false};
          if .returned then .
          elif $e.event == "worktree-moved" then .worktree = $e.worktree
          elif $e.event == "branch-renamed" then .branch = $e.branch
@@ -872,9 +886,10 @@ def worktree_list:
          else . end)];
 
 # The task's branch in <project>, over the task's events as an array: the latest opened,
-# worktree-added or branch-renamed of the project names it; null when none does.
+# worktree-added or branch-renamed of the project with no ticket names it (a ticket worktree's
+# branch is never the task's); null when none does.
 def task_branch($project):
-  [.[] | select((.event | IN("opened", "worktree-added", "branch-renamed")) and .project == $project)]
+  [.[] | select((.event | IN("opened", "worktree-added", "branch-renamed")) and .project == $project and .ticket == null)]
   | last | .branch // null;
 
 # Why PR #$number, from the branch $branch, is not task $task's own PR for $project, over the
@@ -898,8 +913,10 @@ def live_session($session; $sessions):
 # launch (the heartbeat's stow plan, over every open task). They are every planner and reviewer,
 # and every builder when the new worker is a builder (team-worker keeps those of its own worktree,
 # one builder holding a worktree's work at a time), or with no new launch every builder that a
-# later logged builder launch of its worktree follows. Handed on is a launch the ledger follows
-# with a done of its session, or for a builder a pr or ticket-done, or with a paused whose cause
+# later logged builder launch of its worktree follows, and every ticket builder (a launch with a
+# ticket) that its ticket's ticket-done follows. Handed on is a launch the ledger follows with a
+# done of its session, or for a builder what else ends it (ends_launch: its ticket's ticket-done
+# for a ticket builder, else a pr or any ticket-done), or with a paused whose cause
 # is stow (park_cause: "stowed", "stowed, handoff written") and then a logged launch of its role
 # and worktree (a stow carries no session, so it
 # hands on only to the fresh worker that resumes the work, and a resumed does not undo it);
@@ -913,13 +930,14 @@ def handed_on_launches($role; $home):
      | . as $l | ($l.worktree | local_path($home)) as $wt
      | select(.role == "planner" or .role == "reviewer"
          or (.role == "builder"
-             and if $role == "" then any($events[$i + 1:][]; .event == "launch" and .role == "builder"
+             and if $role == "" then any($events[$i + 1:][]; (.event == "launch" and .role == "builder"
                    and (.worktree | local_path($home)) == $wt)
+                   or ($l.ticket != null and .event == "ticket-done" and .ticket == $l.ticket))
                  else $role == "builder" end))
      | [range($i + 1; $events | length) | select($events[.] | .event == "paused" and park_cause == "stow")] as $stows
      | {session, role, worktree: $wt, stowed: ($stows != []),
         handed_on: (any($events[$i + 1:][]; (.event == "done" and .session == $l.session)
-            or ((.event == "pr" or .event == "ticket-done") and $l.role == "builder"))
+            or ($l.role == "builder" and .event != "done" and ends_launch($l)))
           or any($stows[] as $k | $events[$k + 1:][]; .event == "launch" and .role == $l.role
             and (.worktree | local_path($home)) == $wt))}];
 
@@ -967,19 +985,20 @@ def live_session_ids($sessions):
 def latest_asked($id): [.[] | select(.event == "asked" and .id == $id)] | last;
 
 # The task's plan approval, from its latest plan-approved or plan-approval-withdrawn, or null when
-# it has neither, as {state, by, ask, discord_message, plan, scope, ts, legacy}: state approved
-# or withdrawn; by, ask, plan and scope the approval's (null on a withdrawal), discord_message and
-# ts the latest event's; legacy true for an approval logged before T276, with no plan, which is
+# it has neither, as {state, by, ask, discord_message, plan, scope, parallel, ts, legacy}: state
+# approved or withdrawn; by, ask, plan, scope and parallel (the phases' caps) the approval's (null
+# on a withdrawal, and parallel null when it names none), discord_message and ts the latest event's; legacy true for an approval logged before T276, with no plan, which is
 # read as the coordinator's whatever its by says, so no old line is Daniel's read-back word.
 def plan_approval:
   [.[] | select(.event == "plan-approved" or .event == "plan-approval-withdrawn")] | last
   | if . == null then null
     elif .event == "plan-approval-withdrawn" then
-      {state: "withdrawn", by: null, ask: null, discord_message, plan: null, scope: null, ts, legacy: false}
+      {state: "withdrawn", by: null, ask: null, discord_message, plan: null, scope: null, parallel: null, ts, legacy: false}
     else
       (.plan == null) as $legacy
       | {state: "approved", by: (if $legacy then "coordinator" else .by end), ask: (.ask // null),
-         discord_message: (.discord_message // null), plan: (.plan // null), scope: (.scope // null), ts, legacy: $legacy} end;
+         discord_message: (.discord_message // null), plan: (.plan // null), scope: (.scope // null),
+         parallel: (.parallel // null), ts, legacy: $legacy} end;
 
 # Whether a merge-default-withdrawn or merge-default-restored covers the PRs of task $task in
 # project $project: its scope is task and it is logged under $task, its scope is $project, or all.

@@ -2428,3 +2428,92 @@ Daniel moves it with one command.'
   grep -qxF -- '- What Daniel pointed at, kept for this task: `~/agent-team-records/tasks/T12/ui/`, each capture in a directory of its own, listed below.' \
     "$TEAM_HOME/tasks/T12/brief.md"
 }
+
+# T14 opened in home on feat/T14-team-tooling in worktrees/2, with ticket <NN>'s ticket worktree
+# in worktrees/1 on feat/T14-team-tooling--<NN>, as team-open --ticket logs it.
+open_ticket_worktree() {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  event T14 worktree-added "$(jq -cn --arg wt "$HOME/agent-team/.claude/worktrees/1" --arg n "$1" \
+    '{project: "home", branch: "feat/T14-team-tooling--\($n)", base: "feat/T14-team-tooling", base_sha: "644a76b",
+      worktree: $wt, ticket: $n}')"
+}
+
+@test "--ticket NN renders the ticket's brief for its ticket worktree, with the task branch and the parallel text after ui" {
+  open_ticket_worktree 03
+  run_bin -0 team-brief T14 builder-ticket --ticket 03 --name build-03
+  local brief
+  brief=$(<"$TEAM_HOME/tasks/T14/brief-build-03.md")
+  assert_contains "$brief" '# T14 brief (builder): ticket 03 of the team'"'"'s tooling'
+  assert_contains "$brief" 'Worktree: `~/agent-team/.claude/worktrees/1`, branch `feat/T14-team-tooling--03`.'
+  assert_contains "$brief" 'Your ticket: number 03 in `.work/task/tickets/`.
+Its blockers are done on this branch.
+You build in a ticket worktree of your own, beside other tickets'"'"' builders: your branch `feat/T14-team-tooling--03` is local and never pushed, and the task branch `feat/T14-team-tooling` is in `~/agent-team/.claude/worktrees/2`.
+Before your DONE: commit, merge the task branch'"'"'s tip into your branch (`git merge feat/T14-team-tooling`), resolving any conflict within your ticket, run your checks again on the merged head, and list that head last in your DONE.
+If the coordinator answers that the task branch moved, merge it again, run the checks again and send DONE again.
+
+## Do'
+  # The record holds the ticket, and none of the facts.
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T14/brief-build-03.json")" \
+    '{"template":"builder-ticket","project":"home","values":{"ticket":"03"}}'
+  # The role says the ticket worktree's push and merge rules right after its own push rule.
+  assert_equal "$(grep -A1 -F -- '- Commit and push the task branch before reporting DONE or PR' "$REPO_ROOT/roles/builder.md" | sed -n 2p)" \
+    '  In a ticket worktree, which your brief names with its ticket branch, never push the ticket branch, and merge only the task branch into it, never the other way, as your brief says; at `T<n> STOW` or `HOLD`, commit and reply as below without pushing, since the checkpoint keeps the branch.'
+  # --set ticket= may say the same ticket.
+  run_bin -0 team-brief T14 builder-ticket --ticket 03 --set ticket=03 --name build-03 --force
+  assert_equal "$(<"$TEAM_HOME/tasks/T14/brief-build-03.md")" "$brief"
+
+  # What Daniel pointed at comes first, then the parallel text.
+  mkdir -p "$TEAM_HOME/tasks/T14/ui"
+  echo shot >"$TEAM_HOME/tasks/T14/ui/a.png"
+  run_bin -0 team-brief T14 builder-ticket --ticket 03 --name build-03 --force
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-build-03.md")" 'never in the Agent Chrome, which is Daniel'"'"'s own window.
+You build in a ticket worktree of your own'
+}
+
+@test "without --ticket the brief is the task worktree's, with no parallel text, and task_branch and task_worktree are its own" {
+  fake_checkout
+  printf '%s\n' 'branch={{branch}} worktree={{worktree}}' 'task_branch={{task_branch}} task_worktree={{task_worktree}}' \
+    'parallel=[{{parallel}}]' >"$code/templates/briefs/facts.md"
+  open_ticket_worktree 03
+  run_fake T14 facts
+  assert_equal "$status" 0
+  assert_equal "$(<"$TEAM_HOME/tasks/T14/brief.md")" 'branch=feat/T14-team-tooling worktree=~/agent-team/.claude/worktrees/2
+task_branch=feat/T14-team-tooling task_worktree=~/agent-team/.claude/worktrees/2
+parallel=[]'
+  run_fake T14 facts --ticket 03 --force
+  assert_equal "$status" 0
+  assert_equal "$(sed -n 1,2p "$TEAM_HOME/tasks/T14/brief.md")" 'branch=feat/T14-team-tooling--03 worktree=~/agent-team/.claude/worktrees/1
+task_branch=feat/T14-team-tooling task_worktree=~/agent-team/.claude/worktrees/2'
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief.md")" 'parallel=[
+You build in a ticket worktree of your own'
+  local key
+  for key in task_branch task_worktree parallel; do
+    run_fake T14 facts --set "$key=x" --force
+    assert_equal "$output" "team-brief: $key is one of the task's facts, filled from the ledger and the registry; it cannot be set"
+  done
+  run_bin -0 team-brief T14 builder-ticket --set ticket=03 --name build-03
+  refute_grep -F 'ticket worktree' "$TEAM_HOME/tasks/T14/brief-build-03.md"
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-build-03.md")" 'Its blockers are done on this branch.
+
+## Do'
+}
+
+@test "--ticket is refused with no open worktree of that ticket, another --set ticket=, another --project or a malformed number, nothing written" {
+  open_ticket_worktree 03
+  run_bin -1 team-brief T14 builder-ticket --ticket 04
+  assert_equal "$output" "team-brief: T14 has no open worktree of ticket 04"
+  run_bin -1 team-brief T14 builder-ticket --ticket 03 --set ticket=04
+  assert_equal "$output" "team-brief: --ticket 03 gives the brief ticket 03, but --set ticket= says 04"
+  run_bin -1 team-brief T14 builder-ticket --ticket 03 --project conv
+  assert_equal "$output" "team-brief: T14's ticket 03 worktree is in home, not conv"
+  local bad
+  for bad in 3 003 ab; do
+    run_bin -2 team-brief T14 builder-ticket --ticket "$bad"
+    assert_contains "$output" "--ticket takes a ticket's two digits, got '$bad'"
+  done
+  # A returned ticket worktree is none.
+  event T14 worktree-returned "$(jq -cn --arg wt "$HOME/agent-team/.claude/worktrees/1" '{project: "home", worktree: $wt, ticket: "03"}')"
+  run_bin -1 team-brief T14 builder-ticket --ticket 03
+  assert_equal "$output" "team-brief: T14 has no open worktree of ticket 03"
+  assert_equal "$(task_files)" ""
+}

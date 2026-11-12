@@ -29,27 +29,29 @@ def capacity_settings:
   | capacity_defaults + $given
     + {from: (capacity_defaults | with_entries(.key as $key | .value = (if $given | has($key) then "capacity.json" else "default" end)))};
 
-# The task T<n> a task's branch, <type>/T<n>-<slug> with one of team-open's types, names; nothing
-# for any other branch.
+# The task T<n> a task's branch, <type>/T<n>-<slug> with one of team-open's types, or a ticket
+# branch of it, <type>/T<n>-<slug>--NN (team-open --ticket), names; nothing for any other branch.
 def task_branch_task:
-  capture("^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)/(?<task>T[1-9][0-9]*)-[a-z0-9]+(-[a-z0-9]+)*$")
+  capture("^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)/(?<task>T[1-9][0-9]*)-[a-z0-9]+(-[a-z0-9]+)*(--[0-9]{2})?$")
   | .task;
 
 # The worktrees held, from each task's ledger events <tasks> (by_task), the open worktrees <open>
 # of the open tasks (open_worktrees over the events of the tasks is_open keeps, each path on this
-# machine), and the registered worktrees <worktrees> of every registered project's primary
-# checkout but the checkout itself, each {project, branch, worktree}: one {task, project,
-# worktree, half_open} per open worktree, and per registered worktree on a task's branch whose
-# task has no closed event and no open worktree of that project (half open), by task number, then
-# project. The program reads the ledger as bin/lib/reading.sh does (READING_HELD):
+# machine, ticket worktrees among them), and the registered worktrees <worktrees> of every
+# registered project's primary checkout but the checkout itself, each {project, branch,
+# worktree}: one {task, project, worktree, half_open} per open worktree, and per registered
+# worktree on a task's branch, or a ticket branch of it, whose task has no closed event and no
+# open worktree of that project and ticket (null for a task's branch), as half open, by task
+# number, then project. The program reads the ledger as bin/lib/reading.sh does (READING_HELD):
 #   include "ledger"; include "capacity"; include "stack"; ledger_events as $events | ($events | by_task) as $tasks
 #   | held_worktrees($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)
 def held_worktrees($tasks; $open; $worktrees):
-  [$open[] | {task, project, worktree, half_open: false}] as $open
-  | $open
+  [$open[] | {task, project, worktree, ticket}] as $open
+  | [$open[] | {task, project, worktree, half_open: false}]
     + [$worktrees[] | (.branch | task_branch_task) as $task | .project as $project
+      | ((.branch | capture("--(?<n>[0-9]{2})$") | .n) // null) as $ticket
       | select(($tasks[$task] // [] | any(.[]; .event == "closed")) | not)
-      | select(any($open[]; .task == $task and .project == $project) | not)
+      | select(any($open[]; .task == $task and .project == $project and .ticket == $ticket) | not)
       | {task: $task, project, worktree, half_open: true}]
   | sort_by((.task[1:] | tonumber), .project, .worktree);
 
@@ -134,13 +136,19 @@ def machine_reading($in):
 def slice_task:
   (capture("/agent\\.slice/agent-team\\.slice/agent-team-(?<task>T[0-9]+)\\.slice(/|$)") | .task) // null;
 
+# A team session's name, T<n>-<role>, or T<n>-<role>-<NN> for ticket NN's builder in its ticket
+# worktree, read as {task, role}, or null for any other name.
+def team_session_name:
+  (strings | capture("^(?<task>T[1-9][0-9]*)-(?<role>[a-z]+)(-[0-9]{2})?$")) // null;
+
 # The live team sessions of $in.sessions (claude agents --json's, as [{id, name, pid}], or null
-# when it could not be read), each named T<n>-<role> with its process among $in.procs, as {id,
-# task, role, pid}.
+# when it could not be read), each named as team_session_name reads with its process among
+# $in.procs, as {id, task, role, pid}.
 def team_sessions($in):
   ($in.procs | map({key: (.pid | tostring), value: true}) | from_entries) as $running
-  | [$in.sessions // [] | .[] | select((.name // "") | test("^T[1-9][0-9]*-[a-z]+$")) | select($running[.pid | tostring] // false)
-     | {id, task: (.name | split("-")[0]), role: (.name | sub("^T[0-9]+-"; "")), pid}];
+  | [$in.sessions // [] | .[] | (.name | team_session_name) as $named | select($named != null)
+     | select($running[.pid | tostring] // false)
+     | {id, task: $named.task, role: $named.role, pid}];
 
 # The tasks a reading's input <in> (capacity_reading's) shows work of: those holding a worktree,
 # with a live team session, a running team stack, or a process in their slice, by task number.
@@ -845,8 +853,8 @@ def capacity_plan($in):
       else capacity_budget($s; $current.level; $reading; null; 0).memory_bytes end;
     def drop(f): map(select(f | not));
   ([$in.tasks[] | {key: .task, value: .}] | from_entries) as $open
-  | [$in.sessions // [] | .[] | select((.name // "") | test("^T[1-9][0-9]*-[a-z]+$"))
-     | {id: (.id // (.sessionId // "" | .[:8])), task: (.name | split("-")[0])}
+  | [$in.sessions // [] | .[] | (.name | team_session_name) as $named | select($named != null)
+     | {id: (.id // (.sessionId // "" | .[:8])), task: $named.task}
      | select($open[.task] != null)] as $live
   | [$in.sessions // [] | .[] | select(.status == "busy") | .cwd // empty | strings] as $busy
   # The tasks stowed at or after <reading> with no live session, whose sessions, stacks and
