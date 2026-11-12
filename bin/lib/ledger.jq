@@ -979,19 +979,20 @@ def live_session_ids($sessions):
 def latest_asked($id): [.[] | select(.event == "asked" and .id == $id)] | last;
 
 # The task's plan approval, from its latest plan-approved or plan-approval-withdrawn, or null when
-# it has neither, as {state, by, ask, discord_message, plan, scope, ts, legacy}: state approved
-# or withdrawn; by, ask, plan and scope the approval's (null on a withdrawal), discord_message and
-# ts the latest event's; legacy true for an approval logged before T276, with no plan, which is
+# it has neither, as {state, by, ask, discord_message, plan, scope, parallel, ts, legacy}: state
+# approved or withdrawn; by, ask, plan, scope and parallel (the phases' caps) the approval's (null
+# on a withdrawal, and parallel null when it names none), discord_message and ts the latest event's; legacy true for an approval logged before T276, with no plan, which is
 # read as the coordinator's whatever its by says, so no old line is Daniel's read-back word.
 def plan_approval:
   [.[] | select(.event == "plan-approved" or .event == "plan-approval-withdrawn")] | last
   | if . == null then null
     elif .event == "plan-approval-withdrawn" then
-      {state: "withdrawn", by: null, ask: null, discord_message, plan: null, scope: null, ts, legacy: false}
+      {state: "withdrawn", by: null, ask: null, discord_message, plan: null, scope: null, parallel: null, ts, legacy: false}
     else
       (.plan == null) as $legacy
       | {state: "approved", by: (if $legacy then "coordinator" else .by end), ask: (.ask // null),
-         discord_message: (.discord_message // null), plan: (.plan // null), scope: (.scope // null), ts, legacy: $legacy} end;
+         discord_message: (.discord_message // null), plan: (.plan // null), scope: (.scope // null),
+         parallel: (.parallel // null), ts, legacy: $legacy} end;
 
 # Whether a merge-default-withdrawn or merge-default-restored covers the PRs of task $task in
 # project $project: its scope is task and it is logged under $task, its scope is $project, or all.

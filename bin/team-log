@@ -44,7 +44,7 @@
 # directory on this machine, since its spec.md and scope.txt could not be hashed; a scope.txt that
 # lists no path or holds a line that is no clean repository path (a string with no leading /, no .
 # or .. segment, no empty segment, no glob character *?[ and no whitespace; a directory ends in /);
-# and a second approval whose by and plan equal the one standing (plan_approval in
+# and a second approval whose by, plan and parallel equal the one standing (plan_approval in
 # bin/lib/ledger.jq). A plan-approval-withdrawn (discord_message=<id>, Daniel's message, which
 # team-log takes as named, since a withdrawal only stops work) is refused for a closed task, a
 # message that is no Discord id, and when no approval stands. A kind the contract marks retired is
@@ -440,9 +440,11 @@ if [[ $event == plan-approved ]]; then
       -r --arg file "${found#*$'\t'}/scope.txt" <<<"$scope")
     [[ -z $problem ]] || die "$problem"
   fi
-  standing=$(ledger_jq 'plan_approval | select(.state == "approved" and .by == $by and .plan == $plan) | .ts' \
-    -r --arg by "$by" --argjson plan "$plan" <<<"$TASK_EVENTS")
-  [[ -z $standing ]] || die "$task's plan is approved already by $by, at $standing, with the same files, so a second approval means nothing"
+  parallel=null
+  [[ ! -v seen[parallel] ]] || parallel=$(jq -cn --arg p "${seen[parallel]}" '$p')
+  standing=$(ledger_jq 'plan_approval | select(.state == "approved" and .by == $by and .plan == $plan and .parallel == $parallel) | .ts' \
+    -r --arg by "$by" --argjson plan "$plan" --argjson parallel "$parallel" <<<"$TASK_EVENTS")
+  [[ -z $standing ]] || die "$task's plan is approved already by $by, at $standing, with the same files and caps, so a second approval means nothing"
   typed=$(jq -c --argjson plan "$plan" --argjson scope "$scope" '.plan = $plan | if $scope == null then . else .scope = $scope end' <<<"$typed")
 fi
 

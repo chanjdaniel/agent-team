@@ -618,13 +618,10 @@ LINES
   run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$message" parallel=2
   echo "# the spec" >"$task_dir/spec.md"
   run_bin -0 team-log T14 plan-approved by=coordinator parallel=2,1,3
-  echo "# the spec, again" >"$task_dir/spec.md"
-  run_bin -0 team-log T14 plan-approved by=coordinator
-  assert_equal "$(tail -n 3 "$TEAM_HOME/ledger.jsonl" | jq -c '{by, parallel}')" "$(
+  assert_equal "$(tail -n 2 "$TEAM_HOME/ledger.jsonl" | jq -c '{by, parallel}')" "$(
     cat <<'LINES'
 {"by":"Daniel","parallel":"2"}
 {"by":"coordinator","parallel":"2,1,3"}
-{"by":"coordinator","parallel":null}
 LINES
   )"
   local before value
@@ -634,6 +631,25 @@ LINES
     assert_equal "$output" "team-log: parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '$value'"
   done
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  run_bin -0 team-log --check
+}
+
+@test "a second plan-approved by the same approver of the same files is taken when it adds, changes or drops the caps, and refused with the same caps" {
+  plan_task
+  local approved
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  # A cap added to the same files.
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2
+  approved=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
+  # The same cap again is refused.
+  run_bin -1 team-log T14 plan-approved by=coordinator parallel=2
+  assert_equal "$output" "team-log: T14's plan is approved already by coordinator, at $approved, with the same files and caps, so a second approval means nothing"
+  # A cap changed, then dropped, which returns the task to one ticket at a time.
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2,1
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_contains "$output" "with the same files and caps, so a second approval means nothing"
+  assert_equal "$(jq -c 'select(.event == "plan-approved") | .parallel' "$TEAM_HOME/ledger.jsonl" | paste -sd ,)" 'null,"2","2,1",null'
   run_bin -0 team-log --check
 }
 
@@ -923,7 +939,7 @@ sha() {
   local approved
   approved=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
   run_bin -1 team-log T14 plan-approved by=coordinator
-  assert_equal "$output" "team-log: T14's plan is approved already by coordinator, at $approved, with the same files, so a second approval means nothing"
+  assert_equal "$output" "team-log: T14's plan is approved already by coordinator, at $approved, with the same files and caps, so a second approval means nothing"
   # Daniel's approval of the same files stands on its own, and a changed file is a new plan.
   run_bin -0 team-log T14 asked id=plan 'text=Approve the plan?'
   run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$(soon)"

@@ -268,20 +268,22 @@ approval_of() {
   local launch='{"event": "launch", "role": "builder", "session": "b1"}'
   assert_equal "$(approval_of </dev/null)" '[null,"planning"]'
   assert_equal "$(approval_of <<<"$daniel")" \
-    '[{"state":"approved","by":"Daniel","ask":"plan","discord_message":"1563","plan":{"tasks/T1/plan.md":"ab12"},"scope":["src/"],"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
+    '[{"state":"approved","by":"Daniel","ask":"plan","discord_message":"1563","plan":{"tasks/T1/plan.md":"ab12"},"scope":["src/"],"parallel":null,"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
   assert_equal "$(approval_of <<<"$coordinator")" \
-    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":null,"plan":{"tasks/T1/plan.md":"cd34"},"scope":null,"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
+    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":null,"plan":{"tasks/T1/plan.md":"cd34"},"scope":null,"parallel":null,"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
   # A line from before T276 has no plan: never Daniel's read-back word, whatever its by.
   assert_equal "$(approval_of <<<"$legacy")" \
-    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":"1565","plan":null,"scope":null,"ts":"2026-11-01T00:01:00Z","legacy":true},"building"]'
+    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":"1565","plan":null,"scope":null,"parallel":null,"ts":"2026-11-01T00:01:00Z","legacy":true},"building"]'
   # A withdrawal takes the building task back to planning, where no builder launch or ticket-done
   # moves it, until the plan is approved again.
   assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" | approval_of)" \
-    '[{"state":"withdrawn","by":null,"ask":null,"discord_message":"1564","plan":null,"scope":null,"ts":"2026-11-01T00:02:00Z","legacy":false},"planning"]'
+    '[{"state":"withdrawn","by":null,"ask":null,"discord_message":"1564","plan":null,"scope":null,"parallel":null,"ts":"2026-11-01T00:02:00Z","legacy":false},"planning"]'
   assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" "$launch" '{"event": "ticket-done", "ticket": "01", "commits": ["a1b2c3d"]}' | approval_of | jq -c '[.[0].state, .[1]]')" \
     '["withdrawn","planning"]'
   assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" "$coordinator" | approval_of | jq -c '[.[0].state, .[0].by, .[1]]')" \
     '["approved","coordinator","building"]'
+  # The phases' caps are the approval's, and a withdrawal names none.
+  assert_equal "$(jq -c '. + {parallel: "2,1"}' <<<"$coordinator" | approval_of | jq -c '.[0].parallel')" '"2,1"'
   # A withdrawal once the PR is up leaves the review phase as it is.
   assert_equal "$(printf '%s\n' "$daniel" "$launch" '{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d"}' "$withdrawn" \
     | approval_of | jq -c '[.[0].state, .[1]]')" '["withdrawn","in-review"]'
