@@ -108,6 +108,12 @@
 # retro-schedule) is committed and pushed to the team home's origin
 # before team-log ends (ledger_push in bin/lib/team.sh), in either form; a push that fails, or
 # one not tried while the team holds offline, is one line on stderr, and the exit stays 0.
+# An event of a kind the contract marks inbox (what waits on Daniel or how it ranks: an ask, an
+# answer, a merge word, a PR or its review, a done, a park) brings the team home's waiting.md up
+# to date once, after the push, in either form (refresh_inbox in bin/lib/team.sh: team-inbox; a
+# failure is one line on stderr, and the exit stays 0), so no one runs team-inbox after logging;
+# a fenced machine, one that lost the lease, or any while the team holds offline, leaves it to the
+# holder.
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
 # coordinator's message table gives it, checks each as above, and logs them all, or with --print
 # prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
@@ -604,12 +610,24 @@ base_merge_note() {
     | "team-log: \($task) gate run \(.run) re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"' <<<"$1" >&2
 }
 
+# Bring waiting.md up to date when an event of a kind the contract marks inbox was logged, unless
+# the machine is fenced, the team holds offline (both read with no network call) or the machine
+# lost the lease (lease_refusal, whose read of origin ledger_push has just cached), which leave the
+# list to the holder: inbox
+inbox() {
+  [[ -n $LEDGER_INBOX_DUE ]] || return 0
+  ! fence_reason >/dev/null && ! offline_since >/dev/null || return 0
+  ! lease_refusal "writes no waiting list" >/dev/null || return 0
+  refresh_inbox
+}
+
 if [[ $1 != --* ]]; then
   check_event "$@"
   # Stamped now, after the checks, so a park's since is never later than its ts.
   ledger_append "$(stamped "$typed")"
   base_merge_note "$typed"
   ledger_push
+  inbox
   exit 0
 fi
 
@@ -757,3 +775,4 @@ for line in "${lines[@]}"; do
   fi
 done
 ledger_push
+inbox

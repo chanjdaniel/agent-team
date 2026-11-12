@@ -88,12 +88,13 @@
 # preview, then dropped from inbox.json; one Discord no longer has (404), or of another channel, is
 # dropped with no edit; any other failure keeps it for the next run, with a line on stderr. It
 # never edits anything else, and posts only on --post.
-# team-ask, team-answer, team-merge and team-close run it at their end (refresh_inbox in
-# bin/lib/team.sh), going on with a line on stderr when it fails; team-timers run runs it every
-# five minutes on the lease holder. It refuses in a worker session (worker_refusal in
-# bin/lib/team.sh), and, but on --item, on a machine that is fenced or lost the lease
-# (lease_refusal); one run at a time holds ~/.local/state/agent-team/inbox.lock, waiting for it at
-# most a minute (TEAM_INBOX_LOCK_SECONDS replaces the 60 s, the tests' seam; 0 does not wait).
+# team-ask, team-answer, team-merge, team-close, and team-log after an event of a kind the contract
+# marks inbox, run it at their end (refresh_inbox in bin/lib/team.sh), going on with a line on
+# stderr when it fails; team-timers run runs it every five minutes on the lease holder. It refuses
+# in a worker session (worker_refusal in bin/lib/team.sh), and, but on --item, on a machine that is
+# fenced or lost the lease (lease_refusal); one run at a time holds
+# ~/.local/state/agent-team/inbox.lock, waiting for it at most a minute (TEAM_INBOX_LOCK_SECONDS
+# replaces the 60 s, the tests' seam; 0 does not wait).
 # Prints "retired <the old message's link>" when it retired it, then "wrote waiting.md: <n> items"
 # ("1 item", "0 items"), then on --post "posted <link>" for each message posted, in order.
 # Exit codes: 0 written (and on --post, posted; on --item, named); 1 refused, a file cannot be

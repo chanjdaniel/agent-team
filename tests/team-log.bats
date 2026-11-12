@@ -287,6 +287,26 @@ TABLE
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }
 
+@test "an event of a kind the contract marks inbox brings waiting.md up to date, in either form, and another kind leaves it" {
+  opened_task T14
+  run_bin -0 --separate-stderr team-log T14 failed reason="a crash"
+  assert_equal "$stderr" ""
+  [[ ! -e $TEAM_HOME/waiting.md ]]
+  run_bin -0 --separate-stderr team-log T14 asked id=port text="Which port?"
+  assert_equal "$stderr" ""
+  assert_contains "$(cat "$TEAM_HOME/waiting.md")" "T14 port: Which port? <#1563000000000000000>"
+  run_bin -0 --separate-stderr team-log T14 answered id=port answer=8080
+  assert_equal "$stderr" ""
+  assert_equal "$(cat "$TEAM_HOME/waiting.md")" "**Waiting on you**
+Nothing waits on you."
+  # A worker's message logged whole refreshes it too.
+  rm "$TEAM_HOME/waiting.md"
+  run_bin -0 --separate-stderr team-log T14 --from-message 'T14 BLOCKED the build needs T15 merged'
+  assert_equal "$stderr" ""
+  assert_equal "$(cat "$TEAM_HOME/waiting.md")" "**Waiting on you**
+Nothing waits on you."
+}
+
 @test "an event is appended as one line with ts now, task and event" {
   opened_task T14
   local before after
