@@ -21,8 +21,9 @@
 # names one of its task's PRs not merged. A current.md ask holds no task the ledger knows, so it
 # counts 0. Ties go oldest first (an ask by its asked's ts, a PR by its first pr event's, an
 # interview by its interview-thread's, a current.md ask after every dated one, in its order), then
-# in task number order. team-tickets runs once per task with an item, its stderr dropped; a task
-# whose tickets it cannot read counts none, with a line on stderr saying why.
+# the asks, the PRs and the interviews, each in task number order. team-tickets runs once per task
+# with an item, its stderr dropped; a task whose tickets it cannot read counts none, with a line
+# on stderr saying why.
 # Each item is one line under the title "**Waiting on you**", its number in bold, ending with what
 # its answer unblocks, " - unblocks <n>" and, when n is more than 0, each part that is: "- **3** T7
 # plan: Approve the plan? <link> - unblocks 3 (1 task, 2 tickets)"; every URL is in <>, so Discord
