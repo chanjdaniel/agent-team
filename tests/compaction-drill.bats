@@ -202,7 +202,6 @@ team-drill: recorded compaction pass on home-pc at $(git -C "$REPO_ROOT" rev-par
   T93 drill feature blocked | no live worker | parks: blocked-1 worker since 2026-10-27T09:50:00Z: the migration needs T92 on the new database first
   T94 drill feature building | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
-Standing merge word: none
 Live team sessions (1):
   T94-builder c3d4e5f6 busy
 Stray sessions: none
@@ -234,7 +233,6 @@ Current items (3):
   digest=$(cat "$STUB_FIXTURES/turn-1.digest")
   assert_contains "$digest" "  T94 drill feature building | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
-Standing merge word: none
 Live team sessions (1):
   T94-builder c3d4e5f6 busy
 Stray sessions: none

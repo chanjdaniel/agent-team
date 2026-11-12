@@ -393,9 +393,12 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   git -C "$wt" push -q origin HEAD:refs/heads/feat/T1-work
   local head
   head=$(git -C "$wt" rev-parse HEAD)
-  # The builder edits a.txt and adds b.txt; home-pc's heartbeat checkpoints them.
+  # The builder edits a.txt and adds b.txt; home-pc's heartbeat checkpoints them, with Daniel's
+  # answer to the plan's ask.
   echo "edited" >"$wt/a.txt"
   echo "b" >"$wt/b.txt"
+  run_bin -0 team-log T1 asked id=plan text="Approve the plan?"
+  run_bin -0 team-log T1 answered id=plan answer=yes
   run_bin -0 team-timers run
   assert_contains "$output" "checkpoint: T1 home: pushed wip/home/T1 "
   # It works on (a commit and an edit no checkpoint saw, Daniel's approval, which is pushed at
@@ -404,7 +407,7 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   git -C "$wt" add c.txt
   git -C "$wt" commit -q -m "feat: c"
   echo "later" >"$wt/a.txt"
-  run_bin -0 team-log T1 plan-approved by=daniel
+  run_bin -0 team-log T1 plan-approved by=Daniel ask=plan discord_message=$(((($(date -u +%s) + 60 - 1420070400) * 1000) << 22))
   run_bin -0 team-log T1 paused cause=worker reason="waiting on Daniel"
   age_lease 75
 
@@ -415,7 +418,7 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   # The approval reached origin before home-pc died, so laptop's ledger has it after the first
   # one, the plan's; the park did not.
   assert_equal "$(jq -sc '[.[] | select(.task == "T1" and (.event == "plan-approved" or .event == "paused")) | [.event, .by]]' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" \
-    '[["plan-approved","coordinator"],["plan-approved","daniel"]]'
+    '[["plan-approved","coordinator"],["plan-approved","Daniel"]]'
   # laptop's worktree is the pushed branch with the checkpoint's changes uncommitted, none later.
   assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
   assert_equal "$(git -C "$lt" status --porcelain)" "$(printf '%s\n' " M a.txt" "?? b.txt")"
