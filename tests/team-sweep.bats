@@ -1588,6 +1588,7 @@ EOF
   local opened
   opened=$(ago 30)
   retro "$opened" T30
+  launch T30 planner 30303030
   event T30 closed '{archive: [], returned: [], kept: []}'
   schedule "$(ago 40)" 24
   opened T3

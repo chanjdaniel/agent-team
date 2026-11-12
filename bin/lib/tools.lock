@@ -180,7 +180,7 @@
       "name": "jq",
       "version_cmd": "jq --version",
       "version_pattern": "jq-([0-9]+\\.[0-9]+(\\.[0-9]+)?)",
-      "min": "1.7.1",
+      "min": "1.8.1",
       "source": {
         "arch": "sudo pacman -S --needed jq",
         "macos": "brew install jq"

@@ -3,18 +3,19 @@
 #
 # Usage: team-retro status [--json]
 #        team-retro digest [T<n>] [--json]
-# A retro is a task opened with the path retro (team-open). Its schedule is the latest
-# retro-schedule across the ledger (team-log); every_hours 0 stops the retros. Reads only
-# ledger.jsonl, skipping lines that are not JSON, and writes nothing.
-# status: whether retros are scheduled, the last retro task, and when the next is due: every_hours
-# after the later of the latest retro's opening and the latest retro-schedule. It is running while
-# a retro task is open, and due when scheduled, none is running and that time is past. With
+# A retro is a task opened with the path retro (team-open). One closed with no launch was opened by
+# mistake and never ran, so it is no later retro's previous one and not the last retro. Its
+# schedule is the latest retro-schedule across the ledger (team-log); every_hours 0 stops the
+# retros. Reads only ledger.jsonl, skipping lines that are not JSON, and writes nothing.
+# status: whether retros are scheduled, the last retro task that ran, and when the next is due:
+# every_hours after the later of that retro's opening and the latest retro-schedule. It is running
+# while a retro task is open, and due when scheduled, none is running and that time is past. With
 # --json (schema team-retro-status/1): schedule ({every_hours, since, discord_message, task}, or
 # null when not scheduled), last ({task, opened, status} or null), running (T<n> or null), next
 # (or null) and due. Exit 0 whenever the ledger reads.
 # digest: the evidence for one window, each section in ledger order. With a retro task T<n>, from
-# the opening of the retro opened before it (exclusive), or the ledger's first event, to T<n>'s
-# opening (inclusive), so it is the same whenever it runs; without, a dry run, from the latest
+# the opening of the last retro before it that was not closed with no launch (exclusive), or the
+# ledger's first event, to T<n>'s opening (inclusive); without, a dry run, from the latest such
 # retro's opening to now. A task that is not a retro task is a usage error. Sections:
 #   window      since, until, the retro task, the previous retro, the events and each kind's count
 #   blocks      every blocked and failed, a denial when its reason says denied, denies, refused,
