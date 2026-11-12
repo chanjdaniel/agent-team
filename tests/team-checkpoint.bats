@@ -609,10 +609,12 @@ T1 home: archived .scratch/task to tasks/T1/scratch"
   local dir=$HOME/slots/home/1/.scratch/task
   echo "notes" >"$dir/notes.md"
   git init -q --bare "$dir/mirror.git"
-  mkdir -p "$dir/tools/node_modules/a" "$dir/trial/front-end/src" "$dir/kept"
+  mkdir -p "$dir/tools/node_modules/a" "$dir/trial/front-end/src" "$dir/loose/notes" "$dir/kept"
   touch "$dir/tools/node_modules/a/1.js" "$dir/tools/node_modules/a/2.js" "$dir/tools/node_modules/3.js"
-  # 201 files, counted through trial/'s subdirectories; kept/ holds exactly 200.
+  # 201 files, counted through trial/'s subdirectories, its largest of which is left out; loose/
+  # holds 201 of its own, so it is left out whole; kept/ holds exactly 200.
   touch "$dir/trial/front-end/src/"{1..150}.ts "$dir/trial/"{1..51}.txt "$dir/kept/"{1..200}.txt
+  touch "$dir/loose/"{1..201}.txt "$dir/loose/notes/a.md"
   ln -s ../../front-end/node_modules "$dir/node_modules"
   ln -s notes.md "$dir/latest.md"
 
@@ -620,14 +622,67 @@ T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$stderr" ""
   assert_contains "$output" "T1 home: left out of tasks/T1/scratch: mirror.git (nested repository)
 T1 home: left out of tasks/T1/scratch: tools/node_modules (dependencies)
-T1 home: left out of tasks/T1/scratch: trial (over 200 files)
+T1 home: left out of tasks/T1/scratch: loose (over 200 files)
+T1 home: left out of tasks/T1/scratch: trial/front-end (over 200 files)
 T1 home: left out of tasks/T1/scratch: latest.md (link)
 T1 home: left out of tasks/T1/scratch: node_modules (link)
 T1 home: archived .scratch/task to tasks/T1/scratch"
-  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 -not -path './kept/*' | sort)" "./kept
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 -not -path './kept/*' -not -path './trial/*' | sort)" "./kept
 ./notes.md
-./tools"
+./tools
+./trial"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/trial" -mindepth 1 | wc -l)" "51"
   assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/kept" -type f | wc -l)" "200"
+}
+
+@test "the archive leaves out videos, Playwright output and build output, each named, and keeps a probe beside a crowded directory" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  # No address at a real provider is written out (ci.yml's data job and gitleaks read this file).
+  local provider=gmail.com dir=$HOME/slots/home/1/.scratch/task
+  mkdir -p "$dir/work/probes" "$dir/work/tmp/pytest-0" "$dir/work/cache" "$dir/sweep-out/login" \
+    "$dir/e2e/test-results/login-chromium" "$dir/e2e/playwright-report" "$dir/baseline/dist/assets"
+  # A research task's probes, beside the 150 files its tests' TMPDIR left in work/tmp/ and 60 more
+  # in work/cache/: the larger is left out, and the rest of work/ is kept.
+  echo "it('saves once')" >"$dir/work/probes/autosave.test.ts"
+  echo "findings" >"$dir/work/findings.md"
+  touch "$dir/work/tmp/pytest-0/"{1..150}.json "$dir/work/cache/"{1..60}.json
+  # A Playwright sweep's video, and an mp4, whose ftyp box reads as an image's to image_magic.
+  printf '\x1a\x45\xdf\xa3webm' >"$dir/sweep-out/login/video.webm"
+  printf '\0\0\0\x18ftypmp42' >"$dir/demo.MP4"
+  echo "zip" >"$dir/e2e/test-results/login-chromium/trace.zip"
+  echo "zip" >"$dir/e2e/trace.zip"
+  echo "<html>" >"$dir/e2e/playwright-report/index.html"
+  echo "test('login')" >"$dir/e2e/login.spec.ts"
+  # A baseline build, its bundle naming a public provider's address, as T76's did.
+  echo "/* @author ow <ow@$provider> */var a=1" >"$dir/baseline/dist/assets/index-Bgg7i7NB.js"
+  echo "baseline" >"$dir/baseline/notes.md"
+  echo "var a=1" >"$dir/vendor.min.js"
+  echo "{}" >"$dir/app.js.map"
+  echo "font" >"$dir/Inter.woff2"
+  # An archive made before these were left out loses them on the next mirror.
+  mkdir -p "$TEAM_HOME/tasks/T1/scratch/sweep-out/login"
+  echo "old" >"$TEAM_HOME/tasks/T1/scratch/sweep-out/login/video.webm"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: work/tmp (over 200 files)
+T1 home: left out of tasks/T1/scratch: demo.MP4 (video)
+T1 home: left out of tasks/T1/scratch: sweep-out/login/video.webm (video)
+T1 home: left out of tasks/T1/scratch: e2e/playwright-report (Playwright output)
+T1 home: left out of tasks/T1/scratch: e2e/test-results (Playwright output)
+T1 home: left out of tasks/T1/scratch: e2e/trace.zip (Playwright output)
+T1 home: left out of tasks/T1/scratch: Inter.woff2 (build output)
+T1 home: left out of tasks/T1/scratch: app.js.map (build output)
+T1 home: left out of tasks/T1/scratch: baseline/dist (build output)
+T1 home: left out of tasks/T1/scratch: vendor.min.js (build output)
+T1 home: archived .scratch/task to tasks/T1/scratch"
+  # The records hook takes the checkpoint's commit, which holds the text alone, the probe with it.
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch | grep -v /work/cache/)" "tasks/T1/scratch/baseline/notes.md
+tasks/T1/scratch/e2e/login.spec.ts
+tasks/T1/scratch/work/findings.md
+tasks/T1/scratch/work/probes/autosave.test.ts"
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch/work/cache | wc -l)" "60"
 }
 
 @test "the archive leaves out every image anywhere in the task directory, named, and keeps the text beside it" {
