@@ -150,7 +150,10 @@ sandbox() {
   # The user manager's D-Bus answers every call with a job (fake_placement makes it move the
   # processes), and the cgroup tree and /proc team-capacity reads are under TEAM_CGROUP_ROOT, empty
   # until a test writes them (user_controllers, fake_process), never the machine's own.
+  # team-capacity place <id> waits for nothing, as with no ids, unless a test of the wait sets
+  # its seconds: most launches' stubs never list the session they start.
   stub_reply busctl 'o "/org/freedesktop/systemd1/job/1"'
+  export TEAM_CAPACITY_PLACE_SECONDS=0
   # systemd-run starts no scope: it runs the command after --, in place, as `--scope` does, or, once
   # $STUB_FIXTURES/systemd-run-refuse exists, fails as one the user manager refused. Its fixture is
   # the file stub_script would write, written by printf, which starts no cat.
@@ -183,11 +186,13 @@ sandbox() {
   # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in, nor the
   # heavy run tests/run holds (team-heavy), nor the role and task of the session running the suite
   # (worker_refusal), nor the parallelism team-checks gives the suite (TEAM_JOBS), nor a bound on
-  # Docker's answers (TEAM_DOCKER_SECONDS).
+  # Docker's answers (TEAM_DOCKER_SECONDS), nor the heartbeat job's mark (TEAM_HEARTBEAT_JOB), nor
+  # the id of the Claude session running the suite (CLAUDE_CODE_SESSION_ID, team-sweep's own).
   unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
-  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS
-  # The state directory is HOME's, as the sandbox's HOME is.
-  unset XDG_STATE_HOME
+  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS TEAM_HEARTBEAT_JOB CLAUDE_CODE_SESSION_ID
+  # The state and cache directories and Claude Code's config directory are HOME's, as the
+  # sandbox's HOME is.
+  unset XDG_STATE_HOME XDG_CACHE_HOME CLAUDE_CONFIG_DIR
   guard_sandbox
 }
 
@@ -256,6 +261,81 @@ code_checkout() {
     cp -R "$REPO_ROOT/$path" "$CODE_CHECKOUT/$path"
   done
   printf '/%s\n' bin roles settings templates plugins toolkits coordinator.settings.json >>"$exclude"
+}
+
+# with_lifecycle_from <time|null>: run_bin runs from a code checkout of the test's own whose
+# bin/lib/lifecycle.json is this checkout's with lifecycle_from set to <time> (refusing from it
+# on; 2026-01-01T00:00:00Z refuses every test event) or null (warning only), whatever the file
+# here says, so a test that asserts a mode holds through the cutover. It is CODE_CHECKOUT when a
+# test made one (code_checkout first, for a script that reads roles or settings), else a copy of
+# bin/ made here (copy_bin). The shared hard link is replaced, never written through.
+with_lifecycle_from() {
+  if [[ -z ${CODE_CHECKOUT:-} ]]; then
+    export CODE_CHECKOUT=$BATS_TEST_TMPDIR/lifecycle-code
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+  fi
+  local table=$CODE_CHECKOUT/bin/lib/lifecycle.json
+  jq --arg from "$1" '.lifecycle_from = (if $from == "null" then null else $from end)' \
+    "$REPO_ROOT/bin/lib/lifecycle.json" >"$table.new"
+  mv -f "$table.new" "$table"
+}
+
+# ci_wait_ends <outcome> <head> [<status>] [<text>] [<failures as JSON>]: run_bin runs from a code
+# checkout whose team-ci-wait is the logging stub, printing team-ci-wait --json's object of that
+# end (schema team-ci-wait/1; text "team-ci-wait: <outcome>" by default, failures [] by default)
+# and exiting <status> (default 0) on every call, for a test of a script that waits with it
+# (team-next T<n> --ci). It is CODE_CHECKOUT when a test made one (code_checkout first), else a
+# copy of bin/ made here, as with_lifecycle_from's; its calls are stub_calls team-ci-wait.
+ci_wait_ends() {
+  if [[ -z ${CODE_CHECKOUT:-} ]]; then
+    export CODE_CHECKOUT=$BATS_TEST_TMPDIR/ci-wait-code
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+  fi
+  shared_make stub "$REPO_ROOT/tests/helpers/stub"
+  ln -f "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-ci-wait"
+  stub_reply team-ci-wait "$(jq -cn --arg o "$1" --arg h "$2" --arg t "${4:-team-ci-wait: $1}" --argjson f "${5:-[]}" \
+    '{schema: "team-ci-wait/1", outcome: $o, head: (if $h == "" then null else $h end), text: $t, failures: $f}')" "${3:-0}"
+}
+
+# review_app_on: the reviewer App on for the scripts run_bin runs: CODE_CHECKOUT (a copy of bin/
+# made here when the test made none) gets bin/lib/review-app, id 123456 and slug team-reviewer,
+# and its bin/team-review-check is the logging stub (tests/helpers/stub), its calls in
+# $STUB_CALLS/team-review-check.log, printing check run 4242 until the test gives it another
+# fixture (stub_reply or stub_script team-review-check).
+review_app_on() {
+  if [[ -z ${CODE_CHECKOUT:-} ]]; then
+    export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+  fi
+  rm -f "$CODE_CHECKOUT/bin/lib/review-app" "$CODE_CHECKOUT/bin/team-review-check"
+  printf 'id=123456\nslug=team-reviewer\n' >"$CODE_CHECKOUT/bin/lib/review-app"
+  shared_make stub "$REPO_ROOT/tests/helpers/stub"
+  ln "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-review-check"
+  stub_reply team-review-check 4242
+}
+
+# plan_md T<n> [<text>]: write the task's plan, tasks/T<n>/plan.md in the sandbox's team home,
+# which team-log takes a plan-approved of only when it exists.
+plan_md() {
+  mkdir -p "$TEAM_HOME/tasks/$1"
+  printf '%s\n' "${2:-# $1 plan}" >"$TEAM_HOME/tasks/$1/plan.md"
+}
+
+# opened_task T<n> [<path>]: append the task's thread and opened (project proj, path <path>,
+# default feature) to the sandbox's ledger, as team-open logs them, so a test whose events a
+# refusing writer (bin/lib/lifecycle.json's refusing_writers) appends has the open task the
+# lifecycle table takes them on; the table is never loosened to fit a fixture. Both are dated
+# 2026-01-01T00:00:00Z, before every test event, so no rule that reads the task's latest ts (a
+# park's since, a Discord message's age) reads them.
+opened_task() {
+  jq -cn --arg task "$1" --arg path "${2:-feature}" '"2026-01-01T00:00:00Z" as $ts
+    | {ts: $ts, task: $task, event: "thread", discord_thread: "1563000000000000000"},
+      {ts: $ts, task: $task, event: "opened", project: "proj", path: $path, type: "feat", title: "X",
+       branch: "feat/\($task)-x", base: "dev", base_sha: "0000000000000000000000000000000000000000",
+       worktree: "/w/\($task)"}' >>"$TEAM_HOME/ledger.jsonl"
 }
 
 # Push a commit touching <path> to <origin>'s dev from a clone of its own, as another machine's
@@ -352,7 +432,9 @@ stub_calls() {
 # CPUQuotaPerSecUSec, in systemd's form: 360% is 3.600000s); every call fails as a
 # user manager that does not answer once ~/.fake-systemd/down exists; launchctl
 # bootstrap gui/<uid> <plist>, bootout gui/<uid>/<label> and print gui/<uid>/<label>, refusing as
-# launchctl does a bootstrap of a loaded job or a bootout of one not loaded.
+# launchctl does a bootstrap of a loaded job or a bootout of one not loaded, and keeping in
+# ~/.fake-launchd/heartbeat-calls, for each bootstrap and bootout of agent-team.heartbeat, whether
+# the run's lock was held then and the heartbeat's plist there.
 fake_service_managers() {
   stub_script systemctl <<'EOF'
 units=$HOME/.config/systemd/user state=$HOME/.fake-systemd
@@ -432,6 +514,14 @@ EOF
   stub_script launchctl <<'EOF'
 state=$HOME/.fake-launchd domain=gui/$(id -u)
 mkdir -p "$state"
+# Each bootstrap and bootout of the heartbeat, as whether the run's lock was held and its plist
+# was there: "<verb> lock <held|free> plist <present|absent>".
+if [[ ${1:-} == bootstrap || ${1:-} == bootout ]] && [[ ${2:-}${3:-} == *agent-team.heartbeat* ]]; then
+  lock=$HOME/.local/state/agent-team/heartbeat.lock held=free there=absent
+  [[ ! -e $lock ]] || flock -n "$lock" true || held=held
+  [[ ! -e $HOME/Library/LaunchAgents/agent-team.heartbeat.plist ]] || there=present
+  echo "$1 lock $held plist $there" >>"$state/heartbeat-calls"
+fi
 case ${1:-} in
   bootstrap)
     [[ $2 == "$domain" && -f $3 ]] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
@@ -587,11 +677,15 @@ esac
 EOF
 }
 
-# Run the sandbox as macOS: uname stubbed to say Darwin, and a fake Homebrew (HOMEBREW_PREFIX)
-# with the directories of the GNU tools bin/lib/platform.sh puts first on PATH.
+# Run the sandbox as macOS: uname stubbed to say Darwin, pmset stubbed to say the Mac draws from
+# AC power (the doctor's power line; a test of that line rewrites its reply), and a fake Homebrew
+# (HOMEBREW_PREFIX) with the directories of the GNU tools bin/lib/platform.sh puts first on PATH.
 as_macos() {
   [[ -e $BATS_TEST_TMPDIR/stubs/uname ]] || stub_command uname
   stub_reply uname Darwin
+  [[ -e $BATS_TEST_TMPDIR/stubs/pmset ]] || stub_command pmset
+  stub_reply pmset "Now drawing from 'AC Power'
+ -InternalBattery-0 (id=4653155)	100%; charged; 0:00 remaining present: true"
   export HOMEBREW_PREFIX=$BATS_TEST_TMPDIR/brew
   local dir
   for dir in coreutils/libexec/gnubin findutils/libexec/gnubin gnu-sed/libexec/gnubin \

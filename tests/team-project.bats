@@ -243,6 +243,19 @@ TOML
   [[ $stderr != *alpha* ]]
 }
 
+@test "--check refuses a project named task, all or own, which the default word's withdrawals and the short list read as scopes" {
+  local name
+  cp "$TEAM_HOME/projects.toml" "$BATS_TEST_TMPDIR/registered.toml"
+  for name in task all own; do
+    sed "s/^\\[beta/[$name/" "$BATS_TEST_TMPDIR/registered.toml" >"$BATS_TEST_TMPDIR/projects.toml"
+    registry <"$BATS_TEST_TMPDIR/projects.toml"
+    run_bin -1 --separate-stderr team-project --check
+    assert_contains "$stderr" "$name: the name is reserved for"
+    [[ $stderr != *alpha* ]]
+  done
+  assert_contains "$stderr" "own: the name is reserved for the team's own project in bin/lib/guarded's @own lines"
+}
+
 @test "--check refuses TOML that does not parse and a registry that is missing" {
   registry <<<'[alpha'
   run_bin -1 --separate-stderr team-project --check
@@ -395,6 +408,204 @@ TOML
   assert_contains "$stderr" "beta.local_checks: each command must be one line, not empty"
 }
 
+# The problem lines of a --check's stderr on stdin, each without its "team-project: <registry>: "
+# prefix and with the count line left out, so a test compares them whole: problems <<<"$stderr"
+problems() {
+  sed -n "s|^team-project: $TEAM_HOME/projects.toml: ||p" | grep -Ev '^[0-9]+ problems?$'
+}
+
+@test "uptime is optional, defaults to none, and reads back as the project's production checks" {
+  run_bin -0 team-project alpha uptime
+  assert_equal "$(jq -c . <<<"$output")" '[]'
+  run_bin -0 team-project alpha
+  assert_equal "$(jq -c .uptime <<<"$output")" '[]'
+
+  # Conventioner's two checks, as the coordinator adds them, and the tests' stub server on each
+  # loopback name; an expect of 200 characters is the longest that fits.
+  local long
+  long=$(printf 'x%.0s' {1..200})
+  cat >>"$TEAM_HOME/projects.toml" <<TOML
+
+[[alpha.uptime]]
+name = "api"
+url = "https://api.conventioner.io/healthz"
+expect = '"status":"ok"'
+
+[[alpha.uptime]]
+name = "front-end"
+url = "https://conventioner.io/markets"
+expect = '<div id="app">'
+
+[[beta.uptime]]
+name = "stub-1"
+url = "http://127.0.0.1:43210/x"
+expect = "ok"
+
+[[beta.uptime]]
+name = "stub-2"
+url = "http://localhost:43210/x"
+expect = "ok"
+
+[[beta.uptime]]
+name = "api"
+url = "http://[::1]:43210/x"
+expect = "$long"
+TOML
+  run_bin -0 team-project --check
+  run_bin -0 team-project alpha uptime
+  assert_equal "$(jq -c . <<<"$output")" \
+    '[{"name":"api","url":"https://api.conventioner.io/healthz","expect":"\"status\":\"ok\""},{"name":"front-end","url":"https://conventioner.io/markets","expect":"<div id=\"app\">"}]'
+  run_bin -0 team-project beta
+  assert_equal "$(jq -r '.uptime | map(.name) | join(" ")' <<<"$output")" "stub-1 stub-2 api"
+  # A list of tables holds no string, so --find finds nothing in it.
+  run_bin -0 team-project --find uptime api
+  assert_equal "$output" ""
+}
+
+@test "--check refuses a malformed uptime check with a line naming the project, the check and the rule" {
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+
+[[alpha.uptime]]
+name = "api"
+url = "https://a.example.com/"
+expect = "ok"
+method = "HEAD"
+
+[[alpha.uptime]]
+name = "web"
+url = "https://b.example.com/"
+
+[[alpha.uptime]]
+name = 1
+url = "https://c.example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "Api_1"
+url = "https://d.example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "api"
+url = "https://e.example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "plain"
+url = "http://example.com/x"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "ftp"
+url = "ftp://example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "secret"
+url = "https://user:pw@example.com/"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "spaced"
+url = "https://example.com/a b"
+expect = "ok"
+
+[[alpha.uptime]]
+name = "empty"
+url = "https://example.com/"
+expect = ""
+TOML
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$(problems <<<"$stderr")" "alpha.uptime[0]: unknown key 'method'
+alpha.uptime[1]: missing required key 'expect'
+alpha.uptime[2].name: must be a string
+alpha.uptime[3].name: 'Api_1' is lowercase letters, digits and dashes
+alpha.uptime[4].name: 'api' is listed twice
+alpha.uptime[5].url: 'http://example.com/x' must be https://, or http:// to this machine's loopback
+alpha.uptime[6].url: 'ftp://example.com/' must be https://, or http:// to this machine's loopback
+alpha.uptime[7].url: must carry no user name or password
+alpha.uptime[8].url: must be one line with no spaces
+alpha.uptime[9].expect: must be one line, 1 to 200 characters"
+
+  # A long or multi-line expect, a user name alone, an https URL with no host, a control
+  # character, and a non-string url and expect.
+  local long
+  long=$(printf 'x%.0s' {1..201})
+  cat >"$TEAM_HOME/extra.toml" <<TOML
+
+[[beta.uptime]]
+name = "long"
+url = "https://example.com/"
+expect = "$long"
+
+[[beta.uptime]]
+name = "lines"
+url = "https://example.com/"
+expect = "a\nb"
+
+[[beta.uptime]]
+name = "user"
+url = "https://user@example.com/"
+expect = "ok"
+
+[[beta.uptime]]
+name = "nohost"
+url = "https:///healthz"
+expect = "ok"
+
+[[beta.uptime]]
+name = "tab"
+url = "https://example.com/\t"
+expect = "ok"
+
+[[beta.uptime]]
+name = "types"
+url = ["https://example.com/"]
+expect = 200
+TOML
+  sed -i '/^\[\[alpha.uptime\]\]$/,$d' "$TEAM_HOME/projects.toml"
+  cat "$TEAM_HOME/extra.toml" >>"$TEAM_HOME/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$(problems <<<"$stderr")" "beta.uptime[0].expect: must be one line, 1 to 200 characters
+beta.uptime[1].expect: must be one line, 1 to 200 characters
+beta.uptime[2].url: must carry no user name or password
+beta.uptime[3].url: 'https:///healthz' must be https://, or http:// to this machine's loopback
+beta.uptime[4].url: must be one line with no spaces
+beta.uptime[5].url: must be a string
+beta.uptime[5].expect: must be a string"
+}
+
+@test "--check refuses an uptime that is not a list of tables" {
+  sed -i 's|^toolkits = \[\]$|toolkits = []\nuptime = "https://example.com/"|' "$TEAM_HOME/projects.toml"
+  sed -i '0,/^uptime = .*$/s||uptime = [1, { name = "api", url = "https://example.com/", expect = "ok" }]|' "$TEAM_HOME/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$(problems <<<"$stderr")" "alpha.uptime: must be a list of tables
+beta.uptime: must be a list of tables"
+}
+
+@test "--check refuses more than 10 uptime checks across the registry, the heartbeat step's limit" {
+  local n project
+  for n in $(seq 1 11); do
+    project=alpha
+    ((n > 6)) && project=beta
+    cat >>"$TEAM_HOME/projects.toml" <<TOML
+
+[[$project.uptime]]
+name = "check-$n"
+url = "https://example.com/$n"
+expect = "ok"
+TOML
+  done
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$(problems <<<"$stderr")" "uptime: 11 checks in all; at most 10 fit the heartbeat's uptime step"
+  # Ten fit: the last check's five lines go.
+  head -n -5 "$TEAM_HOME/projects.toml" >"$TEAM_HOME/ten.toml"
+  mv "$TEAM_HOME/ten.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project beta uptime
+  assert_equal "$(jq length <<<"$output")" 4
+}
+
 @test "models is optional, defaults to none, and maps a worker role to a model alias" {
   run_bin -0 team-project alpha models
   assert_equal "$(jq -c . <<<"$output")" '{}'
@@ -469,64 +680,31 @@ TOML
   assert_contains "$stderr" "alpha.visibility: must be one of public, private"
 }
 
-@test "merge_with_plan is optional, false by default, a boolean, and found by --find" {
-  run_bin -0 team-project alpha merge_with_plan
-  assert_equal "$output" false
-  run_bin -0 team-project alpha
-  assert_equal "$(jq -c .merge_with_plan <<<"$output")" false
+@test "--check refuses merge_with_plan as retired by T276, and every command with it" {
   sed -i 's|^docs = \[\]$|docs = []\nmerge_with_plan = true|' "$TEAM_HOME/projects.toml"
-  run_bin -0 team-project --check
-  run_bin -0 team-project beta merge_with_plan
-  assert_equal "$output" true
-  run_bin -0 team-project --find merge_with_plan true
-  assert_equal "$output" beta
-  run_bin -0 team-project --find merge_with_plan false
-  assert_equal "$output" alpha
-
-  registry <<'TOML'
-[alpha]
-repo = "owner/alpha"
-path = "alpha"
-base = "main"
-delivery = "direct-pr"
-merge_method = "merge"
-required_checks = []
-merge_with_plan = "yes"
-task_dir = ".scratch/task"
-docs = []
-toolkits = []
-pool = { provider = "git", slots = ["alpha/1"] }
-
-[beta]
-repo = "owner/beta"
-path = "beta"
-base = "main"
-delivery = "direct-pr"
-merge_method = "merge"
-required_checks = []
-merge_with_plan = 1
-task_dir = ".scratch/task"
-docs = []
-toolkits = []
-pool = { provider = "git", slots = ["beta/1"] }
-TOML
   run_bin -1 --separate-stderr team-project --check
-  assert_contains "$stderr" "alpha.merge_with_plan: must be true or false"
-  assert_contains "$stderr" "beta.merge_with_plan: must be true or false"
+  assert_contains "$stderr" "beta.merge_with_plan: retired by T276, since the approved plan is every project's merge word: remove the key"
+  [[ $stderr != *"unknown key"* ]]
+  run_bin -1 team-project alpha
+  sed -i 's|^merge_with_plan = true$|merge_with_plan = false|' "$TEAM_HOME/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "beta.merge_with_plan: retired by T276"
+  sed -i '/^merge_with_plan = /d' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project alpha
+  assert_equal "$(jq 'has("merge_with_plan")' <<<"$output")" false
 }
 
-# A registry of one project, <name>, at <path> under HOME, with merge_with_plan = <value>:
-# own_registry <name> <path> <value> [<repo>]
+# A registry of one project, <name>, at <path> under HOME: own_registry <name> <path> [<repo>]
 own_registry() {
   registry <<TOML
 [$1]
-repo = "${4:-owner/$1}"
+repo = "${3:-owner/$1}"
 path = "$2"
 base = "dev"
 delivery = "direct-pr"
 merge_method = "merge"
 required_checks = []
-merge_with_plan = $3
 task_dir = ".scratch/task"
 docs = []
 toolkits = []
@@ -542,22 +720,6 @@ own_checkout() {
   copy_bin "$CODE_CHECKOUT/bin"
 }
 
-@test "--check refuses merge_with_plan = true on the team's own project: agent-team, or the one at this code checkout" {
-  own_registry agent-team agent-team true
-  run_bin -1 --separate-stderr team-project --check
-  assert_contains "$stderr" "agent-team.merge_with_plan: agent-team is the team's own project, whose PRs merge only on Daniel's word per head"
-  own_registry agent-team agent-team false
-  run_bin -0 team-project --check
-
-  # The project at the code checkout team-project runs from is the team's own, whatever its name.
-  own_checkout
-  own_registry tools projects/tools true
-  run_bin -1 --separate-stderr team-project --check
-  assert_contains "$stderr" "tools.merge_with_plan: its path is the code checkout team-project runs from, $CODE_CHECKOUT, the team's own project, whose PRs merge only on Daniel's word per head"
-  own_registry tools projects/other true
-  run_bin -0 team-project --check
-}
-
 @test "own_project is true for the team's own project, by name, by path or by repo, and false for another" {
   own_checkout
   cat >"$CODE_CHECKOUT/bin/team-own" <<'SCRIPT'
@@ -568,13 +730,13 @@ if own_project "$1"; then echo own; else echo other; fi
 SCRIPT
   chmod +x "$CODE_CHECKOUT/bin/team-own"
 
-  own_registry agent-team elsewhere false
+  own_registry agent-team elsewhere
   run_bin -0 team-own agent-team
   assert_equal "$output" own
-  own_registry tools projects/tools false
+  own_registry tools projects/tools
   run_bin -0 team-own tools
   assert_equal "$output" own
-  own_registry beta beta true
+  own_registry beta beta
   run_bin -0 team-own beta
   assert_equal "$output" other
 
@@ -583,10 +745,10 @@ SCRIPT
   for url in git@github.com:Owner/Code.git https://github.com/owner/code https://github.com/OWNER/code.git/ \
     ssh://git@github.com/owner/Code.git; do
     git -C "$CODE_CHECKOUT" remote set-url origin "$url"
-    own_registry beta beta true owner/CODE
+    own_registry beta beta owner/CODE
     run_bin -0 team-own beta
     assert_equal "$output" own
-    own_registry beta beta true owner/codex
+    own_registry beta beta owner/codex
     run_bin -0 team-own beta
     assert_equal "$output" other
   done
@@ -608,13 +770,6 @@ own_worktree() {
   own_checkout
   local main=$CODE_CHECKOUT
   own_worktree
-  own_registry tools projects/tools true owner/elsewhere
-  run_bin -1 --separate-stderr team-project --check
-  assert_contains "$stderr" "tools.merge_with_plan: its path is $main, the main worktree of the code checkout team-project runs from, the team's own project, whose PRs merge only on Daniel's word per head"
-  own_registry tools projects/tools-wt true owner/elsewhere
-  run_bin -1 --separate-stderr team-project --check
-  assert_contains "$stderr" "tools.merge_with_plan: its path is the code checkout team-project runs from, $CODE_CHECKOUT, the team's own project"
-
   cat >"$CODE_CHECKOUT/bin/team-own" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -623,10 +778,10 @@ if own_project "$1"; then echo own; else echo other; fi
 SCRIPT
   chmod +x "$CODE_CHECKOUT/bin/team-own"
   git -C "$main" remote set-url origin git@github.com:owner/tools.git
-  own_registry tools projects/tools false owner/elsewhere
+  own_registry tools projects/tools owner/elsewhere
   run_bin -0 team-own tools
   assert_equal "$output" own
-  own_registry tools projects/other false owner/elsewhere
+  own_registry tools projects/other owner/elsewhere
   run_bin -0 team-own tools
   assert_equal "$output" other
 }

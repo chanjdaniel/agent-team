@@ -50,64 +50,101 @@ def park_class:
     elif $kind == "waiting" then "wait:daniel"
     else "wait:other" end;
 
-# A task's events up to $end as segments {from, to, class}, from its opened. A park sets a class
-# that the next launch or resumed clears, and so does a merge-approved for a wait on Daniel; an
-# asked with no park standing opens a wait on Daniel that ends once every ask it noted (that one
-# and any asked while it stands) is settled (settles), and an answered ends nothing else. With no
-# park standing, the class is the phase the last marker set: a planner or ops launch planning, a
-# builder's building, a reviewer's review, merge-approved merging (word head), a passing review
-# while a plan-time approval of the task stands merging too (word plan; preapproved, the projects
-# whose merge-preapproved no later merge-preapproval-withdrawn of theirs ended), until the merged or
-# a withdrawal that leaves none standing while the word is still plan, a review that sends notes
-# back (sent_back) building (the builder's fix round, fix, which a reviewer's done leaves building
-# and a paused reason=stowed in it does not park, so the stow up to the fresh builder's launch is
-# building; a builder's done, pr or ticket-done, another review, a merged or another role's launch
-# ends it),
-# and a done (save one while the word plan merges), merged or other review unattributed (the
-# coordinator's turn, or a gate run the ledger did not see); with no park, an ask still open (open,
-# kept across launches) while the phase is unattributed is a wait on Daniel (idle_class). A park
-# logged after the fact with since takes effect at since, held to the span from the event before it
-# to its own ts. The task starts unattributed, and the walk stops at the first event after $end.
+# A task's events up to $end as segments {from, to, class}, from its opened. The walk steps the
+# ledger's lifecycle fold (lifecycle_step) beside its own phase markers, and takes from it which
+# parks stand and which asks are open: a park stands until the fold ends it (by its cause's rules,
+# an old line's as before: a launch ends every blocked, waiting and paused, never a held, a resumed
+# with none of id, all and brief every park; a merge-approved ends an old wait on Daniel; an
+# answered only a typed wait on its ask), and the latest standing
+# one sets the class (park_time_class); an asked with no park standing opens a wait on Daniel
+# (askwait) that ends once every ask it noted (that one and any asked while it stands) is settled,
+# or at a launch, a resumed, another park or a merge-approved, which answers what an old ask's
+# wait was for whether or not its text names the url (a merge ask's "merge PR #<n>"), as the
+# fold's merge-approved does an old wait on Daniel. With no park standing, the class is the phase
+# the last marker set: a planner or ops launch planning, a builder's building, a reviewer's review,
+# merge-approved merging (word head), a passing review while the default word stands merging too
+# (word default: the task's latest plan-approved carries the plan it approved, so it was logged
+# since the default word began with T276, with no plan-approval-withdrawn after it, and its latest
+# merge-default-withdrawn or merge-default-restored of scope task, if any, a giving back; the
+# withdrawals of a project or of all are other tasks' events, which the walk does not read), until
+# the merged or such a withdrawal while the word is default, and for history a passing review while
+# a plan-time approval of the task stands (word plan; preapproved, the projects whose
+# merge-preapproved no later merge-preapproval-withdrawn of theirs ended), until the merged or a
+# withdrawal that leaves none standing while the word is still plan, a review that sends notes back
+# (sent_back) building (the builder's fix round, fix, which a reviewer's done leaves building and a
+# paused whose cause is stow (park_cause) in it does not park (unparked), so the stow up to the
+# fresh builder's launch is building; a builder's done, pr or ticket-done, another review, a merged
+# or another role's launch ends it), and a done (save one while the word plan or default merges),
+# merged or other review unattributed (the coordinator's turn, or a gate run the ledger did not
+# see); with no park, an ask the fold still holds open while the phase is unattributed is a wait on
+# Daniel (idle_class). A park logged after the fact with since takes effect at since, held to the
+# span from the event before it to its own ts. The task starts unattributed, and the walk stops at
+# the first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 
-# A walk state's class: its park, else a wait on Daniel while no worker is at work and an ask
-# is still open (open), else its phase.
-def idle_class: .park // (if .phase == "unattributed" and (.open | length) > 0 then "wait:daniel" else .phase end);
+# What a park event waits on: a typed one's (a cause bin/lib/lifecycle.json's causes list) the
+# table's class of its cause, for a cause classed by its on (class_by_on, an outside wait) and an
+# on given, park_class of its kind and on alone, and for one classed by its words (class_by_words,
+# a worker's), park_class of the whole line; an old one's, with no cause, park_class's.
+def park_event_class:
+  (if .cause == null then null else lifecycle_table.causes[.cause | tostring] end) as $cause
+  | if $cause == null or $cause.class_by_words == true then park_class
+    elif $cause.class_by_on == true and (.on // "" | tostring) != "" then {event, on} | park_class
+    else $cause.class end;
+
+# The class of one of the fold's parks: park_event_class of its kind, on, reason, and cause when
+# the line carried its own (typed), never legacy_cause's, so an old park keeps park_class's.
+def park_time_class: {event: .kind, on, reason, cause: (if .typed then .cause else null end)} | park_event_class;
+
+# A walk state's standing parks: the fold's, less those the walk does not count (unparked).
+def walk_parks: .unparked as $unparked | [.fold.parks[] | select(IN(.id; $unparked[]) | not)];
+
+# A walk state's class: its latest standing park's, else a wait on Daniel while its ask wait
+# stands, or while no worker is at work and the fold holds an ask open, else its phase.
+def idle_class:
+  (walk_parks | last | if . == null then null else park_time_class end)
+  // if .askwait != null or (.phase == "unattributed" and .fold.asks != []) then "wait:daniel" else .phase end;
 def task_segments($end):
   ([.[] | select(.event == "opened") | .ts | fromdate] | first) as $t0
   | (([range(length) as $i | select(.[$i].ts | fromdate > $end) | $i] | first) // length) as $n
-  | reduce .[:$n][] as $e ({phase: "unattributed", word: null, preapproved: [], park: null, asks: null, open: [], fix: false, cur: $t0, segments: []};
+  | reduce .[:$n][] as $e ({phase: "unattributed", word: null, preapproved: [], planned: false, held_back: false, fold: lifecycle_start, unparked: [],
+        askwait: null, fix: false, cur: $t0, segments: []};
       ($e.ts | fromdate) as $ts
       | (if ($e | is_park) and ($e.since | type) == "string" then
           [([(try ($e.since | fromdate) catch $ts), $ts] | min), .cur] | max
         else $ts end) as $t
       | .segments += [{from: .cur, to: $t, class: idle_class}]
       | .cur = $t
-      | .open = (if $e.event == "asked" then .open + [$e] else .open | map(select(. as $ask | $e | settles($ask) | not)) end)
+      | .fold.seen as $i
+      | .fold |= lifecycle_step($e)
       | (if $e.event == "launch" then
-          .park = null | .asks = null
+          .askwait = null
           | .phase = ({planner: "planning", ops: "planning", builder: "building", reviewer: "review"}[$e.role // ""] // .phase)
-        elif $e.event == "resumed" then .park = null | .asks = null
-        elif $e.event == "asked" and .park == null then .park = "wait:daniel" | .asks = [$e]
-        elif $e.event == "asked" and .asks != null then .asks += [$e]
-        elif $e.event == "paused" and .fix and .phase == "building" and ($e.reason // "" | tostring | test("^stowed\\b"; "i")) then .
-        elif $e | is_park then .park = ($e | park_class) | .asks = null
+        elif $e.event == "resumed" then .askwait = null
+        elif $e.event == "asked" then
+          if walk_parks == [] then .askwait = (.askwait // []) + [$i] else . end
+        elif $e.event == "paused" and .fix and .phase == "building" and ($e | park_cause) == "stow" then
+          .unparked += [.fold.parks[-1].id]
+        elif $e | is_park then .askwait = null
         else
-          (if .asks != null then
-            .asks |= map(select(. as $ask | $e | settles($ask) | not))
-            | if .asks == [] then .park = null | .asks = null else . end
-          else . end)
+          (.fold.asks | map(.i)) as $open
+          | (if .askwait != null then .askwait |= (map(select(IN(.; $open[]))) | if . == [] then null else . end) else . end)
           | if $e.event == "review" and $e.verdict == "pass" and .preapproved != [] then .phase = "merging" | .word = "plan"
-            elif $e.event == "done" and .phase == "merging" and .word == "plan" then .
+            elif $e.event == "review" and $e.verdict == "pass" and .planned and (.held_back | not) then .phase = "merging" | .word = "default"
+            elif $e.event == "done" and .phase == "merging" and IN(.word; "plan", "default") then .
             elif $e.event == "review" and ($e.sent_back // [] | length) > 0 then .phase = "building"
             elif $e.event == "done" and $e.role == "reviewer" and .phase == "building" then .
             elif $e.event == "done" or $e.event == "merged" or $e.event == "review" then .phase = "unattributed"
-            elif $e.event == "merge-approved" then
-              .phase = "merging" | .word = "head" | if .park == "wait:daniel" then .park = null | .asks = null else . end
+            elif $e.event == "merge-approved" then .phase = "merging" | .word = "head" | .askwait = null
             elif $e.event == "merge-preapproved" then .preapproved = (.preapproved - [$e.project]) + [$e.project]
             elif $e.event == "merge-preapproval-withdrawn" then
               .preapproved -= [$e.project]
               | if .phase == "merging" and .word == "plan" and .preapproved == [] then .phase = "unattributed" else . end
+            elif $e.event == "plan-approved" then .planned = ($e.plan != null)
+            elif $e.event == "merge-default-restored" and $e.scope == "task" then .held_back = false
+            elif $e.event == "plan-approval-withdrawn" or ($e.event == "merge-default-withdrawn" and $e.scope == "task") then
+              (if $e.event == "plan-approval-withdrawn" then .planned = false else .held_back = true end)
+              | if .phase == "merging" and .word == "default" then .phase = "unattributed" else . end
             else . end
         end)
       | .fix = (if $e.event == "review" then ($e.sent_back // [] | length) > 0
@@ -219,12 +256,13 @@ def time_report($lo; $hi; $since; $until; $task):
        by_outcome: ($runs | map(.outcome) | tally),
        step_minutes: ([$runs[] | .minutes | objects] as $minutes
          | [$minutes[] | keys_unsorted[]] | reduce .[] as $k ([]; if IN(.[]; $k) then . else . + [$k] end)
-         | map({(.): ([$minutes[][.] | numbers] | nearest_rank(0.5))}) | add // {})},
+         | map({(.): ([$minutes[][.] | numbers] | nearest_rank(0.5))}) | add // {}),
+       approved: ([$runs[] | .approved | arrays | .[]] | tally)},
      reviews: ($reviews | group_by([.task, .pr]) | sort_by(.[0].task | ltrimstr("T") | tonumber)
        | map({task: .[0].task, pr: .[0].pr, reviews: length, findings: map(select(.verdict == "findings")) | length})),
      builders: map({task: .time.task, builders: ([.window[] | select(.event == "launch" and .role == "builder")] | length),
        tickets: ([.window[] | select(.event == "ticket-done") | .ticket] | unique | length)}),
-     denials: ([.[].window[] | select(.event == "denied" or (.event == "blocked" and park_class == "wait:denial"))] | length),
+     denials: ([.[].window[] | select(.event == "denied" or (.event == "blocked" and park_event_class == "wait:denial"))] | length),
      answers: {answered: ($asks | map(select(.answered)) | length), unanswered: ($asks | map(select(.answered | not)) | length),
        median_minutes: ([$asks[] | .minutes | numbers] | nearest_rank(0.5) | if . then tenths else . end),
        p90_minutes: ([$asks[] | .minutes | numbers] | nearest_rank(0.9) | if . then tenths else . end)},
@@ -269,6 +307,7 @@ def time_text:
     "Gate runs by cause: \(.gate_runs.by_cause | counts_text)",
     "Gate runs by outcome: \(.gate_runs.by_outcome | counts_text)",
     "Gate minutes per step (median): \(.gate_runs.step_minutes | counts_text)",
+    "Gate parks the builder approved: \(.gate_runs.approved | counts_text)",
     "",
     (if .reviews == [] then "Reviews per PR: none"
      else "Reviews per PR", ([["task", "pr", "reviews", "findings"]] + [.reviews[] | [.task, (.pr // "-"), (.reviews | tostring), (.findings | tostring)]] | table) end),

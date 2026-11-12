@@ -19,8 +19,8 @@ The high-level plan: `{{plan}}`.
    A problem one of them already answers goes under "Considered, not proposed", naming it.
 4. The records of each task in the digest, under its record directory: `plan.md`, the briefs, and in `scratch/` the archived `review.md`, `rereview*.md` and `build-notes/`.
 5. The team as it stands, in your worktree: `roles/`, `templates/`, `settings/`, `sops/` and `bin/`, against which you write exact changes.
-6. A session's transcript (`claude logs <session>`, with the digest's session ids) only where the ledger and the records leave a cause unclear.
-   Never quote a secret or anyone's personal details from it.
+6. No session's transcript: worker settings deny `claude logs` and `claude attach`.
+   Where the ledger and the records leave a cause unclear, say so in the report and name the digest's session id, for the coordinator to read.
 
 ## Deliver, in `{{task_dir}}/`
 

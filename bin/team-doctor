@@ -11,9 +11,10 @@
 # Read-only, but for the trust probes' sessions, which it removes.
 # TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release, TEAM_1PASSWORD_APP
 # the 1Password app to look for, TEAM_CHROME the browser, TEAM_MEMINFO the file read in place
-# of /proc/meminfo, and TEAM_DOCTOR_CHECKS, when not empty, the checks to run (the tests' seams):
-# their file names in bin/lib/doctor.d/ ("040-docker.sh 220-lease.sh"), run in name order with
-# every check they read state from, directly or not; a name that is no check file is refused.
+# of /proc/meminfo (the tests' seams), and TEAM_DOCTOR_CHECKS, when not empty, the checks to run
+# (the tests' seam, and team-bootstrap's machine stage's, which asks for the team home history line
+# alone): their file names in bin/lib/doctor.d/ ("040-docker.sh 220-lease.sh"), run in name order
+# with every check they read state from, directly or not; a name that is no check file is refused.
 # Exit 0 nothing failed, 1 a check failed, 2 usage error.
 # The checks, in order, one file each in bin/lib/doctor.d/, sourced in the order of their names
 # (three digits by tens, so a new check goes between two without renaming any), each calling the

@@ -6,7 +6,8 @@ load helpers/common
 # fixtures/ledger-time.jsonl holds, with known hours:
 # T60, a Conventioner feature closed in 13 h: planning 1, building 4, gate 2.5 (two runs' minutes
 # taken from building, and a pause on a gate run), review 1.5, merging 0.5, unattributed 1.5,
-# Daniel 1.5, the machine's load 0.5; three gate runs on one PR, two reviews.
+# Daniel 1.5, the machine's load 0.5; three gate runs on one PR, the last two approving parks
+# themselves, two reviews.
 # T61, an agent-team task still open from 10:00: building 3.55, a denial 0.25, another task 2 (a
 # denial the builder went past, a denied, logged within it, which parks and clears nothing),
 # GitHub 1, the machine handed over 2, Daniel 1.4 (a question answered in 0.2, then an ask still
@@ -69,7 +70,7 @@ time_json() {
   grep -Eq '^all +26\.2 +100% +10\.2 +16\.0$' <<<"$output"
 }
 
-@test "gate runs are counted per PR, by cause and by outcome, with each step's median minutes" {
+@test "gate runs are counted per PR, by cause and by outcome, with each step's median minutes and the parks builders approved" {
   local json
   json=$(time_json --until "$until")
   assert_equal "$(jq -c '.gate_runs.per_pr' <<<"$json")" \
@@ -77,12 +78,19 @@ time_json() {
   assert_equal "$(jq -c '.gate_runs.by_cause' <<<"$json")" '{"none":1,"load":1,"review":1}'
   assert_equal "$(jq -c '.gate_runs.by_outcome' <<<"$json")" '{"red":1,"pushed":1,"stopped-green":1}'
   assert_equal "$(jq -c '.gate_runs.step_minutes' <<<"$json")" '{"review":5,"test":25,"document":1,"push":1,"ci":28}'
+  # Each park a builder approved itself, by its id; the first run, like a line before the field, approved none.
+  assert_equal "$(jq -c '.gate_runs.approved' <<<"$json")" '{"review-coverage":2,"lint-before":1}'
 
   run_bin -0 team-time --until "$until"
   grep -Eq '^T60 +https://github.com/chanjdaniel/Conventioner/pull/7 +3 +none 1, load 1, review 1$' <<<"$output"
   assert_contains "$output" "Gate runs by cause: none 1, load 1, review 1"
   assert_contains "$output" "Gate runs by outcome: red 1, pushed 1, stopped-green 1"
   assert_contains "$output" "Gate minutes per step (median): review 5, test 25, document 1, push 1, ci 28"
+  assert_contains "$output" "Gate parks the builder approved: review-coverage 2, lint-before 1"
+  # A window with none says so.
+  run_bin -0 team-time --task T61 --until "$until"
+  assert_contains "$output" "Gate parks the builder approved: -"
+  assert_equal "$(jq -c '.gate_runs.approved' <<<"$(time_json --task T61 --until "$until")")" '{}'
 }
 
 @test "reviews and findings per PR, builders per ticket and denials (blocked and denied) are counted" {
@@ -296,6 +304,98 @@ t90_hours() {
     '02:40 done {role: "builder", session: "s1"}')" '{"building":1.333,"review":1,"unattributed":0.333,"wait:limit":0.333}'
 }
 
+@test "a fix round's PAUSED stowed, handoff written, or a paused whose cause is stow, is building up to the fresh builder" {
+  local paused
+  for paused in '02:10 paused {reason: "stowed, handoff written"}' '02:10 paused {cause: "stow", reason: "handoff written"}'; do
+    assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+      '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+      '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+      "$paused" \
+      '02:30 launch {role: "builder", session: "s3", worktree: "/w", toolkits: []}')" '{"building":2,"review":1}'
+  done
+}
+
+@test "a held that a launch follows stays a wait on Daniel until its resumed, as the lifecycle fold keeps it" {
+  # Before the fold, the launch at 02:00 ended the hold: building 3, wait:daniel 1.
+  assert_equal "$(t90_hours 05:00 '01:00 held {on: "Daniel", reason: "Daniel holds it"}' \
+    '02:00 launch {role: "builder", session: "s2", worktree: "/w", toolkits: []}' \
+    '03:00 resumed {}' \
+    '04:00 done {role: "builder", session: "s2"}')" '{"building":2,"unattributed":1,"wait:daniel":2}'
+}
+
+@test "a typed park is classed by its cause's class in bin/lib/lifecycle.json, an outside wait by its on, a worker's by its words" {
+  # park_class would read the first four's words as another wait (wait:other); a worker's pause is
+  # classed by its words as park_class reads them, so naming the gate it is gate time.
+  assert_equal "$(t90_hours 06:00 '01:00 paused {cause: "room", role: "builder", reason: "no room for session:builder at full"}' \
+    '02:00 resumed {}' '02:00 paused {cause: "coordinator-hold", reason: "held"}' \
+    '03:00 resumed {}' '03:00 paused {cause: "offline", reason: "offline GitHub"}' \
+    '04:00 resumed {}' '04:00 blocked {cause: "denial", reason: "the push target"}' \
+    '05:00 resumed {}' '05:00 paused {cause: "worker", reason: "waiting for the gate"}')" \
+    '{"building":1,"gate":1,"wait:external":1,"wait:machine":1,"wait:off":1,"wait:denial":1}'
+  # An outside wait is classed by its on as park_class reads it.
+  assert_equal "$(t90_hours 04:00 '01:00 waiting {cause: "outside", on: "gate", reason: "the run"}' \
+    '02:00 resumed {}' '02:00 waiting {cause: "outside", on: "T31", reason: "its merge"}' \
+    '03:00 resumed {}' '03:00 waiting {cause: "outside", on: "Vercel", reason: "the support ticket"}')" \
+    '{"building":1,"gate":1,"wait:task":1,"wait:external":1}'
+  # A typed blocked of cause denial counts as a denial, whatever its words.
+  t90_hours 02:00 '01:00 blocked {cause: "denial", reason: "the push target"}' >/dev/null
+  assert_equal "$(time_json --until 2026-10-24T02:00:00Z | jq -c .denials)" 1
+}
+
+@test "an old park, with no cause, is classed by park_class from its kind, on and reason" {
+  # The same words untyped: a pause for room, a coordinator's hold and an offline worker are other
+  # waits, a pause naming the gate gate time, and a blocked naming a denial a denial.
+  assert_equal "$(t90_hours 06:00 '01:00 paused {reason: "no room for session:builder at full"}' \
+    '02:00 resumed {}' '02:00 paused {reason: "held"}' \
+    '03:00 resumed {}' '03:00 paused {reason: "offline GitHub"}' \
+    '04:00 resumed {}' '04:00 blocked {reason: "the push target was denied"}' \
+    '05:00 resumed {}' '05:00 paused {reason: "waiting for the gate"}')" \
+    '{"building":1,"gate":1,"wait:denial":1,"wait:other":3}'
+}
+
+# A park team-log logs and the time it took to: the last ledger line, team-log's own, moved to
+# 2026-10-24T<HH:MM>, so the hours are known.
+logged_at() {
+  local at=$1 ledger=$TEAM_HOME/ledger.jsonl last
+  last=$(tail -n 1 "$ledger" | jq -c --arg ts "2026-10-24T$at:00Z" '.ts = $ts')
+  sed -i '$d' "$ledger"
+  printf '%s\n' "$last" >>"$ledger"
+}
+
+@test "a worker's park, typed worker, is classed by park_class of its words, as an old one is" {
+  # T90's opened and its builder's launch at 00:00.
+  t90_hours 01:00 >/dev/null
+  # A worker's BLOCKED reporting a denial, as every role's "When something is denied" asks.
+  run_bin -0 team-log T90 --from-message 'T90 BLOCKED git push denied by a deny rule'
+  logged_at 01:00
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .cause)" worker
+  echo '{"ts":"2026-10-24T02:00:00Z","task":"T90","event":"launch","role":"builder","session":"s2","worktree":"/w","toolkits":[]}' >>"$TEAM_HOME/ledger.jsonl"
+  # The manual's own block on another task, hand-logged with no on.
+  run_bin -0 team-log T90 blocked reason="waits for T31: its PR first"
+  logged_at 03:00
+  echo '{"ts":"2026-10-24T05:00:00Z","task":"T90","event":"launch","role":"builder","session":"s3","worktree":"/w","toolkits":[]}' >>"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-24T06:00:00Z --task T90)
+  assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" \
+    '{"building":3,"wait:task":2,"wait:denial":1}'
+  assert_equal "$(jq -c .denials <<<"$json")" 1
+}
+
+@test "a merge-approved ends an ask's wait whose text names no url of it, so the merge is merging" {
+  assert_equal "$(t90_hours 04:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 asked {id: "merge", text: "merge PR #30 at 0123456"}' \
+    '03:00 merge-approved {url: "https://github.com/chanjdaniel/agent-team/pull/30", discord_message: "1"}' \
+    '04:00 merged {pr: 30, merge: "m", head: "h", by: "team-merge"}')" '{"building":1,"merging":1,"wait:daniel":2}'
+}
+
+@test "a wait logged before the wait on Daniel that a merge-approved ends still stands, as the lifecycle fold keeps every park" {
+  # Before the fold, the later wait replaced the earlier one, and the hour after the word was merging.
+  assert_equal "$(t90_hours 04:00 '01:00 waiting {on: "reviewer", reason: "the rereview"}' \
+    '02:00 waiting {on: "Daniel", reason: "the merge word"}' \
+    '03:00 merge-approved {url: "https://github.com/chanjdaniel/agent-team/pull/30", discord_message: "1"}' \
+    '04:00 merged {pr: 30, merge: "m", head: "h", by: "team-merge"}')" '{"building":1,"wait:daniel":1,"wait:external":2}'
+}
+
 @test "a gate run in the fix round after a review that sends notes back is gate time taken from building" {
   assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
     '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
@@ -341,7 +441,7 @@ t90_hours() {
     '{"building":1,"gate":0.333,"wait:daniel":2.667}'
 }
 
-@test "a plan ask settled by a merge-preapproved naming its id leaves no wait on Daniel after it" {
+@test "a plan ask settled by a merge-preapproved naming its id, a kind retired by T276 read for history, leaves no wait on Daniel after it" {
   assert_equal "$(t90_hours 06:00 '01:00 done {role: "builder", session: "s1"}' \
     '01:00 asked {id: "plan", text: "approve the plan, and its merge?"}' \
     '03:00 merge-preapproved {project: "p", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}' \
@@ -392,6 +492,39 @@ preapproved_rounds() {
     '00:30 merge-preapproval-withdrawn {project: "p", discord_message: "1563000000000000002"}' \
     '00:45 merge-preapproved {project: "p", ask: "plan", discord_message: "1563000000000000006", scope: ["src/"]}' "${rounds[@]:2}")" \
     '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+}
+
+# The lines of a task whose plan was approved with the plan's files (as since T276), with the review
+# rounds of preapproved_rounds after it: the default word stands for the passing review at 03:00.
+default_rounds() {
+  printf '%s\n' '00:00 plan-approved {by: "coordinator", plan: {"tasks/T90/plan.md": "0000"}}'
+  preapproved_rounds | sed 1,2d
+}
+
+@test "a passing review while the default word stands starts merging, which runs to the merged" {
+  local rounds
+  mapfile -t rounds < <(default_rounds)
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}")" '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+
+  # A plan-approved logged before T276, with no plan, was no merge word: the review leaves the
+  # coordinator's turn.
+  assert_equal "$(t90_hours 06:00 '00:00 plan-approved {by: "Daniel"}' "${rounds[@]:1}")" \
+    '{"building":1.5,"review":1,"unattributed":3.5}'
+
+  # The approval withdrawn, or the default withdrawn for the task, before the review: no merging.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:8}" '02:45 plan-approval-withdrawn {discord_message: "1563000000000000002"}' \
+    "${rounds[@]:8}")" '{"building":1.5,"review":1,"unattributed":3.5}'
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:8}" \
+    '02:45 merge-default-withdrawn {scope: "task", discord_message: "1563000000000000002", discord_channel: "1562"}' \
+    "${rounds[@]:8}")" '{"building":1.5,"review":1,"unattributed":3.5}'
+  # Given back for the task before the review, it stands again; withdrawn after it, the merging ends.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:8}" \
+    '02:40 merge-default-withdrawn {scope: "task", discord_message: "1563000000000000002", discord_channel: "1562"}' \
+    '02:45 merge-default-restored {scope: "task", discord_message: "1563000000000000003", discord_channel: "1562"}' \
+    "${rounds[@]:8}")" '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:10}" \
+    '04:00 merge-default-withdrawn {scope: "task", discord_message: "1563000000000000002", discord_channel: "1562"}' \
+    "${rounds[@]:10}")" '{"building":1.5,"review":1,"merging":1,"unattributed":2.5}'
 }
 
 @test "a park logged after the fact with since is counted from since, and the usage limit is its own phase" {
@@ -551,6 +684,34 @@ workers_json() {
   )"
   # A reviewer beside them runs on, since a stow names no session.
   assert_equal "$(jq -r '.workers.running[].session' <<<"$json")" r0070001
+}
+
+@test "a ticket builder's lifetime ends at its own ticket's ticket-done or its ticket's next launch" {
+  local opened='"task":"T7","event":"opened","project":"agent-team","path":"feature","type":"feat","title":"x","branch":"feat/T7-x","base":"dev","base_sha":"0123456","worktree":"/w/1"'
+  printf '%s\n' \
+    "{\"ts\":\"2026-10-28T09:00:00Z\",$opened}" \
+    '{"ts":"2026-10-28T09:00:00Z","task":"T7","event":"launch","role":"builder","session":"b0070001","worktree":"/w/1","toolkits":[]}' \
+    '{"ts":"2026-10-28T09:30:00Z","task":"T7","event":"ticket-done","ticket":"01","commits":["abc1234"]}' \
+    '{"ts":"2026-10-28T09:30:00Z","task":"T7","event":"done","role":"builder","session":"b0070001"}' \
+    '{"ts":"2026-10-28T10:00:00Z","task":"T7","event":"launch","role":"builder","session":"b0070003","worktree":"/w/1--03","toolkits":[],"ticket":"03"}' \
+    '{"ts":"2026-10-28T10:00:00Z","task":"T7","event":"launch","role":"builder","session":"b0070004","worktree":"/w/1--04","toolkits":[],"ticket":"04"}' \
+    '{"ts":"2026-10-28T10:30:00Z","task":"T7","event":"ticket-done","ticket":"03","commits":["abc1235"]}' \
+    '{"ts":"2026-10-28T10:30:00Z","task":"T7","event":"done","role":"builder","session":"b0070003"}' \
+    '{"ts":"2026-10-28T10:50:00Z","task":"T7","event":"launch","role":"builder","session":"b0070005","worktree":"/w/1--05","toolkits":[],"ticket":"05"}' \
+    '{"ts":"2026-10-28T11:20:00Z","task":"T7","event":"ticket-done","ticket":"04","commits":["abc1236"]}' \
+    '{"ts":"2026-10-28T11:30:00Z","task":"T7","event":"launch","role":"builder","session":"b0070006","worktree":"/w/1--05","toolkits":[],"ticket":"05"}' >"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-28T20:00:00Z)
+  # 03's ticket-done is not 04's, 05's launch does not replace 04's builder, and 05's next launch
+  # replaces its first; the task worktree's builder ends as before.
+  assert_equal "$(jq -r '.workers.lifetimes[] | [.session, .end, .ended, .minutes, .rounds] | map(. // "null") | @tsv' <<<"$json")" "$(
+    printf '%s\n' \
+      $'b0070001\t2026-10-28T09:30:00Z\tdone\t30\t1' \
+      $'b0070003\t2026-10-28T10:30:00Z\tdone\t30\t1' \
+      $'b0070004\t2026-10-28T11:20:00Z\tticket-done\t80\t1' \
+      $'b0070005\t2026-10-28T11:30:00Z\treplaced\t40\t0'
+  )"
+  assert_equal "$(jq -r '.workers.running[].session' <<<"$json")" b0070006
 }
 
 @test "a team-thread wait counts as waiting for a message, in the foreground or the background" {

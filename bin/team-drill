@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+# Record a drill's run, and show each drill's last run and whether it is due (sops/drills.md).
+# A drill is a live run of a path the team's portability or its guards rest on; the registry,
+# bin/lib/drills.json, names each one, who runs it (by: coordinator, or daniel when it needs them
+# present) and the code it proves. Each run is one line of the team home's drills.jsonl, appended
+# and never rewritten, which team-checkpoint and team-handoff commit and push with the other
+# records; team-drill itself commits nothing. bin/lib/drills.jq says what a line is and when a
+# drill is due.
+#
+# Usage: team-drill record <drill> --verdict pass|fail [--detail <text>]
+#        team-drill import <run id>
+#        team-drill status [--json]
+#
+# record   Appends one line: {at (now, UTC), drill, machine (this machine's team name), commit
+#          (the HEAD of the code checkout team-drill runs from, the directory above bin/), dirty
+#          (true when that checkout has changes to tracked files), claude (the first word of
+#          claude --version, or null when there is none or it does not answer within 10 s),
+#          verdict, detail ("" without --detail)}, and prints "team-drill: recorded <drill>
+#          <verdict> on <machine> at <short commit>". It takes no option for the fields it fills.
+#          Refused, exit 1, with nothing written: a drill the registry lacks, naming the known
+#          ones; a drill with a workflow_job, which its workflow run records; a fenced machine or
+#          one that lost the lease (lease_refusal in bin/lib/team.sh), since such a machine
+#          commits and pushes no record; a machine with no team name; a code checkout whose HEAD
+#          it cannot read. A missing or other --verdict, and a --detail that holds a newline or is
+#          over 300 characters, are a malformed command line (exit 2).
+# import   Reads one run of the Bootstrap workflow with gh, run in the code checkout so gh names
+#          its repository (gh run view <id> --json ..., then each job's log with gh run view <id>
+#          --log --job <job id>), and appends one line for each drill with a workflow_job, in the
+#          registry's order: at (the job's completedAt), machine, commit and claude from the last
+#          line of the job's log holding "drill-record: ", which tests/bootstrap-drill ends with
+#          (machine=<lower-case kebab case> verdict=<pass|fail> commit=<40 hexadecimal
+#          characters> claude=<digits and dots, or none, recorded as null>), dirty false, verdict
+#          pass only when the job's conclusion is success and that line says verdict=pass, detail
+#          "" on a pass and "the job ended <conclusion>; its record line says verdict=<v>" on a
+#          fail, and run (the run's URL). A job with no such line, or one whose words are not
+#          those four, is a fail with the run's headSha, claude null, the drill's name with
+#          bootstrap- made ci- as machine and detail "the job ended <conclusion> with no record
+#          line"; a job the run lacks, the same at the run's updatedAt, with detail "the run has
+#          no job <name>". A drill that has a line of this run already is skipped, saying so, so
+#          a second import adds nothing. Every line is read before any is written. Exit 75,
+#          nothing written, while the run is not completed; refused, exit 1, nothing written: a
+#          run of another workflow, a gh call that fails, a line gh's fields would make no drill
+#          record (a time with fractional seconds, a missing headSha), and a machine record
+#          refuses; a run id that is not a number is a malformed command line (exit 2).
+# status   One row per registered drill, in the registry's order, under a header: the drill, its
+#          last run's date and age in days, machine, short commit, Claude Code version and
+#          verdict, then ok or "due: <its first reason>"; a drill with no record shows only "due:
+#          never ran". A drill's last run is its last valid line in file order; a line that is no
+#          drill record is skipped, and a last line counts them. With --json one object:
+#          {schema: "team-drill/1", max_age_days, malformed (the lines skipped), drills: [{drill,
+#          by, what, last (the line, or null), age_days (whole days since its at, or null), due,
+#          changed_by}]}. due lists, in this order, each reason that holds: never (no record),
+#          failed (the last run's verdict is fail), unknown-commit (the code checkout has no
+#          commit of its commit), dirty (it ran on uncommitted changes), changed (a commit after
+#          its commit, on the code checkout's HEAD, touches a path it proves: changed_by, the
+#          latest such commit), ahead (its at is over a day after now, a clock ahead, whose run
+#          would otherwise read as fresh) and old (its age_days over max_age_days). It exits 0
+#          whenever it could read the registry: the doctor's drills line decides what a due drill
+#          means.
+# Every line either subcommand writes is held to bin/lib/drills.jq's drills_record before it is
+# written, so no reader skips it. record and import are the coordinator's: a worker session (an
+# AGENT_TEAM_ROLE but coordinator; worker_refusal in bin/lib/team.sh) is refused them, exit 1,
+# nothing written, and status stays open to every session.
+# A drill run on a PR's head stays proven after the PR merges with a merge commit, since the head
+# is then an ancestor of dev.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-drill record <drill> --verdict pass|fail [--detail <text>] | import <run id> | status [--json]"
+REGISTRY=$TEAM_LIB/drills.json
+RECORD=$TEAM_HOME/drills.jsonl
+CODE=$(cd "$TEAM_LIB/../.." && pwd)
+
+# git in the code checkout alone, never a repository above it.
+code_git() {
+  GIT_CEILING_DIRECTORIES=$(dirname "$CODE") git -C "$CODE" "$@"
+}
+
+registry() {
+  jq -e 'select(.drills | type == "array")' "$REGISTRY" 2>/dev/null || die "cannot read the drill registry $REGISTRY"
+}
+
+# Whether <line> is a drill record of the registry <reg>, as every reader holds it (drills.jq's
+# drills_record), so no writer appends a line the readers would skip: drill_record_ok <reg> <line>
+drill_record_ok() {
+  jq -e -L "$TEAM_LIB" --argjson registry "$1" 'include "drills"; drills_record($registry.drills | map(.name))' \
+    <<<"$2" >/dev/null 2>&1
+}
+
+record() {
+  local drill='' verdict='' detail='' has_verdict=0 reg entry known job why machine commit dirty=false claude line
+  while (($#)); do
+    case $1 in
+      --verdict)
+        (($# >= 2)) || usage_error "record needs --verdict pass or --verdict fail"
+        [[ $2 == pass || $2 == fail ]] || usage_error "--verdict takes pass or fail, not '$2'"
+        verdict=$2 has_verdict=1
+        shift 2
+        ;;
+      --detail)
+        if (($# < 2)) || [[ $2 == *$'\n'* ]] || ((${#2} > 300)); then
+          usage_error "--detail takes one line of at most 300 characters"
+        fi
+        detail=$2
+        shift 2
+        ;;
+      -*) usage_error "unexpected argument '$1'; $USAGE" ;;
+      *)
+        [[ -z $drill ]] || usage_error "unexpected argument '$1'; $USAGE"
+        drill=$1
+        shift
+        ;;
+    esac
+  done
+  [[ -n $drill ]] || usage_error "record needs a drill; $USAGE"
+  ((has_verdict)) || usage_error "record needs --verdict pass or --verdict fail"
+
+  reg=$(registry) || exit 1
+  entry=$(jq -c --arg drill "$drill" '.drills[] | select(.name == $drill)' <<<"$reg")
+  if [[ -z $entry ]]; then
+    known=$(jq -r '[.drills[].name] | join(", ")' <<<"$reg")
+    die "no drill '$drill'; the drills are $known"
+  fi
+  job=$(jq -r '.workflow_job // empty' <<<"$entry")
+  [[ -z $job ]] || die "$drill runs as the Bootstrap workflow's job $job, whose run team-drill import <run id> records"
+  if why=$(lease_refusal "records no drill"); then die "$why"; fi
+  machine=$(machine_name) || exit 1
+  commit=$(code_git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) ||
+    die "cannot read the HEAD of the code checkout $CODE, so the drill's commit is unknown"
+  [[ -z $(code_git status --porcelain --untracked-files=no 2>/dev/null) ]] || dirty=true
+  claude=$(bounded 10 claude --version 2>/dev/null </dev/null) || claude=''
+  read -r claude _ <<<"$claude" || true
+
+  line=$(jq -cn --arg at "$(date -u +%FT%TZ)" --arg drill "$drill" --arg machine "$machine" --arg commit "$commit" \
+    --argjson dirty "$dirty" --arg claude "$claude" --arg verdict "$verdict" --arg detail "$detail" \
+    '{at: $at, drill: $drill, machine: $machine, commit: $commit, dirty: $dirty,
+      claude: (if $claude == "" then null else $claude end), verdict: $verdict, detail: $detail}')
+  drill_record_ok "$reg" "$line" || die "the line of $drill is no drill record, so nothing is written: $line"
+  # One write of under 4096 bytes, which the kernel appends whole, so no lock is taken.
+  printf '%s\n' "$line" >>"$RECORD"
+  echo "team-drill: recorded $drill $verdict on $machine at ${commit:0:7}"
+}
+
+# The fields a log's record line gives, as one JSON object, or nothing when the log has no line
+# that parses: the last line holding "drill-record: ", read after that text: record_words <log>
+record_words() {
+  local line word key value
+  local -a parts
+  local -A words=()
+  line=$(grep -F 'drill-record: ' <<<"$1" | tail -n 1) || return 0
+  line=${line##*drill-record: }
+  read -ra parts <<<"${line%$'\r'}" || true
+  for word in "${parts[@]}"; do
+    [[ $word == *=* ]] || return 0
+    key=${word%%=*} value=${word#*=}
+    [[ $key =~ ^(machine|verdict|commit|claude)$ && -z ${words[$key]+set} ]] || return 0
+    words[$key]=$value
+  done
+  [[ ${words[machine]-} =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${words[verdict]-} =~ ^(pass|fail)$ &&
+    ${words[commit]-} =~ ^[0-9a-f]{40}$ && ${words[claude]-} =~ ^([0-9]+(\.[0-9]+)*|none)$ ]] || return 0
+  jq -cn --arg machine "${words[machine]}" --arg verdict "${words[verdict]}" --arg commit "${words[commit]}" \
+    --arg claude "${words[claude]}" \
+    '{machine: $machine, verdict: $verdict, commit: $commit, claude: (if $claude == "none" then null else $claude end)}'
+}
+
+import_run() {
+  (($# == 1)) || usage_error "import needs one run id; $USAGE"
+  local id=$1 reg why view workflow state url drill name job job_id log words line
+  local -a lines=() said=()
+  [[ $id =~ ^[0-9]+$ ]] || usage_error "a run id is a number, not '$id'"
+  reg=$(registry) || exit 1
+  if why=$(lease_refusal "records no drill"); then die "$why"; fi
+  view=$(cd "$CODE" && gh run view "$id" --json status,conclusion,headSha,url,workflowName,updatedAt,jobs 2>&1) ||
+    die "gh run view $id failed: $(grep -m1 . <<<"$view" || true)"
+  workflow=$(jq -r '.workflowName' <<<"$view")
+  [[ $workflow == Bootstrap ]] || die "run $id is a run of $workflow, not of the Bootstrap workflow"
+  state=$(jq -r '.status' <<<"$view")
+  if [[ $state != completed ]]; then
+    echo "${0##*/}: run $id is $state, not completed; import it again once it completes" >&2
+    exit 75
+  fi
+  url=$(jq -r '.url' <<<"$view")
+  while IFS=$'\t' read -r drill name; do
+    if [[ -e $RECORD ]] && jq -enR --arg drill "$drill" --arg url "$url" \
+      'any(inputs | try fromjson catch null; type == "object" and .drill == $drill and .run == $url)' "$RECORD" >/dev/null; then
+      said+=("${0##*/}: $drill of run $url is recorded already, so it is skipped")
+      continue
+    fi
+    job=$(jq -c --arg name "$name" '[.jobs[] | select(.name == $name)] | last // empty' <<<"$view")
+    words=''
+    if [[ -n $job ]]; then
+      job_id=$(jq -r '.databaseId' <<<"$job")
+      log=$(cd "$CODE" && gh run view "$id" --log --job "$job_id" 2>&1) ||
+        die "gh could not read the log of run $id's job $name: $(grep -m1 . <<<"$log" || true)"
+      words=$(record_words "$log")
+    fi
+    line=$(jq -cn --arg drill "$drill" --arg name "$name" --argjson run "$view" --argjson job "${job:-null}" \
+      --argjson words "${words:-null}" '
+      def fallback_at: $run.updatedAt;
+      ($job.conclusion // "") as $conclusion
+      | {at: (if $job == null or ($job.completedAt | type != "string") or ($job.completedAt | startswith("0001-"))
+              then fallback_at else $job.completedAt end),
+         drill: $drill}
+      + if $job == null then
+          {machine: ($drill | sub("^bootstrap-"; "ci-")), commit: $run.headSha, dirty: false, claude: null,
+           verdict: "fail", detail: "the run has no job \($name)"}
+        elif $words == null then
+          {machine: ($drill | sub("^bootstrap-"; "ci-")), commit: $run.headSha, dirty: false, claude: null,
+           verdict: "fail", detail: "the job ended \($conclusion) with no record line"}
+        else
+          (if $conclusion == "success" and $words.verdict == "pass" then "pass" else "fail" end) as $verdict
+          | {machine: $words.machine, commit: $words.commit, dirty: false, claude: $words.claude, verdict: $verdict,
+             detail: (if $verdict == "pass" then ""
+                      else "the job ended \($conclusion); its record line says verdict=\($words.verdict)" end)}
+        end
+      + {run: $run.url}')
+    drill_record_ok "$reg" "$line" || die "run $id gives $drill a line that is no drill record, so nothing is written: $line"
+    lines+=("$line")
+  done < <(jq -r '.drills[] | select(.workflow_job) | [.name, .workflow_job] | @tsv' <<<"$reg")
+  ((${#said[@]} == 0)) || printf '%s\n' "${said[@]}"
+  for line in "${lines[@]}"; do
+    # One write of under 4096 bytes per line, which the kernel appends whole.
+    printf '%s\n' "$line" >>"$RECORD"
+    jq -r '"team-drill: recorded \(.drill) \(.verdict) on \(.machine) at \(.commit[0:7])"' <<<"$line"
+  done
+}
+
+status() {
+  local json=0 reg scan git_facts name commit proves changed known
+  local -a paths
+  while (($#)); do
+    case $1 in
+      --json) json=1 ;;
+      *) usage_error "unexpected argument '$1'; $USAGE" ;;
+    esac
+    shift
+  done
+  reg=$(registry) || exit 1
+  if [[ -e $RECORD ]]; then
+    scan=$(jq -nRc -L "$TEAM_LIB" --argjson registry "$reg" 'include "drills"; drills_scan($registry)' "$RECORD")
+  else
+    scan='{"last": {}, "malformed": 0}'
+  fi
+  # What the code checkout says of each drill's last commit: whether it has it, and the latest
+  # commit after it, on HEAD, that touches a path the drill proves.
+  git_facts='{}'
+  while IFS=$'\t' read -r name commit proves; do
+    known=false changed=''
+    if code_git cat-file -e "$commit^{commit}" 2>/dev/null; then
+      known=true
+      mapfile -t paths < <(jq -r '.[]' <<<"$proves")
+      changed=$(code_git rev-list -1 "$commit..HEAD" -- "${paths[@]}" 2>/dev/null) || changed=''
+    fi
+    git_facts=$(jq -c --arg name "$name" --argjson known "$known" --arg changed "$changed" \
+      '.[$name] = {known: $known, changed_by: (if $changed == "" then null else $changed end)}' <<<"$git_facts")
+  done < <(jq -r --argjson scan "$scan" '.drills[] | select($scan.last[.name] != null)
+    | [.name, $scan.last[.name].commit, (.proves | tojson)] | @tsv' <<<"$reg")
+  if ((json)); then
+    jq -n -L "$TEAM_LIB" --argjson registry "$reg" --argjson scan "$scan" --argjson git "$git_facts" \
+      'include "drills"; drills_status($registry; $scan; $git; now)'
+  else
+    jq -nr -L "$TEAM_LIB" --argjson registry "$reg" --argjson scan "$scan" --argjson git "$git_facts" \
+      'include "drills"; drills_status($registry; $scan; $git; now) | drills_text'
+  fi
+}
+
+command=${1:-}
+(($# == 0)) || shift
+if [[ $command == record || $command == import ]] && why=$(worker_refusal "" "records no drill"); then die "$why"; fi
+case $command in
+  record) record "$@" ;;
+  import) import_run "$@" ;;
+  status) status "$@" ;;
+  '') usage_error "$USAGE" ;;
+  *) usage_error "unknown subcommand '$command'; $USAGE" ;;
+esac

@@ -2,17 +2,12 @@
 # shellcheck shell=bash
 # reads state from: 010-os.sh
 
-# By its app on macOS, by its command on Arch.
+# By bin/lib/chrome.sh's lookup, which team-tickets --graph takes too: its app on macOS, its
+# command on Arch, or TEAM_CHROME.
+# shellcheck source=bin/lib/chrome.sh
+source "$TEAM_LIB/chrome.sh"
 if [[ -n $os ]]; then
-  if [[ -n ${TEAM_CHROME:-} ]]; then
-    browser=$TEAM_CHROME
-    [[ -e $browser ]] || browser=''
-  elif [[ $os == macos ]]; then
-    browser=/Applications/Google\ Chrome.app
-    [[ -e $browser ]] || browser=''
-  else
-    browser=$(command -v google-chrome-stable google-chrome chromium | head -n 1 || true)
-  fi
+  browser=$(chrome_path)
   if [[ -n $browser ]]; then
     report chrome PASS "$(tilde "$browser")"
   elif [[ $os == macos ]]; then

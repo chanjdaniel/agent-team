@@ -111,8 +111,8 @@ session_is() {
 }
 
 # gh: GitHub as the PRs under $GH_DIR (<owner>_<repo>-<n>.json, with the checks on the head in
-# checks/<owner>_<repo>-<n>.json) and the bare origins. pr merge merges the PR's branch into its
-# base on the origin for real, with a merge commit.
+# checks/<owner>_<repo>-<n>.json), with no workflow run of any head, and the bare origins. pr
+# merge merges the PR's branch into its base on the origin for real, with a merge commit.
 fake_github() {
   stub_script gh <<'SH'
 pr_file() { echo "$GH_DIR/${1//\//_}-$2.json"; }
@@ -147,6 +147,9 @@ case "$1 $2" in
     elif [[ $2 =~ ^repos/[^/]+/([^/]+)/compare/([^.]+)\.\.\.(.+)$ && $3 == --jq && $4 == .behind_by ]]; then
       # How many commits the base has that the head lacks.
       git --git-dir "$ORIGINS/${BASH_REMATCH[1]}.git" rev-list --count "${BASH_REMATCH[3]}..${BASH_REMATCH[2]}"
+    elif [[ $2 =~ ^repos/[^/]+/[^/]+/actions/runs\?head_sha=[0-9a-f]+\&per_page=100$ ]]; then
+      # No workflow runs: this GitHub runs no Actions, so team-ci-wait's look reads only the checks.
+      echo '{"total_count": 0, "workflow_runs": []}'
     elif [[ $2 =~ ^repos/([^/]+/([^/]+))/pulls/([0-9]+)/commits$ ]]; then
       file=$(pr_file "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}")
       git=(git --git-dir "$ORIGINS/${BASH_REMATCH[2]}.git")
@@ -273,7 +276,7 @@ level_reading() {
   ok team-open home feature feat tooling "The tooling"
   local wt
   wt=$(jq -r .worktree <<<"$output")
-  ok team-log T1 plan-approved by=Daniel
+  ok team-log T1 plan-approved by=coordinator
   ok team-brief T1 builder-ticket --set ticket=01 --name build-01
   local builder_brief=$output
   # A builder here has peaked at 10 GiB five times, so its learned estimate is 11 GiB; full's 20
@@ -300,7 +303,7 @@ level_reading() {
   step building level-stow:-
 
   # The coordinator's STOW: the builder answers PAUSED stowed, then team-stow stows the task.
-  ok team-log T1 paused reason=stowed
+  ok team-log T1 paused cause=stow reason=stowed
   ok team-stow T1
   assert_equal "$(jq -c 'select(.event == "stowed") | [.task, .roles, .cause]' "$TEAM_HOME/ledger.jsonl")" '["T1",["builder"],"level"]'
   assert_equal "$(jq -c 'map(.id)' "$BATS_TEST_TMPDIR/sessions.json")" '[]'
@@ -323,7 +326,7 @@ level_reading() {
   local resume_brief=$output
   assert_contains "$(cat "$resume_brief")" "resuming the task after the stow for the level at "
   ok team-worker T1 builder "$wt" -- "Read your brief at $resume_brief"
-  ok team-log T1 resumed
+  ok team-log T1 resumed all=true
   step building
   run_bin -0 team-log --check
 }
@@ -366,7 +369,7 @@ level_reading() {
   # Its DONE logged, the next step is the coordinator's until a builder is at work.
   ok team-log T1 "done" role=planner session="$planner"
   step planning no-worker:"$planner"
-  ok team-log T1 plan-approved by=Daniel
+  ok team-log T1 plan-approved by=coordinator
   step building no-worker:"$planner"
 
   # 4. Build: one builder per ticket, one ticket in each project.
@@ -508,7 +511,7 @@ events_from() {
   ok team-next T1 -- "T1 DONE .scratch/task/spec.md"
   assert_equal "$output" "logged done role=planner session=$planner report=.scratch/task/spec.md
 no hand-off for DONE"
-  ok team-log T1 plan-approved by=Daniel
+  ok team-log T1 plan-approved by=coordinator
   step building no-worker:"$planner"
 
   # The first ticket's builder, launched by hand as the manual's step 4 says.
@@ -550,7 +553,7 @@ launched T1-reviewer 2b3c4d5e"
   # Its findings go back to the deliverer, which still holds the context.
   ok team-next T1 --sent-back 1 -- "T1 DONE findings .scratch/task/review.md findings=${zero/blocking:0/blocking:1} before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "send to T1-builder ($deliverer, context unknown): T1 fix findings 1 in .scratch/task/review.md on the same branch, then deliver again as your brief says"
+    "send to T1-builder ($deliverer, context unknown): T1 fix findings 1 in .scratch/task/review.md on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a T1 QUESTION first), then deliver again as your brief says"
 
   # The holder fixes and reports the PR again: the rereview, from the reviewed head.
   session_is "$deliverer" busy working
@@ -567,10 +570,15 @@ launched T1-reviewer 6c7d8e9f"
   agent_review_passes owner/home 7
   session_is "$rereviewer" idle working
 
-  # The pass: the merge ask's facts, and nothing posted or merged.
+  # The pass arms the checks wait, which on green prints the default word's merge line, the plan
+  # being approved, and nothing posted or merged.
   ok team-next T1 -- "T1 DONE pass $url findings=$zero before=none guarded=none"
-  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $fix, agent-review success, checks green"
-  step awaiting-merge
+  assert_equal "$(tail -n 1 <<<"$output")" "checks: arm team-next T1 --ci with Bash run_in_background unless it is already running: it waits on the checks of $url at ${fix:0:8}, then prints the merge ask or hands a red check back as a round"
+  ci_wait_ends passed "$fix"
+  ok team-next T1 --ci
+  assert_equal "$(tail -n 1 <<<"$output")" "merge on the default word: run team-merge T1 for $url at $fix, agent-review success, checks green"
+  # The sweep sends the coordinator to that merge.
+  step awaiting-merge merge-due:-
   [[ $(git --git-dir "$BATS_TEST_TMPDIR/origin/home.git" rev-parse dev) != "$fix" ]]
 
   # The ledger holds every turn, each written by a script, and meets its contract.
@@ -579,7 +587,7 @@ launched T1-reviewer 6c7d8e9f"
 opened
 launch planner brief
 done planner $planner
-plan-approved Daniel
+plan-approved coordinator
 launch builder brief-build-01
 ticket-done 01
 done builder $first
@@ -594,7 +602,8 @@ done reviewer $reviewer
 pr
 launch reviewer brief-rereview-2
 review pass
-done reviewer $rereviewer"
+done reviewer $rereviewer
+ci"
   assert_equal "$(jq -c 'select(.event == "ticket-done") | [.ticket, .commits, .note]' "$TEAM_HOME/ledger.jsonl")" \
     "$(jq -cn --arg one "${one:0:8}" --arg two "${two:0:8}" '["01", [$one], "the first thing"], ["02", [$two], "the second thing"]' | jq -c .)"
   assert_equal "$(jq -c 'select(.event == "review") | [.verdict, .head, .sent_back, .findings.blocking]' "$TEAM_HOME/ledger.jsonl")" \

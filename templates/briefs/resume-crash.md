@@ -8,7 +8,7 @@ Task directory: `{{task_dir}}/` in the worktree, restored from the task's archiv
 ## What may be missing
 
 The checkpoint is the last of the task that {{machine}} saved.
-Up to 5 minutes of work before {{machine}} stopped may be missing, and so may any no-mistakes run that was in flight, with whatever it would have pushed or reported.
+About the last 5 minutes of work before {{machine}} stopped may be missing, more if its checkpoints had stopped, which the heartbeat posts in `#coordinator`, and so may any no-mistakes run that was in flight, with whatever it would have pushed or reported; Daniel's word and the other events the ledger pushes at once are not missing.
 The uncommitted changes of that checkpoint: {{snapshot}}.
 Check before you build on any of it.
 

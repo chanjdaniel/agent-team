@@ -86,6 +86,15 @@ EOF
   rm "$STUB_CALLS/servers-install.log"
   git init -q "$CODE_CHECKOUT"
   git -C "$CODE_CHECKOUT" config core.hooksPath bin/hooks/git
+  # Its first commit, CODE_START, with no file, and every drill passed on it today, so the drills
+  # line passes. Made with git's plumbing, as code_commit makes the later ones: the dev guard's
+  # pre-commit refuses a commit on main.
+  export CODE_START
+  CODE_START=$(git -C "$CODE_CHECKOUT" commit-tree -m 'chore: start the code' 4b825dc642cb6eb9a060e54bf8d69288fbee4904)
+  git -C "$CODE_CHECKOUT" update-ref HEAD "$CODE_START"
+  jq -c --arg at "$(date -u +%FT%TZ)" --arg commit "$CODE_START" '.drills[] | {at: $at, drill: .name,
+    machine: "home-pc", commit: $commit, dirty: false, claude: "2.1.321", verdict: "pass", detail: ""}' \
+    "$REPO_ROOT/bin/lib/drills.json" >"$TEAM_HOME/drills.jsonl"
   # The team home, with the records guard on, as Daniel turns it on.
   git -C "$TEAM_HOME" config core.hooksPath "$CODE_CHECKOUT/bin/hooks/records-git"
 
@@ -181,6 +190,7 @@ EOF
   answer "docker info --format {{.ServerVersion}}" "28.3.3"
   export TEAM_CHROME=$BATS_TEST_TMPDIR/chrome
   touch "$TEAM_CHROME"
+  chmod +x "$TEAM_CHROME"
   # The heartbeat runs, as it should on the holder.
   "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
   # The user manager delegates cpu and memory, as home-pc's does, the team's slice is installed,
@@ -221,7 +231,7 @@ EOF
 }
 
 # The health record a good heartbeat run on the holder home-pc leaves, just now, with its
-# checkpoint, folded by the health module as team-timers run folds one.
+# checkpoint and a live coordinator, folded by the health module as team-timers run folds one.
 good_heartbeat_run() {
   local state=$HOME/.local/state/agent-team now
   now=$(date -u +%FT%TZ)
@@ -229,7 +239,8 @@ good_heartbeat_run() {
   touch "$state/last-checkpoint"
   jq -n -L "$REPO_ROOT/bin/lib" --arg now "$now" 'include "health";
     null | health_fold({machine: "home-pc", id: "doctor-machine", start: $now, now: $now, ended: "ok",
-      last_checkpoint: $now, offline: null, login_refused: null}; [{holding: true}, {lease_renewed: $now}])' \
+      last_checkpoint: $now, offline: null, login_refused: null}; [{holding: true}, {lease_renewed: $now}, {coordinator_live: true}];
+      health_limits)' \
     >"$state/health.json"
 }
 
@@ -408,6 +419,16 @@ secret_ids() {
 # TEAM_DOCTOR_CHECKS='' before it. only_checks <file>...
 only_checks() {
   export TEAM_DOCTOR_CHECKS="$*"
+}
+
+# Replace dev on the team home's origin (make_team_home) with a history of its own, sharing no
+# commit with the team home's, as the records rewrite of 2026-10-28 did: rewrite_origin_dev
+rewrite_origin_dev() {
+  local origin=$BATS_TEST_TMPDIR/origin/agent-team.git blob tree commit
+  blob=$(echo rewritten | git -C "$origin" hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tledger.jsonl\n' "$blob" | git -C "$origin" mktree)
+  commit=$(git -C "$origin" commit-tree "$tree" -m "chore: the rewritten records")
+  git -C "$origin" update-ref refs/heads/dev "$commit"
 }
 
 # The line of check <name> in the output.

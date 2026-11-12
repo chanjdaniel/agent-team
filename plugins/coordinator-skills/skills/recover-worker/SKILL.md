@@ -8,8 +8,8 @@ description: The recovery ladder for a stuck worker. Use when a worker is silent
 Climb the ladder one rung at a time, and stop at the rung that frees the worker.
 Run `team-state T<n>` first, so you act on the task's state, not on the last message you remember.
 
-When one stop the ledger did not see ended several sessions at once (the usage limit, a crash, a reboot), first log each stopped task's park with when it began, the limit message's time when you have it, else the task's last event before the stop: `team-log T<n> blocked reason="usage limit: <what stopped it>" since=<ISO time>`.
-The relaunch then clears it, and `team-time` counts the stop as the usage limit (or the machine off), not as work.
+When one stop the ledger did not see ended several sessions at once (the usage limit, a crash, a reboot), first log each stopped task's park with when it began, the limit message's time when you have it, else the task's last event before the stop: `team-log T<n> paused cause=limit reason="usage limit: <what stopped it>" since=<ISO time>`, with `cause=shutdown` for a crash or a reboot.
+The relaunch then clears it, and `team-time` counts the stop as the usage limit (or the machine off), not as work, by its cause.
 
 1. **Read its log.** `claude logs <session id>` shows what the worker last did and where it stands.
    Often the answer is there: a prompt it is waiting on, a question it asked in the wrong place, a finished step it never reported.
@@ -19,7 +19,7 @@ The finding names the tool call the worker waits on, whether it runs in the back
 
 - **A call in the background** (the worker's turn has ended): send the worker one line naming the command and what it waits on; a message wakes the session, as T121's did.
 - **A call in the foreground** (it holds the turn): find that command's process among the descendants of the session's `pid` from `claude agents --json` (`ps -A -o pid=,ppid=,args=` lists each process with its parent), kill that exact pid and no other, then send the worker one line saying why.
-- **A CI wait that is stuck** (a check still pending on a run that has completed): free the wait as above, and tell the worker to re-run that run with `gh run rerun <run id> --repo <repo>` and wait again with `team-ci-wait` in the background.
+- **A CI wait** (a worker's `team-ci-wait`, run by hand): it always ends, naming a stuck check, and the PR's checks are the coordinator's own wait, `team-next T<n> --ci`, which reruns a stuck check itself: free the worker's wait as above and tell it to go on with its brief.
 - **No tool call running**: the session is stuck inside Claude Code, so go on with rung 2.
 
 When the worker stays stuck, the ladder goes on from rung 2.

@@ -1,6 +1,7 @@
 // The spec-review toolkit as team-worker --toolkit spec-review loads it: its plugin layout, its two
-// read-only reader agents' frontmatter, its spec-review skill's name, limits and order of steps, its
-// README's coordinator section and attribution line, and each eval case's graders.
+// read-only reader agents' frontmatter (their read-only tools, omitClaudeMd and model), its
+// spec-review skill's name, limits and order of steps, its README's sections in the effect
+// toolkit's order, its coordinator section and attribution line, and each eval case's graders.
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

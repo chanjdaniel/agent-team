@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "foldkit-devtools": {
+      "command": "node",
+      "args": ["@TEAM_CODE@/toolkits/effect/scripts/foldkit-devtools-mcp.mjs"],
+      "env": {
+        "FOLDKIT_PROJECT_ROOT": "@WORKTREE@"
+      }
+    }
+  }
+}

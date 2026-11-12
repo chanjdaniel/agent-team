@@ -1,93 +1,166 @@
 #!/usr/bin/env bash
-# Keep one "Waiting on you" message in #coordinator current: what waits on Daniel, from the
-# ledger alone, edited in place through the Discord REST API, so no model turn writes it.
+# Keep what waits on Daniel, numbered, in the team home's waiting.md, from the ledger alone, so no
+# model turn writes it, and post it fresh in #coordinator when Daniel asks what waits.
 #
-# Usage: team-inbox
-# The message lists, for each open task in task number order: each ask nothing settled (an asked
+# Usage: team-inbox [--post | --item <n>]
+# With no argument it writes the list; --post writes it, then posts it; --item <n> names the item
+# numbered n (each below).
+# The list holds, for each open task in task number order: each ask nothing settled (an asked
 # with no answered or merge-preapproved of its id and no merge-approved whose url its text names,
 # as team-sweep reads it), with the task, the ask's id, its first line and a link to the question
 # (its discord_message, which team-ask logs, in the task's thread; else the thread); each PR ready
 # to merge (the task's phase awaiting-merge, the PR not merged and no merge-approved logged at its
 # head), with its full URL; each interview under way (an interview-thread with no planner's done
 # or plan-approved after it) with no walk on in that thread, with its thread; and each walk under
-# way (team-ui --walk, on), with the thread it runs in. With none, it says "Nothing waits on you". The
-# line after the items and the standing word lines (below), or after the items alone when no word
-# stands, is the team's resource level, from team-level status --stored --json (it takes no
-# reading): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved;
-# T171 stowed, waiting to resume", naming each open task whose latest stowed (for the level or a
-# handoff) names roles to relaunch and that no launch has followed; when team-level fails the line
-# is left out, with a line on stderr saying why. After it comes the health line, the line of
-# team-timers health --json (asked once, for at most 10 s; bin/lib/health.jq words it): on the
-# holder "-# Health: ok - last checkpoint <when>, lease renewed <when>" when healthy, else
-# "**Health**: " and each problem, as "checkpoint failing since <time> (2 runs): <reason>"; when
-# the view cannot be read (team-timers fails or prints no JSON view), "**Health**: unknown - " and
-# the last line team-timers wrote on stderr, with a line on team-inbox's stderr saying why. A
-# machine that does not hold the lease, or has no team name, keeps no health, so the view has no
-# line and none is added.
-# Its last line is the time of this run. Items past Discord's 2000 characters are left out from the
-# end, counted in a line; the health line is never cut, and the limit counts it.
-# A PR ready to merge is left out while it waits on no word of Daniel's: the task's latest
-# merge-preapproved of the PR's project (the registered one whose repo is the URL's) stands, and
-# that project opts in now (team-project --find merge_with_plan true) and is not the team's own
-# (own_project in bin/lib/team.sh), so team-merge merges it on that plan-time word. One it
-# refuses comes back as the coordinator's ask, its text naming the PR's URL, listed with the asks.
-# A PR ready to merge is left out too while a standing word of Daniel's stands for its project (the
-# latest merge-standing or merge-standing-withdrawn naming the project or all is a merge-standing)
-# and that project is not the team's own (standing_projects in bin/lib/team.sh), so team-merge
-# merges it on that word; one it refuses comes back as the coordinator's ask too. The team's own
-# project's ready PRs are listed whatever word stands, since they merge only on the per-head word.
-# While a standing word stands, one line per word after the items, before the resources line,
-# names the registered projects it stands for, never the team's own, and links Daniel's message:
-# "-# Standing merge word on <projects> since <link>"; the length limit never cuts those lines.
-# The registry is read only once the ledger holds a merge-preapproved or a merge-standing; when it
-# cannot be read, every PR ready to merge is listed, the standing word lines name the projects as
-# the words were logged (all as "every project"), and a line on stderr says why.
-# It edits the message named in ~/.local/state/agent-team/inbox.json ({channel, guild, message})
-# and posts a new one only when there is none there, it is another channel's, or Discord no longer
-# has it (404), keeping the new one's id. It never pings: no mention in it notifies anyone, and
-# Discord sends no notice of an edit (team-ask's ping does that for a new ask). The guild, which a
-# question's link needs, is read once from #coordinator's channel and kept in the same file.
+# way (team-ui --walk, on), with the thread it runs in. Each is a line of its section ("**Asks**",
+# "**PRs ready to merge**", "**Interviews under way**", "**Walks under way**", a section with none
+# left out) under the title "**Waiting on you**", its number in bold, as "- **3** T7 plan: Approve
+# the plan? <link>", and every URL in <>, so Discord shows no preview card for it; with none, the
+# list says "Nothing waits on you.". An ask's line is cut at 150 characters of its text, a title at 80.
+# Numbers: an item is keyed "ask <task> <id> <the asked's ts>" (so a re-ask of the same id is a new
+# item), "pr <url>" (its trailing slash dropped), "interview <task> <thread>" or "walk <task> <the
+# walk's start>" (so a walk stopped and started again is a new item). An item the last run listed
+# keeps its number, and each new one takes the lowest number no listed item holds and
+# no item of the latest post showed (waiting.json's posted, null until a post records one). A
+# waiting.json that is missing numbers the list afresh; one that cannot be read, or is of another
+# schema than team-waiting/1, does too, with a line on stderr saying why.
+# A PR ready to merge is left out while it waits on no word of Daniel's: its default word, the
+# approved plan, holds on the ledger (merge_authority in bin/lib/ledger.jq, as team-sweep's
+# merge-due reads it: the plan approved and not withdrawn, the PR's project not the team's own by
+# own_project in bin/lib/team.sh, or the team's own on a plan Daniel approved with the reviewer App
+# on, the default not withdrawn for it, the task's branch logged and its reviews letting it merge
+# unasked), so team-merge merges it on that word; one it refuses comes back as the coordinator's
+# ask, its text naming the PR's URL, listed with the asks. While the reviewer App is off (no
+# bin/lib/review-app), the team's own project's ready PRs are listed, since they merge only on the
+# per-head word.
+# While a withdrawal of the default word stands (the latest merge-default-withdrawn or
+# merge-default-restored of any task covering some PR is that withdrawal), one line per withdrawal
+# after the items names what it is for and links Daniel's message: "-# Default merge word
+# withdrawn for <the task, project <name> or every project> since <link>" ("since message <id> in
+# <#channel>" with no guild known).
+# The registry is read only while an open task awaits merge with its plan approved; when it cannot
+# be read, every PR ready to merge is listed, and a line on stderr says why.
+# --post: the post is waiting.md's lines, then the team's resource level, from team-level status
+# --stored --json (it takes no reading): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for
+# the team; 6.1 GiB reserved; T171 stowed, waiting to resume", naming each open task whose latest
+# stowed (for the level or a handoff) names roles to relaunch and that no launch has followed;
+# when team-level fails the line is left out, with a line on stderr saying why. After it comes the
+# health line, the line of team-timers health --json (asked once, for at most 10 s;
+# bin/lib/health.jq words it): on the holder "-# Health: ok - last checkpoint <when>, lease
+# renewed <when>" when healthy, else "**Health**: " and each problem, as "checkpoint failing since
+# <time> (2 runs): <reason>"; when the view cannot be read (team-timers fails or prints no JSON
+# view), "**Health**: unknown - " and the last line team-timers wrote on stderr, with a line on
+# team-inbox's stderr saying why. A machine that does not hold the lease, or has no team name,
+# keeps no health, so the view has no line and none is added. Last comes the foot, "-# Answer by
+# number, as "1 yes, 2 no"; posted <t:<now>:R>" when anything waits, else "-# Posted
+# <t:<now>:R>". Neither line is in waiting.md, which a plain run writes without asking for them.
+# The post goes as new messages at the bottom of #coordinator, each with no mention that notifies
+# anyone and flags 4, so no link shows a preview card; a post over 2000 characters is packed into
+# several messages of at most 2000 each, cut only between lines, posted in order. Once they are
+# posted, waiting.json's posted is {at, messages, items}: the post's time, its message ids and
+# the items it showed, whose numbers no new item takes until the next post. When a later message
+# fails after an earlier one went, posted records the ones that went and the items their lines
+# showed; when the first fails, nothing is recorded. The record is committed and pushed to the
+# team home's origin at once (waiting.json and waiting.md alone), since a holder that steals the
+# lease after a crash numbers from origin's copy; when it cannot be (the team holding offline,
+# origin unreachable or refusing), a line on stderr says so, the run still exits 0, and the next
+# checkpoint pushes it. --post refuses before writing anything
+# without a token, and as Discord's refusal says (75 on a 429, else 1) when the guild cannot be
+# read or a message cannot be posted.
+# --item <n>, n from 1 to 999, for routing Daniel's numbered reply ("3 yes, 5 no"; team-answer
+# --item runs it): prints the standing item numbered n, as "ask <task> <id>", "pr <task> <url>",
+# "interview <task> <thread>" or "walk <task> <thread>" ("walk <task>" for a walk with no thread). It reads waiting.json alone, with no lock, no Discord and no lease
+# check (the lease-fence hook blocks it on a fenced machine), and refuses with exit 1 a number no
+# standing item holds: "item <n> no longer waits: the list posted <time> showed it as <its line>"
+# when the latest post showed it, else "no item <n> waits; the list holds 1, 2 and 4" (or
+# "nothing waits"); and a waiting.json that is missing or cannot be read.
+# Files: the team home's waiting.md, the list as Daniel reads it, with its final newline, and
+# waiting.json beside it ({schema: "team-waiting/1", items: [{n, key, kind, task, title, ...,
+# line}], withdrawn, posted}), which the scripts read; both are records, which the checkpoint
+# commits, and neither holds the time of a run, so a run that changes nothing makes no commit. A
+# steal after a crash loses only what no push took: the numbers plain runs gave new items since the
+# last checkpoint, and a post's reservation whose push failed.
+# Each is written to a temporary file in the team home, then moved into place.
+# Discord: an ask's link needs the guild, which ~/.local/state/agent-team/inbox.json keeps
+# ({channel, guild}), read once from #coordinator's channel; with the guild kept, a run calls
+# Discord for nothing but the post. When that read fails (no token, a refusal, a 429), a plain run
+# links each ask to its thread alone, with a line on stderr saying why. The old Waiting on you message, which a
+# team-inbox from before waiting.md kept current and named in inbox.json, is retired: edited once
+# to say it is no longer kept and how to get the list, with no mention that notifies anyone and no
+# preview, then dropped from inbox.json; one Discord no longer has (404), or of another channel, is
+# dropped with no edit; any other failure keeps it for the next run, with a line on stderr. It
+# never edits anything else, and posts only on --post.
 # team-ask, team-answer, team-merge and team-close run it at their end (refresh_inbox in
 # bin/lib/team.sh), going on with a line on stderr when it fails; team-timers run runs it every
-# five minutes on the lease holder. It refuses on a machine that is fenced or lost the lease
-# (lease_refusal in bin/lib/team.sh) and in a worker session (worker_refusal), and one run at a
-# time holds ~/.local/state/agent-team/inbox.lock.
-# Prints "edited <the message's link>" or "posted <the message's link>".
-# Exit codes: 0 done; 1 refused, or Discord refused a call; 2 a malformed command line; 75 Discord
-# answered 429, or another run held the lock for a minute.
+# five minutes on the lease holder. It refuses in a worker session (worker_refusal in
+# bin/lib/team.sh), and, but on --item, on a machine that is fenced or lost the lease
+# (lease_refusal); one run at a time holds ~/.local/state/agent-team/inbox.lock, waiting for it at
+# most a minute (TEAM_INBOX_LOCK_SECONDS replaces the 60 s, the tests' seam; 0 does not wait).
+# Prints "retired <the old message's link>" when it retired it, then "wrote waiting.md: <n> items"
+# ("1 item", "0 items"), then on --post "posted <link>" for each message posted, in order.
+# Exit codes: 0 written (and on --post, posted; on --item, named); 1 refused, a file cannot be
+# written, no item <n> waits, or Discord refused a post's call; 2 a malformed command line; 75
+# another run held the lock for the wait, or Discord rate-limited a post's call.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-# Discord's limit on a message's characters, the most one call may take and the longest wait for
-# another run's lock, in seconds.
-LIMIT=2000
+# The most one call to Discord may take and the longest wait for another run's lock, in seconds.
 CALL_TIMEOUT=20
-LOCK_SECONDS=60
+LOCK_SECONDS=${TEAM_INBOX_LOCK_SECONDS:-60}
 # The most team-timers health may take, in seconds; it reads three files.
 HEALTH_TIMEOUT=10
-# Discord's message flag SUPPRESS_EMBEDS, so a PR's link shows no preview card.
+# The most characters Discord takes in one message.
+MESSAGE_LIMIT=2000
+# Discord's message flag SUPPRESS_EMBEDS, so a link shows no preview card.
 SUPPRESS_EMBEDS=4
+# The old message's one edit.
+RETIRED='**Waiting on you** is no longer kept here: ask the coordinator what waits on you, and it posts the list fresh, numbered so one reply answers several.'
 
-(($# == 0)) || usage_error "usage: team-inbox"
+USAGE="usage: team-inbox [--post | --item <n>]"
+
+post='' item=''
+case $#:${1:-} in
+  0:) ;;
+  1:--post) post=1 ;;
+  2:--item) item=$2 ;;
+  *) usage_error "$USAGE" ;;
+esac
+[[ -z $item || $item =~ ^[1-9][0-9]{0,2}$ ]] || usage_error "$USAGE"
+[[ $LOCK_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_INBOX_LOCK_SECONDS must be a whole number of seconds, not '$LOCK_SECONDS'"
 why=$(worker_refusal "" "edits nothing in Discord") && die "$why"
 
+# --item reads waiting.json alone: no lock, no Discord and no lease check, which the lease-fence
+# hook makes on a fenced machine.
+if [[ -n $item ]]; then
+  waiting=$TEAM_HOME/waiting.json
+  [[ -e $waiting ]] || die "no waiting list yet; team-inbox writes it"
+  answer=$(jq -sc -L "$TEAM_LIB" --argjson n "$item" 'include "ledger"; waiting_item($n)' <"$waiting" 2>&1) ||
+    die "waiting.json cannot be read: $(grep -m 1 . <<<"$answer" || echo "jq failed"); team-inbox writes it afresh"
+  jq -er '.item // empty' <<<"$answer" || die "$(jq -r .refusal <<<"$answer")"
+  exit 0
+fi
+
 why=$(lease_refusal "posts nothing to Discord; the coordinator on the holder answers there.") && die "$why"
-discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+# A post needs the token, so without it nothing is written.
+[[ -z $post ]] || discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
 
 state_dir=$HOME/.local/state/agent-team
 state=$state_dir/inbox.json
 mkdir -p "$state_dir"
 exec {lock}>>"$state_dir/inbox.lock"
-flock -w "$LOCK_SECONDS" "$lock" || {
+# Zero takes the lock only when it is free (-n), since macOS's flock refuses a wait of 0.
+if (( LOCK_SECONDS == 0 )); then wait_flag=(-n); else wait_flag=(-w "$LOCK_SECONDS"); fi
+flock "${wait_flag[@]}" "$lock" || {
   echo "team-inbox: another run has held $state_dir/inbox.lock for ${LOCK_SECONDS}s; try again later" >&2
   exit 75
 }
 
 scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT
+trap 'rm -rf "$scratch"; rm -f "$TEAM_HOME/.waiting.json.$$" "$TEAM_HOME/.waiting.md.$$"' EXIT
 
 # Call Discord: call <path> [<curl options>...]; writes the answer to $scratch/answer, or sets
-# STATUS (the HTTP status, empty with no answer) and ERROR (curl's first line) and fails.
+# STATUS (the HTTP status, empty with no answer) and ERROR (curl's first line, or why no call was
+# made) and fails.
 STATUS='' ERROR=''
 call() {
   rm -f "$scratch/headers"
@@ -101,7 +174,7 @@ call() {
   return 1
 }
 
-# Fail as Discord's answer says: exit 75 on a 429, with when to try again, else 1.
+# Fail as Discord's refusal of <what> says: 75 on a 429, naming when to try again, else 1.
 refused() {
   local retry
   if [[ $STATUS == 429 ]]; then
@@ -112,74 +185,60 @@ refused() {
   die "Discord refused $1: $ERROR"
 }
 
-# The kept message, when it is #coordinator's.
+# What inbox.json keeps for #coordinator: its guild, and the old message still to retire.
 read -r guild message < <(jq -r --arg channel "$COORDINATOR_CHANNEL" '
   select(type == "object" and (.channel | tostring) == $channel)
   | [(.guild // "" | tostring), (.message // "" | tostring)] | map(select(test("^[0-9]+$")) // "-") | join(" ")' \
   "$state" 2>/dev/null) || true
 [[ ${guild:--} != - ]] || guild=''
 [[ ${message:--} != - ]] || message=''
+kept=$(jq -c . "$state" 2>/dev/null) || kept=''
 
-if [[ -z $guild ]]; then
+# The guild, read once from #coordinator's channel; without it each ask links to its thread, and a
+# post, which a Discord that cannot answer this read cannot take either, is refused.
+if [[ -z $guild && -n $post ]]; then
   call "channels/$COORDINATOR_CHANNEL" || refused "the read of #coordinator's channel"
-  guild=$(jq -r '.guild_id | strings | select(test("^[0-9]+$"))' "$scratch/answer" 2>/dev/null) || guild=''
-  [[ -n $guild ]] || die "Discord named no guild for #coordinator ($COORDINATOR_CHANNEL)"
+  guild=$(jq -er '.guild_id | strings | select(test("^[0-9]+$"))' "$scratch/answer" 2>/dev/null) ||
+    die "Discord named no guild for #coordinator ($COORDINATOR_CHANNEL)"
+elif [[ -z $guild ]]; then
+  if ! discord_token >/dev/null; then
+    why="no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+  elif ! call "channels/$COORDINATOR_CHANNEL"; then
+    why="Discord refused the read of #coordinator's channel: $ERROR"
+  elif ! guild=$(jq -er '.guild_id | strings | select(test("^[0-9]+$"))' "$scratch/answer" 2>/dev/null); then
+    guild='' why="Discord named no guild for #coordinator ($COORDINATOR_CHANNEL)"
+  fi
+  [[ -n $guild ]] || echo "team-inbox: links each ask to its thread alone, since $why" >&2
 fi
 
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 
-# The repos, lowercased, of the projects whose PRs may merge on Daniel's plan-time word, each to
-# its project: those that opt in now and are not the team's own; and, for the standing word, the
-# registered projects it may cover (standing_projects: every one but the team's own) and every
-# one's repo. The registry is read only once the ledger holds such a
-# word, and one that cannot be read lists every PR, the standing word lines naming the projects as
-# the words were logged.
-words=$(ledger_jq 'ledger_events | {plan: any(.[]; .event == "merge-preapproved"),
-  standing: [.[] | select(.event == "merge-standing") | .project | strings] | unique}' -nRc "$ledger")
-plan_repos='{}' repos='{}' projects='[]' unreadable=''
-if jq -e .plan <<<"$words" >/dev/null; then
-  if found=$(team_project --find merge_with_plan true 2>"$scratch/registry"); then
-    while IFS= read -r project; do
-      if [[ -z $project ]] || own_project "$project"; then continue; fi
-      repo=$(team_project "$project" repo) || exit 1
-      plan_repos=$(jq -c --arg repo "$repo" --arg project "$project" '.[$repo | ascii_downcase] = $project' <<<"$plan_repos")
-    done <<<"$found"
-  else
-    unreadable=1
+# The registered projects that are the team's own and the reviewer App's id (own_projects), for
+# the default word, read only while an open task awaits merge with its plan approved; null,
+# listing every PR ready to merge, when the registry cannot be read.
+own='{"projects": [], "app": null}'
+if ledger_jq 'ledger_events | default_may_hold' -nRe "$ledger" >/dev/null; then
+  if ! own=$(own_projects 2>"$scratch/registry"); then
+    own=null
+    echo "team-inbox: lists every PR ready to merge, the default word aside, since the registry cannot be read: $(grep -m 1 . "$scratch/registry" || echo "team-project failed")" >&2
   fi
 fi
-if [[ -z $unreadable ]] && jq -e '.standing != []' <<<"$words" >/dev/null; then
-  if found=$(standing_projects 2>"$scratch/registry"); then
-    while IFS= read -r project; do
-      [[ -n $project ]] || continue
-      repo=$(team_project "$project" repo) || exit 1
-      repos=$(jq -c --arg repo "$repo" --arg project "$project" '.[$repo | ascii_downcase] = $project' <<<"$repos")
-      projects=$(jq -c --arg project "$project" '. + [$project]' <<<"$projects")
-    done <<<"$found"
-  else
-    unreadable=1
+
+# For a post, the team's resource level, for the line after the list; left out, saying why, when
+# team-level cannot tell it.
+level=null health=null
+if [[ -n $post ]]; then
+  level=$(machine_level)
+  if why=$(jq -er '.error // empty' <<<"$level"); then
+    echo "team-inbox: leaves out the resources line, since team-level status failed: $why" >&2
   fi
 fi
-if [[ -n $unreadable ]]; then
-  plan_repos='{}' repos='{}' projects=$(jq -c .standing <<<"$words")
-  aside=$(jq -r '[if .plan then "plan-time" else empty end, if .standing != [] then "standing" else empty end]
-    | "\(join(" and ")) word\(if length > 1 then "s" else "" end)"' <<<"$words")
-  echo "team-inbox: lists every PR ready to merge, Daniel's $aside aside, since the registry cannot be read: $(grep -m 1 . "$scratch/registry" || echo "team-project failed")" >&2
-fi
 
-# The team's resource level, for the line after the items; left out, saying why, when team-level
-# cannot tell it.
-level=$(machine_level)
-if why=$(jq -er '.error // empty' <<<"$level"); then
-  echo "team-inbox: leaves out the resources line, since team-level status failed: $why" >&2
-fi
-
-# The health line, for the line after the resources line: the view's line, none off the lease, and
-# an unknown health, saying why, when the view cannot be read. A machine with no team name holds no
-# lease, so it is not asked.
-health=null
-if machine_name >/dev/null 2>&1; then
+# For a post, the health line, for the line after the resources line: the view's line, none off
+# the lease, and an unknown health, saying why, when the view cannot be read. A machine with no
+# team name holds no lease, so it is not asked.
+if [[ -n $post ]] && machine_name >/dev/null 2>&1; then
   rc=0
   view=$(TEAM_HOME=$TEAM_HOME bounded "$HEALTH_TIMEOUT" "$(dirname "$TEAM_LIB")/team-timers" health --json \
     2>"$scratch/health" </dev/null) || rc=$?
@@ -197,33 +256,131 @@ if machine_name >/dev/null 2>&1; then
   fi
 fi
 
-ledger_jq 'ledger_events | (by_task | awaiting_resume) as $stowed | inbox_items($plan_repos; $repos; $projects)
-  | inbox_text($guild; $limit; now | floor; resources_line($level; $stowed); $health)
-  | {content: ., allowed_mentions: {parse: []}, flags: $flags}' -nRc --argjson plan_repos "$plan_repos" \
-  --argjson repos "$repos" --argjson projects "$projects" --argjson level "$level" --argjson health "$health" \
-  --arg guild "$guild" --argjson limit "$LIMIT" --argjson flags "$SUPPRESS_EMBEDS" "$ledger" >"$scratch/body"
-
-# Keep the message's place: keep <message>
-keep() {
-  jq -n --arg channel "$COORDINATOR_CHANNEL" --arg guild "$guild" --arg message "$1" \
-    '{channel: $channel, guild: $guild, message: $message}' >"$state.$$"
-  mv -f "$state.$$" "$state"
-}
-
-done_as=edited
-if [[ -n $message ]]; then
-  if ! call "channels/$COORDINATOR_CHANNEL/messages/$message" -X PATCH -H "Content-Type: application/json" \
-    --data-binary "@$scratch/body"; then
-    [[ $STATUS == 404 ]] || refused "the edit of message $message"
-    message=''
+# The numbers the last run gave, from waiting.json; a missing one numbers afresh, and one that
+# cannot be read does too, saying why.
+waiting=$TEAM_HOME/waiting.json
+previous=null
+if [[ -e $waiting ]]; then
+  if ! previous=$(jq -sc 'if length == 1 and (.[0] | type == "object" and .schema == "team-waiting/1") then .[0] else empty end' \
+    <"$waiting" 2>"$scratch/previous"); then
+    why=$(grep -m 1 . "$scratch/previous" || echo "jq failed")
+  elif [[ -z $previous ]]; then
+    why="its schema is not team-waiting/1"
+  else
+    why=''
+  fi
+  if [[ -n $why ]]; then
+    echo "team-inbox: numbers the list afresh, since waiting.json cannot be read: $why" >&2
+    previous=null
   fi
 fi
-if [[ -z $message ]]; then
-  call "channels/$COORDINATOR_CHANNEL/messages" -X POST -H "Content-Type: application/json" \
-    --data-binary "@$scratch/body" || refused "the post"
-  message=$(jq -r '.id | strings | select(test("^[0-9]+$"))' "$scratch/answer" 2>/dev/null) || message=''
-  [[ -n $message ]] || die "Discord's answer to the post names no message id"
-  done_as=posted
+
+ledger_jq 'ledger_events | (by_task | awaiting_resume) as $stowed | inbox_items($own)
+  | ($guild | if . == "" then null else . end) as $guild
+  | waiting_list($previous; $guild) | ., waiting_text($guild), [resources_line($level; $stowed), $health | select(. != null)]' \
+  -nRc --argjson own "$own" \
+  --argjson level "$level" --argjson health "$health" --argjson previous "$previous" \
+  --arg guild "$guild" "$ledger" >"$scratch/list"
+
+# Write <file> in the team home from stdin, through a temporary file beside it: put <file>
+put() {
+  local path=$TEAM_HOME/$1 tmp=$TEAM_HOME/.$1.$$ why
+  [[ ! -d $path ]] || die "cannot write $path: it is a directory"
+  if ! why=$({ cat >"$tmp" && mv -fT "$tmp" "$path"; } 2>&1); then
+    rm -f "$tmp"
+    die "cannot write $path: $(grep -m 1 . <<<"$why" | sed -E 's/^.*: line [0-9]+: //; s/^mv: //')"
+  fi
+}
+sed -n 1p "$scratch/list" | jq . | put waiting.json
+sed -n 2p "$scratch/list" | jq -j . | put waiting.md
+
+# Retire the old message, once: edit it to say the list is no longer kept there, then drop it.
+link="$message in #coordinator"
+[[ -z $guild ]] || link=https://discord.com/channels/$guild/$COORDINATOR_CHANNEL/$message
+retired=''
+if [[ -n $message ]]; then
+  if ! discord_token >/dev/null; then
+    echo "team-inbox: the old Waiting on you message $link is not retired yet: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env; the next run tries again" >&2
+  elif jq -n --arg content "$RETIRED" --argjson flags "$SUPPRESS_EMBEDS" '{content: $content, allowed_mentions: {parse: []}, flags: $flags}' \
+    >"$scratch/body" && call "channels/$COORDINATOR_CHANNEL/messages/$message" -X PATCH -H "Content-Type: application/json" \
+    --data-binary "@$scratch/body"; then
+    retired=$link message=''
+  elif [[ $STATUS == 404 ]]; then
+    message=''
+  else
+    echo "team-inbox: the old Waiting on you message $link is not retired yet: Discord refused the edit of message $message: $ERROR; the next run tries again" >&2
+  fi
 fi
-keep "$message"
-echo "$done_as https://discord.com/channels/$guild/$COORDINATOR_CHANNEL/$message"
+
+# Keep #coordinator's guild, and the old message while it waits to be retired, when that changed.
+keep=$(jq -cn --arg channel "$COORDINATOR_CHANNEL" --arg guild "$guild" --arg message "$message" \
+  '{channel: $channel} + (if $guild == "" then {} else {guild: $guild} end) + (if $message == "" then {} else {message: $message} end)')
+# A file of the channel alone is never made where there was none.
+if [[ $keep != "$kept" ]] && [[ -n $kept || $keep != "{\"channel\":\"$COORDINATOR_CHANNEL\"}" ]]; then
+  echo "$keep" >"$state.$$"
+  mv -f "$state.$$" "$state"
+fi
+
+[[ -z $retired ]] || echo "retired $retired"
+jq -r '.items | length | "wrote waiting.md: \(.) item\(if . == 1 then "" else "s" end)"' "$waiting"
+[[ -n $post ]] || exit 0
+
+# The post: waiting.md's lines, the resources and health lines, then the foot, packed into
+# messages Discord takes, each posted new in #coordinator, pinging no one and previewing nothing.
+now=$(date +%s)
+at=$(date -ud "@$now" +%FT%TZ)
+jq -c --arg list "$(cat "$TEAM_HOME/waiting.md")" --argjson waits "$(jq '.items != []' "$waiting")" --argjson now "$now" \
+  --argjson max "$MESSAGE_LIMIT" -L "$TEAM_LIB" '
+  include "ledger";
+  ($list | split("\n")) + .
+  + [if $waits then "-# Answer by number, as \"1 yes, 2 no\"; posted <t:\($now):R>" else "-# Posted <t:\($now):R>" end]
+  | post_messages($max)' <<<"$(sed -n 3p "$scratch/list")" >"$scratch/messages"
+count=$(jq length "$scratch/messages")
+ids='[]' sent='[]'
+# Record the messages that went, so the numbers they showed are not given to a new item, and push
+# the record at once: a holder that steals the lease after a crash numbers from origin's
+# waiting.json, so a reservation only this machine holds would let it give a shown number away.
+record() {
+  [[ $ids != '[]' ]] || return 0
+  jq --arg at "$at" --argjson ids "$ids" --argjson sent "$sent" -L "$TEAM_LIB" 'include "ledger"; waiting_posted($at; $ids; $sent)' \
+    "$waiting" | put waiting.json
+  push_post
+}
+# Commit and push waiting.json and waiting.md as the post left them, saying on stderr when they
+# are not on origin yet (the next checkpoint pushes them), never failing the run, as ledger_push
+# does for the ledger. The push runs with inbox.lock closed for it, so a git helper it leaves
+# running never holds the lock.
+push_post() {
+  local why since
+  [[ -e $TEAM_HOME/.git ]] && git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 0
+  if ! fence_reason >/dev/null && since=$(offline_since); then
+    echo "team-inbox: the post's numbers are not on origin yet (GitHub is unreachable since $(date -d "$since" +%H:%M), and the team is holding); the next checkpoint pushes them" >&2
+    return 0
+  fi
+  if ! (exec {lock}>&-; NET_ERR=$scratch/net NET_TIMEOUT=20 commit_records "chore: waiting list posted" waiting.json waiting.md \
+    >/dev/null 2>"$scratch/push"); then
+    why=$({ grep -m1 . "$scratch/push" || true; } | sed -E "s/^team-inbox: team home: //; s/^committed [0-9a-f]+ [^;]*; //; s/:$//")
+    echo "team-inbox: the post's numbers are not on origin yet (${why:-commit_records failed with no reason}); the next checkpoint pushes them" >&2
+  fi
+  return 0
+}
+for ((i = 0; i < count; i++)); do
+  what="the post of the list"
+  ((count == 1)) || what+="'s message $((i + 1)) of $count"
+  content=$(jq -r --argjson i "$i" '.[$i]' "$scratch/messages")
+  jq -n --arg content "$content" --argjson flags "$SUPPRESS_EMBEDS" '{content: $content, allowed_mentions: {parse: []}, flags: $flags}' \
+    >"$scratch/body"
+  if ! call "channels/$COORDINATOR_CHANNEL/messages" -X POST -H "Content-Type: application/json" --data-binary "@$scratch/body"; then
+    record
+    refused "$what"
+  fi
+  if ! id=$(jq -er '.id | strings | select(test("^[0-9]+$"))' "$scratch/answer" 2>/dev/null); then
+    record
+    STATUS='' ERROR="Discord answered with no message id"
+    refused "$what"
+  fi
+  ids=$(jq -c --arg id "$id" '. + [$id]' <<<"$ids")
+  sent=$(jq -c --arg content "$content" '. + [$content]' <<<"$sent")
+  echo "posted https://discord.com/channels/$guild/$COORDINATOR_CHANNEL/$id"
+done
+record

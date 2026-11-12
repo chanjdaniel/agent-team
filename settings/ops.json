@@ -5,7 +5,7 @@
   "disableBundledSkills": true,
   "disableSkillShellExecution": true,
   "permissions": {
-    "allow": ["mcp__prod-read__*", "mcp__vercel-read__*", "Edit(./.scratch/**)"],
+    "allow": ["mcp__prod-read__*", "mcp__vercel-read__*", "Edit(./.scratch/answer.md)"],
     "ask": [
       "mcp__*prod-write*",
       "mcp__prod-write__insert-many",
@@ -32,7 +32,7 @@
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-        "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/scratch-only-edits", "onFailure": "block", "timeout": 30 }]
+        "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/scratch-only-edits", "args": [".scratch/answer.md"], "onFailure": "block", "timeout": 30 }]
       },
       {
         "matcher": "^mcp__.*(prod-(read|write)|vercel-read).*__",

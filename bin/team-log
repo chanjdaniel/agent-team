@@ -2,13 +2,20 @@
 # Record an event the coordinator writes by hand in the ledger, against the ledger contract.
 #
 # Usage: team-log T<n> <event> [key=value]...
-#        team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print]
+#        team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print]
 #        team-log --check [<file>]
+#        team-log --check-lifecycle [<file>]
 #        team-log --fix-sent-back [<file>]
 # Appends {ts (now, UTC), task, event, key: value...}, each value typed as the contract types its field.
+# The event is checked against the task's state too, by the lifecycle table (bin/lib/lifecycle.json,
+# through ledger_append in bin/lib/team.sh): one the table refuses (a closed task's held, a review
+# of a task with no opened) is logged with one "team-log: lifecycle: <problem> (logged anyway; ...)"
+# line per problem on stderr while the table's lifecycle_from is not set or later than the event,
+# and refused, logging nothing, from it on.
 # A list field (array, or numbers (a list of whole numbers), as sent_back and before are) takes
-# a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990, sent_back=5,6, guarded=ci,settings),
-# each item trimmed, an empty item refused, and none is the empty list (guarded=none).
+# a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990,
+# sent_back=5,6, guarded=ci,secrets), each item trimmed, an empty item refused, and
+# none is the empty list (guarded=none).
 # A list of whole numbers stores each item of a comma list, and each numeric string of a JSON list, as a number, and refuses one that is no whole number, naming it.
 # An object field takes a JSON object, or key:value pairs separated by commas (findings=blocking:0,correctness:1,security:0,real-data:0,note-change:2,note-before:0),
 # each trimmed, a value a number when it reads as one; a list or object value that starts with [ or { is read only as JSON.
@@ -24,72 +31,144 @@
 # sha256, which only team-ask --script logs, with the question that names both; so is an
 # answered that names a discord_message, whatever its value, since only team-answer logs one,
 # having read the message and checked it is Daniel's (an answered with no message, given at the
-# terminal, is logged). A
-# merge-preapproved is refused when its project is not one of the task's opened or worktree-added
-# events, is the team's own (own_project, whatever the registry says), or does not opt in now
-# (team-project's merge_with_plan); when its ask names no asked of the task; when its
-# discord_message is a string of digits that is no Discord id, or was sent before the latest asked
-# of that id; and when its scope is empty or holds an entry that is not a clean repository path (a
-# string with no leading /, no . or .. segment, no empty segment, no glob character *?[ and no
-# whitespace; a directory ends in /). A merge-preapproval-withdrawn is refused unless a
-# merge-preapproved of its project stands for the task (its latest, with no withdrawal since). A
-# merge-standing, Daniel's standing word, or a merge-standing-withdrawn, its withdrawal, both read
-# across the whole ledger, is refused when its project is neither all nor a project team-project
-# --list names (and all when a registered project is named all), when its project is the team's
-# own (own_project, whatever the registry says; all covers every project but it), when its
-# discord_message is a string of digits that is no Discord id, and when its discord_channel is
-# neither #coordinator's channel nor the task's thread (its latest thread event), naming both; a
-# merge-standing-withdrawn is refused too when no standing word stands for its project (for all:
-# for any project the registry or a merge-standing names). A branch-renamed, the task's new
-# branch in a project after the gate rewrote the remote one, is refused when its project is not
-# one of the task's opened or worktree-added events, its branch is the task's there now (the
-# latest opened, worktree-added or branch-renamed of the project), does not name the task, or is
-# no branch name git takes (git check-ref-format --branch). A review
-# whose sent_back names any finding is logged with verdict findings, a pass's too, since a pass
-# whose notes go back before the merge is not ready to merge. A review's findings, when given,
-# must count exactly blocking, correctness, security, real-data, note-change and note-before, each
-# a whole number, and its guarded list only ci, dependencies, migrations, settings, permissions,
-# secrets and guardrails; its before, the numbers of its plain notes on code the PR did not
-# change, distinct whole numbers above 0, is required when findings counts a note-before, as many
-# as it counts, and a sent_back naming one of them is refused, since such a note is queued, never
-# sent back. A park (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>,
-# when it began: no later than now and no earlier than the task's latest event, or it is refused
-# naming both times; no other kind takes since. A retro-change is refused when its retro names a
+# terminal, is logged), and an answered that names an item, the waiting list's number, since only
+# team-answer --item logs one, having checked the message names it. A plan-approved
+# (by=Daniel ask=<id> discord_message=<id>, or by=coordinator) records plan, each of the plan's
+# files that exists (tasks/T<n>/plan.md, and the task directory's spec.md and scope.txt; plan_files
+# in bin/lib/team.sh) to its sha256, and scope, scope.txt's non-blank lines, when it exists; it is
+# refused for a by but Daniel or coordinator; Daniel's with no ask or discord_message, an ask the
+# task never logged, or a message that is no Discord id or was sent before the latest asked of
+# that id; the coordinator's with either, or while the approval standing is withdrawn, which
+# only Daniel's approval ends; a plan or scope given, which team-log records itself; a
+# closed task; no tasks/T<n>/plan.md; a task whose opened project has no open worktree that is a
+# directory on this machine, since its spec.md and scope.txt could not be hashed; a scope.txt that
+# lists no path or holds a line that is no clean repository path (a string with no leading /, no .
+# or .. segment, no empty segment, no glob character *?[ and no whitespace; a directory ends in /);
+# and a second approval whose by, plan and parallel equal the one standing (plan_approval in
+# bin/lib/ledger.jq). A plan-approval-withdrawn (discord_message=<id>, Daniel's message, which
+# team-log takes as named, since a withdrawal only stops work) is refused for a closed task, a
+# message that is no Discord id, and when no approval stands. A kind the contract marks retired is
+# refused before anything else is read, logging nothing, with its reason: merge-preapproved,
+# merge-preapproval-withdrawn, merge-standing and merge-standing-withdrawn, retired by T276, since
+# the approved plan is the merge word, which merge-default-withdrawn withdraws; --check still passes
+# the lines logged before. A merge-default-withdrawn, Daniel's withdrawal of the default merge word,
+# or a merge-default-restored, its giving back (scope=<task|project|all> discord_message=<id>
+# discord_channel=<id>), is refused when its scope is neither task (the task it is logged under),
+# all (every project) nor a project team-project --list names, when it is task on a closed task,
+# when its discord_message or discord_channel is no Discord id, and when its discord_channel is
+# neither #coordinator's channel nor the task's latest thread, naming both; a merge-default-restored
+# is refused too when no PR it covers has a withdrawal as the latest of the two kinds covering it,
+# over the whole ledger (a task's PRs in each project of its opened and worktree-added events;
+# default_restore_withdrawn in bin/lib/ledger.jq). A branch-renamed, the task's new branch in a
+# project after the gate rewrote the remote one, is refused when its project is not one of the
+# task's opened or worktree-added events, its branch is the task's there now (the latest opened,
+# worktree-added or branch-renamed of the project), does not name the task, or is no branch name git
+# takes (git check-ref-format --branch). A review whose sent_back names any finding is logged with
+# verdict findings, a pass's too, since a pass whose notes go back before the merge is not ready to
+# merge. A review's findings, when given, must count exactly blocking, correctness, security,
+# real-data, note-change and note-before, each a whole number, and its guarded list only ci,
+# migrations, deploy, permissions, secrets and guardrails, the areas of bin/lib/guarded
+# (dependencies and settings are retired); its before, the numbers of its plain notes on code the PR
+# did not change, distinct whole numbers above 0, is required when findings counts a note-before, as
+# many as it counts, and a sent_back naming one of them is refused, since such a note is queued,
+# never sent back; its widening, the numbers of a rereview's new findings in what the last fix
+# added, distinct whole numbers above 0 too, is refused naming any before lists, since a before note
+# is on code the PR did not change, and may name a finding sent_back does not. A park (waiting,
+# blocked, paused, held) carries a cause, one bin/lib/lifecycle.json's causes give its kind, and a
+# cause= given is kept: a held is daniel-hold, Daniel's hold, and is refused without discord_message
+# ("a held is Daniel's hold, and needs discord_message, the id of Daniel's message saying so"); a
+# waiting on=Daniel (any case) is daniel, on anyone else outside (ask is team-ask's); a blocked
+# on=T<m> is task, any other worker (denial, for a denial that stops the work, is given); a paused
+# has no default and is refused without one ("a paused needs cause=, one of limit, machine,
+# shutdown, worker"). A park logged after the fact takes since=<UTC time>, when it began: no later
+# than now and no earlier than the task's latest event, or it is refused naming both times; no other
+# kind takes since. A resumed names what it ends, and is refused with none of id, all=true and brief
+# ("resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T<n> lists the
+# standing parks"): id=<park> ends that park, Daniel's hold only with discord_message, their word
+# lifting it, and never an ask's wait, which its ask's answer ends; all=true every standing park
+# whose cause in bin/lib/lifecycle.json takes all (all but Daniel's hold and an ask's wait);
+# brief=<brief> alone, a merge-base round's holder brief, none. The lifecycle table names a resumed
+# id= the fold would not end (of no standing park, of an ask's wait, of Daniel's hold with no
+# discord_message) and a held while Daniel's hold stands, warned or refused as above.
+# A retro-change is refused when its retro names a
 # task with no opened event of path retro, or a retro with no answered of id retro.
+# A plan-approved's parallel, the approved cap on each phase's tickets that build at once
+# (team-next --fill reads the latest plan-approved's), is refused unless it is one cap from 1 to
+# 3 per phase in phase order joined by commas with no spaces (parallel=2, parallel=2,1).
+# A gate-run whose cause is base-merge and whose outcome is not aborted, in either form, is logged
+# with one line on stderr saying the gated delivery brief asks no gate run for a base merge; --print,
+# which logs nothing, prints no such line.
+# A wait on a PR's checks after a pass logs each of its ends and each rerun it makes as
+#   team-log T<n> ci url=<url> head=<sha> outcome=<passed|failed|infrastructure|pending> [failed=<JSON array>] [look=true]
+#   team-log T<n> ci-rerun url=<url> head=<sha> check=<name> run=<id> job=<id>
+# as the contract's table below says of each field; run and job are kept as strings of digits.
+# An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
+# plan-approval-withdrawn, merge-approved, merge-default-withdrawn, merge-default-restored,
+# retro-schedule) is committed and pushed to the team home's origin
+# before team-log ends (ledger_push in bin/lib/team.sh), in either form; a push that fails, or
+# one not tried while the team holds offline, is one line on stderr, and the exit stays 0.
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
 # coordinator's message table gives it, checks each as above, and logs them all, or with --print
 # prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
-# task. QUESTION <text> is a question; BLOCKED <text> and NEED toolkit <name> a blocked; PAUSED
-# <why> a paused; FAILED <why> a failed; INJECTION <where> <what> an injection (source its first
+# task. QUESTION <text> is a question; BLOCKED <text> and NEED toolkit <name> a blocked of cause
+# worker; PAUSED <why> a paused, its cause its first word's (stowed stow, held coordinator-hold,
+# offline offline, any other worker), its reason the whole why; each park carrying the sender's
+# role and session when the sender is known (--from's launch, else the only latest launch of a role
+# with no report since), and neither when it is not, a --from naming no launch refused; FAILED <why> a failed; INJECTION <where> <what> an injection (source its first
 # word). PR <url>, optionally followed by merged <base> conflicts: <files or none>, is a pr whose
 # head is the PR's on GitHub (gh pr view), and a branch-renamed when the PR's head branch is not
 # the task's in the project of the PR's repo. DONE <NN> <sha>... <line> is a ticket-done (commits
 # the shas of 7 to 40 hex digits, note the line) and the builder's done; DONE review-ready <sha> and
 # DONE merged <base> <sha> conflicts: <files or none> the builder's done, report the rest;
 # DONE pass <PR url or head> and DONE findings <path>, each followed by findings=, before=,
-# guarded= and, when the reviewer added a memory, memory= as team-log takes them, a review and the
-# reviewer's done, either taking --sent-back's list as sent_back (a pass's being the notes that go
-# back before the merge, which make it a findings review, as above; no other message takes it);
+# guarded=, on a rereview widening=, and, when the reviewer added a memory, memory= as team-log
+# takes them, a review and the reviewer's done, either taking --sent-back's list as sent_back (a
+# pass's being the notes that go back before the merge, which make it a findings review, as above;
+# no other message takes it);
 # DONE gate <key=value>... a gate-run;
-# any other DONE the sender's done, report the rest. A review's head is the head of the brief record
+# any other DONE the sender's done, report the rest. An ops session's DONE, whatever its first word
+# when --from names that session, and its QUESTION, whose text may hold production data, log its
+# length in characters and never its text: the done report_chars=<n>, the question chars=<n>; its
+# BLOCKED, PAUSED, FAILED and INJECTION are logged as every role's. --relay <id>, the Discord id of
+# the coordinator's message that relayed an ops answer, is logged as that done's relay, and refused
+# with any other message; an id that is not one is a malformed command line. A review's head is the head of the brief record
 # (tasks/T<n>/<brief>.json) that the reviewer's latest launch read, else a pass's own head, else
-# it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's
-# launch (its session name T<n>-<role>, or its session id), else that of the only latest launch of a
-# role with no report since (a done, review, ticket-done or pr that ends it); two are refused,
-# naming both. The session is that role's latest launch.
+# it is refused naming head=. The sender is --from's launch, the latest one its session name names
+# (T<n>-<role>, or T<n>-builder-<NN> for a builder in ticket NN's worktree) or its session id,
+# refused when its role is not the kind's (builder, reviewer); else the latest launch of the kind's
+# role, for a DONE <NN> the latest builder launch of ticket NN when there is one, else the latest
+# builder launch; else the only latest launch of a role and ticket with no report since (an event
+# that ends it: a done of its role, a review, a ticket-done or a pr, and for a ticket builder only
+# a done of its session or its ticket's ticket-done); two or more are refused, naming each by its
+# session name and id.
+# A DONE pass or DONE findings on a project whose agent-review the reviewer App posts (the project
+# of any of the task's pr events, by its project or its URL's repo, or of the task's latest
+# reviewer launch, when own_bar in bin/lib/team.sh gives it the App) is refused, logging nothing,
+# unless --from is the session id of the task's latest reviewer launch, the refusal naming it; the
+# name T<n>-reviewer is refused there too.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
 # line. A sent_back or before from strict_from on that holds whole numbers as strings, as
 # team-log stored them before, passes too, but each such line is named on stderr with
 # --fix-sent-back, and the last line counts them.
+# --check-lifecycle replays a ledger (default: the team home's) against the lifecycle table
+# (bin/lib/lifecycle.json, check_lifecycle in bin/lib/ledger.jq), in one pass: each task's events
+# in ledger order, each checked against the state the ones before it reach, and prints one line
+# per event that breaks the table, "<file>:<line>: <task> <kind>: <problem>" (several joined with
+# "; "), then "<file>: <n> of <total> lines break the lifecycle table, <m> of them from its
+# lifecycle_from on" or "<file>: <total> lines meet the lifecycle table". A line that is no JSON
+# object with a task and an event is --check's to name, and this one passes it. It exits 1, all on
+# stderr, when <m> is above 0 (lifecycle_from set and an event at or after it breaks the table),
+# else 0, all on stdout, so it names what the table would refuse before anything is refused.
 # --fix-sent-back is the one-time conversion of those strings (default: the team home's ledger), run under the ledger's lock:
 # on every line, legacy too, it stores the whole numbers that sent_back and before hold as
 # strings as numbers, leaves every other line byte for byte, and prints how many lines it changed;
 # a string there that is no whole number refuses the whole conversion, naming each line, and
 # changes nothing.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
-# coordinator; worker_refusal in bin/lib/team.sh), in every form, --print and --check included; --help still answers.
+# coordinator; worker_refusal in bin/lib/team.sh), in every form, --print, --check and
+# --check-lifecycle included; --help still answers.
 set -euo pipefail
 
 # Printed by --help after the header.
@@ -101,7 +180,7 @@ help_more() {
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "runs no team-log") && die "$why"
 
-usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print] | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
+usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print] | team-log --check [<file>] | team-log --check-lifecycle [<file>] | team-log --fix-sent-back [<file>]"
 
 if [[ ${1:-} == --check ]]; then
   [[ $# -le 2 ]] || usage_error "$usage"
@@ -123,6 +202,24 @@ if [[ ${1:-} == --check ]]; then
     exit 1
   fi
   if ((total == 1)); then echo "$file: 1 line meets the ledger contract$notes"; else echo "$file: $total lines meet the ledger contract$notes"; fi
+  exit 0
+fi
+
+if [[ ${1:-} == --check-lifecycle ]]; then
+  [[ $# -le 2 ]] || usage_error "$usage"
+  file=${2:-$TEAM_HOME/ledger.jsonl}
+  [[ -f $file ]] || die "no ledger at $file"
+  report=$(ledger_jq 'check_lifecycle' -nRc <"$file")
+  late=$(jq -r '.from as $from | [.bad[] | select($from != null and .ts >= $from)] | length' <<<"$report")
+  lines=$(jq -r --arg file "$file" '(.bad[] | "\($file):\(.line): \(.task) \(.event): \(.problems | join("; "))"),
+    if .bad == [] then "\($file): \(.total) \(if .total == 1 then "line meets" else "lines meet" end) the lifecycle table"
+    else "\($file): \(.bad | length) of \(.total) lines break the lifecycle table, \($late) of them from its lifecycle_from on" end' \
+    --argjson late "$late" <<<"$report")
+  if ((late > 0)); then
+    echo "$lines" >&2
+    exit 1
+  fi
+  echo "$lines"
   exit 0
 fi
 
@@ -193,6 +290,11 @@ check_event() {
 event=$1
 shift
 
+# A retired kind (its contract entry's retired, the reason) is refused before anything else is
+# read, so the ledger lines logged before it still check while no new one is logged.
+retired=$(ledger_jq '$contract.kinds[$event].retired // empty' -nr --arg event "$event")
+[[ -z $retired ]] || die "$event is retired by $retired"
+
 local -A seen=()
 local pairs=() bad=''
 for pair in "$@"; do
@@ -213,13 +315,16 @@ if [[ -n $bad ]]; then
 fi
 
 # A logged message id always means one team-answer read and checked, so team-log writes an
-# answered only with no message id (a decision Daniel gave at the terminal).
+# answered only with no message id (a decision Daniel gave at the terminal), and with no item, the
+# waiting list's number, which team-answer --item checks the message names.
+[[ $event != answered || -z ${seen[item]:-} ]] ||
+  die "an answered that names an item of the waiting list is logged only by team-answer --item, which reads Daniel's message and checks it names that number: team-answer --item ${seen[item]} <the message's id>"
 [[ $event != answered || -z ${seen[discord_message]:-} ]] ||
   die "an answered that names a Discord message is logged only by team-answer, which reads it and checks it is Daniel's: team-answer $task ${seen[id]:-<id>} <the message's id>"
 
 # Each value is typed by the contract when it names the field, and by whether it parses as JSON
 # otherwise (typed_value in bin/lib/ledger.jq), so the checks below read the values the line
-# will hold; ledger_append then checks the event against the contract.
+# will hold; ledger_append then checks the event against the contract and the lifecycle table.
 typed=$(ledger_jq '
   if $contract.kinds | has($event) | not then "unknown event kind '"'"'\($event)'"'"'; team-log --help lists the kinds" | halt_error(1) else
   field_types($contract.kinds[$event]) as $types
@@ -229,6 +334,28 @@ typed=$(ledger_jq '
       | .line[$key] = $typed.value | .problems += ($typed.problems // []))
   | if .problems == [] then .line | review_sent_back else .problems | join("; ") | halt_error(1) end end' \
   -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}" 2>&1) || die "${typed%$'\n'}"
+
+# A park carries its cause (bin/lib/lifecycle.json's causes): a cause= given is kept; a held is
+# Daniel's hold and needs their message; a waiting on Daniel is daniel, on anyone else outside; a
+# blocked on a task is task, any other worker; a paused has no default.
+case $event in
+  held | blocked | waiting | paused)
+    typed=$(jq -c '
+      if .event == "held" and .discord_message == null then
+        "a held is Daniel'"'"'s hold, and needs discord_message, the id of Daniel'"'"'s message saying so" | halt_error(1)
+      elif .cause != null then .
+      elif .event == "held" then .cause = "daniel-hold"
+      elif .event == "waiting" then .cause = (if (.on // "" | tostring | ascii_downcase) == "daniel" then "daniel" else "outside" end)
+      elif .event == "blocked" then .cause = (if (.on // "" | tostring | test("^[Tt][0-9]+$")) then "task" else "worker" end)
+      else "a paused needs cause=, one of limit, machine, shutdown, worker" | halt_error(1) end' <<<"$typed" 2>&1) ||
+      die "${typed%$'\n'}"
+    ;;
+  # A resumed names what it ends, so one never lifts every park again.
+  resumed)
+    jq -e '.id != null or .all == true or .brief != null' <<<"$typed" >/dev/null ||
+      die "resumed needs id=<a standing park>, all=true or brief=<brief>; team-state $task lists the standing parks"
+    ;;
+esac
 
 # Daniel's word is on one PR at one head: the approval names the PR as one of the task's pr events
 # does, and a head that PR's pr events, or the task's reviews since its first one, logged (pr_heads
@@ -258,9 +385,78 @@ if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
   fi
 fi
 
-# Daniel's plan-time word is on the task's PR in one of its projects, which opts in now and is not
-# the team's own, answering an ask the task logged, in a message sent no earlier than the latest
-# asked of that id, over a scope of clean repository paths, as team-merge holds it.
+# A plan approval says who approved which plan: Daniel, answering an ask the task logged in a
+# message sent no earlier than it, or the coordinator, with neither; team-log records the plan's
+# files (plan_files in bin/lib/team.sh) and scope.txt's lines itself, refuses an approval of a
+# closed task or of no plan, a second one by the same approver of the same files, and the
+# coordinator's after Daniel's withdrawal, which only their approval ends. A withdrawal
+# needs an approval standing (plan_approval in bin/lib/ledger.jq).
+if [[ $event == plan-approved || $event == plan-approval-withdrawn ]]; then
+  task_events_once
+  [[ $(ledger_jq 'task_status' -r <<<"$TASK_EVENTS") != closed ]] ||
+    die "$task is closed, so it takes no $event"
+fi
+if [[ $event == plan-approval-withdrawn ]]; then
+  message=${seen[discord_message]:-}
+  [[ ! $message =~ ^[0-9]+$ || $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
+  ledger_jq 'plan_approval | . != null and .state == "approved"' -e <<<"$TASK_EVENTS" >/dev/null ||
+    die "$task has no plan approval standing, so plan-approval-withdrawn withdraws nothing"
+fi
+if [[ $event == plan-approved ]]; then
+  for key in plan scope; do
+    [[ -z ${seen[$key]:-} ]] ||
+      die "$key is recorded by team-log itself, from the plan's files and scope.txt: give by=Daniel ask=<id> discord_message=<id>, or by=coordinator"
+  done
+  by=${seen[by]:-}
+  [[ $by == Daniel || $by == coordinator ]] ||
+    die "by names who approved the plan, Daniel or coordinator, got '$by'"
+  if [[ $by == Daniel ]]; then
+    [[ -n ${seen[ask]:-} && -n ${seen[discord_message]:-} ]] ||
+      die "Daniel's approval names the ask it answers and their message: team-log $task plan-approved by=Daniel ask=<id> discord_message=<id>"
+    asked=$(ledger_jq 'latest_asked($id) | .ts // empty' -r --arg id "${seen[ask]}" <<<"$TASK_EVENTS")
+    [[ -n $asked ]] || die "$task logged no asked with id ${seen[ask]}, so the plan approval answers no ask of it"
+    message=${seen[discord_message]}
+    [[ $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
+    # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+    sent=$(((10#$message >> 22) / 1000 + 1420070400))
+    ((sent >= $(date -ud "$asked" +%s))) ||
+      die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the asked ${seen[ask]} at $asked, so it is not Daniel's answer to that ask"
+  else
+    for key in ask discord_message; do
+      [[ -z ${seen[$key]:-} ]] || die "the coordinator's approval takes no $key, which only Daniel's names: team-log $task plan-approved by=coordinator"
+    done
+    withdrawn=$(ledger_jq 'plan_approval | select(.state == "withdrawn") | "\(.ts) in Discord message \(.discord_message)"' -r <<<"$TASK_EVENTS")
+    [[ -z $withdrawn ]] ||
+      die "$task's plan approval was withdrawn at $withdrawn, so only Daniel approves it again: team-log $task plan-approved by=Daniel ask=<id> discord_message=<id>"
+  fi
+  [[ -f $TEAM_HOME/tasks/$task/plan.md ]] || die "$task has no plan at tasks/$task/plan.md, so there is no plan to approve"
+  plan=$(plan_files "$task") || die "cannot read $task's plan files"
+  found=$(plan_task_dir "$task") || die "cannot read $task's task directory"
+  if [[ -z $found ]]; then
+    plan_project=$(jq -r 'first(.[] | select(.event == "opened") | .project | strings) // empty' <<<"$TASK_EVENTS")
+    if [[ -n $plan_project ]]; then
+      plan_worktree=$(task_worktrees "$task" | jq -r --arg p "$plan_project" 'select(.project == $p) | .worktree | strings' | tail -n 1)
+      [[ -n $plan_worktree ]] ||
+        die "$task has no open worktree of $plan_project, so its spec.md and scope.txt cannot be hashed"
+      die "$task's worktree of $plan_project, $plan_worktree, is not a directory on this machine, so its spec.md and scope.txt cannot be hashed: approve the plan on the machine that holds it"
+    fi
+  fi
+  scope=null
+  if [[ -n $found && -f ${found%%$'\t'*}/scope.txt ]]; then
+    scope=$(jq -Rnc '[inputs | select(test("\\S"))]' <"${found%%$'\t'*}/scope.txt")
+    problem=$(ledger_jq 'if . == [] then "\($file) lists no path: list every path the plan may change, each a file or a directory ending in /, or remove it for no scope"
+      else [scope_problems] | select(. != []) | "\($file) holds lines that are not clean repository paths:" + (map("\n  " + .) | add) end' \
+      -r --arg file "${found#*$'\t'}/scope.txt" <<<"$scope")
+    [[ -z $problem ]] || die "$problem"
+  fi
+  parallel=null
+  [[ ! -v seen[parallel] ]] || parallel=$(jq -cn --arg p "${seen[parallel]}" '$p')
+  standing=$(ledger_jq 'plan_approval | select(.state == "approved" and .by == $by and .plan == $plan and .parallel == $parallel) | .ts' \
+    -r --arg by "$by" --argjson plan "$plan" --argjson parallel "$parallel" <<<"$TASK_EVENTS")
+  [[ -z $standing ]] || die "$task's plan is approved already by $by, at $standing, with the same files and caps, so a second approval means nothing"
+  typed=$(jq -c --argjson plan "$plan" --argjson scope "$scope" '.plan = $plan | if $scope == null then . else .scope = $scope end' <<<"$typed")
+fi
+
 # Refuses a project that is none of the task's opened or worktree-added events: task_project <project>
 task_project() {
   local problem
@@ -275,68 +471,25 @@ task_project() {
   [[ -z $problem ]] || die "$problem"
 }
 
-if [[ $event == merge-preapproved ]]; then
-  project=${seen[project]:-}
-  if [[ -n $project ]]; then
-    task_project "$project"
-    ! own_project "$project" ||
-      die "$project is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
-    opted=$(team_project "$project" merge_with_plan) || exit 1
-    [[ $opted == true ]] ||
-      die "$project does not opt in to a plan-time merge approval: its merge_with_plan in projects.toml is $opted"
-  fi
-  if [[ -n ${seen[ask]:-} ]]; then
+# Daniel's withdrawal of the default word, and its giving back, name a scope (task, the task they
+# are logged under, which must be open; all; or a project the registry names) and a message
+# team-merge can read back: Discord ids, in #coordinator's channel or the task's latest thread. A
+# giving back needs a withdrawal standing that it covers (default_restore_withdrawn in
+# bin/lib/ledger.jq, over the whole ledger).
+if [[ $event == merge-default-withdrawn || $event == merge-default-restored ]]; then
+  scope=${seen[scope]:-}
+  registered=$(team_project --list) || exit 1
+  if [[ $scope == task ]]; then
     task_events_once
-    asked=$(ledger_jq 'latest_asked($id) | .ts // empty' -r --arg id "${seen[ask]}" <<<"$TASK_EVENTS")
-    [[ -n $asked ]] || die "$task logged no asked with id ${seen[ask]}, so merge-preapproved answers no ask of it"
-    message=${seen[discord_message]:-}
-    # A string of digits that is no Discord id the contract would take; any other string it refuses.
-    if [[ $message =~ ^[0-9]+$ ]]; then
-      [[ $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
-      sent=$(((10#$message >> 22) / 1000 + 1420070400))
-      ((sent >= $(date -ud "$asked" +%s))) ||
-        die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the asked ${seen[ask]} at $asked, so it is not Daniel's answer to that ask"
-    fi
+    [[ $(ledger_jq 'task_status' -r <<<"$TASK_EVENTS") != closed ]] ||
+      die "$task is closed, so scope=task names no PR it may still merge: name its project, or all"
+  elif [[ -n $scope && $scope != all ]] && ! grep -qxF -- "$scope" <<<"$registered"; then
+    if [[ -z $registered ]]; then names=': it names none'; else names=": $(sed ':a;N;$!ba;s/\n/, /g' <<<"$registered")"; fi
+    die "scope $scope is neither task, the task it is logged under, all, every project, nor a project projects.toml names$names"
   fi
-  if [[ -n ${seen[scope]:-} ]]; then
-    problem=$(ledger_jq '$line.scope
-      | if type != "array" then empty
-        elif . == [] then "scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
-        else [scope_problems] | select(. != []) | "scope holds entries that are not clean repository paths:" + (map("\n  " + .) | add) end' \
-      -nr --argjson line "$typed")
-    [[ -z $problem ]] || die "$problem"
-  fi
-fi
-
-# A withdrawal ends the plan-time word standing for the project: its latest merge-preapproved,
-# with no withdrawal since.
-if [[ $event == merge-preapproval-withdrawn && -n ${seen[project]:-} ]]; then
-  task_events_once
-  ledger_jq 'merge_preapproval($project) | . != null and .withdrawn == null' \
-    -e --arg project "${seen[project]}" <<<"$TASK_EVENTS" >/dev/null ||
-    die "$task has no merge-preapproved of ${seen[project]} left to withdraw"
-fi
-
-# Daniel's standing word, and its withdrawal, name a project the registry names but the team's own
-# (own_project), or all for every project but that one, and a message team-merge can read back:
-# a Discord id, in #coordinator's channel or the task's latest thread. A withdrawal withdraws a
-# word that stands (standing_words in bin/lib/ledger.jq, over the whole ledger): for all, one
-# standing for any project the registry or a merge-standing names.
-if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
-  project=${seen[project]:-}
-  if [[ -n $project ]]; then
-    registered=$(team_project --list) || exit 1
-    if [[ $project == all ]]; then
-      ! grep -qxF all <<<"$registered" || die "projects.toml names a project all, so project=all cannot say every project"
-    elif ! grep -qxF -- "$project" <<<"$registered"; then
-      if [[ -z $registered ]]; then names=': it names none'; else names=": $(sed ':a;N;$!ba;s/\n/, /g' <<<"$registered")"; fi
-      die "$project is neither all, for every project, nor a project projects.toml names$names"
-    elif own_project "$project"; then
-      die "$project is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
-    fi
-  fi
-  message=${seen[discord_message]:-}
-  [[ ! $message =~ ^[0-9]+$ || $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
+  for key in discord_message discord_channel; do
+    [[ -z ${seen[$key]:-} || ${seen[$key]} =~ ^[1-9][0-9]{0,18}$ ]] || die "$key ${seen[$key]} is not a Discord id"
+  done
   channel=${seen[discord_channel]:-}
   if [[ -n $channel && $channel != "$COORDINATOR_CHANNEL" ]]; then
     task_events_once
@@ -344,16 +497,13 @@ if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
     [[ $channel == "$thread" ]] ||
       die "discord_channel $channel is neither #coordinator's channel, $COORDINATOR_CHANNEL, nor $task's thread$(if [[ -n $thread ]]; then echo ", $thread"; else echo ": it has none"; fi)"
   fi
-  if [[ $event == merge-standing-withdrawn && -n $project ]]; then
+  if [[ $event == merge-default-restored && -n $scope ]]; then
     ledger=$TEAM_HOME/ledger.jsonl
     [[ -e $ledger ]] || ledger=/dev/null
-    ledger_jq '[inputs | fromjson? | objects] as $events
-      | (if $project == "all" then ($registered | split("\n") | map(select(. != "")))
-           + [$events[] | select(.event == "merge-standing") | .project | strings]
-         else [$project] end) as $projects
-      | $events | standing_words($projects | unique) != []' \
-      -nRe --arg project "$project" --arg registered "$registered" <"$ledger" >/dev/null ||
-      die "no standing word of Daniel's stands for $(if [[ $project == all ]]; then echo "any project"; else echo "$project"; fi), so merge-standing-withdrawn withdraws nothing"
+    ledger_jq '[inputs | fromjson? | objects] | task_projects as $projects | default_events
+      | default_restore_withdrawn({task: $task, scope: $scope}; $projects)' \
+      -nRe --arg task "$task" --arg scope "$scope" <"$ledger" >/dev/null ||
+      die "no withdrawal of the default word stands that scope=$scope of $task covers, so merge-default-restored gives nothing back"
   fi
 fi
 
@@ -370,7 +520,7 @@ if [[ $event == branch-renamed && -n ${seen[project]:-} && -n ${seen[branch]:-} 
     die "$branch is not a branch name git takes (git check-ref-format --branch)"
 fi
 
-# A review's finding counts and guarded areas, as the reviewer's DONE gives them.
+# A review's finding counts, before and widening notes and guarded areas, as the reviewer's DONE gives them.
 if [[ $event == review ]]; then
   problem=$(ledger_jq '
     def listed: (.[:-1] | join(", ")) + " and " + last;
@@ -381,6 +531,7 @@ if [[ $event == review ]]; then
     | $line.before as $b
     | $line.sent_back as $s
     | $line.guarded as $g
+    | $line.widening as $w
     | (if ($f | type) == "object" then [$f | findings_problems] == [] else false end) as $f_ok
     | (if ($b | type) == "array" then [$b | before_problems] == [] else false end) as $b_ok
     | ($f | objects | [findings_problems] | select(. != [])
@@ -395,6 +546,10 @@ if [[ $event == review ]]; then
         | "sent_back names note\(if length == 1 then "" else "s" end) \(numbered), which before lists as "
           + (if length == 1 then "a plain note" else "plain notes" end)
           + " on code the PR did not change: such a note is queued as a follow-up, never sent back"),
+      ($w | arrays | [before_problems] | select(. != [])
+        | "widening lists the numbers of the findings in what the last fix added, each a whole number above 0, once:" + lines),
+      (select($b_ok and ($w | type) == "array") | [$w[] | select(IN($b[]))] | unique | select(. != [])
+        | "widening names note\(if length == 1 then "" else "s" end) \(numbered), which before lists as on code the PR did not change"),
       ($g | arrays | [guarded_problems] | select(. != [])
         | "guarded lists the guarded areas the change touches, each one of \(guarded_areas | listed):" + lines)' \
     -nr --argjson line "$typed")
@@ -420,6 +575,11 @@ if [[ $event == retro-change && -n ${seen[retro]:-} ]]; then
     die "$retro has no answered with id retro: Daniel has not answered its proposals, so none is approved to build"
 fi
 
+# A plan's approved caps, one per phase, which team-next --fill reads.
+if [[ $event == plan-approved && -v seen[parallel] && ! ${seen[parallel]} =~ ^[1-3](,[1-3])*$ ]]; then
+  die "parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '${seen[parallel]}'"
+fi
+
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.
 if [[ -n ${seen[since]:-} ]]; then
   case $event in waiting | blocked | paused | held) ;; *) die "since is taken only by a park (waiting, blocked, paused, held), not $event" ;; esac
@@ -435,25 +595,48 @@ fi
 
 }
 
+# A gate run that re-gates a base merge, run to its end, is one the gated delivery brief asks for
+# none of: logged all the same, with one line on stderr saying so, said only where it is logged.
+# base_merge_note <line>.
+base_merge_note() {
+  jq -r --arg task "$task" 'select(.event == "gate-run" and .cause == "base-merge" and .outcome != "aborted")
+    | "team-log: \($task) gate run \(.run) re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"' <<<"$1" >&2
+}
+
 if [[ $1 != --* ]]; then
   check_event "$@"
   # Stamped now, after the checks, so a park's since is never later than its ts.
   ledger_append "$(stamped "$typed")"
+  base_merge_note "$typed"
+  ledger_push
   exit 0
 fi
 
 # A worker's message, read whole (bin/lib/messages.jq) into its events, each checked by
 # check_event before any is logged.
-message='' from='' sent_back='' print=''
+message='' from='' sent_back='' relay='' print=''
 declare -A given=()
 while (($#)); do
   case $1 in
-    --from-message | --from | --sent-back)
+    --from-message | --from | --sent-back | --relay)
       [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
-      case $1 in --from-message) what="a message" ;; --from) what="a session name or id" ;; *) what="a list" ;; esac
+      case $1 in
+        --from-message) what="a message" ;;
+        --from) what="a session name or id" ;;
+        --relay) what="a Discord message id" ;;
+        *) what="a list" ;;
+      esac
       [[ $# -ge 2 && -n $2 ]] || usage_error "$1 needs $what"
       given[$1]=1
-      case $1 in --from-message) message=$2 ;; --from) from=$2 ;; *) sent_back=$2 ;; esac
+      case $1 in
+        --from-message) message=$2 ;;
+        --from) from=$2 ;;
+        --relay)
+          [[ $2 =~ ^[1-9][0-9]{0,18}$ ]] || usage_error "--relay takes the Discord id of the relay's message, got '$2'"
+          relay=$2
+          ;;
+        *) sent_back=$2 ;;
+      esac
       shift 2
       ;;
     --print) print=1 && shift ;;
@@ -461,7 +644,7 @@ while (($#)); do
   esac
 done
 if [[ -z ${given[--from-message]:-} ]]; then
-  for option in --from --sent-back; do
+  for option in --from --sent-back --relay; do
     [[ -z ${given[$option]:-} ]] || usage_error "$option is taken only with --from-message"
   done
   usage_error "--print is taken only with --from-message"
@@ -478,9 +661,32 @@ if ((${#files[@]})); then
 fi
 
 task_events_once
+# A reviewer's verdict on a project whose agent-review the reviewer App posts is taken only from the
+# session of the task's latest reviewer launch (message_app_sender in bin/lib/messages.jq): the
+# first, when own_bar gives it the App, of the project of each of the task's pr events (by its
+# project, else the registered project of its URL's repo), whose PR team-next posts the check
+# for, and the project of that latest launch, which may name another project or none.
+app=''
+if [[ $message =~ ^[[:space:]]*T[0-9]+[[:space:]]+DONE[[:space:]]+(pass|findings)([[:space:]]|$) ]]; then
+  while IFS= read -r reviewed_in; do
+    if [[ $reviewed_in == repo:* ]]; then
+      reviewed_in=$(team_project --find repo "${reviewed_in#repo:}") || exit 1
+      reviewed_in=${reviewed_in%%$'\n'*}
+    fi
+    [[ -n $reviewed_in ]] || continue
+    bar=$(own_bar "$reviewed_in") || exit 1
+    if [[ $(jq -r '.app? // empty' <<<"$bar") ]]; then
+      app=$reviewed_in
+      break
+    fi
+  done < <(jq -r '(.[] | select(.event == "pr") | .project // (.url | strings
+      | capture("^https://github\\.com/(?<repo>[^/]+/[^/]+)/pull/").repo | "repo:\(.)") // empty),
+    (map(select(.event == "launch" and .role == "reviewer")) | last | .project // empty)' <<<"$TASK_EVENTS")
+fi
 parsed=$(jq -L "$TEAM_LIB" -c --arg task "$task" --arg message "$message" --arg from "$from" \
-  --arg sent_back "$sent_back" --argjson records "$brief_records" \
-  'include "messages"; include "ledger"; . as $events | $message | parse_message($task; $events; $records; $from; $sent_back)' <<<"$TASK_EVENTS")
+  --arg sent_back "$sent_back" --arg relay "$relay" --arg app "$app" --argjson records "$brief_records" \
+  'include "messages"; include "ledger"; . as $events
+    | $message | parse_message($task; $events; $records; $from; $sent_back; $app) | message_relay($task; $message; $relay)' <<<"$TASK_EVENTS")
 problem=$(jq -r '.problems // empty | join("; ")' <<<"$parsed")
 [[ -z $problem ]] || die "$problem"
 
@@ -542,5 +748,11 @@ if ((${#lines[@]})); then
 fi
 for line in "${lines[@]}"; do
   line=$(stamped "$line")
-  if [[ -n $print ]]; then printf '%s\n' "$line"; else ledger_append "$line"; fi
+  if [[ -n $print ]]; then
+    printf '%s\n' "$line"
+  else
+    ledger_append "$line"
+    base_merge_note "$line"
+  fi
 done
+ledger_push

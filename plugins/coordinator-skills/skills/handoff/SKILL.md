@@ -27,7 +27,7 @@ The level recorded in `level.jsonl` holds across the restart; `team-resume` then
    Exit 1 means this machine does not hold the lease, 75 that GitHub is unreachable: tell Daniel the reason it printed and stop.
 2. **Stow yourself.** Follow the `stow` skill's walk through the conversation, so nothing you know lives only here.
 3. **Post.** In `#coordinator`: the handoff has started, and what is in flight (each open task, its phase and live workers, from `team-snapshot`).
-4. **STOW the workers.** Send `T<n> STOW` to each live worker and log each `T<n> PAUSED stowed` with `team-log T<n> --from-message '<the message>'`, never `team-next`, which would launch a fix round's builder here.
+4. **STOW the workers.** First run `team-stow --all --begin --cause handoff`, which logs each open task's `stowing`; then send `T<n> STOW` to each live worker and log each `T<n> PAUSED stowed` with `team-log T<n> --from-message '<the message>'`, never `team-next`, which would launch a fix round's builder here.
    Wait up to 10 minutes for every answer; a worker that has not answered by then is stopped by the handoff as it stands, before its checkpoint, which keeps its uncommitted work as `wip/<project>/T<n>` on the team home's origin for `team-resume` to apply on the other machine (untracked files that may hold a secret stay here, and the handoff names them).
    Name each one that did not answer in the final post.
    Never send `STOW` to an ops session (`T<n>-ops`): it is never carried over, and `team-handoff` ends it with `team-ops-end`, deleting its transcript and answer file.
@@ -37,4 +37,6 @@ The level recorded in `level.jsonl` holds across the restart; `team-resume` then
    A failure stops it before the release with the reason: fix what it names (a diverged branch goes back to its builder's word, or Daniel's), then run `team-handoff` again, which picks up where it stopped.
    Exit 75: GitHub went away; wait, then run it again.
 6. **Post the final message.** What `team-handoff` printed from `Released at` to its end goes in `#coordinator` word for word, with any worker that did not answer STOW.
-7. **Retire.** Run `team-handoff --retire` and end your turn: a few seconds later it stops and removes this session.
+7. **Retire.** Run `team-handoff --retire` right after the post, with nothing between, and end your turn: a few seconds later it stops and removes this session, and its Remote Control row with it.
+   The other machine's wait starts its coordinator once it has taken the lease, and until this session stops, every worker there meets two sessions named `coordinator`.
+   That coordinator's start asks for one `ListAgents` call, so a row of this session's still listed then is its `coordinator-twin` to raise.

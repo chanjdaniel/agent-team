@@ -6,21 +6,27 @@
 # Reads only ledger.jsonl, claude agents --json, team-capacity plan --json (from the stored
 # readings), team-timers health --json (the health view, from the heartbeat's health record, the
 # lease record and the fence file, asked for at most 10 s, and only on a machine with a team
-# name), the registry once the ledger holds a merge-standing (merge-due, below) and, through
+# name), the registry and bin/lib/review-app while an open task awaits merge with its plan approved
+# (which projects are the team's own and whether the reviewer App is on, for merge-due, below)
+# and, through
 # bin/lib/session-activity, the live sessions' transcripts: their modification times, and from a
 # session's quiet past the default limit only its times, tool names, tool call ids, commands and
 # background task marks (never GitHub, never a tool's output or a message's text, and never a new
 # reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
-# id, no merge-approved whose url its text names), or when its latest paused or waiting has no
-# later resumed or launch; an awaiting-merge task that nothing else parks is merge-due instead
-# while Daniel's plan-time or standing merge word stands. Findings, one line each with the task,
+# id, no merge-approved whose url its text names), or when a park (held, blocked, waiting, paused)
+# stands in the ledger's lifecycle fold; an ask a launch went past (team-worker --past-ask) and its
+# wait park nothing, so that launch's worker is watched; an awaiting-merge task that nothing else parks is merge-due instead
+# while the default merge word, the approved plan, holds for one of its PRs and the checks of its
+# pass have passed, and ci-due while no wait of those checks has ended, and none of them was
+# rerun, for 100 minutes. Findings, one line each with the task,
 # the session and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
 #                  ledger event since its launch, a denied aside, has handed the next step back);
-#                  merged is told to close
+#                  merged is told to close, and merged-part (a merged naming phases_left, phases
+#                  with a ticket not done) to launch the next phase's first ticket's builder
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
 #                  task after that session's latest launch but denied ones (one waiting for input
@@ -39,6 +45,10 @@
 #                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
 #                  than Bash by its name, and ", and <n> more running" when others run; or " with no
 #                  tool call running". None for a session whose transcript cannot be found
+#   stowing        an open task whose stowing (a stow under way: team-stow --begin, or a team-stow
+#                  run, logged it) has stood 30 minutes with no stowed or stow-failed, whatever
+#                  parks it, with session null: "stowing since <its time> (<cause>), with no
+#                  stowed; next: run team-stow T<n>, which finishes the stow or logs stow-failed"
 #   walk-stale     an open task, parked or not, with session null, whose walk is on with no message
 #                  from Daniel for over 4 hours (walk_holds in bin/lib/ledger.jq: since the latest of
 #                  its start and its walk-note events), so it no longer keeps its stack up or stows
@@ -46,35 +56,56 @@
 #                  4 hours, ...; next: ask Daniel whether it goes on: if not, team-ui T<n> --walk
 #                  stop; if so, team-ui T<n> --walk stop, then team-ui T<n> --walk start", with the
 #                  --in interview and --reseeded <a new message of Daniel's> that walk started with
-#   merge-due      an open task in awaiting-merge with a plan-time merge approval not withdrawn (its
-#                  latest merge-preapproved of a project with no later merge-preapproval-withdrawn
-#                  of it) or a standing word of Daniel's on one of its projects (those of its
-#                  opened and worktree-added events: the latest merge-standing or
-#                  merge-standing-withdrawn of the project or all, logged under any task, is a
-#                  merge-standing) that a standing word may cover (standing_projects in
-#                  bin/lib/team.sh: every registered project but the team's own, whose PRs merge
-#                  only on the per-head word), no ask nothing settled, no paused or waiting
-#                  standing, no merge-base round in flight (its latest builder launch or resumed
-#                  naming a merge-base brief, with no review, caught-up or merged since and a
-#                  worker on it live with no done since) and a PR not merged with no review-side
-#                  reason against the word (team-state's: the latest review of the latest head
-#                  the task logged for it a pass that found no guarded area, and no review of the
-#                  task that counted a security or real-data finding or left its counts out),
-#                  with session null:
-#                  "awaiting the merge of
-#                  <those PRs' URLs> on Daniel's plan-time word on
-#                  <projects>, with no ask open; next: run team-merge T<n>; on a refusal, ask
-#                  Daniel for the per-head word with team-ask", with "standing word on
-#                  <projects>" for the standing word, or "plan-time word on <projects> and
-#                  standing word on <projects>" for both, and no other finding of the task's; the
-#                  ledger names no PR's project, so any word on one of the task's projects counts,
-#                  and GitHub is not read: team-merge says when a project no longer opts in, a
-#                  PR's own project has no word or a changed path is guarded. The registry is read
-#                  only once the ledger holds a merge-standing; when it cannot be read, no
-#                  standing word counts and a line on stderr says why
+#   merge-due      an open task in awaiting-merge, with no ask nothing settled, no paused or
+#                  waiting standing, the checks of its latest pass passed (checks_wait in
+#                  bin/lib/ledger.jq, read from the ledger alone: team-next T<n> --ci logged a ci
+#                  of outcome passed for the head the pass waits on), no merge-base round in flight (its latest builder launch or
+#                  resumed naming a merge-base brief, with no review, caught-up or merged since and
+#                  a worker on it live with no done since) and a PR not merged whose default word
+#                  holds on the ledger (merge_authority in bin/lib/ledger.jq, the derivation
+#                  team-merge and team-state read too: the plan approved and not withdrawn, the
+#                  PR's project, its latest pr event's or else the task's opened one's, not the
+#                  team's own, by own_project in bin/lib/team.sh, or the team's own on a plan
+#                  Daniel approved with the reviewer App on, the default not withdrawn for the
+#                  task, its project or every project by the latest merge-default-withdrawn or
+#                  merge-default-restored of any task covering it, the task's branch logged, and
+#                  the latest review of the latest head the task logged for the PR a pass that
+#                  found no guarded area, with no review of the task that counted a security or
+#                  real-data finding or left its counts out), with session null:
+#                  "awaiting the merge of <those PRs' URLs> on the default word, the approved
+#                  plan, with no ask open; next: run team-merge T<n>; on a refusal, ask Daniel for
+#                  the per-head word with team-ask", and no other finding of the task's. GitHub,
+#                  Discord and the plan's files are not read: team-merge says when a changed path
+#                  is guarded or outside the plan's scope, the plan changed since its approval, or
+#                  a message does not read back. When the registry cannot be read, no task is
+#                  merge-due and a line on stderr says why
+#   ci-due         after the task's other findings, an open task in awaiting-merge, with no ask
+#                  nothing settled and no park standing, whose latest pass's checks_wait is waiting
+#                  (no ci logged for the head it waits on) or pending (its latest ci ended at
+#                  team-ci-wait's deadline) since 100 minutes or more, counted from the pass,
+#                  its catch-up, or the latest ci or ci-rerun of that head, since a rerun starts the
+#                  wait again (ci_due_seconds: the deadline's 90, its 2-minute settle, then room),
+#                  with session null: "the checks of <url> at <short>
+#                  have had no wait end for <h>h<mm>m; next: arm team-next T<n> --ci with Bash
+#                  run_in_background unless it is running". It is read from the ledger alone, no
+#                  GitHub and no process, so a wait still running past it is the coordinator's to
+#                  see in its background commands, and a second one armed beside it says so and
+#                  ends (team-next's lock)
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
-#   activity       after every task finding, with task and session null: session-activity
+#   coordinator-twin  after every task finding, with task null: one for each session named
+#                  coordinator in the session list but the one the sweep runs in
+#                  (CLAUDE_CODE_SESSION_ID's), when more than one is listed, with session its short
+#                  id: "coordinator-twin: coordinator <id> (<kind>, <state or status>, started
+#                  <time>) is a second session named coordinator on this machine; next: read claude
+#                  logs <id> for anything left to log, then stop it with claude stop <id>" ("ask
+#                  Daniel to end it, an interactive session, pid <pid>" for an interactive one, and
+#                  "started at an unknown time" for one whose startedAt is not a number); when
+#                  CLAUDE_CODE_SESSION_ID names none of them, each is "one of <n> sessions named
+#                  coordinator" and its next starts "if it is not you, ". The list is this
+#                  machine's: a Remote Control twin is the coordinator's own ListAgents check
+#                  (bin/hooks/session-digest)
+#   activity       after the coordinator-twin findings, with task and session null: session-activity
 #                  failed (a Python older than 3.11, say, or a session with a transcript whose
 #                  startedAt is not epoch milliseconds) or printed no JSON object, so no busy
 #                  worker can be found stalled: "activity: <its last line on stderr>, so no busy
@@ -86,12 +117,16 @@
 #                  their workers STOW, then runs team-stow)
 #   level-resume   after it, with task and session null: the first task stowed, waiting to
 #                  resume (for the level or a handoff), oldest stow first, whose roles' estimates
-#                  fit the budget again: "level: T171 fits again: relaunch its builder"
+#                  fit the budget again and that nothing holds (Daniel's hold or an ask no launch
+#                  went past, wherever logged, or a held, waiting or blocked logged after its stow
+#                  standing, until it ends): "level: T171 fits again: relaunch its builder"
 #   level-launch   after it, with task and session null: the first task whose launches were
-#                  refused for room (a paused, after its latest launch, whose reason is
-#                  team-worker's "no room for session:<role>" line), oldest refusal first, whose
-#                  roles fit again: "level: T5 has room again: launch its reviewer, refused for
-#                  room at <time>"
+#                  refused for room (a standing paused of cause room, which team-worker logs
+#                  with its role on its exit 75, an old line's role read from its "no room for
+#                  session:<role>" words, and which a launch of its role or a resumed naming it
+#                  or all=true ends), oldest refusal first, whose roles fit again and that nothing
+#                  holds (as for level-resume, after its latest refusal): "level: T5
+#                  has room again: launch its reviewer, refused for room at <time>"
 #   level          in their place, with task and session null: team-capacity plan failed:
 #                  "level: <its last line on stderr>: fix what team-capacity names"
 #   retro-due      after the level findings, with task and session null: a retro is due, as
@@ -221,18 +256,19 @@ health_view() {
   rm -f "$out" "$err"
 }
 
-# The projects a standing word may cover (standing_projects in bin/lib/team.sh: every registered
-# one but the team's own) as one JSON array, read only once the ledger holds a merge-standing,
-# else []; with a registry it cannot read, [], saying why on stderr.
-standing_covered() {
+# The registered projects that are the team's own and the reviewer App's id, own_projects' JSON in
+# bin/lib/team.sh, read only while an open task awaits merge with its plan approved
+# (default_may_hold), else no project and no App; null with a registry it cannot read, saying why
+# on stderr.
+own_covered() {
   local found err
-  if ! grep -qF merge-standing "$ledger"; then echo '[]'; return; fi
+  if ! ledger_jq 'ledger_events | default_may_hold' -nRe "$ledger" >/dev/null; then echo '{"projects": [], "app": null}'; return; fi
   err=$(mktemp)
-  if found=$(standing_projects 2>"$err"); then
-    jq -cR '[., inputs | select(. != "")]' <<<"$found"
+  if found=$(own_projects 2>"$err"); then
+    printf '%s\n' "$found"
   else
-    echo "team-sweep: counts no standing word of Daniel's, since the registry cannot be read: $(grep -m 1 . "$err" || echo "team-project failed")" >&2
-    echo '[]'
+    echo "team-sweep: finds no task merge-due, since the registry cannot be read: $(grep -m 1 . "$err" || echo "team-project failed")" >&2
+    echo null
   fi
   rm -f "$err"
 }
@@ -241,7 +277,7 @@ standing_covered() {
 # stow plan and the live sessions' transcripts; fails with the reason on stderr when the session
 # list cannot be read.
 look() {
-  local sessions plan activity plan_file covered health plan_pid health_pid
+  local sessions plan activity plan_file own health plan_pid health_pid
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
   plan_file=$(mktemp)
   printf '%s\n' "$sessions" >"$plan_file.sessions"
@@ -257,10 +293,10 @@ look() {
   rm -f "$plan_file" "$plan_file.sessions" "$plan_file.health"
   [[ -n $plan ]] || plan='{"error": "team-capacity plan printed nothing"}'
   [[ -n $health ]] || health='{"error": "team-timers health printed nothing"}'
-  covered=$(standing_covered)
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $covered; $health)' -nRc \
-    --argjson sessions "$sessions" --argjson plan "$plan" --argjson activity "$activity" --argjson covered "$covered" \
-    --argjson health "$health" "$ledger")
+  own=$(own_covered)
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $own; $health; $self)' -nRc \
+    --argjson sessions "$sessions" --argjson plan "$plan" --argjson activity "$activity" --argjson own "$own" \
+    --argjson health "$health" --arg self "${CLAUDE_CODE_SESSION_ID:-}" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.

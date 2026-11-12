@@ -1,38 +1,47 @@
 #!/usr/bin/env bash
-# Wait on a pull request's GitHub checks, and always end: a worker runs it with Bash
-# run_in_background and acts on how it ended.
+# Wait on a pull request's GitHub checks, and always end: the coordinator's checks wait
+# (team-next T<n> --ci) runs it and acts on how it ended, and a worker may run it by hand, with
+# Bash run_in_background; --json and --look are for a script that reads its end.
 #
-# Usage: team-ci-wait [--no-agent-review] <pr url> [<sha>]
+# Usage: team-ci-wait [--no-agent-review] [--json] [--look] <pr url> [<sha>]
 #   --no-agent-review
 #           leave the agent-review check out of every look, as though GitHub had not reported it:
-#           a builder's wait, which runs while the reviewer reads and may see the reviewer's own
-#           status, ends on CI's checks alone and leaves the review to the coordinator's round
+#           the checks wait after a pass and the findings round's look (team-next), which run once
+#           the reviewer has set its own status, end on CI's checks alone and leave the review to
+#           the review's own verdict
+#   --json  print one JSON object instead of the text, on every end but a refused command line
+#           (below); the exit code is as without it
+#   --look  take one readable look at <sha> and end, with no wait (below)
+#           the options come in any order, before the URL
 #   pr url  https://github.com/<owner>/<name>/pull/<n>, in a registered project's repo
-#   sha     the head the worker means (the commit it pushed, the head it reviews), in full or
+#   sha     the head its caller means (the commit it pushed, the head it reviews), in full or
 #           short (7 to 40 hex characters); without it, the head of the first readable look
 # While the PR's head is not <sha>, it keeps looking for a grace of 2 minutes from the first look
 # (GRACE_SECONDS), since GitHub may not show a push of a moment ago yet, and reads nothing else of
 # those looks but a merged or closed PR; the first look whose head is <sha> is "the first look"
-# below. TEAM_CI_WAIT_GRACE_SECONDS replaces the grace's seconds, and TEAM_CI_WAIT_DEADLINE_SECONDS
-# the deadline's 90 minutes (DEADLINE_SECONDS), in seconds (the tests' seams).
+# below. TEAM_CI_WAIT_GRACE_SECONDS replaces the grace's seconds, TEAM_CI_WAIT_QUEUED_SECONDS the
+# queued limit's 20 minutes (QUEUED_SECONDS), and TEAM_CI_WAIT_DEADLINE_SECONDS the deadline's 90
+# minutes (DEADLINE_SECONDS), in seconds (the tests' seams).
 # It looks every 30 s (WAIT_SECONDS), counting time in looks, so a test steps it with a stub
 # sleep. Each look reads the PR's state and head (gh pr view), its checks (gh pr checks), the head's
 # workflow runs (gh api repos/<repo>/actions/runs?head_sha=<head>&per_page=100), and, once per run,
 # the workflow run of each pending check whose link is an Actions job link
-# (.../actions/runs/<run id>/job/<job id>, through gh api repos/<repo>/actions/runs/<run id>):
-# only reads, never a log or a check's output. A workflow run of the head that is not completed
-# holds the wait whatever the checks show, since in a re-run's or a push's first seconds gh pr checks
-# may list only another workflow's checks, and an earlier attempt's failure may yet be replaced.
+# (.../actions/runs/<run id>/job/<job id>, through gh api repos/<repo>/actions/runs/<run id>);
+# once, when the wait ends on a failure, it reads the Actions job of each failed or cancelled check
+# with an Actions job link that is not a roll-up (gh api repos/<repo>/actions/jobs/<job id>), for
+# its runner and steps: only reads of metadata, never a log or a check's output.
+# A workflow run of the head that is not completed holds the wait whatever the checks show, since
+# in a re-run's or a push's first seconds gh pr checks may list only another workflow's checks, and
+# an earlier attempt's failure may yet be replaced.
 # A run GitHub does not list yet holds nothing, so a reading of no check, or of every check passed,
 # counts only once it has stood for 2 minutes of looks (SETTLE_SECONDS), with no run open and no
 # new check listed: until then any of these restarts it. The project's required_checks are read
 # through team-project, and one still not listed when that reading has stood is a failure.
-# agent-review is never among them here, since a reviewer delivers it after its wait ends.
-# Before each look, while the team holds offline
-# (offline_hold), it ends at once with exit 75 and the hold's text.
-# It prints one line when it starts, naming the PR and the short head of the first look, and
-# its result when it ends, nothing in between; it ends at the earliest look where one of
-# these holds:
+# agent-review is never among them here, since a reviewer sets it at its verdict, apart from CI.
+# Before each look, while the team holds offline (offline_hold), it ends at once with exit 75 and
+# the hold's text. Without --json or --look, it prints one line when it starts, naming the PR and
+# the short head of the first look, and its result when it ends, nothing in between; it ends at the
+# earliest look where one of these holds:
 #   the PR is merged or closed                         exit 1, naming its state
 #   the head is still not <sha> after the grace        exit 1, naming both short heads: it is
 #                                                      another commit; report it to the
@@ -44,9 +53,10 @@
 #   no check pending and no workflow run open, every   exit 0, naming each
 #   check passed or skipped, for 2 minutes of looks,
 #   and every required check listed
-#   the same, with a required check not listed         exit 1, naming each such check
-#   no check pending but stuck ones, no workflow run   exit 1, naming each failed or cancelled
-#   open, and at least one failed, cancelled or stuck  check with its link, and each stuck one
+#   the same, with a required check not listed         exit 1, naming each such check as the PR's
+#   no check pending but stuck or queued ones, no      exit 1, naming each failed, cancelled,
+#   workflow run open but a queued one's, and at       stuck or queued check in its class (below)
+#   least one failed, cancelled, stuck or queued
 #   a gh call failing at every look for 5 minutes      exit 75, with gh's last reason line
 #   90 minutes of looks with checks still pending or   exit 75, naming each pending check with
 #   a workflow run open                                its run's id and status and each other
@@ -56,20 +66,60 @@
 # A check is stuck when it is pending while its Actions run's status is completed, at every
 # readable look for 5 minutes from the first that saw it: GitHub lost the job's status, and the
 # message names the run, its conclusion and time, and the step: re-run it with gh run rerun <run
-# id> --repo <repo>, then run team-ci-wait again, and report BLOCKED if it sticks again. A look
-# whose gh call fails reads no state: it neither starts nor advances the stuck or the standing
+# id> --repo <repo>, then run team-ci-wait again, and report BLOCKED if it sticks again. A check is
+# queued when it is pending in any state but in_progress (queued, pending, waiting, requested) and
+# its Actions run is not completed, at every readable look for 20 minutes from the first that saw
+# it: no runner took it, and neither it nor its run holds the wait any more. A look whose gh call
+# fails reads no state: it neither starts nor advances the stuck, the queued or the standing
 # clock, while the deadline counts every look. A pending check from outside Actions (no run in
-# its link) is waited on until it concludes or the deadline; agent-review is a check like any
-# other, unless --no-agent-review leaves it out.
+# its link) is never queued, and is waited on until it concludes or the deadline; agent-review is
+# a check like any other, unless --no-agent-review leaves it out.
+# A failure's text keeps the first line, "the checks on <short> did not pass:", and gives each
+# check its own line, led by its class, the PR's first, then infrastructure, then roll-ups:
+#   roll-up         a failed or cancelled check R beside a check of the same workflow run (the run
+#                   id in their Actions links), failed, cancelled, stuck or queued, whose name is R
+#                   then "-shard" or " shard" (test beside test-shards (2), e2e beside e2e shard
+#                   3/6): "roll-up: R, of <its shards>, left out"; one whose shards all passed is
+#                   the PR's
+#   infrastructure  never started: a failed or cancelled check whose job has no runner and no step
+#                   that ran (none concluded but skipped); setup: a failed check whose first
+#                   failing step is GitHub's own (Set up job, Set up runner, Initialize containers,
+#                   Complete job) or a stock action's (Run actions/..., Post Run actions/...); and
+#                   each queued or stuck check: each line names its link and the gh run rerun (for
+#                   a queued one, gh run cancel first) to run before running team-ci-wait again
+#   the PR's        every other: a failed step of the project's own, a cancel after a step ran, a
+#                   required check not listed, a check from outside Actions, and a check whose job
+#                   could not be read, so said
+# Every class is a failure, since the head is not green.
+# --look ends at the first readable look whose head is <sha>, keeping the grace for a push: it
+# prints no starting line, and its text names each failed or cancelled check, classed as above, then
+# the checks still pending and each open workflow run as the deadline names them ("  still pending:
+# ..."). It names no queued or stuck check and no required check not listed, since each of those
+# needs a clock across looks and --look takes one; such a check is named pending. Its ends: a
+# failure, exit 1 (failed); none, but checks pending or a run open, exit 0 (pending); every check
+# passed or skipped, exit 0 (passed); no check and no run open, exit 0 (none); the head still not
+# <sha> after the grace, the PR merged or closed, or the team holding offline, as the wait ends;
+# GitHub not read for the grace, exit 75 (unreadable).
+# --json's object is {schema: "team-ci-wait/1", outcome, head, text, failures}: outcome one of
+# passed, none, failed, other-head (still not <sha> after the grace), moved, closed (merged or
+# closed), deadline, unreadable (gh failing for its limit, or the deadline with no readable look),
+# offline, and with --look pending; head the PR's head at the last readable look, null before
+# one; text what the end prints without --json, the starting line left out; failures each failure
+# of a failed end, in the text's order, as {name, class (pr, infrastructure or rollup), kind
+# (failed, cancelled, missing, never-started, setup, queued, stuck or rollup), state (the check's,
+# lowercase, null for a missing one), link, run, job (the Actions run and job ids as numbers, else
+# null), step (the first failing step's name, else null), rerun (the command its line gives, else
+# null)}, and [] on any other end.
 # Exit 0 the checks passed, 1 they did not or the wait no longer applies, 2 a malformed command
 # line, 75 try again later.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-# Seconds between looks, how long a check must look stuck, how long a reading with nothing left to
-# wait on must stand, how long gh may fail, and the deadline.
+# Seconds between looks, how long a check must look stuck or queued, how long a reading with nothing
+# left to wait on must stand, how long gh may fail, and the deadline.
 WAIT_SECONDS=30
 STUCK_SECONDS=300
+QUEUED_SECONDS=${TEAM_CI_WAIT_QUEUED_SECONDS:-1200}
 SETTLE_SECONDS=120
 FAILING_SECONDS=300
 DEADLINE_SECONDS=${TEAM_CI_WAIT_DEADLINE_SECONDS:-5400}
@@ -77,13 +127,19 @@ GRACE_SECONDS=${TEAM_CI_WAIT_GRACE_SECONDS:-120}
 
 [[ $DEADLINE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_CI_WAIT_DEADLINE_SECONDS must be a number of seconds"
 [[ $GRACE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_CI_WAIT_GRACE_SECONDS must be a number of seconds"
-without_review=false
-if [[ ${1:-} == --no-agent-review ]]; then
-  without_review=true
+[[ $QUEUED_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_CI_WAIT_QUEUED_SECONDS must be a number of seconds"
+usage="usage: team-ci-wait [--no-agent-review] [--json] [--look] <pr url> [<sha>]"
+without_review=false json=false look=false
+while [[ ${1:-} == --* ]]; do
+  case $1 in
+    --no-agent-review) without_review=true ;;
+    --json) json=true ;;
+    --look) look=true ;;
+    *) usage_error "$usage" ;;
+  esac
   shift
-fi
-[[ $# -eq 1 || ($# -eq 2 && $2 =~ ^[0-9a-f]{7,40}$) ]] ||
-  usage_error "usage: team-ci-wait [--no-agent-review] <pr url> [<sha>]"
+done
+[[ $# -eq 1 || ($# -eq 2 && $2 =~ ^[0-9a-f]{7,40}$) ]] || usage_error "$usage"
 expected=${2:-}
 pr=$(registered_pr "$1")
 { read -r project && read -r repo && read -r number; } <<<"$pr"
@@ -91,6 +147,20 @@ required=$(team_project "$project" required_checks)
 
 dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT
+echo '[]' >"$dir/failures"
+
+# finish <outcome> <exit code> <text>: print <text>, or with --json the object of this end, its
+# failures those report wrote, and exit with <exit code>.
+finish() {
+  if $json; then
+    jq -cn --arg outcome "$1" --arg head "$head" --arg text "$3" --slurpfile failures "$dir/failures" \
+      '{schema: "team-ci-wait/1", outcome: $outcome, head: (if $head == "" then null else $head end), text: $text,
+        failures: $failures[0]}'
+  else
+    printf '%s\n' "$3"
+  fi
+  exit "$2"
+}
 
 # Read one look into $dir/look, {state, head, checks: [{name, state, bucket, link, run}], open_runs:
 # [{id, name, status}]}, each pending check's run {id, status, conclusion, updated_at} when its link
@@ -127,17 +197,141 @@ pending_text() {
     | join("; ")' "$dir/look"
 }
 
-# The span of <seconds>, in whole minutes when it is some.
+# The span of <seconds>, in whole minutes when it is some, one of either in the singular.
 span() {
-  if (($1 > 0 && $1 % 60 == 0)); then echo "$(($1 / 60)) minutes"; else echo "$1 seconds"; fi
+  local n=$1 unit=second
+  if ((n > 0 && n % 60 == 0)); then n=$((n / 60)) unit=minute; fi
+  ((n == 1)) || unit+=s
+  echo "$n $unit"
 }
 
-look_n=0 seen_n=0 first_head='' failing_since='' settled_since='' settled_on=''
-declare -A stuck_since=()
+# tick <clocks> <seconds> <filter> <out>: the clocks of the checks the jq <filter> selects at the
+# last readable look, in the associative array <clocks> (each name's first look that saw it, from
+# that look; a check no longer selected loses its clock), and in the array <out> each name whose
+# clock has run <seconds>.
+# shellcheck disable=SC2004 # since is an associative array, by nameref, keyed by $name
+tick() {
+  local -n since=$1 out=$4
+  local name
+  local -A now=()
+  while IFS= read -r name; do
+    now[$name]=1
+    [[ -n ${since[$name]:-} ]] || since[$name]=$seen_n
+  done < <(jq -r ".checks[] | select($3) | .name" "$dir/look")
+  out=()
+  for name in "${!since[@]}"; do
+    if [[ -z ${now[$name]:-} ]]; then
+      unset "since[$name]"
+    elif (((seen_n - since[$name]) * WAIT_SECONDS >= $2)); then
+      out+=("$name")
+    fi
+  done
+}
+
+# The classes, as jq definitions over a look, with $stuck and $queued the names of the checks that
+# ran out their clocks, $jobs each Actions job read by its id, and $repo. unpassed is each check
+# that did not pass, failed, cancelled, stuck or queued, with its run_id and job_id from its Actions
+# job link (else null) and shards, the names of the checks of its run, failed, cancelled, stuck or
+# queued, that make a failed or cancelled check a roll-up of them. classed is each of them as
+# {name, class, kind, state, link, run, job, step, rerun, line}, line its text.
+CLASSES='
+  def ids: (.link | capture("/actions/runs/(?<run>[0-9]+)/job/(?<job>[0-9]+)")
+    | {run_id: (.run | tonumber), job_id: (.job | tonumber)}) // {run_id: null, job_id: null};
+  def unpassed:
+    [.checks[] | select(.bucket == "fail" or .bucket == "cancel" or (.name | IN($stuck[], $queued[]))) | . + ids] as $c
+    | $c[] | . as $r
+    | . + {shards: (if (.bucket == "fail" or .bucket == "cancel") and .run_id != null then
+        [$c[] | select(.run_id == $r.run_id
+          and (.name | startswith($r.name + "-shard") or startswith($r.name + " shard"))) | .name]
+      else [] end)};
+  def setup_step: IN("Set up job", "Set up runner", "Initialize containers", "Complete job")
+    or startswith("Run actions/") or startswith("Post Run actions/");
+  def classed:
+    unpassed
+    | (if .job_id == null then null else $jobs[.job_id | tostring] end) as $job
+    | ([$job.steps[]? | select(.conclusion == "failure")] | sort_by(.number) | .[0].name) as $step
+    | (if .link == "" then "no link" else .link end) as $link
+    | "gh run rerun \(.run_id) --job \(.job_id) --repo \($repo)" as $rerun
+    | {name, state, link: (if .link == "" then null else .link end), run: .run_id, job: .job_id, step: null, rerun: null}
+      + if .shards != [] then
+        {class: "rollup", kind: "rollup", line: "roll-up: \(.name), of \(.shards | join(", ")), left out"}
+      elif .name | IN($stuck[]) then
+        {class: "infrastructure", kind: "stuck", rerun: "gh run rerun \(.run.id) --repo \($repo)",
+         line: "infrastructure: \(.name) is still \(.state), but its run \(.run.id) completed \(.run.conclusion) at \(.run.updated_at): GitHub lost the job\u0027s status; re-run it with gh run rerun \(.run.id) --repo \($repo), then run team-ci-wait again, and report BLOCKED if it sticks again"}
+      elif .name | IN($queued[]) then
+        {class: "infrastructure", kind: "queued", rerun: $rerun,
+         line: "infrastructure: \(.name) is still \(.state) after \($queued_span) of looks: no runner took it (\($link)); cancel its run with gh run cancel \(.run_id) --repo \($repo), then rerun the job with \($rerun), then run team-ci-wait again"}
+      elif $job != null and ($job.runner_name // "") == ""
+        and all($job.steps[]?; .conclusion == null or .conclusion == "skipped") then
+        {class: "infrastructure", kind: "never-started", rerun: $rerun,
+         line: "infrastructure: \(.name) never started: no runner took it (\($link)); rerun it with \($rerun), then run team-ci-wait again"}
+      elif .bucket == "fail" and ($step // "" | setup_step) then
+        {class: "infrastructure", kind: "setup", step: $step, rerun: $rerun,
+         line: "infrastructure: \(.name) failed in setup, at its step \"\($step)\" (\($link)); rerun it with \($rerun), then run team-ci-wait again"}
+      else
+        {class: "pr", kind: (if .bucket == "fail" then "failed" else "cancelled" end), step: $step,
+         line: ("the PR\u0027s: \(.name) " + (if .bucket == "fail" then "failed" else "was cancelled" end) + ": \($link)"
+           + (if .job_id != null and $job == null then " (its job could not be read)" else "" end))}
+      end;
+'
+
+# report <missing>: sets text to the text of a wait that ends on a failure: today's first line, then
+# a line for each check the last readable look did not pass, classed, and each required check in
+# the JSON array <missing>, the PR's first, then infrastructure, then roll-ups; and writes those
+# failures, in that order, to $dir/failures as --json gives them. It reads the Actions job of each
+# failed or cancelled check that is not a roll-up, once; one it cannot read stays the PR's.
+report() {
+  local id
+  : >"$dir/jobs"
+  while IFS= read -r id; do
+    if github "$dir" "job-$id" api "repos/$repo/actions/jobs/$id"; then
+      jq -c --arg id "$id" '{($id): .}' "$dir/job-$id" >>"$dir/jobs"
+    fi
+  done < <(jq -r --argjson stuck "$stuck_json" --argjson queued "$queued_json" "$CLASSES"'
+    unpassed | select(.shards == [] and (.bucket == "fail" or .bucket == "cancel") and .job_id != null) | .job_id' "$dir/look")
+  jq -c --argjson stuck "$stuck_json" --argjson queued "$queued_json" --argjson missing "$1" --arg repo "$repo" \
+    --arg queued_span "$(span "$QUEUED_SECONDS")" --arg settle_span "$(span "$SETTLE_SECONDS")" \
+    --argjson jobs "$(jq -s 'add // {}' "$dir/jobs")" "$CLASSES"'
+    [classed, ($missing[] | {name: ., class: "pr", kind: "missing", state: null, link: null, run: null, job: null,
+       step: null, rerun: null, line: "the PR\u0027s: \(.) was not reported for \($settle_span), and the project requires it"})]
+    | sort_by({pr: 0, infrastructure: 1, rollup: 2}[.class])' "$dir/look" >"$dir/classed"
+  jq 'map(del(.line))' "$dir/classed" >"$dir/failures"
+  text="team-ci-wait: the checks on ${head:0:7} did not pass:"$'\n'$(jq -r '.[] | "  " + .line' "$dir/classed")
+}
+
+# The text of a look whose every check passed or was skipped, naming each.
+passed_text() {
+  jq -r --arg short "${head:0:7}" '"team-ci-wait: every check passed on \($short): "
+    + ([.checks[] | "\(.name) " + (if .bucket == "pass" then "passed" else "skipped" end)] | join(", "))' "$dir/look"
+}
+
+# --look's end, at the first readable look of the head: each failed or cancelled check, classed,
+# then what is still pending.
+look_end() {
+  local pending
+  pending=$(pending_text)
+  if jq -e 'any(.checks[]; .bucket == "fail" or .bucket == "cancel")' "$dir/look" >/dev/null; then
+    report '[]'
+    [[ -z $pending ]] || text+=$'\n'"  still pending: $pending"
+    finish failed 1 "$text"
+  elif [[ -n $pending ]]; then
+    finish pending 0 "team-ci-wait: no check has failed on ${head:0:7} so far; still pending: $pending"
+  elif jq -e '.checks == []' "$dir/look" >/dev/null; then
+    finish none 0 "team-ci-wait: ${head:0:7} has no GitHub checks reported so far"
+  fi
+  finish passed 0 "$(passed_text)"
+}
+
+look_n=0 seen_n=0 head='' first_head='' failing_since='' settled_since='' settled_on='' text=''
+# How long gh may fail before the end: a look's grace, else FAILING_SECONDS.
+if $look; then failing_limit=$GRACE_SECONDS; else failing_limit=$FAILING_SECONDS; fi
+# The stuck and queued clocks, which tick keeps by nameref, and the names that ran theirs out.
+# shellcheck disable=SC2034
+declare -A stuck_since=() queued_since=()
+stuck=() queued=() stuck_json='[]' queued_json='[]'
 while :; do
   if hold=$(offline_hold); then
-    echo "team-ci-wait: $hold"
-    exit 75
+    finish offline 75 "team-ci-wait: $hold"
   fi
   if read_look; then
     failing_since=''
@@ -145,12 +339,10 @@ while :; do
     if [[ -z $first_head ]]; then
       if [[ $head != "$expected"* ]]; then
         if [[ $state != OPEN ]]; then
-          echo "team-ci-wait: $repo#$number is ${state,,}: its checks no longer matter"
-          exit 1
+          finish closed 1 "team-ci-wait: $repo#$number is ${state,,}: its checks no longer matter"
         fi
         if ((look_n * WAIT_SECONDS >= GRACE_SECONDS)); then
-          echo "team-ci-wait: the head of $repo#$number is ${head:0:7}, not ${expected:0:7}, after $(span "$GRACE_SECONDS") of looks: it is another commit, and its checks are not the ones to wait on; if ${head:0:7} is not your own, report it to the coordinator"
-          exit 1
+          finish other-head 1 "team-ci-wait: the head of $repo#$number is ${head:0:7}, not ${expected:0:7}, after $(span "$GRACE_SECONDS") of looks: it is another commit, and its checks are not the ones to wait on; if ${head:0:7} is not your own, report it to the coordinator"
         fi
         # GitHub may not show the push yet: look again.
         sleep "$WAIT_SECONDS"
@@ -158,71 +350,51 @@ while :; do
         continue
       fi
       first_head=$head
-      echo "team-ci-wait: waiting on the checks of $repo#$number at ${head:0:7}"
+      $json || $look || echo "team-ci-wait: waiting on the checks of $repo#$number at ${head:0:7}"
     fi
     if [[ $state != OPEN ]]; then
-      echo "team-ci-wait: $repo#$number is ${state,,}: its checks no longer matter"
-      exit 1
+      finish closed 1 "team-ci-wait: $repo#$number is ${state,,}: its checks no longer matter"
     fi
     if [[ $head != "$first_head" ]]; then
-      echo "team-ci-wait: the head of $repo#$number moved from ${first_head:0:7} to ${head:0:7}: the new head's checks need a wait of their own"
-      exit 1
+      finish moved 1 "team-ci-wait: the head of $repo#$number moved from ${first_head:0:7} to ${head:0:7}: the new head's checks need a wait of their own"
     fi
-    # The stuck clocks: a pending check whose run completed, from the first readable look that
-    # saw it.
-    declare -A now=()
-    while IFS= read -r name; do
-      now[$name]=1
-      [[ -n ${stuck_since[$name]:-} ]] || stuck_since[$name]=$seen_n
-    done < <(jq -r '.checks[] | select(.bucket == "pending" and .run.status == "completed") | .name' "$dir/look")
-    stuck=()
-    for name in "${!stuck_since[@]}"; do
-      if [[ -z ${now[$name]:-} ]]; then
-        unset "stuck_since[$name]"
-      elif (((seen_n - stuck_since[$name]) * WAIT_SECONDS >= STUCK_SECONDS)); then
-        stuck+=("$name")
-      fi
-    done
-    unset now
-    # What this look says with nothing left to wait on: a failure now, or "settled" for a reading
-    # that must stand. Nothing at all while a check is pending or a run open.
-    if result=$(jq -re --argjson stuck "$(jq -cn '$ARGS.positional' --args "${stuck[@]}")" \
-      --arg repo "$repo" --arg short "${head:0:7}" '
-      if .open_runs != [] or any(.checks[]; .bucket == "pending" and (.name | IN($stuck[]) | not)) then empty
+    $look && look_end
+    # The clocks: a pending check whose run completed is stuck, and one of an Actions run still
+    # open, pending in any state but in_progress, is queued, from the first readable look that saw
+    # it.
+    tick stuck_since "$STUCK_SECONDS" '.bucket == "pending" and .run.status == "completed"' stuck
+    tick queued_since "$QUEUED_SECONDS" \
+      '.bucket == "pending" and .state != "in_progress" and .run != null and .run.status != "completed"' queued
+    stuck_json=$(jq -cn '$ARGS.positional' --args "${stuck[@]}")
+    queued_json=$(jq -cn '$ARGS.positional' --args "${queued[@]}")
+    # What this look says with nothing left to wait on: "failed" now, or "settled" for a reading
+    # that must stand. Nothing at all while a check is pending or a run open, but a stuck or a
+    # queued check and a queued one's run.
+    if result=$(jq -re --argjson stuck "$stuck_json" --argjson queued "$queued_json" '
+      [.checks[] | select(.name | IN($queued[])) | .run.id] as $queued_runs
+      | if any(.open_runs[]; .id | IN($queued_runs[]) | not)
+        or any(.checks[]; .bucket == "pending" and (.name | IN($stuck[], $queued[]) | not)) then empty
       elif all(.checks[]; .bucket == "pass" or .bucket == "skipping") then "settled"
-      else
-        "1\nteam-ci-wait: the checks on \($short) did not pass:"
-          + ([.checks[] | select(.bucket == "fail" or .bucket == "cancel" or (.name | IN($stuck[])))
-            | "\n  " + (if .bucket == "pending" then
-                "\(.name) is still \(.state), but its run \(.run.id) completed \(.run.conclusion) at \(.run.updated_at): GitHub lost the job\u0027s status; re-run it with gh run rerun \(.run.id) --repo \($repo), then run team-ci-wait again, and report BLOCKED if it sticks again"
-              else "\(.name) " + (if .bucket == "fail" then "failed" else "was cancelled" end)
-                + ": " + (if .link == "" then "no link" else .link end) end)] | add)
-      end' "$dir/look"); then
-      if [[ $result != settled ]]; then
-        printf '%s\n' "${result#*$'\n'}"
-        exit "${result%%$'\n'*}"
+      else "failed" end' "$dir/look"); then
+      if [[ $result == failed ]]; then
+        report '[]'
+        finish failed 1 "$text"
       fi
       names=$(jq -c '[.checks[].name] | sort' "$dir/look")
       if [[ $names != "$settled_on" ]]; then
         settled_on=$names settled_since=$seen_n
       fi
       if (((seen_n - settled_since) * WAIT_SECONDS >= SETTLE_SECONDS)); then
-        unlisted=$(jq -r --argjson required "$required" '[.checks[].name] as $listed
-          | [$required[] | select(. != "agent-review" and (IN($listed[]) | not))] | join("\n")' "$dir/look")
-        if [[ -n $unlisted ]]; then
-          echo "team-ci-wait: the checks on ${head:0:7} did not pass:"
-          while IFS= read -r name; do
-            echo "  $name was not reported for $((SETTLE_SECONDS / 60)) minutes, and the project requires it"
-          done <<<"$unlisted"
-          exit 1
+        unlisted=$(jq -c --argjson required "$required" '[.checks[].name] as $listed
+          | [$required[] | select(. != "agent-review" and (IN($listed[]) | not))]' "$dir/look")
+        if [[ $unlisted != '[]' ]]; then
+          report "$unlisted"
+          finish failed 1 "$text"
         fi
         if [[ $names == '[]' ]]; then
-          echo "team-ci-wait: ${head:0:7} has no GitHub checks: none reported for $((SETTLE_SECONDS / 60)) minutes"
-        else
-          jq -r --arg short "${head:0:7}" '"team-ci-wait: every check passed on \($short): "
-            + ([.checks[] | "\(.name) " + (if .bucket == "pass" then "passed" else "skipped" end)] | join(", "))' "$dir/look"
+          finish none 0 "team-ci-wait: ${head:0:7} has no GitHub checks: none reported for $((SETTLE_SECONDS / 60)) minutes"
         fi
-        exit 0
+        finish passed 0 "$(passed_text)"
       fi
     else
       settled_since='' settled_on=''
@@ -230,19 +402,16 @@ while :; do
     seen_n=$((seen_n + 1))
   else
     [[ -n $failing_since ]] || failing_since=$look_n
-    if (((look_n - failing_since) * WAIT_SECONDS >= FAILING_SECONDS)); then
-      echo "team-ci-wait: GitHub could not be read for $((FAILING_SECONDS / 60)) minutes running: $(cat "$dir/error")"
-      exit 75
+    if (((look_n - failing_since) * WAIT_SECONDS >= failing_limit)); then
+      finish unreadable 75 "team-ci-wait: GitHub could not be read for $(span "$failing_limit") running: $(cat "$dir/error")"
     fi
   fi
   # A reading standing at the deadline gets its 2 minutes, which bounds the wait all the same.
   if ((look_n * WAIT_SECONDS >= DEADLINE_SECONDS + (${#settled_since} ? SETTLE_SECONDS : 0))); then
     if [[ -s $dir/look ]]; then
-      echo "team-ci-wait: $(span "$DEADLINE_SECONDS"), and checks still pending on ${first_head:0:7}: $(pending_text): run team-ci-wait again to wait on them, or report BLOCKED"
-    else
-      echo "team-ci-wait: $(span "$DEADLINE_SECONDS"), and GitHub not read yet: $(cat "$dir/error"): run team-ci-wait again to wait, or report BLOCKED"
+      finish deadline 75 "team-ci-wait: $(span "$DEADLINE_SECONDS"), and checks still pending on ${first_head:0:7}: $(pending_text): run team-ci-wait again to wait on them, or report BLOCKED"
     fi
-    exit 75
+    finish unreadable 75 "team-ci-wait: $(span "$DEADLINE_SECONDS"), and GitHub not read yet: $(cat "$dir/error"): run team-ci-wait again to wait, or report BLOCKED"
   fi
   sleep "$WAIT_SECONDS"
   look_n=$((look_n + 1))

@@ -18,7 +18,7 @@ Each applies the limits at once and prints the acknowledgement the coordinator p
 `team-level` alone says the mode, the level, the budget and what bounds it, the team's use and the last change; `team-level apply` applies the recorded level's limits again, after a reboot or a reset slice.
 A change, `apply` and `tick` refuse on a machine that does not hold the lease; `status` only reads.
 The coordinator runs each change on Daniel's word and posts the acknowledgement, and stows and relaunches tasks to fit, as its `level` skill says.
-Daniel sees the level where they look: `team-inbox`'s Waiting on you message after its items, and `team-snapshot` after its open tasks, say one line, "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 stowed, waiting to resume", from `team-level status --stored --json`, naming the open tasks stowed and not yet relaunched.
+Daniel sees the level where they look: the list `team-inbox --post` posts in `#coordinator`, after its items, and `team-snapshot` after its open tasks, say one line, "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 stowed, waiting to resume", from `team-level status --stored --json`, naming the open tasks stowed and not yet relaunched.
 
 ## Automatic mode
 
@@ -104,6 +104,14 @@ Rootful Docker keeps its containers outside every user slice, so their CPU is he
 A slice that is not installed is said with its fix, `team-capacity install` (Daniel's yes), and the containers are still held.
 On macOS only the containers' CPU is held.
 
+## On macOS
+
+macOS has no cgroups, so its backend is admission and stow only.
+As on Linux, it holds admission by reservation, stowing and the automatic level, all from the readings, which find each task's processes by their working directory and descent (see "Readings").
+It holds the team's containers' CPU with `docker update --cpus`, as "The limits" says, and their memory inside Docker Desktop's VM, whose size Daniel sets in Docker Desktop's Settings, Resources.
+It holds no hard limit on the team's sessions, heavy runs or the gate: no slice, no `CPUQuota`, no `MemoryHigh` or `MemoryMax`, so a busy team can still slow Daniel's own programs at minor.
+The doctor's `resources` line says so, and its `power` line warns while the Mac runs on battery, since a closed lid or a flat battery sleeps it and stops the team.
+
 ## The team's slice
 
 On Linux every worker session, heavy run and gate run sits in one systemd user slice, `agent-team.slice`, so the kernel can measure and limit the team's work as one, apart from Daniel's own programs.
@@ -122,8 +130,12 @@ The coordinator and Daniel's own sessions are never in the slice.
 
 A worker session is the claude daemon's child (the daemon, then the session's `bg-pty-host`, then the session), never `team-worker`'s, so it cannot be started inside the slice.
 Instead `team-capacity place` adopts each live session named `T<n>-<role>` after it starts, but a load check's `T0-<role>`, which is no task's work: the session's process, its `bg-pty-host` parent and every descendant move into the transient scope `agent-team-T<n>-<id>.scope` in its task's slice, through the user manager's `StartTransientUnit` (`busctl --user call org.freedesktop.systemd1 ...`).
-A descendant the team's slice already holds stays where it is, a session already in its scope is left, and a call that fails is tried once more with a fresh tree, since a process may end between the read and the call.
-`team-worker` runs `place` for its new session right after the launch; a session it cannot place is a warning, and the launch stands.
+A descendant the team's slice already holds stays where it is, a session already in its scope is left, and a call that fails while the session runs is tried once more at once, with the session's pid from a fresh session list and a fresh tree, since a process may end between the read and the call.
+`team-worker` runs `place <id>` for its new session right after the launch, which the claude daemon may not list yet, or list with no running process: with ids, `place` reads the list again once a second until the session is placeable or `TEAM_CAPACITY_PLACE_SECONDS` (30) have passed since that id's wait began.
+With ids, a call that fails saying a process is gone (`No such process`, a short-lived process of the tree that ended before the call) is tried again 1 second apart, within the same seconds; any other failure gets the one retry.
+An id listed under a name that is no team session fails at once, since a name does not change.
+A session it still cannot place is a warning, and the launch stands.
+`place` with no ids, the heartbeat's and the doctor's fix, waits for nothing and retries a failed call once, so the heartbeat's `capacity` step stays within its time limit.
 Once all of a scope's processes end, systemd removes the scope.
 
 The assumptions, checked on home-pc on 2026-11-01 (T175 build note `01-cgroups.md`): the user manager's cgroup delegates `cpu`, `memory` and `pids`; systemd is 262; Docker's cgroup driver is `systemd` on cgroup v2; the claude daemon was started from a Konsole tab, and every session it starts sits in that tab's scope under `user@1000.service`; and Daniel's own run of the probe moved such a process into `agent-team-probe.scope`.
@@ -191,10 +203,13 @@ What is reserved, in the parts `team-capacity status --json` splits it into:
 - `spike_allowance`: one for the team, the largest of those sessions' estimates less their use, at 0 at least, and 0 with no session past its window, which keeps room reserved for one worker's spike at a time;
 - `admissions`: each admission of the last 10 minutes, but a heavy run's, at its estimate then, since a new session or stack has not grown yet and the next reading may not hold it; they are kept in `capacity/admitted.json`.
   One whose session's launch was logged a minute or more before `claude agents --json` was read, and whose session that list does not hold, is released, and that session is left out of the stored reading too, so stopping a worker frees its room.
-  A session admission whose session the reading holds, the session its logged launch names (the ledger's `launch`, paired as the release pairs it), reserves that session once, at the larger of the estimate and its use, its use plus its gap, until 10 minutes after the admission, when the session joins `sessions_use` under the one spike allowance.
+  A session admission pairs with its launch by id: an admission with an id with the `launch` whose `admission` field is that id, whatever their order, so a relaunch after a failed launch is paired with its own admission, never the dead one's.
+  An entry with no id, made before admissions had ids, pairs as before, oldest first with the first launch of its role and task at or after its time, but only among launches that carry no `admission`, so it never takes a new launch; such entries end within 10 minutes and need no migration.
+  A session admission whose session the reading holds, the session its paired launch names, reserves that session once, at the larger of the estimate and its use, its use plus its gap, until 10 minutes after the admission, when the session joins `sessions_use` under the one spike allowance.
+  One paired with a session the reading does not hold yet is reserved at its estimate alone and stands for no other session.
   So a burst of launches that one reading catches early, at a fraction of what they grow to, is reserved at what they grow to: five builders read at 0.1 GiB seconds after their launches would otherwise reserve 0.5 GiB and one allowance, and let more in while they grow to five estimates.
   On 2026-11-09 five such launches filled full's budget only because each estimate was a cache-inflated 2.8 GiB; the working-set estimates (see "Learned costs") are a fraction of that.
-  A session the reading holds of an admission's kind and task that no admission's launch names (its launch not logged yet) is in the window of one whose session the reading does not hold, reserved once, at the larger of that estimate and its use; of several such sessions, the ones using least are, since a new session uses little yet.
+  A session the reading holds of an admission's kind and task that no admission's launch names (its launch not logged yet) is in the window of an admission with no launch paired yet, reserved once, at the larger of that estimate and its use; of several such sessions, the ones using least are, since a new session uses little yet.
 - `stacks` and `gates`: each running team or gate stack, and the gate while it runs a pipeline, at the larger of its kind's estimate and its use, but a gate stack no process works in (`in_use` false, its gate run over) at its use, since only a run grows it; a stack the reading holds that an admission names (`team-stack up` gives its Compose project name, `--name`) is reserved once, among the stacks, at the larger of that and the admission's estimate, so an instance admitted while its task's own stack runs is reserved beside that stack until the reading holds it;
 - `heavy_runs`: the running heavy run, while a `team-heavy` holds its lock, at the larger of its estimate and its use, at its admission's kind, its use the reading's (its scope's on Linux) when the reading saw it; a run holding the lock in another form, Conventioner's, at `heavy_gib`.
 
@@ -203,19 +218,25 @@ Daniel chose the use and one shared allowance (2026-11-01), so the team keeps it
 
 A heavy run asking is never counted beside itself: it asks while it holds the heavy-run lock, so the running heavy run is the asker.
 The kind's estimate is `team-capacity costs`'s; a stack it has none of yet is weighed at the `mem_limit`s `team-stack up` gives (`--seed-bytes`), a heavy run or session kind it does not list at `heavy_gib` or `session_gib`, and anything else with no estimate at 0, so the next reading weighs it by its use.
-When the reserved memory plus the estimate is at most the budget it exits 0 and keeps the admission; else it exits 75 with the reason on stderr and what makes room, such as `no room for session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises`; at none, `no room for session:reviewer: the team is at level none: nothing starts; room comes when Daniel raises the level` (in automatic mode, "when the level rises").
+When the reserved memory plus the estimate is at most the budget it exits 0 and keeps the admission, its id first on stdout; else it exits 75 with the reason on stderr and what makes room, such as `no room for session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises`; at none, `no room for session:reviewer: the team is at level none: nothing starts; room comes when Daniel raises the level` (in automatic mode, "when the level rises").
 `team-capacity status --json` says what is reserved (`reserved`: the total, each part and each item) and what room is left (`room`), and `team-level status` reports the same split.
+Each item that is an admission or stands for one (an `admissions` item, and a stack or heavy run an admission names) carries `admission`, the admission's id, or null for an entry with none, so a reservation that looks wrong can be traced to the admission that made it.
+
+Every admission has an id, 12 lowercase hex digits `admit` makes from `/dev/urandom` under its lock, printed alone as the first line of its stdout and kept in its `admitted.json` entry, `{id, at, kind, task, name, bytes, pid}`; a refusal or a failure prints none.
+`team-capacity release <id>` ends an admission at once: under the same lock it removes that entry, printing `released admission <id>: <kind> of <task>`, and with no such entry (released, expired, never made) it prints `no admission <id>: nothing to release` and still exits 0, so an exit handler never fails a script that is already ending; it reads no reading, level or session list, so it is fast.
+A malformed id is a usage error (exit 2), and a lock still held after 2 minutes is exit 75.
+An admission nobody releases still ends 10 minutes after it was made, as before (a heavy run's while its `team-heavy` holds the lock).
 
 Who asks:
 
 | Caller | Kind | With no room |
 | - | - | - |
-| `team-worker` | `session:<role>`, once it has stopped the task's finished sessions, which `--freed` leaves out, since the reading still holds them | exits 75 with the reason, launching nothing; T0 and ops are never asked |
-| `team-stack up` | `stack:<project>`, once the disk floor holds | waits within `wait_minutes`, re-checking every 30 seconds, then exits 75 (`sops/docker.md`, "Admission") |
-| `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
+| `team-worker` | `session:<role>`, once it has stopped the task's finished sessions, which `--freed` leaves out, since the reading still holds them; it logs the id on its `launch` as `admission`, and releases the admission on any end before that launch is logged | exits 75 with the reason, launching nothing; T0 and ops are never asked |
+| `team-stack up` | `stack:<project>`, once the disk floor holds; it releases the admission on any end before its `up -d --wait` has returned 0, then keeps its id in the stack's record, which `stop` and `down` release (`sops/docker.md`, "Admission") | waits within `wait_minutes`, re-checking every 30 seconds, then exits 75 (`sops/docker.md`, "Admission") |
+| `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock; it releases the admission at every end of the run, success included | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
 
 An admission that fails for another reason (a malformed `capacity.json`, no reading to size the budget by) fails the caller with its reason.
-The coordinator logs a worker's 75 as `paused` with its line, and launches it again on `team-sweep`'s `level-launch` finding ("Shrinking and growing back"); a worker that gets a stack's 75 reports `PAUSED` with it.
+`team-worker` logs its own 75 as the task's park, `paused cause=room role=<role>` with the admission's line as its reason, and the coordinator launches it again on `team-sweep`'s `level-launch` finding ("Shrinking and growing back"); a worker that gets a stack's 75 reports `PAUSED` with it.
 
 ## Stowing
 
@@ -226,16 +247,22 @@ It runs on the lease holder, once each task's live workers have answered the coo
 `team-stow T<n>... [--down] [--cause level|handoff] [--json]`, or `--all` for every open task, takes these steps, one line per step and task, each safe to run again:
 
 1. branches: each task's branches checked against origin's before any of its sessions stops; a diverged branch refuses its task, naming it, and its workers keep running;
+   then stowing: a `stowing` logged for each task left, `{machine, cause, roles}` with its unfinished roles, unless one stands already (`team-stow --begin`'s) or the task is stowed from this machine already (a run again);
 2. sessions: `claude stop` then `claude rm` for each live `T<n>-<role>` session; an ops session is ended with `team-ops-end`, never carried; one that will not stop refuses its task;
 3. stacks: `team-stack stop --worktree <path>` for each worktree whose project has a stack block, its data kept (`team-stack down`, saving the logs, with `--down`); one that fails is said, and the task still stows;
 4. checkpoint: `team-checkpoint --force`, once per run, none when every task left was stowed already and no session was stopped;
 5. branches: each task branch pushed to its origin when strictly ahead, checked again first;
 6. stowed: one `stowed` per task, with `cause` `level` (the default) or `handoff`; none when the task's latest machine event is already a stowed from this machine with the same worktrees.
    Its `sessions` names the sessions this run stopped and those an earlier run of the same lease stopped without stowing the task (one interrupted, or whose push failed), which `~/.local/state/agent-team/stow.json` keeps until the task is stowed.
+   A `stowing` standing always gets its `stowed`, even for a task stowed already.
 
 A refused task is said on stderr with its reason, the others still stow, and the exit is 1; `--json` prints `{tasks: [{task, worktrees, roles, sessions, cause}], refused: [{task, reason}]}`.
 
-A task is stowed, waiting to resume, while its latest `stowed`, for the level or a handoff, names roles to relaunch and no launch follows it (`stowed_awaiting_resume` in `bin/lib/ledger.jq`); a stowed with no `cause`, as every line before `team-stow` has, is a handoff's.
+A stow under way is recorded, so a compaction or a restart between the STOW and the run never plans the same stow again: the level and handoff skills run `team-stow <tasks> --begin` (or `--all --begin --cause handoff`) before they send STOW, which only logs each open task's `stowing` with none standing, saying "stowing: T<n> since <ts>" (or "already since <ts>").
+A task refused after its `stowing` gets a `stow-failed` with the refusal as its `reason`, and a run that stops on a step (a checkpoint that fails, exit 1 or 75) logs, from its exit trap, a `stow-failed` with "the run stopped: <its last error line>" for each task whose `stowing` stands and that it did not stow.
+While a `stowing` stands, `team-capacity plan` never names the task to stow, resume or launch, and counts what it holds as freed already, so no other task stows in its place; `team-state` shows "stowing since <ts>", and `team-sweep` names one standing 30 minutes with no `stowed` or `stow-failed` ("T<n> stowing: stowing since <ts> (<cause>), with no stowed; next: run team-stow T<n>, which finishes the stow or logs stow-failed").
+
+A task is stowed, waiting to resume, while its latest `stowed`, for the level or a handoff, or its `stow-failed`, which keeps its `stowing`'s roles, names roles to relaunch and no launch follows it (`stowed_awaiting_resume` in `bin/lib/ledger.jq`); a stowed with no `cause`, as every line before `team-stow` has, is a handoff's.
 
 `team-stow T<n>... --stop-runs` does only this, on any machine: `team-heavy stop --task T<n>` ends the task's heavy run when it holds the machine's lock, and in each of the task's worktrees whose project delivers through no-mistakes, `no-mistakes axi abort` cancels the run `no-mistakes axi` shows active on its branch.
 A worker blocked in a foreground test or gate then returns and reads the STOW already sent; a manual drop runs it right after the STOWs, and an automatic one does not, so a running test or gate finishes.
@@ -255,7 +282,7 @@ While it is confirmed, the plan's steps, in order, each with what it frees (the 
 
 1. stop each finished session: idle, its work handed on, by the rule `team-worker` stops a task's own sessions by (`handed_on_launches` in `bin/lib/ledger.jq`), over every open task; with no new launch, a builder counts only once a later builder has launched in its worktree (its work handed on, as for `team-worker`, by a `ticket-done`, `pr` or `done` after its launch), since a builder whose PR is open still takes the review's findings;
 2. stop each running team stack of an open task (its worktree's own, kind `dev`) that no busy session, Daniel's own included, works in, and whose task's walk does not count now;
-3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested) and any whose walk counts now after every other, until what is left fits; at none, every one, a walk's included.
+3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested) and any whose walk counts now after every other, until what is left fits; at none, every one, a walk's included; a task whose `stowing` stands is never named, and what it holds counts as freed.
 
 A walk counts while `team-ui T<n> --walk` has it on and the latest of its start and its `walk-note` events is at most 4 hours old (`walk_holds` in `bin/lib/ledger.jq`), since stowing one frees little and Daniel is waiting on it.
 `team-thread wait` logs a `walk-note` for an interview walk, and `team-ui --capture --note-file` for a walk in the task's own thread; a message of Daniel's reaching neither does not reset the clock.
@@ -264,13 +291,16 @@ Past the 4 hours the walk no longer counts in either step, and `team-sweep`'s `w
 The heartbeat's `level` step (`team-level tick`) takes steps 1 and 2 itself, since they lose nothing: `claude stop`, bounded 30 seconds, for each session, and `team-stack stop --worktree <path>`, its data kept, for each stack, one heartbeat log line each, such as "stopped T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB".
 Step 1 seldom finds a session: the heartbeat's `finished` step, before the `capacity` step's reading, stops the same finished sessions on every run, whatever the level and budget (`team-timers --help`), but for a planner whose task has no `plan-approved`, which it keeps since a refusal of its tickets goes back to it.
 So step 1 is left only that planner and the sessions that step could not stop.
-Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks in that order, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
+Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks in that order, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator runs `team-stow <tasks> --begin`, sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
 `team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
 
-A task is stowed, waiting to resume, while its latest `stowed` names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
-The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate) and whether that fits beside what is reserved now; at none nothing fits.
-`team-sweep`'s `level-resume` finding names the first that fits ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
-A launch refused with 75 for a task that is not stowed waits the same way: while the task's latest launch is followed by a `paused` whose reason is `team-worker`'s "no room for session:<role>" line, the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until the task's next launch.
+A task is stowed, waiting to resume, while its latest `stowed` (or `stow-failed`, with its `stowing`'s roles) names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
+The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate), whether that fits beside what is reserved now, and what holds it, if anything; at none nothing fits.
+A stowed task is on hold while Daniel's hold (a park of cause `daniel-hold`) or an ask no launch went past (`team-worker --past-ask`) stands, wherever it was logged, or while a `held`, `waiting` or `blocked` logged after its latest `stowed` stands (`stow_hold` in `bin/lib/ledger.jq`), and the plan's line for it ends ", on hold, not relaunched: <what holds it>".
+Any other wait or block logged before the stow does not hold it, since it was the stowed worker's own state (a planner interviewing Daniel), which its relaunch resumes, and neither does a `paused`, which every stow logs; a `resumed id=<that park>` lifts the hold (Daniel's hold only with `discord_message=` of their word).
+`team-sweep`'s `level-resume` finding names the first that fits and is not on hold ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
+A launch refused with 75 for a task that is not stowed waits the same way: while a `paused` refusing it for room stands (its cause `room` and its role, as `team-worker` logs them, or on an old line as `park_cause` in `bin/lib/ledger.jq` reads its "no room for session:<role>" words), the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit and that is not on hold ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until a launch of its role, a `resumed id=<its park>` or a `resumed all=true` ends the refusal.
+Such a task is on hold by the same rule, its latest refusal in the stow's place (`hold_since` in `bin/lib/ledger.jq`), and the plan's line for it ends ", on hold, not launched: <what holds it>".
 A `team-capacity plan` that fails is one `level` finding naming its reason, in their place.
 
 ## What the doctor says
@@ -282,4 +312,7 @@ It fails on a `capacity.json` or a `level.jsonl` line that is malformed, naming 
 It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
 It warns on what the task slots left, which nothing reads since levels replaced them: `~/.config/agent-team/slots.json`, `~/.local/state/agent-team/slots/` (their readings) and `~/.local/state/agent-team/slots.lock`, naming whichever are present, its fix `rm -r` of them.
 On Linux with the slice installed it warns, naming `team-level apply`, when the limits last applied are missing or another mode and level's than the record's, or the slice's CPU quota is not theirs, as after a reboot.
-macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "no hard limits on macOS: admission and stow only".
+On Linux the passing reason, after the level's words, is "systemd backend: agent-team.slice holds the team, <n> live team session(s) in it".
+macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "macOS backend, admission and stow only: no cgroups, so no hard CPU or memory limit holds the team's sessions, heavy runs or gate; the team's containers' CPU is held with docker update, and their memory within Docker Desktop's VM"; its warnings and failures are only the ones on any OS above.
+`team-capacity check --json` carries the backend as `backend`, `systemd` on Linux and `macos` on macOS, on every verdict.
+On macOS only, the doctor's `power` line reads `pmset -g batt`'s first line: it passes on AC power ("on AC power; keep the lid open while this Mac holds the team, since caffeinate keeps it from idle sleep only"), and warns on battery power ("on battery power: a closed lid or a flat battery sleeps this Mac and stops the team, and the lease goes stale after 60 minutes", its fix "plug this Mac in, and keep its lid open while it holds the team") and when `pmset` is missing, fails or names neither source; it never fails, since a standby on battery is fine and `team-resume` stops only on a FAIL.

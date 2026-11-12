@@ -1,7 +1,9 @@
 #!/usr/bin/env bats
 # hooks/session-digest: the coordinator's SessionStart hook prints the team snapshot (its current
-# items included) with the instruction to reconcile it before new work, then the two standing
-# watches to arm in the background: the sweep watch and the offline watch.
+# items included) with the instruction to reconcile it before new work, on any start but a
+# compaction the ListAgents call for a Remote Control coordinator twin, then the two standing
+# watches to arm in the background: the sweep watch and the offline watch, and each checks wait
+# the snapshot lists.
 
 load helpers/common
 
@@ -47,6 +49,12 @@ watch_lines() {
   offline watch, ends when the hold starts or ends: \"$REPO_ROOT/bin/team-timers\" watch --once"
 }
 
+# The line every digest but a compaction's has, before the watches: one ListAgents call for a
+# Remote Control coordinator twin, which no script can list.
+twin_line() {
+  echo "Call ListAgents once now, since no script can list a Remote Control session: a row named coordinator but this session (the one ListAgents says you are) is a coordinator-twin, which makes the bare name ambiguous to every worker. One on this machine is team-sweep's finding; one over Remote Control is another machine's coordinator, which Daniel ends there (team-handoff --retire once that machine holds no lease), or your own row from before a re-host, which goes only when your session stops: post it in #coordinator and ask Daniel whether to restart you."
+}
+
 # The command the digest gives for the watch named <name>.
 watch_command() {
   watch_lines | sed -nE "s/^  $1 watch, [^:]*: //p"
@@ -77,11 +85,11 @@ team_at_work() {
   team_at_work
   start -0
   assert_equal "$stderr" ""
+  # Each builder's launch put its task in building (the lifecycle's launch rule).
   assert_equal "$output" "Open tasks (2):
-  T3 planning | T3-builder busy
-  T12 planning | T12-builder idle blocked
+  T3 building | T3-builder busy
+  T12 building | T12-builder idle blocked
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
-Standing merge word: none
 Live team sessions (2):
   T3-builder 59709d99 busy
   T12-builder 3ed2d1f2 idle blocked
@@ -93,6 +101,7 @@ Pending asks: none
 Current items: none
 
 $(reconcile_line)
+$(twin_line)
 $(watch_lines)"
   refute_idle_notices "$output"
   # One snapshot: the session list is read once.
@@ -110,8 +119,10 @@ $(watch_lines)"
   event T172 launch '{role: "builder", session: "59709d99", worktree: "/w/1", toolkits: [], brief: "brief-build-04"}'
   stub_reply claude '[{"id": "59709d99", "sessionId": "59709d99-7687", "name": "T172-builder", "status": "idle"}]'
   start -0
+  # Its ticket-done put it in building, and its review in review (the lifecycle's build and review
+  # phase rules).
   assert_contains "$output" "Open tasks (1):
-  T172 proj feature planning | T172-builder idle on build-04 | tickets 3/7 | review 1 findings, sent back 5, 6
+  T172 proj feature in-review | T172-builder idle on build-04 | tickets 3/7 | review 1 findings, sent back 5, 6
 "
 }
 
@@ -121,6 +132,22 @@ $(watch_lines)"
   assert_contains "$output" "  T12-builder 3ed2d1f2"
   start -0 compact
   assert_contains "$output" "  T12-builder 3ed2d1f2"
+}
+
+@test "a start, resume or clear asks for one ListAgents call for a Remote Control twin; a compaction, which keeps the process, does not" {
+  team_at_work
+  local source
+  for source in startup resume clear; do
+    start -0 "$source"
+    assert_equal "$(tail -n 4 <<<"$output")" "$(twin_line)
+$(watch_lines)"
+  done
+  start -0 compact
+  assert_equal "$(tail -n 4 <<<"$output")" "$(reconcile_line)
+$(watch_lines)"
+  # Input that is not a SessionStart event's JSON asks for it too.
+  run_bin -0 --separate-stderr hooks/session-digest <<<'not json'
+  assert_contains "$output" "$(twin_line)"
 }
 
 @test "it shows the current items of tasks/current.md on start, resume and after a compaction" {
@@ -141,11 +168,41 @@ Reconcile these before taking new work"
   done
 }
 
+@test "after the standing watches, it says to arm each checks wait the snapshot lists, by its command" {
+  local head=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 task
+  # GitHub down: each PR part carries its error, and the ledger alone says what waits.
+  stub_reply gh "error connecting to api.github.com" 1
+  for task in T3 T5; do
+    event "$task" opened "{project: \"proj\", path: \"feature\", type: \"feat\", title: \"Work\", branch: \"feat/$task-work\",
+      base: \"main\", base_sha: \"0123456\", worktree: \"/w/1\"}"
+    event "$task" pr "{url: \"https://github.com/owner/proj/pull/${task#T}\", head: \"$head\"}"
+    event "$task" review "{verdict: \"pass\", head: \"$head\"}"
+  done
+  # T5's checks passed: nothing to arm for it.
+  event T5 ci "{url: \"https://github.com/owner/proj/pull/5\", head: \"$head\", outcome: \"passed\"}"
+  start -0 compact
+  assert_contains "$output" "
+Checks waits to arm unless running: team-next T3 --ci (https://github.com/owner/proj/pull/3 at a1b2c3d4, since 2026-10-22T02:00:00Z)
+"
+  [[ $output != *"team-next T5"* ]]
+  assert_equal "$(tail -n 5 <<<"$output")" "$(watch_lines)
+Arm each checks wait the same way unless it is already running; it ends when its checks do, and what it prints is the next step (the merge ask, the round, or a re-arm):
+  checks wait of T3, ends when the checks of https://github.com/owner/proj/pull/3 at a1b2c3d4 do: \"$REPO_ROOT/bin/team-next\" T3 --ci"
+  [[ -x $REPO_ROOT/bin/team-next ]]
+
+  # With no checks wait to arm, the standing watches end the digest, as when the snapshot fails.
+  event T3 ci "{url: \"https://github.com/owner/proj/pull/3\", head: \"$head\", outcome: \"failed\"}"
+  start -0 compact
+  assert_equal "$(tail -n 3 <<<"$output")" "$(watch_lines)"
+  [[ $output != *"Checks waits"* ]]
+}
+
 @test "with no live workers the closing lines are the same, strays aside" {
   event T4 closed '{archive: [], returned: [], kept: []}'
   stub_reply claude '[{"id": "77777777", "sessionId": "77777777-1111", "name": "T4-reviewer", "status": "idle"}]'
   start -0
-  assert_equal "$(tail -n 4 <<<"$output")" "$(reconcile_line)
+  assert_equal "$(tail -n 5 <<<"$output")" "$(reconcile_line)
+$(twin_line)
 $(watch_lines)"
 }
 
@@ -157,6 +214,7 @@ $(watch_lines)"
   assert_equal "$output" "team-snapshot failed (exit 1), so there is no digest:
 team-snapshot: cannot read the live session list (claude agents --json)
 Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude agents, tasks/current.md).
+$(twin_line)
 $(watch_lines)"
   refute_idle_notices "$output"
 }
@@ -180,6 +238,7 @@ $(watch_lines)"
   start -0
   assert_contains "$output" "tasks/current.md).
 GitHub unreachable since 2026-10-24T08:00:00Z; the team is holding: hold each live worker and launch nothing until the offline watch says GitHub answers again (Machines).
+$(twin_line)
 $(watch_lines)"
   # The hold over, the line goes.
   rm "$flag"

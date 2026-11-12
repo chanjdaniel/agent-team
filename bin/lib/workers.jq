@@ -13,8 +13,13 @@ def role_rank: .role as $role | [(["builder", "reviewer", "planner", "ops"] | in
 # A lifetime's minutes, unrounded, from its start to its end, or to $hi while it runs.
 def span_minutes($hi): (((if .end then .end | fromdate else $hi end) - (.start | fromdate)) / 60);
 
-# The index of a list of events' first launch of $role, else its length.
-def first_launch($role): . as $events | ([range(length) as $j | select($events[$j] | .event == "launch" and .role == $role) | $j] | first) // length;
+# Whether the event is a launch that follows the launch $l in its work: one of its role, and for a
+# launch with a ticket (a ticket builder's) one of its ticket too.
+def next_launch_of($l): .event == "launch" and .role == $l.role and ($l.ticket == null or .ticket == $l.ticket);
+
+# The index of a list of events' first launch that follows the launch $l (next_launch_of), else
+# its length.
+def first_next_launch($l): . as $events | ([range(length) as $j | select($events[$j] | next_launch_of($l)) | $j] | first) // length;
 
 # A worker's rounds (input: its round events in time order, then ledger order): each a list of
 # them with at, the time of its report. A done or a pr is a report, which ends a round; the
@@ -38,18 +43,20 @@ def worker_rounds:
 # A task's worker lifetimes (input: its events in ledger order, only those at or before $hi): one
 # per launch with a session. Its project is the launch's, else the task's opened; its path the
 # opened's, else "-" (a legacy task); its model the launch's, else "default"; its toolkits the
-# launch's, sorted and deduplicated, [] for none or a legacy launch with no list. Its rounds
-# (worker_rounds) are of its session's dones and, for a builder, the task's pr and ticket-done
-# events after its launch and before the task's next builder launch (which name no session:
-# ends_worker in ledger.jq); it ends at its last round's last event (ended done when that round
-# holds a done, else pr or ticket-done); else, for a reviewer, at the task's last review after its
-# launch and before the task's next reviewer launch (review); else at the first after its launch of
-# the task's next launch of the same role (replaced), its stowed or, for a builder or a planner, a
-# paused reason=stowed, which names no session and so says nothing of a reviewer beside them
-# (stowed), or its closed (closed); else it is running (ended "running", end null). Its first done is the minutes to its first
-# round's report; its phases the minutes per phase of the task's segments (gate runs included)
-# over its span, null for a legacy task. Its segments, those over its span, are for workers_join,
-# which drops them.
+# launch's, sorted and deduplicated, [] for none or a legacy launch with no list. Its next launch
+# is the task's next launch of its role, for a launch with a ticket (a ticket builder's) the next
+# launch of its ticket (first_next_launch). Its rounds (worker_rounds) are of its session's dones
+# and, for a builder, the events after its launch and before its next launch that end it but name
+# no session (ends_launch in ledger.jq): its ticket's ticket-dones for a ticket builder, else the
+# task's pr and ticket-done events; it ends at its last round's last event (ended done when that
+# round holds a done, else pr or ticket-done); else, for a reviewer, at the task's last review
+# after its launch and before its next launch (review); else at the first after its launch of its
+# next launch (replaced), its stowed or, for a builder or a planner, a paused whose cause is stow
+# (park_cause), which names no session and so says nothing of a reviewer beside them (stowed), or
+# its closed (closed); else it is running (ended "running", end null). Its first done is the
+# minutes to its first round's report; its phases the minutes per phase of the task's segments
+# (gate runs included) over its span, null for a legacy task. Its segments, those over its span,
+# are for workers_join, which drops them.
 def task_lifetimes($hi):
   . as $events
   | (map(select(.event == "opened")) | first) as $opened
@@ -59,19 +66,19 @@ def task_lifetimes($hi):
   | select($l.event == "launch" and ($l.session | type) == "string" and $l.session != "")
   | $events[$k + 1:] as $after
   | ($l.ts | fromdate) as $start
-  | ($k + 1 + (if $l.role == "builder" then $after | first_launch("builder") else 0 end)) as $delivered
+  | ($k + 1 + (if $l.role == "builder" then $after | first_next_launch($l) else 0 end)) as $delivered
   | ([$events | to_entries[] | select(.key > $k)
       | select((.value.event == "done" and .value.session == $l.session)
-          or (.key < $delivered and (.value.event == "pr" or .value.event == "ticket-done")))]
+          or (.key < $delivered and .value.event != "done" and (.value | ends_launch($l))))]
      | sort_by(.value.ts, .key) | map(.value) | worker_rounds) as $rounds
   | ((if $rounds != [] then $rounds[-1]
         | {end: .events[-1].ts, ended: (if any(.events[]; .event == "done") then "done" elif any(.events[]; .event == "pr") then "pr" else "ticket-done" end)}
       else null end)
      // (if $l.role == "reviewer" then
-           [$after[:$after | first_launch("reviewer")][] | select(.event == "review")] | last | if . then {end: .ts, ended: "review"} else null end
+           [$after[:$after | first_next_launch($l)][] | select(.event == "review")] | last | if . then {end: .ts, ended: "review"} else null end
          else null end)
-     // ([$after[] | select((.event == "launch" and .role == $l.role) or .event == "stowed" or .event == "closed"
-           or (IN($l.role; "builder", "planner") and .event == "paused" and ((.reason // "") | startswith("stowed"))))] | first
+     // ([$after[] | select(next_launch_of($l) or .event == "stowed" or .event == "closed"
+           or (IN($l.role; "builder", "planner") and .event == "paused" and park_cause == "stow"))] | first
          | if . then {end: .ts, ended: (if .event == "launch" then "replaced" elif .event == "paused" then "stowed" else .event end)} else null end)
      // {end: null, ended: "running"}) as $end
   | ((if $end.end then $end.end | fromdate else $hi end)) as $stop

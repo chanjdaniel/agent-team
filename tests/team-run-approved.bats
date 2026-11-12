@@ -52,14 +52,16 @@ message() {
     >"$DISCORD_DIR/1562486564871995482-$1.json"
 }
 
-# Daniel's answer <text> to ask <id>, sent in #coordinator now and logged as team-answer logs it;
-# prints its message id: answer <id> <text>
+# Daniel's answer <text> to ask <id>, sent in #coordinator now and logged as team-answer logs it,
+# or as team-answer --item <n> logs it when <n> is given; prints its message id:
+# answer <id> <text> [<n>]
 answer() {
   local m
   m=$(next_message)
   message "$m" 757 "$2"
-  jq -nc --arg ts "$(date -u +%FT%TZ)" --arg id "$1" --arg text "$2" --arg m "$m" \
-    '{ts: $ts, task: "T7", event: "answered", id: $id, answer: $text, discord_message: $m}' >>"$TEAM_HOME/ledger.jsonl"
+  jq -nc --arg ts "$(date -u +%FT%TZ)" --arg id "$1" --arg text "$2" --arg m "$m" --arg n "${3:-}" \
+    '{ts: $ts, task: "T7", event: "answered", id: $id, answer: $text, discord_message: $m}
+     + if $n == "" then {} else {item: ($n | tonumber)} end' >>"$TEAM_HOME/ledger.jsonl"
   echo "$m"
 }
 
@@ -115,6 +117,12 @@ no_yes() {
   echo "T7's ask $1, at $(asked_at "$1"), runs nothing: Daniel's latest answer, Discord message $2, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and this task's id, no other (T7, T7: or T7,); ask again with team-ask T7 $1 --file <question> --script <path>"
 }
 
+# The refusal of a reply by number <n> whose parts numbered <n> do not all say yes to ask <id>,
+# Discord message <m>: no_item_yes <id> <m> <n>
+no_item_yes() {
+  echo "T7's ask $1, at $(asked_at "$1"), runs nothing: Daniel's latest answer, Discord message $2, answers item $3 with no yes, and the script runs only on a reply whose every part numbered $3 starts with the word yes, in any case, after an optional task id, this task's alone; ask again with team-ask T7 $1 --file <question> --script <path>"
+}
+
 # The ledger's events of T7 after the opened, without ts, one per line.
 events() {
   jq -c 'select(.event != "opened") | del(.ts)' "$TEAM_HOME/ledger.jsonl"
@@ -160,6 +168,19 @@ T7 ran fix ($WT/scripts/fix.sh), exit 3; its output is in $log"
   # The log is the machine's, never a record: nothing of the run is in the team home.
   [[ ! -e $TEAM_HOME/tasks/T7/runs ]]
   [[ -f $RUNS/fix.started && -f $RUNS/fix.lock ]]
+}
+
+@test "the ran is on origin when the run ends, and the exit is still the script's" {
+  local team_origin=$BATS_TEST_TMPDIR/origin/agent-team.git tip
+  approve fix "$WT/scripts/fix.sh"
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -3 --separate-stderr team-run-approved T7 fix
+  assert_equal "$stderr" ""
+  assert_equal "$(tail -n 1 <<<"$output")" "T7 ran fix ($WT/scripts/fix.sh), exit 3; its output is in $RUNS/fix.log"
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T7 ran"
+  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | tail -n 1 | jq -c 'del(.ts)')" '{"task":"T7","event":"ran","id":"fix","exit":3}'
 }
 
 @test "a script that exits 0 is exit 0, and one in the task directory runs too" {
@@ -431,4 +452,43 @@ ran"
   assert_contains "$output" "team-run-approved: $prefix"
   assert_contains "$output" ", before T7's question early (Discord message $((m + 4194304))), so it is not Daniel's answer to it"
   [[ ! -e $MARK ]]
+}
+
+@test "an answer by number runs the script when every part with its number starts with yes" {
+  approved_script "$WT/scripts/ok.sh" 0
+  local n=0 reply
+  for reply in "3 no, 5 yes" "5 yes" "#5: Yes, run it" "5) yes" $'3 later\n- 5 yes' "3 and 5 yes" "3, 5: yes" \
+    "5 T7 yes" "5 t7: yes" $'5 yes\n5 yes, go'; do
+    n=$((n + 1))
+    asked_about "ok$n" run-it "$WT/scripts/ok.sh"
+    answer "ok$n" "$reply" 5 >/dev/null
+    run_bin -0 team-run-approved T7 "ok$n"
+    assert_equal "$(events | tail -n 1)" "{\"task\":\"T7\",\"event\":\"ran\",\"id\":\"ok$n\",\"exit\":0}"
+  done
+  assert_equal "$(wc -l <"$MARK")" "$n"
+}
+
+@test "refused with nothing run: an answer by number whose parts with its number do not all start with yes" {
+  local n=0 reply m
+  for reply in "3 yes, 5 no" $'5 yes\n5 no' "5 T8 yes" "5 T70 yes" "3 yes" "yes" "5" "5 yesterday" "5 not yet, yes later" \
+    "T7 5 yes" "1-5 yes"; do
+    n=$((n + 1))
+    asked_about "no$n" run-it "$WT/scripts/fix.sh"
+    m=$(answer "no$n" "$reply" 5)
+    refuses "$(no_item_yes "no$n" "$m" 5)" "no$n"
+  done
+}
+
+@test "the number is the latest answered's: a later answer with no number reads by the line rule again" {
+  asked_about fix run-it "$WT/scripts/fix.sh"
+  local m
+  m=$(answer fix "3 yes, 5 no" 5)
+  refuses "$(no_item_yes fix "$m" 5)" fix
+  answer fix "yes" >/dev/null
+  run_bin -3 team-run-approved T7 fix
+  rm "$MARK"
+  # And a line rule's yes is superseded by a later answer by number.
+  approve again "$WT/scripts/fix.sh"
+  m=$(answer again "5 no, 3 yes" 5)
+  refuses "$(no_item_yes again "$m" 5)" again
 }

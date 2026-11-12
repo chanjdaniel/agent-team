@@ -160,7 +160,7 @@ usage/home-pc/time/2026-10-26.jsonl"
 # team-handoff's) take whole, naming no paths of their own, and CLAUDE.md's table of the team home.
 # team-checkpoint's first commit, of the ledger files by name, is a command substitution, never
 # one of these lines.
-@test "the ledger and the level record are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
+@test "the ledger, the level record, the drill record and the waiting list's two files are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
   local file script calls
   for script in team-checkpoint team-handoff; do
     calls=$(grep -E '^[[:space:]]*(records_by_group=1 )?commit_records ' "$REPO_ROOT/bin/$script")
@@ -170,10 +170,197 @@ usage/home-pc/time/2026-10-26.jsonl"
       return 1
     fi
   done
-  for file in ledger.jsonl level.jsonl; do
+  for file in ledger.jsonl level.jsonl drills.jsonl waiting.md waiting.json; do
     grep -qxF "$file" "$REPO_ROOT/bin/lib/records" || { echo "$file is not in bin/lib/records" >&2; return 1; }
     grep -qF "| \`$file\` |" "$REPO_ROOT/CLAUDE.md" || { echo "$file is not in CLAUDE.md's team-home table" >&2; return 1; }
   done
+}
+
+# A drill proves the code it names: each proves path of bin/lib/drills.json is a tracked file, or a
+# directory, ending in /, that holds tracked files, so a rename never leaves a drill proving
+# nothing; and each drill's name is lower-case kebab case, its by coordinator or daniel.
+@test "every drill's proves path is a tracked file or a directory holding tracked files" {
+  local registry=$REPO_ROOT/bin/lib/drills.json path missing=()
+  assert_equal "$(jq -r '[.drills[] | select((.name | test("^[a-z0-9]+(-[a-z0-9]+)*$") | not)
+    or (.by | IN("coordinator", "daniel") | not) or (.proves | length) == 0) | .name] | join(" ")' "$registry")" ""
+  while IFS= read -r path; do
+    if [[ $path == */ ]]; then
+      [[ -n $(git -C "$REPO_ROOT" ls-files -- "$path") ]] || missing+=("$path")
+    else
+      git -C "$REPO_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || missing+=("$path")
+    fi
+  done < <(jq -r '[.drills[].proves[]] | unique[]' "$registry")
+  assert_equal "${missing[*]}" ""
+}
+
+# The doctor's drills line sends Daniel to sops/drills.md for a due drill's runbook, so every
+# drill of the registry has a "## " heading there naming it in backquotes.
+@test "every drill has a section in sops/drills.md" {
+  local name missing=()
+  while IFS= read -r name; do
+    grep -qE "^## .*\`$name\`" "$REPO_ROOT/sops/drills.md" || missing+=("$name")
+  done < <(jq -r '.drills[].name' "$REPO_ROOT/bin/lib/drills.json")
+  assert_equal "${missing[*]}" ""
+}
+
+# The refusal probe's data, bin/lib/probe.json, held to the worker roles' settings, so a deny rule
+# or a PreToolUse hook added to them is either probed live by `team-load-check --probe` or says why
+# it is not.
+PROBE_ROLES=(planner builder reviewer)
+
+# probe_rules <role>: the deny rules a <role> session holds, settings/worker.json's and its own, as
+# one JSON array
+probe_rules() {
+  jq -s '[.[].permissions.deny // [] | .[]]' "$REPO_ROOT/settings/worker.json" "$REPO_ROOT/settings/$1.json"
+}
+
+@test "every attempt of the refusal probe is well formed, and names a family the data file has" {
+  local out
+  out=$(jq -r '(.families | map(.family)) as $families | .attempts[]
+    | select((.id | test("^[a-z]+(-[a-z]+)*$") | not)
+      or (.roles | length) == 0 or any(.roles[]; IN("planner", "builder", "reviewer") | not)
+      or (.tool | IN("Bash", "Read", "Write") | not) or (.input | type) != "string"
+      or (.expect | IN("rule", "hook", "refused") | not)
+      or ((.expect == "hook") != (.marker | type == "string"))
+      or ((.expect == "rule") != (.family | type == "string"))
+      or (.family != null and (.family | IN($families[]) | not)))
+    | .id' "$REPO_ROOT/bin/lib/probe.json")
+  assert_equal "$out" ""
+  out=$(jq -r '[.attempts[].id] | group_by(.) | map(select(length > 1) | .[0]) | join(" ")' "$REPO_ROOT/bin/lib/probe.json")
+  assert_equal "$out" ""
+}
+
+@test "every deny rule of the worker roles' settings belongs to exactly one family of the refusal probe" {
+  local out
+  out=$(jq -rn --slurpfile probe "$REPO_ROOT/bin/lib/probe.json" '
+    [inputs | .permissions.deny // [] | .[]] | unique[] as $rule
+    | [$probe[0].families[] | select(.rules as $re | $rule | test($re)) | .family]
+    | select(length != 1) | "\($rule): \(if length == 0 then "no family" else join(", ") end)"' \
+    "$REPO_ROOT"/settings/{worker,planner,builder,reviewer}.json)
+  assert_equal "$out" ""
+}
+
+@test "every family of the refusal probe has an attempt for each role that holds one of its rules, or a reason it has none" {
+  local role rules out
+  for role in "${PROBE_ROLES[@]}"; do
+    rules=$(probe_rules "$role")
+    out=$(jq -r --arg role "$role" --argjson rules "$rules" '
+      .attempts as $attempts | .families[] | select(.unprobed == null)
+      | .rules as $re | select(any($rules[]; test($re)))
+      | .family as $family | select(any($attempts[]; .family == $family and any(.roles[]; . == $role)) | not)
+      | "\($role) holds a rule of \($family), which has no attempt of its and no unprobed reason"' \
+      "$REPO_ROOT/bin/lib/probe.json")
+    assert_equal "$out" ""
+  done
+  # A family that matches no rule of any role is stale.
+  out=$(jq -rn --slurpfile probe "$REPO_ROOT/bin/lib/probe.json" '
+    [inputs | .permissions.deny // [] | .[]] as $rules | $probe[0].families[]
+    | .rules as $re | select(any($rules[]; test($re)) | not) | "\(.family) matches no deny rule"' \
+    "$REPO_ROOT"/settings/{worker,planner,builder,reviewer}.json)
+  assert_equal "$out" ""
+}
+
+# Whether a deny rule of <rules> (one per line) matches the <tool> call's <input>, as the suite
+# models Claude Code's matcher: a Bash rule's content against each of the input's deny_forms, a
+# Read rule's path (// the root, ~/ the home, which an input spells @HOME@) against the input,
+# each by rule_text_matches: probe_denies <rules> <tool> <input>
+probe_denies() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced probe_denies "$@"; return; }
+  local rule pattern form forms
+  [[ $2 != Bash ]] || forms=$(deny_forms "$3")
+  while IFS= read -r rule; do
+    [[ $rule == "$2("*")" ]] || continue
+    pattern=${rule#"$2("} pattern=${pattern%)}
+    if [[ $2 == Bash ]]; then
+      while IFS= read -r form; do
+        rule_text_matches "$pattern" "$form" && return 0
+      done <<<"$forms"
+      continue
+    fi
+    case $pattern in
+      //*) pattern=${pattern#/} ;;
+      \~/*) pattern=@HOME@/${pattern#\~/} ;;
+      *) echo "the model has no reading of the $2 rule $rule" >&2; return 1 ;;
+    esac
+    rule_text_matches "$pattern" "$3" && return 0
+  done <<<"$1"
+  return 1
+}
+
+@test "every rule attempt of the refusal probe is denied by a rule of its family in each of its roles' settings" {
+  local role id tool input family rules list probe=$REPO_ROOT/bin/lib/probe.json missing=() n=0
+  for role in "${PROBE_ROLES[@]}"; do
+    list=$(jq -r --arg role "$role" '.attempts[] | select(.expect == "rule" and any(.roles[]; . == $role))
+      | [.id, .tool, .input, .family] | @tsv' "$probe")
+    while IFS=$'\t' read -r id tool input family; do
+      rules=$(jq -r --arg family "$family" --argjson rules "$(probe_rules "$role")" \
+        '(.families[] | select(.family == $family) | .rules) as $re | $rules[] | select(test($re))' "$probe")
+      probe_denies "$rules" "$tool" "$input" || missing+=("$role $id")
+      n=$((n + 1))
+    done <<<"$list"
+  done
+  assert_equal "${missing[*]}" ""
+  ((n > 3))
+}
+
+# A hook attempt stands for the hook under bin/hooks/ whose file holds its marker.
+@test "every PreToolUse hook of the worker roles' settings has an attempt for each role that loads it, or a reason it has none" {
+  local file role hook hooks roles markers marker found probe=$REPO_ROOT/bin/lib/probe.json missing=() listed=()
+  for file in worker "${PROBE_ROLES[@]}"; do
+    roles=("$file")
+    [[ $file != worker ]] || roles=("${PROBE_ROLES[@]}")
+    hooks=$(jq -r '.hooks.PreToolUse // [] | .[].hooks[].command | split(" ")[0]' "$REPO_ROOT/settings/$file.json")
+    while IFS= read -r hook; do
+      [[ -n $hook ]] || continue
+      [[ $hook == @TEAM_CODE@/bin/hooks/* ]] || { missing+=("$file: $hook is not a hook of bin/hooks/"); continue; }
+      hook=${hook#@TEAM_CODE@/bin/hooks/}
+      listed+=("$hook")
+      jq -e --arg hook "$hook" 'any(.hooks[]; .hook == $hook)' "$probe" >/dev/null ||
+        { missing+=("$hook is not in the data file's hooks"); continue; }
+      ! jq -e --arg hook "$hook" 'any(.hooks[]; .hook == $hook and .unprobed != null)' "$probe" >/dev/null || continue
+      for role in "${roles[@]}"; do
+        markers=$(jq -r --arg role "$role" '.attempts[] | select(.expect == "hook" and any(.roles[]; . == $role)) | .marker' "$probe")
+        found=''
+        while IFS= read -r marker; do
+          [[ -z $marker ]] || ! grep -qF -- "$marker" "$REPO_ROOT/bin/hooks/$hook" || found=1
+        done <<<"$markers"
+        [[ -n $found ]] || missing+=("$role loads $hook, which has no attempt of its")
+      done
+    done <<<"$hooks"
+  done
+  ((${#listed[@]} > 0))
+  hooks=$(jq -r '.hooks[].hook' "$probe")
+  while IFS= read -r hook; do
+    [[ " ${listed[*]} " == *" $hook "* ]] || missing+=("the data file's $hook is no PreToolUse hook of the settings")
+  done <<<"$hooks"
+  assert_equal "$(printf '%s\n' "${missing[@]}")" ""
+}
+
+# Only classifier refusals in a row are known to leave a background session on a prompt, so the
+# auto mode stand-ins are never next to each other in a session's list.
+@test "no two refused attempts of the refusal probe are adjacent in any role's list" {
+  local role out
+  for role in "${PROBE_ROLES[@]}"; do
+    out=$(jq -r --arg role "$role" '[.attempts[] | select(any(.roles[]; . == $role))]
+      | . as $list | range(1; length) | select($list[. - 1].expect == "refused" and $list[.].expect == "refused")
+      | "\($role): \($list[. - 1].id) and \($list[.].id)"' "$REPO_ROOT/bin/lib/probe.json")
+    assert_equal "$out" ""
+  done
+}
+
+# The kinds the contract marks push, Daniel's word and outside facts, are on origin the moment
+# they are logged: every script the contract names as a writer of one calls ledger_push, on a
+# line of its own, which commits and pushes the ledger before it ends.
+@test "every writer of a push kind calls ledger_push" {
+  local contract=$REPO_ROOT/bin/lib/ledger-contract.json writer missing=()
+  assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.push == true) | .key] | sort | join(" ")' "$contract")" \
+    "answered closed merge-approved merge-default-restored merge-default-withdrawn merge-preapproval-withdrawn merge-preapproved merge-standing merge-standing-withdrawn merged plan-approval-withdrawn plan-approved ran retro-schedule"
+  for writer in $(jq -r '[.kinds[] | select(.push == true) | .writer] | flatten | unique[]' "$contract"); do
+    grep -qE '^[[:space:]]*ledger_push$' "$REPO_ROOT/bin/$writer" || missing+=("$writer")
+  done
+  assert_equal "${missing[*]}" ""
+  # No other kind is marked with anything but true.
+  assert_equal "$(jq -r '[.kinds[] | select(has("push") and .push != true)] | length' "$contract")" 0
 }
 
 # The machine docs: Daniel's sentence, the setup entry point and the SOPs.
@@ -299,6 +486,35 @@ toolkits/x/scripts/run:1: a needs b"
   done
 }
 
+# The reviewer App's key signs the agent-review check the team's own project merges behind, so no
+# session reads it: the worker and coordinator settings deny it to the Read and Edit tools and to a
+# Bash command naming its path by any of the usual spellings, a speed bump against a steered
+# session (sops/merging.md), while the scripts that read it, and text naming the committed
+# bin/lib/review-app or the key's bare file name, stay allowed.
+@test "the worker and coordinator settings deny reading the reviewer App's key" {
+  local file rule command
+  for file in settings/worker.json coordinator.settings.json; do
+    for rule in 'Read(~/.config/agent-team/review-app*)' 'Edit(~/.config/agent-team/review-app*)'; do
+      jq -e --arg r "$rule" '.permissions.deny | index($r) != null' "$REPO_ROOT/$file" >/dev/null ||
+        { echo "$file does not deny $rule" >&2; return 1; }
+    done
+    for command in 'cat ~/.config/agent-team/review-app.pem' 'head -c 64 ~/.config/agent-team/review-app.pem' \
+      'less ~/.config/agent-team/review-app.pem' 'tail $HOME/.config/agent-team/review-app.pem' \
+      'base64 < "$HOME/.config/agent-team/review-app.pem"' 'openssl rsa -in ~/.config/agent-team/review-app.pem -text' \
+      'cp ~/.config/agent-team/review-app.pem /tmp/k' 'cat ~/.config/agent-team/review-app.p*' \
+      'cat ~/.config/agent-team/*.pem' 'cd ~/.config && cat agent-team/review-app.pem' \
+      'cd ~/.config/agent-team && cat review-app.pem' 'pushd ~/.config/agent-team' \
+      'cat /home/someone/.config/agent-team/review-app.pem | base64'; do
+      denied_in "$REPO_ROOT/$file" "$command" || { echo "$file allows: $command" >&2; return 1; }
+    done
+    for command in 'team-review-check https://github.com/o/r/pull/1 0123 success ok' 'team-secrets check' \
+      'cat bin/lib/review-app' 'cat ~/.config/agent-team/home' 'grep -rn review-app.pem bin sops' \
+      'team-doctor'; do
+      if denied_in "$REPO_ROOT/$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
+    done
+  done
+}
+
 # Role <role>'s deny list from the source files, settings/worker.json's rules then the role file's,
 # as team-worker generates it (tests/team-worker.bats proves the generated list is exactly this);
 # prints the file it writes: role_deny <role>
@@ -342,6 +558,22 @@ role_matrix() {
     "claude agents --json" "claude respawn --all" "$HOME/.local/bin/claude -p hi" \
     "~/.local/bin/claude --bg go" "/usr/bin/claude --model opus --print hi" \
     "$HOME/.local/bin/claude agents"
+}
+
+# A worker reads no other session's conversation: claude attach and claude logs would show it an
+# ops session's production results, or any session's text it was never given. The coordinator
+# attaches to sessions and reads their logs, so its settings deny neither.
+@test "every worker role's settings deny attaching to a session and reading its logs, and the coordinator's do not" {
+  local command
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  role_matrix "git log --oneline -5" "git log -p bin/team-close" "grep -rn 'claude logs' bin" \
+    "grep -n \"claude attach\" bin/team-close" "claude --version" "git commit -m 'deny claude logs'" -- \
+    "claude attach T7-ops" "claude attach abc12345" "claude logs abc12345" "claude logs T7-ops --follow" \
+    "/usr/bin/claude logs abc12345" "$HOME/.local/bin/claude attach T7-ops" "~/.local/bin/claude logs abc12345" \
+    "cd ~/wt && claude attach T7-ops" "true; /usr/bin/claude logs abc12345"
+  for command in "claude attach T7-ops" "/usr/bin/claude logs abc12345" "claude logs abc12345"; do
+    if denied coordinator.settings.json "$command"; then echo "the coordinator may not run: $command" >&2; return 1; fi
+  done
 }
 
 @test "every worker role's settings deny Docker's prune commands, in every spelling, and nothing else of Docker" {
@@ -1477,7 +1709,7 @@ Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   if denied settings/reviewer.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
 }
 
-@test "the builder's allow rules are the local checks, the CI wait scripts, as the briefs give them, and marking a PR ready" {
+@test "the builder's allow rules are the local checks, as the briefs give them, the CI wait a worker may run by hand, and marking a PR ready" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-checks *)
 Bash(@TEAM_CODE@/bin/team-ci-wait *)
 Bash(gh pr ready *)
@@ -1489,9 +1721,9 @@ Bash(gh-axi pr ready *)'
   for brief in reviewer rereview verify before-pr/rereview before-pr/verify; do
     grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview verify wait/direct-pr; do
-    grep -qF '`{{team_bin}}/team-ci-wait ' "$REPO_ROOT/templates/briefs/$brief.md"
-  done
+  # No brief starts a wait on CI, which the coordinator's checks wait takes after a pass; the rule
+  # stays for a worker's wait by hand.
+  if git -C "$REPO_ROOT" grep -n team-ci-wait -- templates; then return 1; fi
   allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
   allows builder "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
   allows builder "$REPO_ROOT/bin/team-ci-wait --no-agent-review https://github.com/me/shop/pull/5"
@@ -1762,6 +1994,26 @@ SH
   assert_contains "$output" "ok tests/repo.bats ("
   assert_contains "$output" "bats: 1 tests passed; 0 of 1 files failed"
   assert_equal "$(cat "$STUB_CALLS/bats-ran")" repo.bats
+}
+
+# A skipped test counts as passed, and its line is named after the file lines, since a file's ok
+# line never shows it.
+@test "tests/run bats names each skipped test after the file lines, and counts it as passed" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  ln -f "$(shared skipping-bats <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 1..3 "ok 1 runs" "ok 2 with a real Chrome # skip no Chrome on this machine" "ok 3 bare # skip"
+SH
+)" "$copy/tests/vendor/bats-core/bin/bats"
+  changed_rebase "$copy"
+  echo 'more' >>"$copy/sops/rules.md"
+  TEAM_JOBS=2 run -0 --separate-stderr "$copy/tests/run" bats --changed base
+  assert_equal "$(grep -A 3 '^ok tests/repo.bats (' <<<"$output" | tail -n 3)" \
+    "tests/repo.bats: ok 2 with a real Chrome # skip no Chrome on this machine
+tests/repo.bats: ok 3 bare # skip
+bats: 3 tests passed; 0 of 1 files failed"
 }
 
 # Commits the copy's working tree and moves its base tag there, so a test's fixture files are no
@@ -2130,4 +2382,42 @@ briefs_without_gotchas() {
   run grep -nE '\{\{(team_home|team_code|team_bin|plan)\}\}|platform-gotchas' "$REPO_ROOT/templates/briefs/ops.md"
   assert_equal "$status" 1
   assert_equal "$output" ""
+}
+
+@test "bin/lib/guarded's areas are the ledger's guarded areas in their order, each @ naming own or a registered project" {
+  local lines fields names
+  lines=$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/guarded")
+  fields=$(cut -d ' ' -f 1 <<<"$lines")
+  assert_equal "$(cut -d @ -f 1 <<<"$fields" | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    '["ci","migrations","deploy","permissions","secrets","guardrails"]'
+  assert_equal "$(cut -d @ -f 1 <<<"$fields" | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    "$(jq -L "$REPO_ROOT/bin/lib" -nc 'include "ledger"; guarded_areas')"
+  # Every line is its area, an optional @<project>, one space and a pattern.
+  assert_equal "$(grep -Evc '^[a-z]+(@[a-z0-9-]+)? [^ ]' <<<"$lines" || true)" 0
+  names=$(sed -n 's/^\[\([a-z0-9-]*\)\]$/\1/p' "$REPO_ROOT/tests/fixtures/projects.toml")
+  [[ -n $names ]]
+  while IFS= read -r field; do
+    [[ $field == *@* ]] || continue
+    [[ ${field#*@} == own ]] || grep -Fxq -- "${field#*@}" <<<"$names" ||
+      { echo "bin/lib/guarded's $field names no project of the registry fixture" >&2; return 1; }
+  done <<<"$fields"
+  # The team's own lines are its guardrails, and Conventioner's its permissions.
+  assert_equal "$(grep -o '@[a-z0-9-]*' <<<"$fields" | sort -u | jq -Rsc 'split("\n")[:-1]')" '["@conventioner","@own"]'
+  assert_equal "$(grep '@own$' <<<"$fields" | sort -u)" guardrails@own
+  assert_equal "$(grep '@conventioner$' <<<"$fields" | sort -u)" permissions@conventioner
+}
+
+# The reviewer App's constant (review_app in bin/lib/team.sh) is committed code, never a record:
+# when present, one id=<n> line and one slug=<s> line; present or not, the short list holds its
+# path and team-review-check's as the team's own guardrails.
+@test "bin/lib/review-app, when present, is one id and one slug, and it and team-review-check are guardrails" {
+  local file=$REPO_ROOT/bin/lib/review-app path patterns form=$'^id=[1-9][0-9]*\nslug=[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+  if [[ -e $file ]]; then
+    [[ $(cat "$file") =~ $form ]] ||
+      { echo "bin/lib/review-app is not one id=<n> line and one slug=<s> line" >&2; return 1; }
+  fi
+  patterns=$(sed -n 's/^guardrails@own //p' "$REPO_ROOT/bin/lib/guarded")
+  for path in bin/lib/review-app bin/team-review-check; do
+    grep -Eiqx -f <(printf '%s\n' "$patterns") <<<"$path" || { echo "bin/lib/guarded holds no guardrails@own line for $path" >&2; return 1; }
+  done
 }

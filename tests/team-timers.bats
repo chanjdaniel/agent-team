@@ -7,13 +7,18 @@
 load helpers/common
 load helpers/docker
 load helpers/inbox
+load helpers/uptime
+
+# The live session list with only the coordinator in it, which the coordinator step looks for.
+COORDINATOR='[{"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
 
 setup() {
   sandbox
   # A registry, committed with the team home, for the capacity step's readings, and a
-  # claude daemon with no live session, which the capacity step reads.
+  # claude daemon whose one live session is the coordinator, which the coordinator and capacity
+  # steps read.
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   origin=$(hold_lease home-pc)
   fake_service_managers
   stub_command uname
@@ -21,8 +26,9 @@ setup() {
   units=$HOME/.config/systemd/user agents=$HOME/Library/LaunchAgents
   log=$HOME/.local/state/agent-team/heartbeat.log
   failures=$HOME/.local/state/agent-team/heartbeat-failures.log
+  notices=$HOME/.local/state/agent-team/notices.json
   inbox_discord alerts
-  inbox_kept
+  inbox_guild_kept
 }
 
 # The failures log's lines, each without its time.
@@ -97,6 +103,8 @@ expected_heartbeat_plist() {
     <string>$TEAM_HOME</string>
     <key>PATH</key>
     <string>$1</string>
+    <key>TEAM_HEARTBEAT_JOB</key>
+    <string>agent-team.heartbeat</string>
   </dict>
   <key>StandardErrorPath</key>
   <string>$HOME/.local/state/agent-team/heartbeat.err</string>
@@ -224,7 +232,7 @@ EOF
   run_bin -0 team-timers disable
   assert_equal "$output" "the heartbeat is disabled: agent-team.heartbeat, agent-team.caffeinate stopped and removed"
   assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$(printf '%s\n' \
-    "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]" "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]")"
+    "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]")"
   [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $agents/agent-team.caffeinate.plist ]]
   [[ ! -e $HOME/.fake-launchd/agent-team.caffeinate ]]
 
@@ -232,6 +240,256 @@ EOF
   run_bin -0 team-timers disable
   assert_equal "$output" "the heartbeat is not installed; nothing to disable"
   assert_equal "$(stub_calls launchctl | grep -v '"print"')" ""
+}
+
+# The calls the fake launchctl made to agent-team.heartbeat, each with the lock's and the plist's
+# state then, one a line.
+heartbeat_calls() {
+  cat "$HOME/.fake-launchd/heartbeat-calls" 2>/dev/null || true
+}
+
+# Forget the launchctl calls made so far.
+forget_launchctl() {
+  : >"$STUB_CALLS/launchctl.log"
+  rm -f "$HOME/.fake-launchd/heartbeat-calls"
+}
+
+@test "on macOS, disable with no run in progress removes both LaunchAgents, then stops caffeinate and the heartbeat, the heartbeat under the run's lock" {
+  as_macos
+  local uid
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  forget_launchctl
+  run_bin -0 --separate-stderr team-timers disable
+  assert_equal "$output" "the heartbeat is disabled: agent-team.heartbeat, agent-team.caffeinate stopped and removed"
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$(printf '%s\n' \
+    "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]")"
+  assert_equal "$(heartbeat_calls)" "bootout lock held plist absent"
+  [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $agents/agent-team.caffeinate.plist ]]
+  [[ ! -e $HOME/.fake-launchd/agent-team.heartbeat && ! -e $HOME/.fake-launchd/agent-team.caffeinate ]]
+  # The lock is let go.
+  flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
+}
+
+@test "on macOS, disable while a run holds the lock, and disable inside the heartbeat job, leave the heartbeat to unload itself" {
+  as_macos
+  local uid lock=$HOME/.local/state/agent-team/heartbeat.lock case
+  uid=$(id -u)
+  mkdir -p "${lock%/*}"
+  for case in held-outside free-inside held-inside; do
+    rm -f "$HOME/.fake-launchd/agent-team.heartbeat"
+    run_bin -0 team-timers enable
+    forget_launchctl
+    case $case in
+      held-outside) run -0 --separate-stderr flock "$lock" "$REPO_ROOT/bin/team-timers" disable ;;
+      free-inside) TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 --separate-stderr team-timers disable ;;
+      held-inside) TEAM_HEARTBEAT_JOB=agent-team.heartbeat run -0 --separate-stderr flock "$lock" "$REPO_ROOT/bin/team-timers" disable ;;
+    esac
+    assert_equal "$output" "the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends"
+    assert_equal "$stderr" ""
+    assert_equal "$(stub_calls launchctl | grep -v '"print"')" "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]"
+    assert_equal "$(heartbeat_calls)" ""
+    [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $agents/agent-team.caffeinate.plist ]]
+    [[ -e $HOME/.fake-launchd/agent-team.heartbeat && ! -e $HOME/.fake-launchd/agent-team.caffeinate ]]
+  done
+}
+
+@test "on macOS, a run inside the heartbeat job whose LaunchAgent is gone unloads its job and does nothing else" {
+  as_macos
+  local uid stub
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  rm "$agents/agent-team.heartbeat.plist"
+  for stub in "$STUB_CALLS"/*.log; do : >"$stub"; done
+  rm -f "$HOME/.fake-launchd/heartbeat-calls"
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 --separate-stderr team-timers run
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-timers: the heartbeat was disabled, so this run unloads its job and does nothing else"
+  assert_equal "$(stub_calls launchctl)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
+  [[ ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+  [[ ! -e $log && ! -e $failures && ! -e $HOME/.local/state/agent-team/health.json ]]
+  for stub in "$STUB_CALLS"/*.log; do
+    [[ $stub == */launchctl.log || $stub == */uname.log ]] || assert_equal "$(basename "$stub"): $(cat "$stub")" "$(basename "$stub"): "
+  done
+}
+
+@test "on macOS, a run inside the job whose LaunchAgent goes during it unloads its job last, after its log line, record and alerts" {
+  as_macos
+  local uid
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  # The coordinator step's session list, read mid-run, is when a handoff's disable removes the
+  # plist.
+  stub_script claude <<SH
+[[ \$1 == agents ]] && rm -f '$agents/agent-team.heartbeat.plist'
+echo '$COORDINATOR'
+SH
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 team-timers run
+  assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
+  assert_equal "$(heartbeat_calls)" "bootout lock free plist absent"
+  [[ ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+  assert_equal "$output" "$(cat "$log")"
+  jq -e '.last_run.ended == "ok" and .last_run.holding == true' "$HOME/.local/state/agent-team/health.json"
+}
+
+@test "on macOS, a run inside the job that its time limit stops unloads its job last when its LaunchAgent went" {
+  as_macos
+  local uid hung=$BATS_TEST_TMPDIR/hung
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  stub_script claude <<SH
+[[ \$1 == agents ]] || exit 0
+rm -f '$agents/agent-team.heartbeat.plist'
+trap '' TERM
+echo "\$\$" >>'$hung'
+command -p sleep 300
+SH
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  assert_equal "$(still_running "$hung")" ""
+  jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
+  assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
+  assert_equal "$(heartbeat_calls)" "bootout lock held plist absent"
+}
+
+@test "on macOS, a disable from outside while a run its time limit stopped writes its record leaves the job to unload itself" {
+  as_macos
+  local uid hung=$BATS_TEST_TMPDIR/hung pid rc
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  stub_script claude <<SH
+[[ \$1 == agents ]] || exit 0
+trap '' TERM
+echo "\$\$" >>'$hung'
+command -p sleep 300
+SH
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=2 TEAM_TIMERS_KILL_SECONDS=4 \
+    "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/run.out" 2>&1 &
+  pid=$!
+  until [[ -s $hung ]]; do command -p sleep 0.1; done
+  # The time limit has stopped the run, whose lock went with it, and bounded_run is still in its
+  # wait before the timed-out log line and record.
+  command -p sleep 3
+  run_bin -0 --separate-stderr team-timers disable
+  assert_equal "$output" "the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends"
+  rc=0
+  wait "$pid" || rc=$?
+  assert_equal "$rc" 1
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 2 s"$ ]]
+  assert_equal "$(still_running "$hung")" ""
+  jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
+  assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
+  assert_equal "$(heartbeat_calls)" "bootout lock held plist absent"
+  [[ ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+}
+
+@test "on macOS, disable passes when the heartbeat job unloads itself between disable's look and its bootout" {
+  as_macos
+  local uid
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  # The fake's first look at the heartbeat finds it loaded, and the job's run unloads it as it
+  # answers.
+  { cat <<'SH'
+if [[ ${1:-} == print && ${2:-} == */agent-team.heartbeat && ! -e $HOME/.fake-launchd/answered ]]; then
+  touch "$HOME/.fake-launchd/answered"
+  rm -f "$HOME/.fake-launchd/agent-team.heartbeat"
+  echo "$2 = {"
+  echo "}"
+  exit 0
+fi
+SH
+    cat "$STUB_FIXTURES/launchctl.sh"; } >"$BATS_TEST_TMPDIR/launchctl.sh"
+  mv "$BATS_TEST_TMPDIR/launchctl.sh" "$STUB_FIXTURES/launchctl.sh"
+  forget_launchctl
+  run_bin -0 --separate-stderr team-timers disable
+  assert_equal "$output" "the heartbeat is disabled: agent-team.heartbeat, agent-team.caffeinate stopped and removed"
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]"
+  [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+}
+@test "on macOS, a run with its LaunchAgent there, or outside the job, never unloads the heartbeat" {
+  as_macos
+  run_bin -0 team-timers enable
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 team-timers run
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" ""
+
+  rm "$agents/agent-team.heartbeat.plist"
+  age_lease 20
+  run_bin -0 --separate-stderr team-timers run
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" ""
+  assert_contains "$output" " lease: home-pc renewed the lease, epoch 1"
+  [[ -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+}
+
+@test "on macOS, A holds, B steals: A's next run inside its job fences A, writes its log line and record, and unloads its job last" {
+  as_macos
+  local uid
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  stub_reply curl "curl must not be called" 99
+  stub_script claude <<'EOF'
+case $1 in
+  agents) echo '[{"id": "3169fcbd", "name": "coordinator", "status": "busy"}, {"id": "81f08540", "name": "T5-builder", "status": "busy"}]' ;;
+  stop) echo "Stopped $2" ;;
+  *) exit 127 ;;
+esac
+EOF
+  make_machine laptop
+  steal_lease laptop home-pc
+  forget_launchctl
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat run_bin -0 team-timers run
+  [[ $output =~ ^[0-9T:Z-]+" lease: home-pc no longer holds the lease: laptop holds it (epoch 2); fenced home-pc: stopped coordinator (3169fcbd), T5-builder (81f08540); the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends; team-lease take clears the fence"$ ]]
+  assert_equal "$output" "$(tail -n 1 "$log")"
+  [[ -e $HOME/.local/state/agent-team/fenced ]]
+  assert_equal "$(stub_calls claude)" "$(printf '%s\n' '["agents","--json"]' '["stop","3169fcbd"]' '["stop","81f08540"]')"
+  [[ ! -e $agents/agent-team.heartbeat.plist && ! -e $agents/agent-team.caffeinate.plist ]]
+  [[ ! -e $HOME/.fake-launchd/agent-team.caffeinate && ! -e $HOME/.fake-launchd/agent-team.heartbeat ]]
+  jq -e '.last_run.ended == "fenced"' "$HOME/.local/state/agent-team/health.json"
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$(printf '%s\n' \
+    "[\"bootout\",\"gui/$uid/agent-team.caffeinate\"]" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]")"
+  assert_equal "$(heartbeat_calls)" "bootout lock free plist absent"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "on macOS, enable reloads a loaded heartbeat whose LaunchAgent is gone or changed under the run's lock, and past TEAM_TIMERS_LOCK_SECONDS reloads it anyway" {
+  as_macos
+  local uid lock=$HOME/.local/state/agent-team/heartbeat.lock
+  uid=$(id -u)
+  run_bin -0 team-timers enable
+  local reload
+  reload=$(printf '%s\n' "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]" \
+    "[\"bootstrap\",\"gui/$uid\",\"$agents/agent-team.heartbeat.plist\"]")
+
+  rm "$agents/agent-team.heartbeat.plist"
+  forget_launchctl
+  run_bin -0 --separate-stderr team-timers enable
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$reload"
+  assert_equal "$(heartbeat_calls)" "$(printf '%s\n' "bootout lock held plist present" "bootstrap lock held plist present")"
+  flock -n "$lock" true
+
+  echo "<!-- stale -->" >>"$agents/agent-team.heartbeat.plist"
+  forget_launchctl
+  run_bin -0 --separate-stderr team-timers enable
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$reload"
+  assert_equal "$(heartbeat_calls)" "$(printf '%s\n' "bootout lock held plist present" "bootstrap lock held plist present")"
+
+  rm "$agents/agent-team.heartbeat.plist"
+  forget_launchctl
+  local start=$SECONDS
+  TEAM_TIMERS_LOCK_SECONDS=1 run -0 --separate-stderr flock "$lock" "$REPO_ROOT/bin/team-timers" enable
+  ((SECONDS - start < 10))
+  assert_equal "$stderr" "team-timers: a heartbeat run still held its lock after 1 s, so the job was reloaded under it"
+  assert_equal "$(stub_calls launchctl | grep -v '"print"')" "$reload"
+  assert_equal "$(cat "$HOME/.fake-launchd/agent-team.heartbeat")" "$(cat "$agents/agent-team.heartbeat.plist")"
 }
 
 @test "status says installed, enabled, the last run from the heartbeat log, the last good run and health; --json says the same" {
@@ -368,8 +626,12 @@ EOF
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md"
+  # It takes the waiting list the first run's inbox step wrote, a record too.
+  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md
+waiting.json
+waiting.md"
   assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
+  # The waiting list, which did not change, is not committed again.
   echo "steps" >"$TEAM_HOME/manual-steps.md"
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
@@ -611,33 +873,98 @@ SH
   flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
 
   rm "$STUB_FIXTURES/claude.sh"
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
 }
 
-@test "the inbox step edits the Waiting on you message once a run on the holder, logging only a new message or a failure, which never fails the run" {
+# The ids of the processes whose arguments are exactly "sleep 4199", each killed, so a run that
+# leaves one never holds the file's run open.
+leftover_timers() {
+  local pid
+  command -p ps -A -o pid=,args= | awk '$2 == "sleep" && $3 == "4199" && NF == 3 { print $1 }' |
+    while read -r pid; do
+      kill -KILL "$pid" 2>/dev/null || true
+      echo "$pid"
+    done
+}
+
+@test "a run leaves no timer behind, even when the process list misses the timer's sleep" {
+  # The parent ids' snapshot taken before the timer's sleep was forked: it waits for that sleep,
+  # then lists every process but the sleeps. Every other form reads the real table.
+  stub_command ps
+  stub_script ps <<'SH'
+if [[ $* == "-A -o pid=,ppid=" ]]; then
+  for ((i = 0; i < 50; i++)); do
+    command -p ps -A -o args= | grep -x 'sleep 4199' >/dev/null && break
+    command -p sleep 0.1
+  done
+  command -p ps -A -o pid=,ppid=,comm= | awk '$3 != "sleep" && $3 !~ /\/sleep$/ { print $1, $2 }'
+  exit 0
+fi
+command -p ps "$@"
+exit
+SH
+  export TEAM_TIMERS_RUN_SECONDS=4199
+  local start lock=$HOME/.local/state/agent-team/heartbeat.lock
+  mkdir -p "${lock%/*}"
+
+  # A run that finds the lock held ends at once.
+  start=$SECONDS
+  flock "$lock" "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/out" 2>&1 || true
+  assert_contains "$(cat "$BATS_TEST_TMPDIR/out")" "run: another run is still going; skipped"
+  assert_equal "$(leftover_timers)" ""
+  ((SECONDS - start < 10))
+
+  # And an ordinary run.
+  start=$SECONDS
+  run_bin -0 team-timers run
+  assert_equal "$(leftover_timers)" ""
+  ((SECONDS - start < 10))
+}
+
+@test "the inbox step writes waiting.md once a run on the holder, logging only the old message's retire, a numbering afresh or a failure, which never fails the run" {
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  assert_equal "$(inbox_calls)" ""
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 
-  # Deleted by hand: posted again, and that is logged.
-  rm "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  # The old Waiting on you message is retired once, and that is logged.
+  inbox_kept
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: retired https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000000"$ ]]
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
   : >"$STUB_FIXTURES/inbox/calls"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "lease checkpoint inbox"
-  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"$ ]]
-  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000
-POST channels/1562486564871995482/messages"
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(inbox_calls)" ""
 
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  # A waiting.json it cannot read is numbered afresh, which the next run would not show, so it is
+  # logged.
+  echo '{"schema": "team-waiting/0"}' >"$TEAM_HOME/waiting.json"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint inbox"
-  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"$ ]]
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: numbers the list afresh, since waiting.json cannot be read: its schema is not team-waiting/1"$ ]]
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+
+  waiting_unwritable
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"$ ]]
+
+  # A run that numbers afresh and then fails names the failure's own cause, and logs the
+  # numbering too, since waiting.json was written before waiting.md failed.
+  echo '{"schema": "team-waiting/0"}' >"$TEAM_HOME/waiting.json"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
+  assert_equal "$(grep ' inbox: ' <<<"$output" | sed -E 's/^[0-9T:Z-]+ //')" "inbox: numbers the list afresh, since waiting.json cannot be read: its schema is not team-waiting/1
+inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"
 }
 
 @test "the inbox step never runs off the lease, offline or on a fenced machine, and runs after the back step" {
+  inbox_kept
   make_machine laptop
   on_machine laptop run_bin -0 team-timers run
   assert_equal "$(inbox_calls)" ""
@@ -648,9 +975,9 @@ POST channels/1562486564871995482/messages"
   run_bin -75 team-timers run
   run_bin -75 team-timers run
   assert_equal "$(inbox_calls)" ""
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "back checkpoint"
+  assert_equal "$(steps "$output")" "back checkpoint inbox"
   assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
 
   steal_lease laptop home-pc
@@ -659,6 +986,175 @@ POST channels/1562486564871995482/messages"
   run_bin -0 team-timers run
   assert_contains "$output" "home-pc is fenced since "
   assert_equal "$(inbox_calls | wc -l)" 1
+}
+
+# Conventioner's API as a production check on the stub production, answering <status> with <body>,
+# the known-good site on the stub too, and curl as the fake Discord or the machine's own:
+# production <status> <body>
+production() {
+  uptime_curl
+  base=$(uptime_server)
+  export TEAM_UPTIME_SECONDS=1 TEAM_UPTIME_KNOWN_GOOD=$base/known-good
+  uptime_answer known-good 200 ''
+  uptime_check conventioner api "$base/api" '"status":"ok"'
+  uptime_answer api "$1" "$2"
+}
+
+# The production posts that reached the fake Discord, in order.
+production_posts() {
+  uptime_posts | grep '^Production' || true
+}
+
+# The uptime step's lines of <output>, each without its time.
+uptime_lines() {
+  sed -n 's/^[^ ]* uptime: //p' <<<"$1"
+}
+
+@test "the uptime step makes no fetch and logs nothing with no production check in the registry" {
+  uptime_curl
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(uptime_lines "$output")" ""
+  assert_equal "$(stub_calls curl | jq -r '.[-1]' | grep -v '^https://discord\.com/' || true)" ""
+  [[ ! -e $HOME/.local/state/agent-team/uptime.json ]]
+}
+
+@test "the uptime step posts one Production down on the second failing run, none on the third, and one Production back once it answers" {
+  production 503 'Service Unavailable'
+  local since at url
+  run_bin -0 team-timers run
+  since=$(jq -r '.checks["conventioner/api"].since' "$HOME/.local/state/agent-team/uptime.json")
+  at=$(date -d "$since" +%H:%M) url=$base/api
+  assert_equal "$(uptime_lines "$output")" "conventioner/api: failed: HTTP 503 (1 in a row, since $since)"
+  assert_equal "$(production_posts)" ""
+
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" "conventioner/api: failed: HTTP 503 (2 in a row, since $since)
+posted to #coordinator (message 1569000000000000001): down: conventioner/api"
+  assert_equal "$(production_posts)" "Production down: conventioner api (<$url>) since $at, 2 checks in a row from home-pc: HTTP 503."
+  # Production down is not a failure of the step.
+  jq -e '(.steps | has("uptime") | not) and .last_run.ended == "ok"' "$HOME/.local/state/agent-team/health.json"
+
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" "conventioner/api: failed: HTTP 503 (3 in a row, since $since)"
+  assert_equal "$(production_posts | wc -l)" 1
+
+  uptime_answer api 200 '{"status":"ok"}'
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" "posted to #coordinator (message 1569000000000000002): back: conventioner/api"
+  assert_equal "$(production_posts | wc -l)" 2
+  [[ $(production_posts | tail -n 1) =~ ^"Production back: conventioner api (<$url>) answers again at "[0-9]{2}:[0-9]{2}", down since $at (" ]]
+  run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" ""
+  assert_equal "$(production_posts | wc -l)" 2
+}
+
+@test "with the known-good site unreachable the uptime step fails the run and counts nothing, posting no production post" {
+  production 503 'Service Unavailable'
+  export TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/
+  run_bin -1 team-timers run
+  run_bin -1 team-timers run
+  [[ $(uptime_lines "$output") =~ ^"cannot reach the internet: http://127.0.0.1:9/: "[^$'\n']+"; 1 failing check(s) not counted"$'\n'"failed: this machine cannot reach the internet (http://127.0.0.1:9/: "[^$'\n']+"), so 1 failing check(s) were not counted"$ ]]
+  # Both runs' failures, curl's reason aside, which may name how many ms its connect took.
+  assert_equal "$(problems | grep -c -xE '^uptime: failed: this machine cannot reach the internet \(http://127\.0\.0\.1:9/: .+\), so 1 failing check\(s\) were not counted$')" 2
+  assert_equal "$(production_posts)" ""
+  jq -e '.steps.uptime.runs == 2 and (.steps.uptime.reason | startswith("this machine cannot reach the internet (http://127.0.0.1:9/: "))' \
+    "$HOME/.local/state/agent-team/health.json"
+  jq -e '.checks["conventioner/api"] == null' "$HOME/.local/state/agent-team/uptime.json"
+}
+
+@test "two unreachable runs whose curl names another connect time each are both counted in the failures log" {
+  production 503 'Service Unavailable'
+  # The known-good fetch refused as curl 8 says it, after 0 ms and then after 1 ms.
+  { cat <<'EOF'
+if [[ ${*: -1} == http://127.0.0.1:9/ ]]; then
+  ms=$(cat "$STUB_FIXTURES/connect-ms" 2>/dev/null || echo 0)
+  echo $((ms + 1)) >"$STUB_FIXTURES/connect-ms"
+  printf 000
+  echo "curl: (7) Failed to connect to 127.0.0.1 port 9 after $ms ms: Couldn't connect to server" >&2
+  exit 7
+fi
+EOF
+    cat "$STUB_FIXTURES/curl.sh"; } >"$STUB_FIXTURES/curl.sh.new"
+  mv "$STUB_FIXTURES/curl.sh.new" "$STUB_FIXTURES/curl.sh"
+  TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/ run_bin -1 team-timers run
+  TEAM_UPTIME_KNOWN_GOOD=http://127.0.0.1:9/ run_bin -1 team-timers run
+  local fixed='uptime: failed: this machine cannot reach the internet (http://127.0.0.1:9/: Failed to connect to 127.0.0.1 port 9 after'
+  assert_equal "$(problems | grep -F "$fixed")" "$fixed 0 ms: Couldn't connect to server), so 1 failing check(s) were not counted
+$fixed 1 ms: Couldn't connect to server), so 1 failing check(s) were not counted"
+  # So the second run's whole line is in the log once, and the line's fixed part twice.
+  assert_equal "$(problems | grep -c -xF "$(grep ' uptime: failed: ' <<<"$output" | cut -d' ' -f2-)")" 1
+  assert_equal "$(problems | grep -c -xE '^uptime: failed: this machine cannot reach the internet \(http://127\.0\.0\.1:9/: .+\), so 1 failing check\(s\) were not counted$')" 2
+}
+
+@test "the uptime step logs after the alert step's lines and before the inbox step's" {
+  production 503 'Service Unavailable'
+  # ledger: a line no reader can parse, alerted at once; inbox: the old Waiting on you message,
+  # retired.
+  echo 'not json' >>"$TEAM_HOME/ledger.jsonl"
+  inbox_kept
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint ledger alert uptime inbox"
+}
+
+@test "the uptime step never runs off the lease, offline or on a fenced machine, and runs after the back step" {
+  production 503 'Service Unavailable'
+  make_machine laptop
+  TEAM_HOME=$BATS_TEST_TMPDIR/machines/laptop/team uptime_check conventioner api "$base/api" '"status":"ok"'
+  on_machine laptop run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output")" ""
+
+  stub_sleep </dev/null
+  cut_origin
+  run_bin -75 team-timers run
+  run_bin -75 team-timers run
+  assert_equal "$(uptime_lines "$output")" ""
+  assert_equal "$(uptime_requests)" ""
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "back checkpoint uptime"
+  assert_equal "$(uptime_requests | jq -r .path | paste -sd ' ')" "/api /known-good"
+
+  steal_lease laptop home-pc
+  run_bin -0 team-timers run
+  assert_contains "$output" "fenced home-pc"
+  run_bin -0 team-timers run
+  assert_contains "$output" "home-pc is fenced since "
+  assert_equal "$(uptime_lines "$output")" ""
+  assert_equal "$(uptime_requests | wc -l)" 2
+}
+
+@test "TEAM_TIMERS_UPTIME_SECONDS replaces the uptime step's 180 s, after which it is stopped and fails the run" {
+  production 503 'Service Unavailable'
+  uptime_hang api
+  export TEAM_TIMERS_UPTIME_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 TEAM_UPTIME_SECONDS=30
+  local start=$SECONDS
+  run_bin -1 team-timers run
+  ((SECONDS - start < 20))
+  assert_equal "$(uptime_lines "$output")" "failed: timed out after 1 s"
+  assert_contains "$(problems)" "uptime: failed: timed out after 1 s"
+  grep -q '^UPTIME_TIMEOUT=${TEAM_TIMERS_UPTIME_SECONDS:-180}$' "$REPO_ROOT/bin/team-timers"
+}
+
+@test "at the registry's 10 checks, every one hanging, the uptime step's limit fits the fetches, the probe and the down post" {
+  # The defaults' ratio, read from the scripts: the step's seconds over a fetch's, with a fetch of 1 s.
+  local step fetch i
+  step=$(sed -n 's/^UPTIME_TIMEOUT=${TEAM_TIMERS_UPTIME_SECONDS:-\([0-9]*\)}$/\1/p' "$REPO_ROOT/bin/team-timers")
+  fetch=$(sed -n 's/^FETCH_SECONDS=${TEAM_UPTIME_SECONDS:-\([0-9]*\)}$/\1/p' "$REPO_ROOT/bin/team-uptime")
+  production 200 ''
+  uptime_hang api
+  for i in 1 2 3 4 5 6 7 8 9; do
+    uptime_check conventioner "check-$i" "$base/check-$i" '"status":"ok"'
+    uptime_hang "check-$i"
+  done
+  local limit=$((step / fetch))
+  TEAM_TIMERS_UPTIME_SECONDS=$limit TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
+  assert_equal "$(production_posts)" ""
+  TEAM_TIMERS_UPTIME_SECONDS=$limit TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
+  assert_equal "$(uptime_lines "$output" | grep -c "^failed: timed out" || true)" 0
+  assert_equal "$(grep -c " uptime: posted to #coordinator (message [0-9]*): down: " <<<"$output")" 1
+  assert_equal "$(uptime_posts | grep -c '^Production down: conventioner .*: no answer in 1 s\.$')" 10
+  assert_equal "$(production_posts | wc -l)" 10
 }
 
 # One ledger line per line on stdin, in order: "launch <task> <role> <session> <worktree>" or
@@ -746,7 +1242,8 @@ LINES
  {"id": "66666666", "name": "T9-ops", "status": "idle"},
  {"id": "77777777", "name": "T8-planner", "status": "idle"},
  {"id": "99999999", "name": "T6-planner", "status": "idle"},
- {"id": "88888888", "name": "T7-reviewer", "status": "idle"}]
+ {"id": "88888888", "name": "T7-reviewer", "status": "idle"},
+ {"id": "c0ffee00", "name": "coordinator", "status": "idle"}]
 JSON
   finished_stub
 }
@@ -800,14 +1297,15 @@ finished: warning: could not stop T9-reviewer 33333333 (no such session 33333333
 finished: stopped T9-builder 44444444: its work is handed on"
   assert_equal "$(steps "$output")" "lease checkpoint finished"
 
-  # The capacity and level steps read the same list, and their failures are what fail this run.
+  # The coordinator, capacity and level steps read the same list; the coordinator step's failure
+  # fails no run, and the capacity and level steps' are what fail this one.
   touch "$STUB_FIXTURES/agents-fail"
   : >"$STUB_CALLS/claude.log"
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease checkpoint finished capacity level"
+  assert_equal "$(steps "$output")" "lease checkpoint coordinator finished capacity level"
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
     "finished: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
-  assert_equal "$(grep -c ': failed: ' <<<"$output")" 2
+  assert_equal "$(grep -c ': failed: ' <<<"$output")" 3
   [[ $(grep ' capacity: \| level: ' <<<"$output") == *"failed: "*"failed: "* ]]
   assert_equal "$(stops)" ""
 }
@@ -860,7 +1358,7 @@ finished: stopped T9-builder 44444444: its work is handed on"
 
 # Origin unreachable for the team home: a closed local port.
 cut_origin() {
-  git -C "${1:-$TEAM_HOME}" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${1:-${TEAM_HOME:?}}" remote set-url origin https://127.0.0.1:9/agent-team.git
 }
 
 # git's reason for a cut origin, whose wording after "Failed to connect to 127.0.0.1" changes
@@ -929,7 +1427,7 @@ teardown() {
 @test "a probe that fails once and then answers sets no flag, posts nothing and goes on to the lease" {
   age_lease 20
   stub_sleep <<EOF
-git -C "$TEAM_HOME" remote set-url origin "$origin"
+git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
 EOF
   cut_origin
   run_bin -0 team-timers run
@@ -956,7 +1454,9 @@ EOF
   local flag=$HOME/.local/state/agent-team/offline since
   since=$(jq -r .since "$flag")
   (($(date -d "$since" +%s) >= before && $(date -d "$since" +%s) <= $(date -u +%s)))
-  jq -e '.posted == true' "$flag"
+  # The flag is the hold alone; that #coordinator was told is the offline notice's.
+  jq -e 'keys == ["since"]' "$flag"
+  jq -e --arg since "$since" '.notices.offline | .state == "posted" and .since == $since' "$notices"
   assert_contains "$(sed -n 2p <<<"$output")" " probe: GitHub unreachable since $since (unable to access 'https://127.0.0.1:9/agent-team.git/': Failed to connect"
   assert_contains "$(sed -n 2p <<<"$output")" "); the team is holding; #coordinator is told"
   assert_equal "$(posts)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team" '$t')"
@@ -991,7 +1491,7 @@ EOF
   # Renewed 5 minutes ago, so no renewal would be due but for the outage.
   age_lease 5
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   [[ $(lease_tip) != "$tip" ]]
   lease_json | jq -e '.holder == "home-pc" and .epoch == 1 and (.renewed_at | fromdateiso8601) > now - 120'
@@ -1010,27 +1510,29 @@ EOF
 @test "an outage post that failed goes out with the back message" {
   stub_sleep </dev/null
   discord_answers 503
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   cut_origin
   run_bin -75 team-timers run
   assert_contains "$output" "the team is holding; the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it goes with the back message"
-  jq -e '.posted == false' "$HOME/.local/state/agent-team/offline"
+  jq -e '.notices.offline | .state == "open" and (.tried | type) == "string" and .posted == null' "$notices"
   local since
   since=$(jq -r .since "$HOME/.local/state/agent-team/offline")
 
   discord_answers
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   local back
   back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
   assert_equal "$(posts | sed -n 2p)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team
 GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  [[ ! -e $HOME/.local/state/agent-team/offline ]]
+  jq -e '.notices.offline == null' "$notices"
 }
 
 @test "with a session list that never answers, the back post is still made, saying the list could not be read" {
   stub_sleep </dev/null
   discord_answers
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   cut_origin
   run_bin -75 team-timers run
   local since
@@ -1042,9 +1544,9 @@ if [[ ! -e '$BATS_TEST_TMPDIR/hung' ]]; then
   touch '$BATS_TEST_TMPDIR/hung'
   command -p sleep 300
 fi
-echo '[]'
+echo '$COORDINATOR'
 SH
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   local start=$SECONDS
   TEAM_TIMERS_FINISHED_CALL_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
   ((SECONDS - start < 20))
@@ -1058,7 +1560,7 @@ SH
 @test "GitHub refusing the login (HTTP 403 or 401) is not offline: logged each run, posted once, no second try" {
   local tip
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 403)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
   stub_sleep </dev/null
   discord_answers
   run_bin -1 team-timers run
@@ -1069,7 +1571,7 @@ SH
   [[ $(posts | jq -r .) =~ $pattern ]]
 
   # A credential git cannot ask for (HTTP 401) is the same refusal, and is not posted again.
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 401)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 401)"
   run_bin -1 team-timers run
   [[ $output =~ ^[0-9T:Z-]+" probe: GitHub refuses home-pc's login (could not read Username for 'http://127.0.0.1:"[0-9]+"': terminal prompts disabled); not offline"$ ]]
   assert_equal "$(posts | wc -l)" 1
@@ -1077,15 +1579,100 @@ SH
   assert_equal "$(wc -l <"$failures")" 2
 
   # Answering again clears it, so a later refusal is posted again.
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_contains "$(sed -n 1p <<<"$output")" " probe: GitHub accepts home-pc's login again"
+  jq -e '.notices["login-refused"] == null' "$notices"
   [[ ! -e $HOME/.local/state/agent-team/login-refused ]]
   assert_equal "$(lease_tip)" "$tip"
 }
 
+@test "a login refusal whose post Discord refused is posted at the next refused run, once" {
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
+  stub_sleep </dev/null
+  discord_answers 503
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline; the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again next run" ]]
+  jq -e '.notices["login-refused"] | .state == "open" and (.tried | type) == "string"' "$notices"
+
+  discord_answers
+  : >"$STUB_CALLS/curl.log"
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline; #coordinator is told" ]]
+  assert_equal "$(posts | wc -l)" 1
+  [[ $(posts | jq -r .) == "GitHub refuses home-pc's login ("*"); the heartbeat cannot renew the lease until it is fixed there (team-doctor)" ]]
+  jq -e '.notices["login-refused"].state == "posted"' "$notices"
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline" ]]
+  assert_equal "$(posts | wc -l)" 1
+}
+
+@test "a login-refused file from before the notice record is moved without a second post while the refusal lasts, and closed silently when GitHub accepts the login" {
+  local file=$HOME/.local/state/agent-team/login-refused since
+  since=$(date -u +%FT%TZ)
+  mkdir -p "${file%/*}"
+  jq -n --arg since "$since" '{since: $since, reason: "The requested URL returned error: 403"}' >"$file"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 403)"
+  stub_sleep </dev/null
+  discord_answers
+  run_bin -1 team-timers run
+  [[ $output == *"); not offline" ]]
+  assert_equal "$(posts)" ""
+  [[ ! -e $file ]]
+  jq -e --arg since "$since" '(.upgraded | index("login-refused") != null)
+    and (.notices["login-refused"] | .state == "posted" and .since == $since)' "$notices"
+  # The health view reads the refusal from the notice record, dated from the old file.
+  run_bin -1 team-timers health --json
+  jq -e --arg since "$since" '[.problems[] | select(.key == "login-refused") | .since] == [$since]' <<<"$output"
+
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  run_bin -0 team-timers run
+  assert_contains "$(sed -n 1p <<<"$output")" " probe: GitHub accepts home-pc's login again"
+  assert_equal "$(posts)" ""
+  jq -e '.notices["login-refused"] == null' "$notices"
+  [[ ! -e $file ]]
+}
+
+@test "an offline flag from before the notice record is moved by the back step: told, the back post has no outage line; not told, it carries it; the flag goes either way" {
+  local flag=$HOME/.local/state/agent-team/offline since back
+  since=$(date -u +%FT%TZ)
+  discord_answers
+  mkdir -p "${flag%/*}"
+  jq -n --arg since "$since" '{since: $since, posted: true}' >"$flag"
+  run_bin -0 team-timers run
+  [[ ! -e $flag ]]
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_equal "$(posts)" "$(jq -n --arg t "GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  jq -e '(.upgraded | index("offline") != null) and .notices.offline == null' "$notices"
+
+  # The same from a machine with no notice record yet, whose outage post failed.
+  rm "$notices"
+  : >"$STUB_CALLS/curl.log"
+  jq -n --arg since "$since" '{since: $since, posted: false}' >"$flag"
+  run_bin -0 team-timers run
+  [[ ! -e $flag ]]
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_equal "$(posts)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team
+GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+  jq -e '.notices.offline == null' "$notices"
+}
+
+@test "an offline flag from before the notice record is rewritten as the hold alone, and a run still offline posts nothing" {
+  local flag=$HOME/.local/state/agent-team/offline since
+  since=$(date -u +%FT%TZ)
+  stub_sleep </dev/null
+  discord_answers
+  mkdir -p "${flag%/*}"
+  jq -n --arg since "$since" '{since: $since, posted: false}' >"$flag"
+  cut_origin
+  run_bin -75 team-timers run
+  assert_equal "$(posts)" ""
+  jq -e --arg since "$since" '. == {since: $since}' "$flag"
+  jq -e --arg since "$since" '.notices.offline | .state == "open" and .tried == $since' "$notices"
+}
+
 @test "GitHub answering 5xx is a network failure, tried again and then offline" {
-  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 503)"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$(http_origin 503)"
   stub_sleep </dev/null
   discord_answers
   run_bin -75 team-timers run
@@ -1123,12 +1710,36 @@ EOF
   steal_lease laptop home-pc
   local tip
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   [[ $output =~ ^[0-9T:Z-]+" back: home-pc no longer holds the lease: laptop holds it (epoch 2); fenced home-pc: stopped coordinator (3169fcbd), T5-builder (81f08540); the heartbeat is disabled: agent-team-heartbeat.timer stopped and removed; team-lease take clears the fence"$ ]]
   [[ -e $HOME/.local/state/agent-team/fenced && ! -e $HOME/.local/state/agent-team/offline ]]
   assert_equal "$(posts | wc -l)" 1
   assert_equal "$(lease_tip)" "$tip"
+}
+
+@test "a machine the back step's renew fences posts nothing and leaves no offline notice" {
+  stub_sleep </dev/null
+  discord_answers
+  stub_script claude <<'SH'
+case $1 in
+  agents) echo '[{"id": "3169fcbd", "name": "coordinator"}]' ;;
+  stop) echo "Stopped $2" ;;
+  *) exit 127 ;;
+esac
+SH
+  run_bin -0 team-timers enable
+  cut_origin
+  run_bin -75 team-timers run
+  jq -e '.notices.offline.state == "posted"' "$notices"
+  make_machine laptop
+  steal_lease laptop home-pc
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  : >"$STUB_CALLS/curl.log"
+  run_bin -0 team-timers run
+  [[ -e $HOME/.local/state/agent-team/fenced && ! -e $HOME/.local/state/agent-team/offline ]]
+  assert_equal "$(posts)" ""
+  jq -e '.notices | has("offline") | not' "$notices"
 }
 
 @test "A holds, B steals: A's next run fences A, stops only its team sessions, disables the heartbeat and posts nothing" {
@@ -1251,7 +1862,7 @@ docker_machine() {
   stack_project shop
   docker_stub "$STACK_WORKTREE"
   reap_machine
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   discord_answers
 }
 
@@ -1280,12 +1891,15 @@ day_report() {
 
 @test "every step that logs on the holder logs in one run, in the heartbeat's order" {
   docker_machine
-  discord_answers
+  # uptime: a production check failing once.
+  production 503 'Service Unavailable'
+  uptime_curl answers
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
-  # inbox: the Waiting on you message deleted by hand, so a new one is posted.
-  rm -f "$STUB_FIXTURES/inbox/1569000000000000000.json"
-  # finished: T7's idle reviewer, handed on by its done, stopped; capacity: the same session,
-  # still listed by the stub and outside its slice, placed.
+  # inbox: the old Waiting on you message, retired.
+  inbox_kept
+  # coordinator: no session named coordinator is listed; finished: T7's idle reviewer, handed on
+  # by its done, stopped; capacity: the same session, still listed by the stub and outside its
+  # slice, placed.
   log_events <<LINES
 launch T7 reviewer a1b2c3d4 $HOME/slots/proj/1
 T7 {event: "done", role: "reviewer", session: "a1b2c3d4"}
@@ -1307,7 +1921,7 @@ LINES
   add_loose 200
   run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease checkpoint inbox finished capacity level stacks pack janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint coordinator uptime inbox finished capacity level stacks pack janitor"
 }
 
 @test "the stacks and janitor steps are off without stack.json, without their keys and while they are false: no line, no call" {
@@ -1370,7 +1984,10 @@ exit 1
 EOF
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease checkpoint finished capacity level stacks janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint coordinator finished capacity level stacks janitor"
+  # The coordinator step cannot look for a coordinator, which fails the step, never the run.
+  assert_equal "$(grep -E '^[^ ]+ coordinator: ' <<<"$output" | cut -d ' ' -f 2-)" \
+    "coordinator: failed: cannot read the live session list (claude agents --json): claude: the session list is down"
   # The finished step warns and stops nothing, never failing the run.
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
     "finished: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
@@ -1388,7 +2005,7 @@ EOF
   # Docker not answering: the sweep has nothing to sweep, which it logs nothing for, and the
   # janitor fails, its report then the day's, so it is not run again that day.
   rm "$STUB_FIXTURES/claude.sh"
-  stub_reply claude '[]'
+  stub_reply claude "$COORDINATOR"
   rm "$(day_report)"
   docker_down
   run_bin -1 team-timers run
@@ -1510,7 +2127,7 @@ EOF
   # A live team session outside its slice is placed, and that is logged.
   fake_placement
   fake_process 100 99 - claude
-  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}]'
+  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}, {"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint capacity"
   assert_equal "$(grep ' capacity: ' <<<"$output" | cut -d ' ' -f 2-)" "capacity: placed T7-builder a1b2c3d4 in agent-team-T7-a1b2c3d4.scope (1 process)"
@@ -1530,8 +2147,8 @@ EOF
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ ! -e $HOME/.local/state/agent-team/capacity/readings.jsonl ]]
-  # The finished step's session list and the place's.
-  assert_equal "$(stub_calls claude)" $'["agents","--json"]\n["agents","--json"]'
+  # The coordinator step's session list and its sweep's, the finished step's and the place's.
+  assert_equal "$(stub_calls claude)" $'["agents","--json"]\n["agents","--json"]\n["agents","--json"]\n["agents","--json"]'
 }
 
 @test "neither step runs off the lease, while another run holds the lock, offline or on a fenced machine; both run after the back step" {
@@ -1557,7 +2174,7 @@ EOF
   assert_equal "$(docker_calls)" ""
   assert_equal "$(readings)" ""
 
-  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "back checkpoint stacks janitor"
   assert_equal "$(readings | wc -l)" 1
@@ -1698,7 +2315,7 @@ EOF2
   discord_answers
   fake_placement
   fake_process 100 99 - claude
-  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}]'
+  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}, {"id": "c0ffee00", "name": "coordinator", "status": "idle"}]'
   # Automatic mode at none for an hour, and a stored reading of the last hour each 5 minutes,
   # the other programs using 8 GiB of 32: the readings span rise_minutes, so it rises to full.
   local file=$HOME/.local/state/agent-team/capacity/readings.jsonl minutes

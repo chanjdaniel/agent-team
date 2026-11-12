@@ -2,7 +2,8 @@
 # runs on a pull request. Each job starts from Daniel's first steps and runs tests/bootstrap-drill,
 # which runs the bootstrap as the setup SOP's agent would, plays Daniel for the steps needing sudo,
 # and ends at the first step only Daniel can take (the GitHub login the project clones need, at
-# the latest, since the runner's gh is signed in to nothing).
+# the latest, since the runner's gh is signed in to nothing); its last line is the drill-record
+# line from which team-drill import <run id> records the job's run in the team home's drills.jsonl.
 name: Bootstrap
 
 on:

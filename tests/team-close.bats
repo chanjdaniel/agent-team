@@ -163,20 +163,34 @@ rm 4f2a9c1e archive:2 worktrees:2"
   assert_contains "$output" "closed"
 }
 
-@test "a close takes the task out of the Waiting on you message, and Discord refusing that is a line on stderr" {
+@test "the closed and worktree-returned lines are on origin when the close ends" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]} tip
+  work_and_push "$slot" feature.txt
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-close T1
+  [[ $stderr != *"not on origin"* ]]
+  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T1 worktree-returned closed"
+  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -r .event | tail -n 2)" "worktree-returned
+closed"
+}
+
+@test "a close takes the task out of waiting.md, and a list team-inbox cannot write is a line on stderr" {
   run_bin -0 team-open home feature feat work "Do the work"
   ledger_line '{ts: "2026-10-22T02:11:00Z", task: "T1", event: "asked", id: "go", text: "Go on?"}'
   run_bin -0 team-inbox
-  assert_equal "$(inbox_items_shown)" "**Asks**
-- T1 go: Go on? <#1563000000000000001>"
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T1 go: Go on? <#1563000000000000001>"
   run_bin -0 --separate-stderr team-close T1
-  [[ $stderr != *"Waiting on you"* ]]
-  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  [[ $stderr != *"waiting.md"* ]]
+  assert_equal "$(waiting_items_shown)" "Nothing waits on you."
 
   run_bin -0 team-open home feature feat more "Do more"
-  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  waiting_unwritable
   run_bin -0 --separate-stderr team-close T2
-  assert_equal "$(tail -n 1 <<<"$stderr")" "team-close: the Waiting on you message is not updated: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-close: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(events closed | jq -r .task)" "T1
 T2"
 }
@@ -198,6 +212,22 @@ T2"
 ./scratch/spec.md"
   # Another task's captures are its own.
   [[ -f $TEAM_HOME/tasks/T2/ui/page.png ]]
+}
+
+# The system prompts team-worker generated for the task's sessions, each with a copy of a
+# project's instructions, stay on this machine and go with the task.
+@test "the task's generated system prompts in the machine's state directory are removed, another task's kept" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]} prompts=$HOME/.local/state/agent-team/prompts
+  mkdir -p "$slot/.scratch/task" "$prompts/T1" "$prompts/T2"
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  echo "You build." >"$prompts/T1/builder.home.md"
+  echo "You plan." >"$prompts/T2/planner.home.md"
+  work_and_push "$slot" feature.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $prompts/T1 ]]
+  assert_contains "$stderr" "team-close: removed ~/.local/state/agent-team/prompts/T1/, the system prompts team-worker generated for the task's sessions"
+  [[ -f $prompts/T2/planner.home.md ]]
 }
 
 # What team-thread wait saves from an interview goes the same way.
@@ -501,7 +531,7 @@ rehome_ledger() {
   stub_reply claude "[]"
   run_bin -0 team-state T1 --json
   assert_equal "$(jq -c .worktrees <<<"$output")" "$(jq -cn --arg wt "$slot" \
-    '[{project: "home", branch: "feat/T1-work", worktree: $wt, returned: true}]')"
+    '[{project: "home", branch: "feat/T1-work", worktree: $wt, ticket: null, returned: true}]')"
 }
 
 # open_home_task: T1 open in the first home slot with a builder launched and live, its task
@@ -869,6 +899,118 @@ SH
   assert_equal "$(events worktree-returned)" ""
 }
 
+# ops_session <status>: T1's ops session, launched in $wt and listed with <status>, with the
+# transcript and the answer file team-ops-end deletes; sets ops_transcript and ops_answer.
+ops_session() {
+  local uuid=6f93fe38-1111-4222-8333-444455556666
+  launch T1 ops 6f93fe38 "$wt"
+  ops_transcript=$HOME/.claude/projects/-slots-home-1/$uuid.jsonl
+  ops_answer=$wt/.scratch/answer.md
+  mkdir -p "$(dirname "$ops_transcript")"
+  echo '{"query": "results"}' >"$ops_transcript"
+  echo "42 documents" >"$ops_answer"
+  sessions "$(jq -c --arg wt "$wt" '.cwd = $wt' <<<"$(session 6f93fe38 T1-ops "$1" "done")")" \
+    "$(session 4f2a9c1e T1-builder idle blocked)"
+  remember_before
+}
+
+@test "an ops session is ended through team-ops-end before the other sessions stop, and the close goes on" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session idle
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c '[.stopped, .removed]' <<<"$output")" '[["4f2a9c1e"],["6f93fe38","4f2a9c1e"]]'
+  assert_contains "$stderr" "deleted $ops_transcript"
+  assert_contains "$stderr" "deleted $ops_answer"
+  assert_contains "$stderr" "ended T1-ops (6f93fe38)"
+  [[ ! -e $ops_transcript ]]
+  # team-ops-end's own stop and rm come first; the close stops and removes no ops session itself.
+  assert_equal "$(claude_actions)" '["stop","6f93fe38"]
+["rm","6f93fe38"]
+["stop","4f2a9c1e"]
+["rm","4f2a9c1e"]'
+  assert_equal "$(events closed)" "$(jq -cn --arg wt "$wt" \
+    '{task: "T1", event: "closed", archive: ["tasks/T1/scratch"], returned: [$wt], kept: []}')"
+}
+
+@test "a failed team-ops-end stops the close half closed with its reason, and a second close after the fix completes" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session idle
+  touch "$BATS_TEST_TMPDIR/rm-fails"
+  stub_script claude <<'SH'
+case $1 in
+  agents) cat "$BATS_TEST_TMPDIR/sessions.json" ;;
+  stop) ;;
+  rm) [[ ! -e $BATS_TEST_TMPDIR/rm-fails ]] ;;
+  *) exit 64 ;;
+esac
+SH
+
+  run_bin -1 --separate-stderr team-close T1
+  assert_contains "$stderr" "team-ops-end: claude rm 6f93fe38 failed; its transcript is kept"
+  assert_contains "$stderr" "team-close: cannot end T1-ops with team-ops-end; its reason is above"
+  assert_contains "$stderr" "team-close: T1 is half closed"
+  [[ -f $ops_transcript ]]
+  # The builder was never stopped, nothing was archived, and the slot is still held.
+  assert_equal "$(claude_actions)" '["stop","6f93fe38"]
+["rm","6f93fe38"]'
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+  assert_equal "$(home_worktrees)" "$(cat "$BATS_TEST_TMPDIR/worktrees.before")"
+
+  rm "$BATS_TEST_TMPDIR/rm-fails"
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .removed <<<"$output")" '["6f93fe38","4f2a9c1e"]'
+  [[ ! -e $ops_transcript ]]
+  assert_equal "$(events closed | jq -r .event)" closed
+}
+
+@test "a busy ops session refuses the close; --stop-busy ends it through team-ops-end" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  ops_session busy
+
+  run_bin -1 team-close T1
+  assert_contains "$output" "  T1-ops 6f93fe38 is busy"
+  assert_equal "$(grep -c 'is busy' <<<"$output")" 1
+  assert_contains "$output" "--stop-busy"
+  assert_unchanged
+  [[ -f $ops_transcript ]]
+
+  run_bin -0 --separate-stderr team-close T1 --stop-busy
+  assert_contains "$stderr" "ended T1-ops (6f93fe38)"
+  [[ ! -e $ops_transcript && ! -e $ops_answer ]]
+  assert_equal "$(claude_actions | grep -c 6f93fe38)" 2
+  assert_equal "$(jq -c '[.stopped, .removed]' <<<"$output")" '[["4f2a9c1e"],["6f93fe38","4f2a9c1e"]]'
+}
+
+@test "an ops session listed with no launch of its own is ended too, and a launched one no longer listed is left alone" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  # A launch of an ops session that team-ops-end already ended: it is not removed again.
+  launch T1 ops 0a0b0c0d "$wt"
+  # As Claude Code lists them, a background session that has finished only with --all; a busy one
+  # listed there alone still refuses the close.
+  stub_script claude <<'SH'
+case $1 in
+  agents) if [[ ${3:-} == --all ]]; then cat "$BATS_TEST_TMPDIR/sessions.json"; else jq -c 'map(select(.state != "done"))' "$BATS_TEST_TMPDIR/sessions.json"; fi ;;
+  stop | rm) ;;
+  *) exit 64 ;;
+esac
+SH
+  sessions "$(session 7e7e7e7e T1-ops busy "done")" "$(session 4f2a9c1e T1-builder idle blocked)"
+  run_bin -1 team-close T1
+  assert_contains "$output" "  T1-ops 7e7e7e7e is busy"
+  sessions "$(session 7e7e7e7e T1-ops idle "done")" "$(session 4f2a9c1e T1-builder idle blocked)"
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_contains "$stderr" "ended T1-ops (7e7e7e7e)"
+  assert_equal "$(jq -c .removed <<<"$output")" '["7e7e7e7e","4f2a9c1e"]'
+  [[ $(claude_actions) != *0a0b0c0d* ]]
+}
+
 @test "a two-project task archives both task directories and returns both slots through their pools" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 team-open --task T1 --add conv feat move
@@ -1140,4 +1282,367 @@ legacy_task() {
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-close")"
   AGENT_TEAM_ROLE=coordinator run_bin -2 team-close
   assert_contains "$output" "usage: team-close T<n>"
+}
+
+# Ticket worktrees (team-open --ticket), returned one at a time with --ticket and with the rest at
+# the close.
+
+# open_ticket <NN> [<task worktree>]: give T1's task worktree (default $wt, open_home_task's) a
+# ticket NN and open its ticket worktree with the real team-open --ticket; sets twt (the ticket
+# worktree) and tbranch (its branch).
+open_ticket() {
+  local task_wt=${2:-$wt}
+  mkdir -p "$task_wt/.scratch/task/tickets"
+  printf '# %s: t\n\nBlocked by: None\n' "$1" >"$task_wt/.scratch/task/tickets/$1-t.md"
+  run_bin -0 team-open --task T1 --ticket "$1"
+  twt=$(events worktree-added | jq -r --arg t "$1" 'select(.ticket == $t) | .worktree' | tail -n 1)
+  tbranch=$(events worktree-added | jq -r --arg t "$1" 'select(.ticket == $t) | .branch' | tail -n 1)
+}
+
+# Commit a file in the worktree <wt>, pushing nothing: commit_in <wt> <file>
+commit_in() {
+  echo "$2" >"$1/$2"
+  git -C "$1" add "$2"
+  git -C "$1" commit -q -m "feat: $2"
+}
+
+# Fast-forward the task branch in its worktree (default $wt) to the ticket branch's head, as an
+# integration does: integrate [<task worktree>]
+integrate() {
+  git -C "${1:-$wt}" merge -q --ff-only "$tbranch"
+}
+
+@test "--ticket stops the ticket's idle builder, archives, removes it, returns the slot and deletes its integrated branch" {
+  open_home_task
+  open_ticket 03
+  assert_equal "$twt" "${home_slots[1]}"
+  launch T1 builder 7c7c7c7c "$twt"
+  sessions "$(session 4f2a9c1e T1-builder idle blocked)" "$(session 7c7c7c7c T1-builder-03 idle blocked)"
+  mkdir -p "$twt/.scratch/task/build-notes"
+  echo "note three" >"$twt/.scratch/task/build-notes/03.md"
+  commit_in "$twt" three.txt
+  integrate
+  local head
+  head=$(git -C "$twt" rev-parse HEAD)
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 03
+  assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg wt "$twt" '{task: "T1", ticket: "03", stopped: ["7c7c7c7c"],
+    removed: ["7c7c7c7c"], archive: "tasks/T1/scratch--03", returned: $wt, branch: "feat/T1-work--03", branch_deleted: true}')"
+  # Stopped before the archive, removed after it, both before the slot was returned; the task's
+  # own builder is never touched.
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/order")" "stop 7c7c7c7c archive:0 worktrees:3
+rm 7c7c7c7c archive:3 worktrees:3"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch--03" && find . -type f | sort)" "./build-notes/03.md
+./spec.md
+./tickets/03-t.md"
+  [[ ! -e $twt ]]
+  [[ -f $wt/.scratch/task/spec.md ]]
+  assert_equal "$(git -C "$home" worktree list | wc -l)" "2"
+  assert_contains "$stderr" "team-close: deleted feat/T1-work--03 at ${head:0:8}, which feat/T1-work holds"
+  run -1 git -C "$home" show-ref -q --verify refs/heads/feat/T1-work--03
+  git -C "$home" show-ref -q --verify refs/heads/feat/T1-work
+
+  assert_equal "$(events worktree-returned)" "$(jq -cn --arg wt "$twt" \
+    '{task: "T1", event: "worktree-returned", project: "home", worktree: $wt, branch: "feat/T1-work--03", ticket: "03"}')"
+  assert_equal "$(events closed)" ""
+  run_bin -0 team-log --check
+  run_bin -0 --separate-stderr team-state T1 --json
+  assert_equal "$(jq -c '[.worktrees[] | select(.returned | not) | .worktree]' <<<"$output")" "$(jq -cn --arg wt "$wt" '[$wt]')"
+}
+
+@test "--ticket keeps a ticket branch the task branch does not hold, and says so" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  local head
+  head=$(git -C "$twt" rev-parse HEAD)
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 03
+  assert_equal "$(jq -c '[.stopped, .removed, .branch_deleted]' <<<"$output")" '[[],[],false]'
+  assert_contains "$stderr" "team-close: kept feat/T1-work--03 at ${head:0:8}: the task branch does not hold it"
+  assert_equal "$(git -C "$home" rev-parse refs/heads/feat/T1-work--03)" "$head"
+  [[ ! -e $twt ]]
+  assert_equal "$(events worktree-returned | jq -r .ticket)" "03"
+}
+
+@test "--ticket waits for a busy builder, and returns the worktree once it is idle" {
+  open_home_task
+  open_ticket 03
+  launch T1 builder 7c7c7c7c "$twt"
+  sessions "$(session 7c7c7c7c T1-builder-03 busy)"
+  stub_script claude <<'SH'
+case $1 in
+  agents)
+    cat "$BATS_TEST_TMPDIR/sessions.json"
+    jq -cn '[{id: "7c7c7c7c", sessionId: "7c7c7c7c-1111-4222-8333-444455556666", name: "T1-builder-03", status: "idle"}]' \
+      >"$BATS_TEST_TMPDIR/sessions.json"
+    ;;
+  stop | rm) ;;
+  *) exit 64 ;;
+esac
+SH
+
+  TEAM_CLOSE_IDLE_SECONDS=10 run_bin -0 --separate-stderr team-close T1 --ticket 03
+  assert_equal "$(jq -c .stopped <<<"$output")" '["7c7c7c7c"]'
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "agents")' | wc -l)" "2"
+  [[ ! -e $twt ]]
+}
+
+@test "--ticket on a builder still busy after the wait is exit 75, returning nothing" {
+  open_home_task
+  open_ticket 03
+  launch T1 builder 7c7c7c7c "$twt"
+  sessions "$(session 7c7c7c7c T1-builder-03 busy)"
+  remember_before
+
+  TEAM_CLOSE_IDLE_SECONDS=0 run_bin -75 --separate-stderr team-close T1 --ticket 03
+  assert_equal "$stderr" "team-close: T1-builder-03 7c7c7c7c is still busy; run this again once it is idle"
+  assert_equal "$output" ""
+  assert_equal "$(claude_actions)" ""
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch--03 ]]
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+  [[ -d $twt ]]
+
+  TEAM_CLOSE_IDLE_SECONDS=soon run_bin -2 team-close T1 --ticket 03
+  assert_equal "$output" "team-close: TEAM_CLOSE_IDLE_SECONDS must be a whole number of seconds, got 'soon'"
+}
+
+@test "--ticket stops only the sessions launched in that worktree since it was given to the ticket" {
+  open_home_task
+  open_ticket 03
+  launch T1 builder 7c7c7c7c "$twt"
+  sessions "$(session 7c7c7c7c T1-builder-03 idle blocked)"
+  run_bin -0 team-close T1 --ticket 03
+  # The slot goes to ticket 04 next; ticket 03's builder, already removed, is not touched again.
+  open_ticket 04
+  assert_equal "$twt" "${home_slots[1]}"
+  launch T1 builder 8d8d8d8d "$twt"
+  sessions "$(session 8d8d8d8d T1-builder-04 idle blocked)" "$(session 4f2a9c1e T1-builder idle blocked)"
+  rm -f "$BATS_TEST_TMPDIR/order"
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 04
+  assert_equal "$(jq -c '[.stopped, .removed, .archive]' <<<"$output")" '[["8d8d8d8d"],["8d8d8d8d"],"tasks/T1/scratch--04"]'
+  assert_equal "$(cut -d' ' -f1,2 "$BATS_TEST_TMPDIR/order")" "stop 8d8d8d8d
+rm 8d8d8d8d"
+}
+
+@test "--ticket returns a treehouse slot through the project's return command" {
+  run_bin -0 --separate-stderr team-open conv feature feat move "Move it"
+  open_ticket 02 "${conv_slots[0]}"
+  assert_equal "$twt" "${conv_slots[1]}"
+  integrate "${conv_slots[0]}"
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 02
+  assert_equal "$(jq -c '[.archive, .returned, .branch_deleted]' <<<"$output")" "$(jq -cn --arg wt "$twt" '["tasks/T1/scratch--02", $wt, true]')"
+  run -1 git -C "$twt" symbolic-ref -q HEAD
+  [[ -d $twt/.scratch/task && -z $(ls -A "$twt/.scratch/task") ]]
+  assert_equal "$(stub_calls th-return.sh)" "$(jq -cn --arg cwd "$conv" --arg wt "$twt" '{cwd: $cwd, args: [$wt]}')"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/free")" "$twt"
+  run -1 git -C "$conv" show-ref -q --verify refs/heads/feat/T1-move--02
+  assert_equal "$(events worktree-returned)" "$(jq -cn --arg wt "$twt" \
+    '{task: "T1", event: "worktree-returned", project: "conv", worktree: $wt, branch: "feat/T1-move--02", ticket: "02"}')"
+}
+
+@test "--ticket takes down the ticket worktree's stack before the archive" {
+  home_stack
+  docker_stub "${home_slots[1]}"
+  open_home_task
+  open_ticket 03
+  run_bin -0 team-stack up --worktree "$twt" --no-seed
+  stack_exists stackfix-2
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 03
+  assert_contains "$stderr" "team-stack: stackfix-2 is removed, its logs in $twt/.scratch/task/stack-logs"
+  stack_gone stackfix-2
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch--03/stack-logs ]]
+}
+
+@test "--ticket refuses a ticket worktree with uncommitted work, naming it, and changes nothing" {
+  open_home_task
+  open_ticket 03
+  launch T1 builder 7c7c7c7c "$twt"
+  sessions "$(session 7c7c7c7c T1-builder-03 idle blocked)"
+  echo changed >>"$twt/README.md"
+  echo new >"$twt/new.txt"
+  echo ignored >"$twt/.env"
+  remember_before
+
+  run_bin -1 team-close T1 --ticket 03
+  assert_equal "$output" "team-close: T1's ticket 03 worktree $twt has changes to tracked files: README.md; untracked files: new.txt, so nothing was returned"
+  assert_equal "$(claude_actions)" ""
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch--03 ]]
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+  assert_equal "$(home_worktrees)" "$(cat "$BATS_TEST_TMPDIR/worktrees.before")"
+}
+
+@test "--ticket refuses a task with no open worktree of the ticket, a closed or legacy task, and a malformed command line" {
+  open_home_task
+  run_bin -1 team-close T1 --ticket 03
+  assert_equal "$output" "team-close: T1 has no open worktree of ticket 03"
+  open_ticket 03
+  run_bin -0 team-close T1 --ticket 03
+  run_bin -1 team-close T1 --ticket 03
+  assert_equal "$output" "team-close: T1 has no open worktree of ticket 03"
+
+  ledger_line '{ts: "2026-10-22T01:00:00Z", task: "T5", event: "launch", role: "builder", session: "5e5e5e5e", toolkits: []}'
+  run_bin -1 team-close T5 --ticket 03
+  assert_equal "$output" "team-close: T5 is not open: the ledger has no opened event for it"
+  run_bin -1 team-close T9 --ticket 03
+  assert_equal "$output" "team-close: unknown task T9: the ledger has no events for it"
+
+  local bad
+  for bad in "--ticket" "--ticket 3" "--ticket 003" "--ticket ab" "--ticket 03 --keep-worktree" \
+    "--ticket 03 --stop-busy" "--ticket 03 --worktree x"; do
+    # shellcheck disable=SC2086
+    run_bin -2 team-close T1 $bad
+    assert_contains "$output" "usage: team-close T<n>"
+  done
+
+  run_bin -0 team-close T1
+  run_bin -1 team-close T1 --ticket 03
+  assert_equal "$output" "team-close: T1 is already closed"
+}
+
+@test "the close returns an integrated ticket worktree with the task's and deletes its branch" {
+  open_home_task
+  open_ticket 03
+  launch T1 builder 7c7c7c7c "$twt"
+  commit_in "$twt" three.txt
+  integrate
+  git -C "$wt" push -q origin HEAD
+  local head
+  head=$(git -C "$twt" rev-parse HEAD)
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c '[.archive, .returned, .kept]' <<<"$output")" "$(jq -cn --arg wt "$wt" --arg twt "$twt" \
+    '[["tasks/T1/scratch", "tasks/T1/scratch--03"], [$wt, $twt], []]')"
+  [[ ! -e $wt && ! -e $twt ]]
+  assert_contains "$stderr" "team-close: deleted feat/T1-work--03 at ${head:0:8}, which feat/T1-work holds"
+  run -1 git -C "$home" show-ref -q --verify refs/heads/feat/T1-work--03
+  assert_equal "$(events worktree-returned)" "$(jq -cn --arg wt "$wt" --arg twt "$twt" \
+    '{task: "T1", event: "worktree-returned", project: "home", worktree: $wt, branch: "feat/T1-work"},
+     {task: "T1", event: "worktree-returned", project: "home", worktree: $twt, branch: "feat/T1-work--03", ticket: "03"}' | jq -c .)"
+  [[ -f $TEAM_HOME/tasks/T1/scratch--03/tickets/03-t.md ]]
+  run_bin -0 team-log --check
+}
+
+@test "the close counts a ticket head a squash-merged PR of the task branch holds as landed" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  integrate
+  commit_in "$wt" after.txt
+  git -C "$wt" push -q origin HEAD
+  squash_merge "$wt" feat/T1-work
+  stub_reply gh "$(jq -cn --arg head "$(git -C "$wt" rev-parse HEAD)" '[{number: 7, headRefOid: $head}]')"
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .returned <<<"$output")" "$(jq -cn --arg wt "$wt" --arg twt "$twt" '[$wt, $twt]')"
+  # Each landed check (before and after the stop) asks for the task branch's merged PRs alone.
+  assert_equal "$(stub_calls gh | jq -r '.[5]' | sort -u)" "feat/T1-work"
+}
+
+@test "the close refuses an unintegrated ticket worktree, and --keep-worktree keeps it with its branch" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  work_and_push "$wt" feature.txt
+  stub_reply gh '[]'
+  remember_before
+
+  run_bin -1 team-close T1
+  assert_contains "$output" "  $twt (home, feat/T1-work--03) has not landed: head $(git -C "$twt" rev-parse --short=7 HEAD) is on no branch of origin (1 commit not pushed) and no merged PR of feat/T1-work holds it"
+  assert_unchanged
+
+  run_bin -0 --separate-stderr team-close T1 --keep-worktree
+  assert_equal "$(jq -c '[.returned, .kept]' <<<"$output")" "$(jq -cn --arg wt "$wt" --arg twt "$twt" '[[$wt], [$twt]]')"
+  [[ -d $twt ]]
+  git -C "$home" show-ref -q --verify refs/heads/feat/T1-work--03
+  [[ $stderr != *"feat/T1-work--03 at"* ]]
+  assert_equal "$(events worktree-returned | jq -r .worktree)" "$wt"
+}
+
+@test "--ticket catches a file its builder wrote as it was stopped, and is half returned" {
+  open_home_task
+  open_ticket 03
+  launch T1 builder 7c7c7c7c "$twt"
+  sessions "$(session 7c7c7c7c T1-builder-03 idle blocked)"
+  export TICKET_LATE_IN=$twt
+  stub_script claude <<'SH'
+case $1 in
+  agents) cat "$BATS_TEST_TMPDIR/sessions.json" ;;
+  stop) echo late >"$TICKET_LATE_IN/late.txt" ;;
+  rm) ;;
+  *) exit 64 ;;
+esac
+SH
+
+  run_bin -1 --separate-stderr team-close T1 --ticket 03
+  assert_equal "$stderr" "team-close: T1's ticket 03 worktree $twt has untracked files: late.txt since its sessions were stopped, so it was not returned
+team-close: T1's ticket 03 worktree $twt is half returned; fix the cause above and run team-close T1 --ticket 03 again"
+  [[ -d $twt && ! -e $TEAM_HOME/tasks/T1/scratch--03 ]]
+  assert_equal "$(events worktree-returned)" ""
+}
+
+@test "--ticket deletes its ticket's wip ref on the team home's origin and in the primary checkout, and no other" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  integrate
+  local ref
+  # team-checkpoint's snapshots of the task worktree and two ticket worktrees, and team-open
+  # --resume's copies of them in the primary checkout.
+  for ref in wip/home/T1 wip/home/T1--02 wip/home/T1--03; do
+    git -C "$wt" push -q "$team_origin" "HEAD:refs/heads/$ref"
+    git -C "$home" update-ref "refs/remotes/team-home/$ref" "$(git -C "$wt" rev-parse HEAD)"
+  done
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 03
+  [[ $stderr != *"cannot delete"* ]]
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T1
+refs/heads/wip/home/T1--02"
+  assert_equal "$(git -C "$home" for-each-ref --format='%(refname)' refs/remotes/team-home/)" "refs/remotes/team-home/wip/home/T1
+refs/remotes/team-home/wip/home/T1--02"
+}
+
+@test "--ticket with the team home's origin unreachable says so in one line and still returns the worktree" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  integrate
+  git -C "$wt" push -q "$team_origin" HEAD:refs/heads/wip/home/T1--03
+  mv "$team_origin" "$team_origin.away"
+
+  run_bin -0 --separate-stderr team-close T1 --ticket 03
+  mv "$team_origin.away" "$team_origin"
+  assert_equal "$(grep -c 'wip/home/T1--03' <<<"$stderr")" 1
+  assert_contains "$stderr" "team-close: cannot delete wip/home/T1--03 on the team home's origin ("
+  assert_contains "$stderr" "delete it by hand: git -C $TEAM_HOME push origin --delete wip/home/T1--03"
+  [[ ! -e $twt ]]
+  assert_equal "$(jq -r .returned <<<"$output")" "$twt"
+  assert_equal "$(events worktree-returned | jq -r .ticket)" "03"
+}
+
+@test "the close deletes every wip/<project>/T<n>--NN origin lists beside wip/<project>/T<n>, and no other task's" {
+  open_home_task
+  open_ticket 03
+  commit_in "$twt" three.txt
+  integrate
+  git -C "$wt" push -q origin HEAD
+  run_bin -0 team-close T1 --ticket 03
+  local ref
+  # Ticket 03's ref left behind (its return could not reach origin), ticket 05's whose worktree was
+  # returned on another machine, and T10's and T1's of another project, which stay.
+  for ref in wip/home/T1 wip/home/T1--03 wip/home/T1--05 wip/home/T10 wip/home/T10--03 wip/conv/T1--03; do
+    git -C "$wt" push -q "$team_origin" "HEAD:refs/heads/$ref"
+  done
+  git -C "$home" update-ref refs/remotes/team-home/wip/home/T1--05 "$(git -C "$wt" rev-parse HEAD)"
+  git -C "$home" update-ref refs/remotes/team-home/wip/home/T10--03 "$(git -C "$wt" rev-parse HEAD)"
+
+  run_bin -0 --separate-stderr team-close T1
+  [[ $stderr != *"cannot delete"* ]]
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/conv/T1--03
+refs/heads/wip/home/T10
+refs/heads/wip/home/T10--03"
+  assert_equal "$(git -C "$home" for-each-ref --format='%(refname)' refs/remotes/team-home/)" "refs/remotes/team-home/wip/home/T10--03"
 }

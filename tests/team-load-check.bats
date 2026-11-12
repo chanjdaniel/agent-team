@@ -1,47 +1,78 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2154 # code, wt and stopped are helpers/load-check.bash's
 # team-load-check: team-doctor --json runs first, and a FAIL there that bears on a session the
 # form starts stops the load check before it touches its worktree or launches a worker; the other
-# tests pass a stub doctor (TEAM_DOCTOR).
+# tests pass a stub doctor (TEAM_DOCTOR, from helpers/load-check, with the code checkout and the
+# registry).
 # The planner form: the planner it launches through team-worker, in a detached worktree of the code
 # checkout (a sandbox repo, TEAM_LOAD_CHECK_CHECKOUT) at .claude/worktrees/load-check, reports its
 # MCP tools and skills, and the check fails on anything production or coordinator-only. The session
 # is a claude stub that writes the inventory from $STUB_FIXTURES/inventory.txt, notes in
 # $BATS_TEST_TMPDIR/launch where it started, and writes outside.txt where it started when
-# $STUB_FIXTURES/write-outside exists. Before it, each treehouse project's
+# $STUB_FIXTURES/write-outside exists. It copies the markers planted in its worktree to
+# $BATS_TEST_TMPDIR/planted-claude.md and planted-claude/, and writes the isolation report from what
+# team-worker gave it (its fixtures are named beside it). It writes its transcript from
+# $STUB_FIXTURES/planner.jsonl (planner_transcript, from helpers/transcript; none when the file is
+# absent), which claude agents --json --all lists as done. Before it, each treehouse project's
 # lease is rehearsed on a fake pool (helpers/treehouse); the registry has no treehouse project
 # unless a test adds one.
 
 load helpers/common
+load helpers/load-check
+load helpers/ops-request
+load helpers/transcript
 load helpers/treehouse
 
 setup() {
-  sandbox
-  code=$(make_repo code)
-  printf '%s\n' .scratch/ .claude/worktrees/ >"$code/.gitignore"
-  git -C "$code" add .gitignore
-  git -C "$code" commit -q -m "chore: ignore scratch and worktrees"
-  code=$(realpath "$code") wt=$code/.claude/worktrees/load-check
-  export TEAM_LOAD_CHECK_CHECKOUT=$code
-  # A doctor that answers --json with $BATS_TEST_TMPDIR/doctor.json, and fails when it holds a
-  # FAIL, as team-doctor does; it passes until a test calls doctor_results. The doctor's own lines
-  # are tests/team-doctor*.bats'.
-  export TEAM_DOCTOR=$BATS_TEST_TMPDIR/doctor
-  printf '%s\n' '#!/usr/bin/env bash' '[[ $* == --json ]] || exit 64' 'cat "$BATS_TEST_TMPDIR/doctor.json"' \
-    'jq -e "all(.[]; .verdict != \"FAIL\")" "$BATS_TEST_TMPDIR/doctor.json" >/dev/null 2>&1' >"$TEAM_DOCTOR"
-  chmod +x "$TEAM_DOCTOR"
-  doctor_results
-  registry
+  load_check_sandbox
+  planner_transcript hook
   stub_script claude <<'SH'
 case $1 in
   --bg)
     { pwd -P; git rev-parse HEAD; git symbolic-ref -q HEAD || echo detached
       git check-ignore -q .scratch/inventory.txt && echo '.scratch ignored'
-      ls -A | grep -vx -e .git -e .gitignore -e README.md -e .scratch || true; } >"$BATS_TEST_TMPDIR/launch"
+      ls -A | grep -vx -e .git -e .gitignore -e README.md -e CLAUDE.md -e .scratch -e .claude || true; } >"$BATS_TEST_TMPDIR/launch"
+    rm -rf "$BATS_TEST_TMPDIR/planted-claude" && cp -R .claude "$BATS_TEST_TMPDIR/planted-claude" 2>/dev/null || true
+    cp CLAUDE.md "$BATS_TEST_TMPDIR/planted-claude.md" 2>/dev/null || true
     [[ ! -e $STUB_FIXTURES/write-outside ]] || echo planner >outside.txt
+    # The isolation report, as a session reports what it was given: the heading of its system
+    # prompt file's project section, its settings' memory directory, its working directory, and a
+    # marker only where $STUB_FIXTURES/leak-claude-md or leak-rules has the worktree's file reach
+    # it; run-hook runs the worktree's SessionStart hook; heading, memory and cwd override a value;
+    # no-isolation writes no report.
+    prompt_file='' settings_file='' args=("$@")
+    for ((i = 0; i < ${#args[@]} - 1; i++)); do
+      case ${args[i]} in
+        --append-system-prompt-file) prompt_file=${args[i + 1]} ;;
+        --settings) settings_file=${args[i + 1]} ;;
+      esac
+    done
+    if [[ -e $STUB_FIXTURES/run-hook ]]; then
+      bash -c "$(jq -r '.hooks.SessionStart[].hooks[].command' .claude/settings.json)"
+    fi
+    if [[ ! -e $STUB_FIXTURES/no-isolation ]]; then
+      markers=$( { [[ ! -e $STUB_FIXTURES/leak-claude-md ]] || cat CLAUDE.md
+        [[ ! -e $STUB_FIXTURES/leak-rules ]] || cat .claude/rules/*.md; } | { grep -oE 'load-check-marker-[a-z0-9-]+' || true; } | paste -sd ' ')
+      heading=$(sed -n 's/^# \(Project instructions: .*\)$/\1/p' "$prompt_file" | head -n 1)
+      memory=$(jq -r '.autoMemoryDirectory // "none"' "$settings_file")
+      memory=${memory/#\~/$HOME}
+      [[ ! -f $STUB_FIXTURES/heading ]] || heading=$(cat "$STUB_FIXTURES/heading")
+      [[ ! -f $STUB_FIXTURES/memory ]] || memory=$(cat "$STUB_FIXTURES/memory")
+      cwd=$(pwd -P)
+      [[ ! -f $STUB_FIXTURES/cwd ]] || cwd=$(cat "$STUB_FIXTURES/cwd")
+      printf '%s\n' "markers: ${markers:-none}" "heading: ${heading:-none}" "memory: $memory" "cwd: $cwd" >.scratch/isolation.txt
+    fi
     cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt
+    if [[ -f $STUB_FIXTURES/planner.jsonl ]]; then
+      mkdir -p "$HOME/.claude/projects/-wt"
+      cp "$STUB_FIXTURES/planner.jsonl" "$HOME/.claude/projects/-wt/4f2a9c1e-0000-4000-8000-000000000001.jsonl"
+    fi
     echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
     ;;
-  agents) echo '[]' ;;
+  agents)
+    if [[ ${3:-} == --all ]]; then echo '[{"id": "4f2a9c1e", "state": "done", "sessionId": "4f2a9c1e-0000-4000-8000-000000000001"}]'
+    else echo '[]'; fi
+    ;;
   --settings)
     # claude --settings <file> auto-mode config: the file's autoMode lists, "$defaults" read as one
     # built-in line, or $STUB_FIXTURES/automode.json when the test writes one
@@ -50,49 +81,41 @@ case $1 in
     if [[ -f $STUB_FIXTURES/automode.json ]]; then cat "$STUB_FIXTURES/automode.json"
     else jq '(.autoMode // {}) | map_values(map(if . == "$defaults" then "a built-in line" else . end))' "$2"; fi
     ;;
+  --version) echo '2.1.321 (Claude Code)' ;;
   stop | rm) ;;
   *) exit 64 ;;
 esac
 SH
 }
 
-# registry [<treehouse project's pool block>]: projects.toml with a git pool project, site, and,
-# when given, a treehouse one, proj, with that pool
-registry() {
-  {
-    project site
-    printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'
-    if [[ -n ${1:-} ]]; then project proj && echo "$1"; fi
-  } >"$TEAM_HOME/projects.toml"
-}
-
-project() {
-  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "no-mistakes"' \
-    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []'
-}
-
-# doctor_results [<verdict> <check>]...: the stub doctor's results: a PASS of machine, then each
-# given one, its reason "broken" and its fix "repair it"
-doctor_results() {
-  local results='{"check": "machine", "verdict": "PASS", "reason": "named", "fix": ""}'
-  while [[ $# -gt 0 ]]; do
-    results+=$(jq -cn --arg verdict "$1" --arg check "$2" '{$check, $verdict, reason: "broken", fix: "repair it"}')
-    shift 2
-  done
-  jq -s . <<<"$results" >"$BATS_TEST_TMPDIR/doctor.json"
-}
-
-# going_on <check>: the line the load check names a FAIL it goes on past with
-going_on() {
-  echo "load check: going on past FAIL $1: it bears on no session this check starts"
-}
-
-stopped="load check: team-doctor reports a FAIL above; fix it, then run the load check again"
-
 # inventory <line>...: what the planner reports
 inventory() {
   printf '%s\n' "$@" >"$STUB_FIXTURES/inventory.txt"
 }
+
+# planner_transcript <outcome>...: the planner's transcript: its Write of .scratch/inventory.txt,
+# which ran, then one Write of outside.txt in its worktree per outcome: hook (the real edit hook's
+# block), other-hook (a block by another hook's message), none (a call with no result), or any
+# outcome tool_result takes (ran, rule, automode, no-verdict, safety-check, user-rejected)
+planner_transcript() {
+  local outcome i=1 input
+  {
+    tool_call toolu_01 Write "$(jq -cn --arg p "$wt/.scratch/inventory.txt" '{file_path: $p, content: "---"}')"
+    tool_result toolu_01 ran
+    for outcome in "$@"; do
+      i=$((i + 1)) input=$(jq -cn --arg p "$wt/outside.txt" '{file_path: $p, content: "probe"}')
+      tool_call "toolu_0$i" Write "$input"
+      case $outcome in
+        hook) hook_result "toolu_0$i" scratch-only-edits Write "$input" "$wt" ;;
+        other-hook) tool_result "toolu_0$i" hook $'PreToolUse:Write hook error: [command hook 1]: Blocked by command-guard\n' ;;
+        none) ;;
+        *) tool_result "toolu_0$i" "$outcome" ;;
+      esac
+    done
+  } >"$STUB_FIXTURES/planner.jsonl"
+}
+
+hook_passed="load check: the planner's edit hook blocked its write of outside.txt (read from its transcript)"
 
 @test "a planner with no MCP tool and no production skill passes, and its inventory is kept" {
   inventory --- tdd implement
@@ -100,14 +123,20 @@ inventory() {
   assert_contains "$output" "load check: 0 MCP tools, 2 skills"
   assert_contains "$output" "PASS"
   assert_equal "$(cat "$TEAM_HOME/tasks/T0/inventory.txt")" "$(printf '%s\n' --- tdd implement)"
-  assert_equal "$(stub_calls claude | jq -c 'select(.[0] != "--bg")')" \
-    "$(printf '%s\n' "[\"--settings\",\"$TEAM_HOME/tasks/T0/settings.planner.json\",\"auto-mode\",\"config\"]" \
-      '["agents","--json"]' '["stop","4f2a9c1e"]' '["rm","4f2a9c1e"]')"
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] != "--bg" and .[0] != "--version")')" \
+    "$(printf '%s\n' "[\"--settings\",\"$TEAM_HOME/tasks/T0/settings.planner.code.json\",\"auto-mode\",\"config\"]" \
+      '["agents","--json"]' '["agents","--json","--all"]' '["stop","4f2a9c1e"]' '["rm","4f2a9c1e"]')"
+  assert_contains "$output" "$hook_passed"
 }
 
 # The team's autoMode lines in the settings team-worker generated for <role> (default planner),
-# the registry's projects filled in.
-team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM_HOME/tasks/T0/settings.${1:-planner}.json"; }
+# the registry's projects filled in: settings.<role>.code.json, keyed by the code checkout's
+# project, for every role but ops.
+team_lines() {
+  local stem=${1:-planner}
+  [[ $stem == ops ]] || stem+=.code
+  jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM_HOME/tasks/T0/settings.$stem.json"
+}
 
 @test "the planner's effective autoMode, read under its settings in its worktree, holds the team's lines and is kept" {
   inventory --- tdd
@@ -161,7 +190,7 @@ team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM
 
 # toolkit_checkout: a code checkout of the test's own for run_bin, holding this one's bin/, roles/
 # and settings/ and two fixture toolkits: served, whose .mcp.json declares the MCP servers served
-# and spare, and plain, with no .mcp.json.
+# and spare, and plain, with no .mcp.json; the code checkout's project is registered (registry).
 toolkit_checkout() {
   export CODE_CHECKOUT=$BATS_TEST_TMPDIR/toolkit-code
   mkdir -p "$CODE_CHECKOUT/toolkits/served" "$CODE_CHECKOUT/toolkits/plain"
@@ -190,16 +219,19 @@ toolkit_checkout() {
   assert_contains "$output" "FAIL: toolkit served brought no tools from its MCP server spare"
   [[ $output != *"MCP server served"* ]]
 
+  # A server the toolkit's mcp-roles.json names for other roles only is neither expected of the
+  # planner nor allowed it.
+  echo '{"spare": ["builder", "reviewer"]}' >"$CODE_CHECKOUT/toolkits/served/mcp-roles.json"
+  run_bin -0 team-load-check --toolkit served
+  assert_equal "${lines[-1]}" PASS
+  inventory mcp__served__look mcp__spare__look --- served:a-skill
+  run_bin -1 team-load-check --toolkit served
+  assert_contains "$output" "FAIL: MCP tools from outside the toolkits:"$'\n'"  mcp__spare__look"
+  rm "$CODE_CHECKOUT/toolkits/served/mcp-roles.json"
+
   # A toolkit that declares no MCP server needs none.
   inventory --- plain:a-skill
   run_bin -0 team-load-check --toolkit plain
-}
-
-# left_nothing: the load check's worktree is gone, and the code checkout is as it was
-left_nothing() {
-  [[ ! -e $wt ]]
-  assert_equal "$(git -C "$code" worktree list --porcelain | sed -n 's/^worktree //p')" "$code"
-  assert_equal "$(git -C "$code" status --porcelain --ignored)" ""
 }
 
 @test "the planner runs in a fresh worktree of the code checkout, detached at its HEAD, which is removed at the end" {
@@ -231,9 +263,171 @@ left_nothing() {
   left_nothing
 }
 
+@test "the planner's write of outside.txt must show in its transcript as blocked by its edit hook, in either content shape" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  assert_contains "$output" "$hook_passed"
+  # The hook's own message, which the check matches, is the one the fixture holds.
+  assert_contains "$(cat "$STUB_FIXTURES/planner.jsonl")" "Blocked: this role may edit files only under $wt/.scratch (tried $wt/outside.txt)."
+
+  as_text_list <"$STUB_FIXTURES/planner.jsonl" >"$BATS_TEST_TMPDIR/list.jsonl"
+  mv "$BATS_TEST_TMPDIR/list.jsonl" "$STUB_FIXTURES/planner.jsonl"
+  run_bin -0 team-load-check
+  assert_contains "$output" "$hook_passed"
+
+  # Two attempts, both blocked, pass too.
+  planner_transcript hook hook
+  run_bin -0 team-load-check
+  assert_contains "$output" "$hook_passed"
+}
+
+@test "a planner that never tried to write outside.txt fails the hook check" {
+  inventory --- tdd
+  planner_transcript
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: the planner never tried to write outside.txt, so its edit hook was not exercised"
+  [[ $output != *"$hook_passed"* ]]
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  left_nothing
+}
+
+@test "a write of outside.txt that another layer stopped, or that ran, fails the hook check naming what happened" {
+  inventory --- tdd
+  local outcome what
+  for outcome in ran rule automode no-verdict safety-check other-hook none user-rejected interrupted; do
+    case $outcome in
+      ran) what='it ran' ;;
+      rule) what='a deny rule refused it' ;;
+      automode) what='auto mode refused it' ;;
+      no-verdict) what='auto mode gave no verdict' ;;
+      safety-check) what='a built-in safety check refused it' ;;
+      other-hook) what='another hook refused it' ;;
+      none) what='it has no result' ;;
+      *) what="it was $outcome" ;;
+    esac
+    planner_transcript "$outcome"
+    run_bin -1 team-load-check
+    assert_contains "$output" "FAIL: the planner's write of outside.txt was not blocked by its edit hook: $what"
+    [[ $output != *"$hook_passed"* ]]
+    assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  done
+
+  # One blocked attempt does not cover another that ran.
+  planner_transcript hook ran
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: the planner's write of outside.txt was not blocked by its edit hook: it ran"
+  left_nothing
+}
+
+@test "a planner whose transcript cannot be read fails the hook check" {
+  inventory --- tdd
+  rm "$STUB_FIXTURES/planner.jsonl"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: cannot read the planner's transcript, so its edit hook's block is unproven"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+
+  echo 'not json' >"$STUB_FIXTURES/planner.jsonl"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: cannot read the planner's transcript, so its edit hook's block is unproven"
+  left_nothing
+}
+
+@test "the planner is told its write of outside.txt is expected to be refused" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  assert_contains "$(stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][0][-1]')" \
+    "Then use the Write tool to create outside.txt in the current directory. That write is expected to be refused; a refusal is the expected result and no reason to send BLOCKED."
+}
+
 @test "a failing planner check also leaves nothing in the code checkout" {
   inventory mcp__prod-read__find --- tdd
   run_bin -1 team-load-check
+  left_nothing
+}
+
+# isolation_pass: the PASS line of a planner none of whose worktree's markers reached it
+isolation_pass() {
+  echo "PASS planner: no marker of its worktree reached it (the line in CLAUDE.md, the file in .claude/rules/, the SessionStart hook in .claude/settings.json), its project instructions are headed 'Project instructions: code, from origin/main at $(git -C "$code" rev-parse origin/main)', its memory directory is $TEAM_HOME/memory/code, and it works in $wt"
+}
+
+@test "the planner's worktree gets a CLAUDE.md line, a .claude/rules/ file and a .claude/settings.json hook and allow rule, and a planner that reports none of them passes" {
+  inventory --- tdd
+  # A tracked .claude/settings.json keeps its keys, and a commit not on origin/main is not the
+  # instructions' ref.
+  mkdir -p "$code/.claude"
+  echo '{"worktree": {"bgIsolation": "none"}}' >"$code/.claude/settings.json"
+  git -C "$code" add .claude/settings.json
+  git -C "$code" commit -q -m "chore: settings"
+  run_bin -0 team-load-check
+  assert_contains "$output" "$(isolation_pass)"
+  assert_equal "${lines[-1]}" PASS
+
+  # The markers, planted before the launch, each its own word of this run.
+  assert_equal "$(head -n 1 "$BATS_TEST_TMPDIR/planted-claude.md")" "# code"
+  claude_md=$(tail -n 1 "$BATS_TEST_TMPDIR/planted-claude.md" | grep -oE 'load-check-marker-claude-md-[0-9a-f]+')
+  rules=$(grep -ohE 'load-check-marker-rules-[0-9a-f]+' "$BATS_TEST_TMPDIR"/planted-claude/rules/*.md)
+  settings=$BATS_TEST_TMPDIR/planted-claude/settings.json
+  assert_equal "$(jq -r .worktree.bgIsolation "$settings")" none
+  assert_equal "$(jq -r '.hooks.SessionStart | length' "$settings")" 1
+  hook=$(jq -r '.hooks.SessionStart[0].hooks[0] | select(.type == "command") | .command' "$settings")
+  assert_contains "$hook" "$wt/.scratch/load-check-hook-"
+  [[ $(jq -r '.permissions.allow[]' "$settings") =~ ^Bash\(echo\ load-check-marker-allow-[0-9a-f]+\)$ ]]
+  [[ ${claude_md#load-check-marker-claude-md-} == "${rules#load-check-marker-rules-}" ]]
+  # The planner is asked for them, and never told them.
+  prompt=$(stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1] | join(" ")')
+  assert_contains "$prompt" ".scratch/isolation.txt"
+  [[ $prompt != *"$claude_md"* && $prompt != *"$rules"* ]]
+  left_nothing
+
+  # A second run plants markers of its own.
+  run_bin -0 team-load-check
+  [[ $(tail -n 1 "$BATS_TEST_TMPDIR/planted-claude.md") != *"$claude_md"* ]]
+  left_nothing
+}
+
+@test "each worktree marker that reaches the planner and each wrong value it reports is its own FAIL line, and the worktree is still removed" {
+  inventory --- tdd
+  sha=$(git -C "$code" rev-parse origin/main)
+  # fails_with <fixture> <FAIL line>: the planner with <fixture> fails on that line alone
+  fails_with() {
+    run_bin -1 team-load-check
+    assert_contains "$output" "$2"
+    assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
+    [[ $output != *"PASS planner:"* ]]
+    assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+    left_nothing
+    rm -f "$STUB_FIXTURES/$1"
+  }
+  touch "$STUB_FIXTURES/leak-claude-md"
+  fails_with leak-claude-md "FAIL planner: the marker line of its worktree's CLAUDE.md reached it, so its project instructions came from the worktree"
+  touch "$STUB_FIXTURES/leak-rules"
+  fails_with leak-rules "FAIL planner: the marker file of its worktree's .claude/rules/ reached it"
+  touch "$STUB_FIXTURES/run-hook"
+  fails_with run-hook "FAIL planner: the SessionStart hook of its worktree's .claude/settings.json ran, so the worktree's project settings configured it"
+  echo "Project instructions: code, from the worktree" >"$STUB_FIXTURES/heading"
+  fails_with heading "FAIL planner: its project instructions are headed 'Project instructions: code, from the worktree', not 'Project instructions: code, from origin/main at $sha'"
+  echo none >"$STUB_FIXTURES/heading"
+  fails_with heading "FAIL planner: its project instructions are headed 'none', not 'Project instructions: code, from origin/main at $sha'"
+  echo "$HOME/.claude/projects/-wt/memory" >"$STUB_FIXTURES/memory"
+  fails_with memory "FAIL planner: its memory directory is '$HOME/.claude/projects/-wt/memory', not $TEAM_HOME/memory/code, the project's folder in the team home"
+  echo "$code" >"$STUB_FIXTURES/cwd"
+  fails_with cwd "FAIL planner: its working directory is '$code', not the worktree it was started in, $wt"
+  touch "$STUB_FIXTURES/no-isolation"
+  fails_with no-isolation "FAIL planner: it wrote no .scratch/isolation.txt, so nothing shows that its worktree's markers did not reach it"
+
+  # All at once, each its own line.
+  touch "$STUB_FIXTURES/leak-claude-md" "$STUB_FIXTURES/leak-rules" "$STUB_FIXTURES/run-hook"
+  echo "$code" >"$STUB_FIXTURES/cwd"
+  run_bin -1 team-load-check
+  assert_equal "$(grep -c '^FAIL planner: ' <<<"$output")" 4
+  left_nothing
+}
+
+@test "a code checkout that is no registered project's fails the planner's isolation check, naming why" {
+  inventory --- tdd
+  { project site; printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'; } >"$TEAM_HOME/projects.toml"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL planner: $code is no registered project's primary checkout, so neither its project instructions nor its memory directory can be shown to be the project's"
   left_nothing
 }
 
@@ -364,9 +558,11 @@ prod_read_tools=(aggregate aggregate-db collection-indexes collection-schema col
   count db-stats explain find list-collections list-databases)
 prod_write_tools=(insert-many update-many delete-many create-index drop-index)
 
-# ops_setup: a linked worktree, the stub, and a session that passes every check
+# ops_setup: a linked worktree of proj, registered with a git pool, the stub, and a session that
+# passes every check
 ops_setup() {
   local clone
+  registry "$(printf '%s\n' '[proj.pool]' 'provider = "git"' 'slots = []')"
   clone=$(make_repo proj)
   wt=$HOME/wt/proj-1
   git -C "$clone" worktree add -q -b load "$wt"
@@ -396,6 +592,7 @@ case $1 in
     if [[ -f $STUB_FIXTURES/automode.json ]]; then cat "$STUB_FIXTURES/automode.json"
     else jq '(.autoMode // {}) | map_values(map(if . == "$defaults" then "a built-in line" else . end))' "$2"; fi
     ;;
+  --version) echo '2.1.321 (Claude Code)' ;;
   stop) ;;
   rm) touch "$STUB_FIXTURES/removed" ;;
   *) exit 64 ;;
@@ -429,7 +626,13 @@ oplog_lines() {
   ops_setup
   mkdir -p "$TEAM_HOME/tasks/T0"
   printf '%s\n' '# Ops log of T0' '' '- 2026-10-22T00:00:00Z requested `prod-read` `find` `{}`' >"$TEAM_HOME/tasks/T0/ops-log.md"
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  local request
+  request=$(ops_request "$OPS_COORDINATOR")
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$request" --toolkit prod-read
+  # team-worker launched it on Daniel's message, read back from #coordinator, and recorded it.
+  assert_equal "$(stub_calls curl | jq -r '.[-1]')" "https://discord.com/api/v10/channels/$OPS_COORDINATOR/messages/${request##*/}"
+  assert_equal "$(cut -d ' ' -f 1,3 "$HOME/.local/state/agent-team/ops-requests")" "${request##*/} 6f93fe38"
+  assert_contains "$(last_prompt)" "on Daniel's request $request."
   assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
   assert_contains "$output" "load check: ops's effective autoMode holds the $(team_lines ops | wc -l) lines of its settings' autoMode"
   assert_equal "$(cat "$BATS_TEST_TMPDIR/automode-cwd")" "$(realpath "$wt")"
@@ -447,13 +650,52 @@ oplog_lines() {
   assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "rm")')" '["rm","6f93fe38"]'
 }
 
+@test "the ops form needs --request, the link to Daniel's message, before the doctor runs; a message used before launches nothing" {
+  ops_setup
+  cp "$TEAM_DOCTOR" "$BATS_TEST_TMPDIR/doctor.pass"
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$BATS_TEST_TMPDIR/doctor-ran"' 'exit 1' >"$TEAM_DOCTOR"
+  run_bin -2 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_equal "$output" "team-load-check: --role ops needs --request <the link to Daniel's Discord message in #coordinator asking for this load check>"
+  run_bin -2 team-load-check --role ops --worktree "$wt" --request load-check --toolkit prod-read
+  assert_equal "$output" "team-load-check: --request must link Daniel's Discord message, https://discord.com/channels/<guild>/<channel>/<message>, got 'load-check'"
+  run_bin -2 team-load-check --request "$(ops_request "$OPS_COORDINATOR")"
+  assert_equal "$output" "team-load-check: --request is for --role ops only"
+  run_bin -2 team-load-check --context --request "$(ops_request "$OPS_COORDINATOR")"
+  assert_equal "$output" "team-load-check: --request is for --role ops only"
+  [[ ! -e $BATS_TEST_TMPDIR/doctor-ran ]]
+  assert_equal "$(stub_calls claude)" ""
+  cp "$BATS_TEST_TMPDIR/doctor.pass" "$TEAM_DOCTOR"
+  run_bin -0 team-load-check --help
+  assert_contains "$output" "team-load-check --role ops --worktree <path> --request <link> --toolkit <name>..."
+  assert_contains "$output" "The ops form needs --request <link>, the link to Daniel's message in #coordinator asking for this"
+  assert_contains "$output" "so each load"$'\n'"check of the ops role needs a new message"
+
+  # One message runs one load check: the next needs a new one.
+  local request
+  request=$(ops_request "$OPS_COORDINATOR")
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$request" --toolkit prod-read
+  : >"$STUB_CALLS/claude.log"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$request" --toolkit prod-read
+  assert_contains "$output" "team-worker: Discord message ${request##*/} asked for T0's ops launch 6f93fe38 at "
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg" or .[0] == "rm")')" ""
+}
+
+@test "the ops form in a worktree whose project does not list the toolkit is refused by team-worker, starting no session" {
+  ops_setup
+  sed -i 's/^toolkits = \["prod-read", "prod-write", "vercel-read"\]$/toolkits = ["prod-read"]/' "$TEAM_HOME/projects.toml"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
+  assert_contains "$output" "team-worker: toolkit 'prod-write' is not one of proj's toolkits in projects.toml (prod-read): a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg")')" ""
+  assert_equal "$(stub_calls curl)" ""
+}
+
 @test "an ops session with a stray tool, a shell or a readable /proc fails, and is still ended" {
   ops_setup
   local s=$STUB_FIXTURES/session
   sed -i 's/^Bash: absent$/Bash: present/; s/^tools: Read,/tools: Read, Bash, WebFetch,/' "$s/tools.txt"
   echo mcp__plugin_prod-read_prod-read__find >>"$s/tools.txt"
   printf '%s\n' 'grep-environ: allowed: 42' 'read-status: allowed' >"$s/probes.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  > mcp__plugin_prod-read_prod-read__find"
   assert_contains "$output" "FAIL: built-in tools beyond the ops allowlist: Bash WebFetch"
   assert_contains "$output" "FAIL: Bash is not reported absent"
@@ -467,7 +709,7 @@ oplog_lines() {
   ops_setup
   local s=$STUB_FIXTURES/session
   printf '%s\n' simplify prod-write:changing-production-data loop >"$s/skills.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: skills beyond the toolkits': simplify prod-write:changing-production-data loop"
   assert_contains "$output" "FAIL: the session cannot invoke querying-production-data"
   assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
@@ -475,16 +717,16 @@ oplog_lines() {
   # The bare names count as well as the namespaced ones; no skills file is no skill.
   rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
   echo querying-production-data >"$s/skills.txt"
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed" "$s/skills.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: the session cannot invoke querying-production-data"
 
   # A write session needs both.
   rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
   write_session
   echo prod-read:querying-production-data >"$s/skills.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
   assert_contains "$output" "FAIL: the session cannot invoke changing-production-data"
   [[ $output != *"skills beyond"* ]]
 }
@@ -492,12 +734,12 @@ oplog_lines() {
 @test "the ops log must gain exactly a requested and a ran line for the one read" {
   ops_setup
   oplog_lines requested
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-collections"
 
   rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
   oplog_lines requested ran ran
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-collections"
 }
 
@@ -508,7 +750,7 @@ oplog_lines() {
   rm "$s/tools.txt" "$s/probes.txt" "$s/query.txt"
   echo 'not connected' >"$s/done.txt"
   : >"$STUB_FIXTURES/ops-log"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_contains "$output" 'FAIL: a production server did not connect: prod-read (CONNECTION_CLOSED): "Connection closed"'
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
@@ -559,7 +801,7 @@ write_line() {
 @test "an ops session whose five writes are each declined at a prompt passes, and keeps the write inventory" {
   ops_setup
   write_session
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
   assert_contains "$output" "load check: Daniel, two 1Password prompts are coming on the PC: approve them; then decline each of the five write prompts on the phone"
   assert_contains "$output" "load check: 16 MCP tools, 10 built-in tools"
   assert_equal "${lines[-1]}" "PASS"
@@ -583,7 +825,7 @@ write_line() {
   transcript list-collections:result insert-many:user-rejected insert-many:user-rejected update-many:result \
     delete-many:user-rejected create-index:user-rejected drop-index:user-rejected >"$STUB_FIXTURES/transcript.jsonl"
   { write_line ran update-many; write_line failed create-index; } >>"$STUB_FIXTURES/ops-log"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
   assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  < mcp__prod-write__drop-index"
   assert_contains "$output" "FAIL: insert-many was not called once and declined at its prompt (transcript: 2 call(s))"
   assert_contains "$output" "FAIL: update-many was not called once and declined at its prompt (transcript: 1 call(s))"
@@ -642,7 +884,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
 @test "an ops session that reads only through vercel-read passes, keeps its inventory and is ended with its transcript" {
   ops_setup
   vercel_session
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
   assert_contains "$output" "load check: 5 MCP tools, 10 built-in tools"
   assert_equal "${lines[-1]}" "PASS"
@@ -667,7 +909,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   # Built here, so the file holds no token-shaped string.
   token=vcp_$(printf 'Ab1_%.0s' {1..5})
   jq -nc --arg text "the token is $token" '{type: "user", message: {content: $text}}' >"$STUB_FIXTURES/transcript.jsonl"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  < mcp__vercel-read__runtime-logs"$'\n'"  > mcp__vercel-read__promote-deployment"
   assert_contains "$output" "FAIL: skills beyond the toolkits': simplify"
   assert_contains "$output" "FAIL: the session cannot invoke reading-vercel-deployments"
@@ -685,7 +927,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   echo prod-read:querying-production-data >>"$s/skills.txt"
   vercel_lines ran >>"$STUB_FIXTURES/ops-log"
   jq -nc '{type: "user", message: {content: "masked as <vercel-token>, the vcp_ prefix, vcp_short"}}' >"$STUB_FIXTURES/transcript.jsonl"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" "FAIL: skills beyond the toolkits': prod-read:querying-production-data"
   assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-deployments"
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 3
@@ -700,17 +942,25 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   token=vcp_$(printf 'Fx9_%.0s' {1..5})
   mkdir -p "$TEAM_HOME/tasks/T9/scratch/work" "$TEAM_HOME/memory/proj"
   echo "const token = \"$token\";" >"$TEAM_HOME/tasks/T9/scratch/work/dump-tools.mjs"
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_equal "${lines[-1]}" "PASS"
 
   # In T0's directory or the memory, it is one.
   relaunch
   echo "$token" >"$TEAM_HOME/tasks/T0/notes.txt"
   echo "$token" >"$TEAM_HOME/memory/proj/vercel.md"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  # And in an MCP log under Claude Code's cache: Library/Caches on macOS, else XDG_CACHE_HOME's
+  # when it is set.
+  local cache=$HOME/xdg/claude-cli-nodejs
+  [[ $(uname -s) != Darwin ]] || cache=$HOME/Library/Caches/claude-cli-nodejs
+  local log=$cache/-p/mcp-logs-vercel-read/2026-11-09T10-00-00-000Z.jsonl
+  mkdir -p "${log%/*}"
+  echo "{\"debug\":\"$token\"}" >"$log"
+  XDG_CACHE_HOME=$HOME/xdg run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" "FAIL: a Vercel token in:"
   assert_contains "$output" "  $TEAM_HOME/tasks/T0/notes.txt"
   assert_contains "$output" "  $TEAM_HOME/memory/proj/vercel.md"
+  assert_contains "$output" "  $log"
   [[ $output != *"tasks/T9"* ]]
 }
 
@@ -722,7 +972,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   rm "$s/tools.txt" "$s/probes.txt" "$s/vercel.txt"
   echo 'not connected' >"$s/done.txt"
   : >"$STUB_FIXTURES/ops-log"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   assert_contains "$output" 'FAIL: a production server did not connect: vercel-read (CONNECTION_CLOSED): "Connection closed"'
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
@@ -730,7 +980,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   relaunch
   printf '%s\n' 'prod-read: connected' 'notice: connected' 'vercel-read: still connecting after 30 searches' \
     'notice: vercel-read is still connecting' >"$s/connect.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
   assert_contains "$output" 'FAIL: a production server did not connect: connected vercel-read is still connecting'
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
 }
@@ -738,7 +988,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
 @test "an ops session with prod-read and vercel-read passes on both smoke reads, and the ops log must gain both reads' lines and no more" {
   ops_setup
   vercel_session prod-read
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read --toolkit prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read --toolkit prod-read
   assert_contains "$output" "load check: Daniel, two 1Password prompts are coming on the PC: approve them"
   [[ $output != *"write prompts"* ]]
   assert_contains "$output" "load check: 16 MCP tools, 10 built-in tools"
@@ -754,26 +1004,26 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   # prod-read's lines alone, then one line too many, then a smoke read not run.
   relaunch
   oplog_lines requested ran
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
   assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-deployments"
   assert_contains "$output" "FAIL: the ops log gained 2 event lines, not one per call made"
   [[ $output != *"line for list-collections"* ]]
   relaunch
   vercel_session prod-read
   vercel_lines ran >>"$STUB_FIXTURES/ops-log"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
   assert_contains "$output" "FAIL: the ops log gained 5 event lines, not one per call made"
   relaunch
   vercel_session prod-read
   rm "$STUB_FIXTURES/session/query.txt"
-  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
   assert_contains "$output" "FAIL: list-collections did not run"
   [[ $output != *"list-deployments did not run"* ]]
 }
 
 @test "the session prompt waits for and smoke-reads only the toolkits given" {
   ops_setup
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   local prompt
   prompt=$(last_prompt)
   assert_contains "$prompt" "1. Wait for prod-read: "
@@ -783,7 +1033,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
 
   relaunch
   vercel_session
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
   prompt=$(last_prompt)
   assert_contains "$prompt" "1. Wait for vercel-read: "
   assert_contains "$prompt" "for each of vercel-read, a line '<server>: connected'"
@@ -794,7 +1044,7 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
 
   relaunch
   vercel_session prod-read
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read --toolkit prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read --toolkit prod-read
   prompt=$(last_prompt)
   assert_contains "$prompt" "1. Wait for prod-read and vercel-read: "
   assert_contains "$prompt" "4. Call mcp__prod-read__list-collections exactly once"
@@ -991,7 +1241,16 @@ reviewer    45003       2               2            0"
   [[ $output != *"FAIL builder"* ]]
   assert_equal "${lines[-1]}" "load check FAILED"
 
-  # A toolkit that declares no MCP server needs none; the stub forgets the first run's sessions.
+  # A server the toolkit's mcp-roles.json names for other roles only is expected of those alone;
+  # the stub forgets the first run's sessions.
+  rm "$STUB_FIXTURES"/launched-* "$STUB_FIXTURES"/removed-*
+  echo '{"served": ["builder"]}' >"$CODE_CHECKOUT/toolkits/served/mcp-roles.json"
+  run_bin -1 team-load-check --context --toolkit served
+  assert_contains "$output" "FAIL planner: toolkit served brought no tools from its MCP server spare"
+  [[ $output != *"MCP server served"* ]]
+  rm "$CODE_CHECKOUT/toolkits/served/mcp-roles.json"
+
+  # A toolkit that declares no MCP server needs none.
   rm "$STUB_FIXTURES"/launched-* "$STUB_FIXTURES"/removed-*
   run_bin -0 team-load-check --context --role builder --toolkit served --toolkit plain
   [[ $output != *FAIL* ]]
@@ -1035,9 +1294,11 @@ reviewer    45003       2               2            0"
   assert_equal "$stderr" "load check: team-doctor reports a FAIL above; fix it, then run the load check again"
   [[ ! -e $wt ]]
   assert_equal "$(git -C "$code" worktree list --porcelain | grep -c '^worktree ')" 1
-  # claude was asked only the doctor's questions, its login, its plugins and its trust probe of
-  # the team home (which the stub's reply never starts): no session of the load check's.
+  # claude was asked only the doctor's questions, its login, its plugins and its trust probes of
+  # the team home and of code, the one project with a checkout here (which the stub's reply never
+  # starts): no session of the load check's.
   assert_equal "$(stub_calls claude | jq -r 'join(" ")' | LC_ALL=C sort -u)" "--bg --name team-doctor-home-trust
+--bg --name team-doctor-trust-code
 agents --json
 auth status --json
 plugin list --json"
@@ -1068,7 +1329,6 @@ planner     42006       3               3            0"
 
 @test "a FAIL of the code checkout's own project stops the load check before any worktree, as does every FAIL but another project's and the gate's" {
   # The code checkout's own project is the one at its main checkout, run from a linked worktree.
-  { project code && printf '%s\n' '[code.pool]' 'provider = "git"' 'slots = []'; } >>"$TEAM_HOME/projects.toml"
   git -C "$code" worktree add -q --detach "$HOME/code-wt"
   export TEAM_LOAD_CHECK_CHECKOUT=$HOME/code-wt
   local check
@@ -1110,14 +1370,13 @@ $(going_on 'gate proj')"
 
 @test "the ops form stops on any FAIL of the project its worktree is in, and goes on past another project's" {
   ops_setup
-  registry "$(printf '%s\n' '[proj.pool]' 'provider = "git"' 'slots = []')"
   doctor_results FAIL 'branches proj'
-  run_bin -1 --separate-stderr team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -1 --separate-stderr team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_equal "$stderr" "$stopped"
   [[ ! -e $STUB_FIXTURES/launched ]]
 
   doctor_results FAIL 'branches site'
-  run_bin -0 --separate-stderr team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  run_bin -0 --separate-stderr team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
   assert_equal "$stderr" "$(going_on 'branches site')"
   assert_equal "${lines[-1]}" "PASS"
 }
@@ -1131,4 +1390,174 @@ $(going_on 'gate proj')"
     [[ ! -e $wt ]]
     assert_equal "$(stub_calls claude)" ""
   done
+}
+
+# The drill record: the planner form and the ops form's prod-write and vercel-read sets record
+# their run in the team home's drills.jsonl, through this checkout's team-drill, once they have
+# launched their session.
+
+@test "the planner form records load-check-planner: pass on exit 0 with its toolkits, fail otherwise, before its verdict line" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner pass "no toolkit")"
+  assert_equal "${lines[-2]}" "$(recorded load-check-planner pass)"
+  assert_equal "${lines[-1]}" PASS
+
+  # A check that fails records fail.
+  rm "$TEAM_HOME/drills.jsonl"
+  planner_transcript
+  run_bin -1 team-load-check
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner fail "no toolkit")"
+  assert_equal "${lines[-2]}" "$(recorded load-check-planner fail)"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+}
+
+@test "the planner form's record names the toolkits it was given, in their order" {
+  toolkit_checkout
+  inventory mcp__served__look mcp__plugin_served_spare__look --- served:a-skill plain:a-skill
+  run_bin -0 team-load-check --toolkit served --toolkit plain
+  # Run from the toolkit checkout, which is no repository, team-drill cannot read its HEAD.
+  assert_contains "$output" "load check: not recorded: team-drill: cannot read the HEAD of the code checkout $CODE_CHECKOUT"
+  git -C "$CODE_CHECKOUT" init -q
+  git -C "$CODE_CHECKOUT" add -A
+  git -C "$CODE_CHECKOUT" commit -q -m "chore: the toolkit checkout"
+  run_bin -0 team-load-check --toolkit served --toolkit plain
+  assert_equal "$(jq -r '[.drill, .verdict, .detail, .commit] | join(" ")' "$TEAM_HOME/drills.jsonl")" \
+    "load-check-planner pass toolkits: served plain $(git -C "$CODE_CHECKOUT" rev-parse HEAD)"
+}
+
+@test "a planner form that ends early after its launch records fail: no inventory within 5 minutes" {
+  # Its 60 waits of 5 seconds pass at once.
+  stub_command sleep
+  stub_reply sleep ''
+  export TEAM_PATH_FIRST=$BATS_TEST_TMPDIR/stubs
+  rm "$STUB_FIXTURES/inventory.txt" 2>/dev/null || true
+  sed -i 's|^    cp "\$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt$|    [[ ! -f $STUB_FIXTURES/inventory.txt ]] \|\| cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt|' "$STUB_FIXTURES/claude.sh"
+  run_bin -1 team-load-check
+  assert_equal "${lines[-2]}" "FAIL: the worker wrote no inventory within 5 minutes"
+  assert_equal "${lines[-1]}" "$(recorded load-check-planner fail)"
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner fail "no toolkit")"
+  left_nothing
+}
+
+@test "a planner form interrupted after its launch records fail" {
+  rm -f "$STUB_FIXTURES/inventory.txt"
+  sed -i 's|^    cp "\$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt$|    touch "$BATS_TEST_TMPDIR/launched"|' "$STUB_FIXTURES/claude.sh"
+  guard_sandbox
+  "$REPO_ROOT/bin/team-load-check" >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  local pid=$!
+  for _ in $(seq 1 100); do [[ ! -e $BATS_TEST_TMPDIR/launched ]] || break; sleep 0.1; done
+  [[ -e $BATS_TEST_TMPDIR/launched ]]
+  sleep 0.5
+  kill -TERM "$pid"
+  local status=0
+  wait "$pid" || status=$?
+  assert_equal "$status" 143
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner fail "no toolkit")"
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/out")" "$(recorded load-check-planner fail)"
+}
+
+@test "a run the doctor stops, a malformed command line, and a lease rehearsal stopped before the launch record nothing" {
+  doctor_results FAIL machine
+  run_bin -1 team-load-check
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+
+  doctor_results
+  run_bin -2 team-load-check --role nobody
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+
+  lease_setup
+  printf '%s\n' "touch '$BATS_TEST_TMPDIR/leasing'" 'sleep 1' >"$BATS_TEST_TMPDIR/prewarm"
+  guard_sandbox
+  "$REPO_ROOT/bin/team-load-check" >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  local pid=$!
+  for _ in $(seq 1 100); do [[ ! -e $BATS_TEST_TMPDIR/leasing ]] || break; sleep 0.1; done
+  kill -TERM "$pid"
+  wait "$pid" || true
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+  assert_equal "$(stub_calls claude)" ""
+}
+
+@test "a lease rehearsal that fails, but lets the planner launch, records the planner's fail" {
+  lease_setup
+  echo 'echo changed >>README.md' >"$BATS_TEST_TMPDIR/prewarm"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL lease proj: "
+  assert_equal "$(drill_lines)" "$(drill_line load-check-planner fail "no toolkit")"
+}
+
+@test "a refused record says why on stderr and leaves the load check's exit status" {
+  inventory --- tdd
+  rm "$HOME/.config/agent-team/machine"
+  run_bin -0 --separate-stderr team-load-check
+  assert_equal "${lines[-1]}" PASS
+  assert_equal "$stderr" "load check: not recorded: team-drill: this machine has no team name; write one with: echo <name> > ~/.config/agent-team/machine"
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+
+  planner_transcript
+  run_bin -1 --separate-stderr team-load-check
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  assert_contains "$stderr" "load check: not recorded: team-drill: this machine has no team name"
+}
+
+@test "the ops form records load-check-ops-prod-write with prod-read and prod-write, pass or fail, with no detail" {
+  ops_setup
+  write_session
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-write --toolkit prod-read
+  assert_equal "$(drill_lines)" "$(drill_line load-check-ops-prod-write pass)"
+  assert_equal "${lines[-2]}" "$(recorded load-check-ops-prod-write pass)"
+  assert_equal "${lines[-1]}" PASS
+
+  rm "$TEAM_HOME/drills.jsonl"
+  relaunch
+  sed -i '/^drop-index: denied/d' "$STUB_FIXTURES/session/writes.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit prod-write
+  assert_contains "$output" "FAIL: the session did not report drop-index as denied"
+  assert_equal "$(drill_lines)" "$(drill_line load-check-ops-prod-write fail)"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+}
+
+@test "the ops form records load-check-ops-vercel-read with vercel-read alone, pass or fail" {
+  ops_setup
+  vercel_session
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
+  assert_equal "$(drill_lines)" "$(drill_line load-check-ops-vercel-read pass)"
+  assert_equal "${lines[-2]}" "$(recorded load-check-ops-vercel-read pass)"
+
+  rm "$TEAM_HOME/drills.jsonl"
+  relaunch
+  echo simplify >>"$STUB_FIXTURES/session/skills.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit vercel-read
+  assert_equal "$(drill_lines)" "$(drill_line load-check-ops-vercel-read fail)"
+}
+
+@test "the ops form's prod-read set, alone or with vercel-read, records nothing and says so, and the context form records nothing" {
+  ops_setup
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read
+  assert_equal "${lines[-2]}" "load check: no drill is registered for this toolkit set, so nothing is recorded"
+  assert_equal "${lines[-1]}" PASS
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+
+  relaunch
+  vercel_session prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --request "$(ops_request "$OPS_COORDINATOR")" --toolkit prod-read --toolkit vercel-read
+  assert_equal "${lines[-2]}" "load check: no drill is registered for this toolkit set, so nothing is recorded"
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--version")')" ""
+
+  context_setup
+  run_bin -0 team-load-check --context
+  [[ $output != *"recorded"* ]]
+  [[ ! -e $TEAM_HOME/drills.jsonl ]]
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--version")')" ""
+}
+
+@test "the header says which forms record which drill" {
+  run_bin -0 team-load-check --help
+  assert_contains "$output" "drills.jsonl"
+  assert_contains "$output" "load-check-planner"
+  assert_contains "$output" "load-check-ops-prod-write"
+  assert_contains "$output" "load-check-ops-vercel-read"
+  assert_contains "$output" "not recorded: <team-drill's first error line>"
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
-# team-post: posting a file's text, and in an interview its images, to a task's Discord thread or
-# #coordinator through the REST API, cut into parts as the Discord plugin cuts, and refused on a
-# fenced machine or one that lost the lease.
+# team-post: posting a file's text to a task's Discord thread, its interview thread or
+# #coordinator through the REST API, with images in either of the task's threads, cut into parts
+# as the Discord plugin cuts, and refused on a fenced machine or one that lost the lease.
 
 load helpers/common
 
@@ -223,8 +223,7 @@ run_of() {
     "--coordinator --thread task --file q.md" "--coordinator --thread interview --file q.md" \
     "T7 --thread interviews --file q.md" "T7 --file" \
     "T7 T8 --file q.md" "T7 --file q.md --channel 1111" \
-    "T7 --file q.md --attach s.png" "T7 --thread task --file q.md --attach s.png" \
-    "--coordinator --file q.md --attach s.png" "T7 --thread interview --attach s.png" \
+    "--coordinator --file q.md --attach s.png" "T7 --thread interview --attach s.png" "T7 --attach s.png" \
     "T7 --thread interview --file q.md --attach" "T7 --retract 1" "T7 --thread task --retract 1" \
     "--coordinator --retract 1" "T7 --thread interview --retract" "T7 --thread interview --retract x" \
     "T7 --thread interview --retract 1 --file q.md" "T7 --thread interview --retract 1 --attach s.png"; do
@@ -600,6 +599,49 @@ EOF
   assert_equal "$(logged image-posted | wc -l)" 11
 }
 
+@test "--attach on the task's thread posts there with the image, the coordinator's alone, and logs image-posted with thread task" {
+  interview_task
+  png "$IMAGES/tickets.png"
+  AGENT_TEAM_ROLE=coordinator run_bin -0 --separate-stderr team-post T7 --file "$BATS_TEST_TMPDIR/q.md" --attach "$IMAGES/tickets.png"
+  assert_equal "$output" "1564000000000000001"
+  assert_equal "$(channels)" "2222"
+  assert_equal "$(forms)" "$(jq -cn --arg d "$IMAGES" '[
+    "payload_json={\"content\":\"Which of the two sign-in limits stays?\",\"allowed_mentions\":{\"parse\":[\"users\"]}}",
+    "files[0]=@\"\($d)/tickets.png\";filename=\"tickets.png\";type=image/png"]')"
+  assert_equal "$(logged image-posted)" \
+    '{"task":"T7","event":"image-posted","thread":"task","discord_thread":"2222","discord_message":"1564000000000000001","file":"tickets.png"}'
+  run_bin -0 team-log --check
+
+  # --thread task is the same thread, by name.
+  run_bin -0 team-post T7 --thread task --file "$BATS_TEST_TMPDIR/q.md" --attach "$IMAGES/tickets.png"
+  assert_equal "$(channels | tail -n 1)" "2222"
+  assert_equal "$(logged image-posted | jq -r .thread | paste -sd ' ')" "task task"
+
+  # A worker's attachment goes only to its own interview thread, never the task's thread.
+  : >"$STUB_CALLS/curl.log"
+  local role
+  for role in planner builder reviewer; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-post T7 --file "$IMAGES/q.md" --attach "$IMAGES/tickets.png"
+    assert_equal "$output" "team-post: a $role session posts to Discord: that is the coordinator's; send it your message"
+  done
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged image-posted | wc -l)" 2
+}
+
+@test "--retract takes back only an image of the interview thread, never one of the task's thread" {
+  interview_task
+  png "$IMAGES/tickets.png"
+  run_bin -0 team-post T7 --file "$BATS_TEST_TMPDIR/q.md" --attach "$IMAGES/tickets.png"
+  : >"$STUB_CALLS/curl.log"
+  local by
+  for by in coordinator planner; do
+    AGENT_TEAM_ROLE=$by AGENT_TEAM_TASK=T7 run_bin -1 team-post T7 --thread interview --retract 1564000000000000001
+    assert_equal "$output" "team-post: the ledger records no image post 1564000000000000001 in T7's interview thread, so nothing was retracted"
+  done
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged image-retracted)" ""
+}
+
 @test "a failed message logs only what was sent, says so, and sends nothing after it" {
   interview_task
   local i files=()
@@ -660,9 +702,9 @@ EOF
   : >"$STUB_CALLS/curl.log"
   for id in "$text_post" 900 123; do
     as_planner -1 team-post T7 --thread interview --retract "$id"
-    assert_equal "$output" "team-post: the ledger records no image post $id for T7, so nothing was retracted"
+    assert_equal "$output" "team-post: the ledger records no image post $id in T7's interview thread, so nothing was retracted"
     AGENT_TEAM_ROLE=coordinator run_bin -1 team-post T7 --thread interview --retract "$id"
-    assert_equal "$output" "team-post: the ledger records no image post $id for T7, so nothing was retracted"
+    assert_equal "$output" "team-post: the ledger records no image post $id in T7's interview thread, so nothing was retracted"
   done
   as_planner -1 team-post T17 --thread interview --retract 900
   assert_equal "$output" "team-post: a planner session of T7 posts to Discord for T17: a planner talks with Daniel only in its own task's interview thread"

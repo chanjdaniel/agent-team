@@ -17,16 +17,16 @@ Why: with no terminal each `sudo` attempt counts as a failed login, enough of th
 
 Seen: T18, whose test script's Playwright `--with-deps` locked Daniel's account (ledger 2026-10-22T12:16:15Z, `tasks/T18/plan.md`); T5, T12 and T15, which waited on Daniel's Docker restart (ledger 2026-10-22T00:09:49Z to 2026-10-22T11:08:03Z); T49, which asked Daniel to upgrade Chrome (ledger 2026-10-25T14:30:56Z).
 
-## Once a PR is open and its checks are green, stop the gate run, and treat any commit that lands after the review as unreviewed
+## Treat any commit that lands on a PR after its review as unreviewed
 
-Why: the gate's CI step may push "apply CI fixes" commits on its own, after the reviewer has read the head.
+Why: a review reads one head, and a tool may commit on its own after it: the gate's steps commit after the team's first review, which is why a gated PR is re-reviewed, and its ci step pushed "apply CI fixes" commits even after that re-review had read the head, until the gated delivery skipped that step.
 
-Seen: T4 and T18, whose reviews found such commits (`tasks/T4/scratch/review.md`, `tasks/T18/scratch/review.md`); T5, where one set a `verified` date that had not come yet (`tasks/T5/brief-revert.md`); T24, whose brief stops the gate run (`tasks/T24/brief-build-01.md`).
+Seen: T4 and T18, whose reviews found such commits (`tasks/T4/scratch/review.md`, `tasks/T18/scratch/review.md`); T5, where one set a `verified` date that had not come yet (`tasks/T5/brief-revert.md`).
 
 ## Wait for work with a command that ends when the work does, never a self-set timer or a loop that may never end
 
 Why: auto mode refuses a timer as persistence, three refusals in a row leave a background session on a prompt nobody sees, and commands such as `team-ci-wait` and `docker compose up --wait` wait without one.
-The wait must end on its own too: `gh pr checks --watch` reads each check's status, so a job whose status GitHub lost keeps it waiting forever, and Claude Code moves a foreground call to the background after 10 minutes, so the session ends its turn and waits unseen; `team-ci-wait`, run with Bash `run_in_background`, names such a stuck check and always ends.
+The wait must end on its own too: `gh pr checks --watch` reads each check's status, so a job whose status GitHub lost keeps it waiting forever, and Claude Code moves a foreground call to the background after 10 minutes, so the session ends its turn and waits unseen; `team-ci-wait`, which the coordinator's checks wait (`team-next T<n> --ci`) runs and a worker may run by hand, each with Bash `run_in_background`, names such a stuck check and always ends.
 
 Seen: T17 ticket 08, whose builder stuck on that prompt and was relaunched (ledger 2026-10-22T14:40:56Z); T121, whose builder `21de9a86` watched PR 217's checks for 7 hours after run 41110572636 completed with its `e2e` job still `in_progress`, until the coordinator killed the watch (2026-10-30T19:02:24Z to 2026-10-31T02:09:45Z).
 

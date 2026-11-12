@@ -41,17 +41,18 @@ TOML
   mkdir -p "$HOME/.claude"
   echo "Shared instructions." >"$HOME/.claude/CLAUDE.md"
 
-  # claude: each machine's sessions in its own HOME's sessions.json; --bg adds one, but in a root
-  # listed in $BATS_TEST_TMPDIR/untrusted; stop marks it stopped, rm takes it off; no plugins,
-  # no marketplaces and no MCP servers.
+  # claude: each machine's sessions in its own HOME's sessions.json, with --all too; --bg adds
+  # one, but in a root listed in $BATS_TEST_TMPDIR/untrusted; stop marks it stopped (its status
+  # and its state, as --all reports it), rm takes it off; no plugins, no marketplaces and no MCP
+  # servers.
   echo '[{"id": "3169fcbd", "name": "coordinator", "status": "busy"},
     {"id": "81f08540", "name": "T1-builder", "status": "idle"}]' >"$HOME/sessions.json"
   stub_script claude <<'SH'
 list=$HOME/sessions.json
 [[ -e $list ]] || echo '[]' >"$list"
 case "$*" in
-  'agents --json') cat "$list" ;;
-  'stop '*) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list" ;;
+  'agents --json' | 'agents --json --all') cat "$list" ;;
+  'stop '*) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" | .state = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   'rm '*) jq --arg id "$2" 'map(select(.id != $id))' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   'plugin list --json' | 'plugin marketplace list --json') echo '[]' ;;
   'mcp list') echo 'No MCP servers configured. Use `claude mcp add` to add a server.' ;;
@@ -216,6 +217,29 @@ laptop_state() {
   # The worktree and its scratch are as they were left.
   assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
   assert_equal "$(cat "$wt/.scratch/task/spec.md")" "spec"
+}
+
+@test "T278's D5: after a restart with no handoff, home-pc resumes itself: a task last launched here did not crash" {
+  # home-pc lost power with T1's builder at work: no stowed, and the restart ended every session.
+  # The builder's work since its last commit is in the live worktree.
+  "$REPO_ROOT/bin/team-config" capture >/dev/null
+  git -C "$TEAM_HOME" add machine
+  git -C "$TEAM_HOME" commit -q -m "chore: capture the config"
+  git -C "$TEAM_HOME" push -q origin dev
+  echo "live" >"$wt/a.txt"
+  echo '[]' >"$HOME/sessions.json"
+
+  run_bin -0 --separate-stderr team-resume
+  report=$(reported)
+  assert_equal "$stderr" ""
+  assert_contains "$output" "lease: home-pc holds the lease, epoch 1"
+  [[ $output != *"crashed on"* ]]
+  # Its latest launch ran here, so the report has no crash (one last launched on another machine
+  # does, as --steal's tests show), and no snapshot is applied over the live worktree.
+  assert_equal "$(jq -c '.tasks | map({task, here, stowed, crashed})' "$report")" \
+    '[{"task":"T1","here":false,"stowed":null,"crashed":null}]'
+  assert_equal "$(jq -c '.tasks[0].worktrees[0] | [.worktree, .moved, .head, .snapshot]' "$report")" "[\"$wt\",false,\"$head\",null]"
+  assert_equal "$(cat "$wt/a.txt")" "live"
 }
 
 @test "while home-pc holds a fresh lease, the resume refuses and changes nothing" {
@@ -655,10 +679,12 @@ TOML
   run -0 "$REPO_ROOT/bin/team-timers" run
   [[ -e $HOME/.local/state/agent-team/fenced ]]
   # Its doctor then lists what only home-pc holds, with the commands that push it to a salvage
-  # branch, and fails.
+  # branch, and fails; its team home holds nothing origin lacks, the checkpoint having pushed it.
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
   assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict, .reason, .fix]' <<<"$output")" \
-    "$(jq -cn --arg url "$team_origin" '["salvage T1 home", "FAIL",
+    "$(jq -cn --arg url "$team_origin" '["salvage records", "PASS",
+      "the team home holds no records that neither origin'"'"'s dev nor a salvage branch keeps", ""],
+      ["salvage T1 home", "FAIL",
       "~/slots/home/1 has 1 commit on no origin branch and uncommitted changes (changes to tracked files: a.txt; untracked files: b.txt)",
       "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push \($url) HEAD:refs/heads/salvage/home/T1-home-pc"]')"
 }
@@ -751,14 +777,16 @@ EVENTS
   assert_equal "$(jq -c '.tasks[0].crashed.roles' "$report")" '[]'
 }
 
-@test "the coordinator and workers are denied typing team-resume --steal" {
-  local file command
-  for file in "$REPO_ROOT/coordinator.settings.json" "$REPO_ROOT/settings/worker.json"; do
-    for command in "team-resume --steal" "$REPO_ROOT/bin/team-resume --steal" "TEAM_LEASE_TTY=/tmp/x bin/team-resume --steal"; do
-      denied_in "$file" "$command" || { echo "${file##*/} allows: $command" >&2; return 1; }
-    done
-    if denied_in "$file" "team-resume --wait"; then echo "${file##*/} denies: team-resume --wait" >&2; return 1; fi
+# The coordinator's settings deny it; a worker's command-guard refuses it where a command starts.
+@test "the coordinator is denied typing team-resume --steal, and a worker's command-guard refuses it" {
+  local command
+  for command in "team-resume --steal" "$REPO_ROOT/bin/team-resume --steal" "TEAM_LEASE_TTY=/tmp/x bin/team-resume --steal"; do
+    denied_in "$REPO_ROOT/coordinator.settings.json" "$command" || { echo "coordinator.settings.json allows: $command" >&2; return 1; }
+    run_bin -2 --separate-stderr hooks/command-guard <<<"$(jq -cn --arg c "$command" '{tool_name: "Bash", tool_input: {command: $c}}')"
+    assert_contains "$stderr" "Blocked by command-guard: a lease steal is Daniel's word, through the coordinator"
   done
+  if denied_in "$REPO_ROOT/coordinator.settings.json" "team-resume --wait"; then echo "coordinator.settings.json denies: team-resume --wait" >&2; return 1; fi
+  run_bin -0 --separate-stderr hooks/command-guard <<<'{"tool_name": "Bash", "tool_input": {"command": "team-resume --wait"}}'
 }
 
 @test "a malformed command line is a usage error, and a machine with no name is refused" {

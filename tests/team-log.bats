@@ -23,17 +23,16 @@ assert_ledger_empty() {
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
-# One project of the registry, at ~/projects/<name>, as TOML: plan_project <name> <merge_with_plan> [<repo>]
+# One project of the registry, at ~/projects/<name>, as TOML: plan_project <name> [<repo>]
 plan_project() {
   cat <<TOML
 [$1]
-repo = "${3:-owner/$1}"
+repo = "${2:-owner/$1}"
 path = "projects/$1"
 base = "dev"
 delivery = "direct-pr"
 merge_method = "merge"
 required_checks = []
-merge_with_plan = $2
 task_dir = ".scratch/task"
 docs = []
 toolkits = []
@@ -41,32 +40,23 @@ pool = { provider = "git", slots = ["slots/$1/1"] }
 TOML
 }
 
-# A registry of proj, which opts in to a plan-time merge approval, conv, which does not, and the
-# projects given as more TOML: plan_registry [<TOML>]
+# A registry of proj and conv, and the projects given as more TOML: plan_registry [<TOML>]
 plan_registry() {
   {
-    plan_project proj true
+    plan_project proj
     echo
-    plan_project conv false
+    plan_project conv
     [[ -z ${1:-} ]] || printf '\n%s\n' "$1"
   } >"$TEAM_HOME/projects.toml"
 }
 
-# A code checkout of tools, at owner/tools, for run_bin to run team-log from, so the team's own
-# project is mirror by its repo and tools by its path: own_by_repo_and_path <merge_with_plan>
-own_by_repo_and_path() {
-  export CODE_CHECKOUT
-  CODE_CHECKOUT=$(make_repo tools dev)
-  copy_bin "$CODE_CHECKOUT/bin"
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Tools.git
-  plan_registry "$(plan_project mirror "$1" owner/tools && echo && plan_project tools false owner/elsewhere)"
-}
-
-# A project of the task, as team-open logs it: opened <task> <project> [worktree-added]
+# A project of the task, as team-open logs it, its worktree a directory, as a plan approval reads
+# it: opened <task> <project> [worktree-added]
 opened() {
-  jq -cn --arg task "$1" --arg project "$2" --arg event "${3:-opened}" \
+  mkdir -p "$BATS_TEST_TMPDIR/w/$2"
+  jq -cn --arg task "$1" --arg project "$2" --arg event "${3:-opened}" --arg w "$BATS_TEST_TMPDIR/w" \
     '{ts: (now | todate), task: $task, event: $event, project: $project, branch: "feat/\($task)-x", base: "dev",
-      base_sha: "0123456", worktree: "/w/\($project)"}
+      base_sha: "0123456", worktree: "\($w)/\($project)"}
      + if $event == "opened" then {path: "feature", type: "feat", title: "X"} else {} end' >>"$TEAM_HOME/ledger.jsonl"
 }
 
@@ -84,11 +74,6 @@ thread() {
     >>"$TEAM_HOME/ledger.jsonl"
 }
 
-# The standing words and withdrawals logged, one "<event> <project>" per line.
-standing_events() {
-  jq -r 'select(.event | startswith("merge-standing")) | "\(.event) \(.project)"' "$TEAM_HOME/ledger.jsonl"
-}
-
 # --from-message: a worker's message, whole.
 
 HEAD_A=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
@@ -101,11 +86,12 @@ open_t7() {
   opened T7 proj
 }
 
-# A launch of the task, as team-worker logs it: launched <task> <role> <session> [<brief>]
+# A launch of the task, as team-worker logs it, in project <project> (default proj):
+# launched <task> <role> <session> [<brief>] [<project>]
 launched() {
-  jq -cn --arg task "$1" --arg role "$2" --arg session "$3" --arg brief "${4:-}" \
-    '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session, worktree: "/w/proj",
-      toolkits: [], project: "proj", branch: "feat/\($task)-x", machine: "m"}
+  jq -cn --arg task "$1" --arg role "$2" --arg session "$3" --arg brief "${4:-}" --arg project "${5:-proj}" \
+    '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session, worktree: "/w/\($project)",
+      toolkits: [], project: $project, branch: "feat/\($task)-x", machine: "m"}
      + if $brief == "" then {} else {brief: $brief} end' >>"$TEAM_HOME/ledger.jsonl"
 }
 
@@ -170,12 +156,13 @@ gate-lane-cleared team-clean-messages branch head tag
 caught-up team-catch-up url from head base
 done team-log role session
 ticket-done team-log ticket commits
-question team-log,team-ask role text
+question team-log,team-ask role
 asked team-log,team-ask id text
 answered team-log,team-answer id answer
 ran team-run-approved id exit
 plan-approved team-log by
-paused team-log reason
+plan-approval-withdrawn team-log discord_message
+paused team-log,team-worker reason
 blocked team-log reason
 denied team-log,denial-log role what why
 held team-log reason
@@ -184,16 +171,22 @@ resumed team-log,team-answer
 pr team-log url head
 review team-log verdict head
 gate-run team-log run head outcome
+ci team-log url head outcome
+ci-rerun team-log url head check run job
 merge-approved team-log url discord_message
 merge-preapproved team-log project ask discord_message scope
 merge-preapproval-withdrawn team-log project discord_message
 merge-standing team-log project discord_message discord_channel
 merge-standing-withdrawn team-log project discord_message discord_channel
+merge-default-withdrawn team-log scope discord_message discord_channel
+merge-default-restored team-log scope discord_message discord_channel
 branch-renamed team-log project branch
 failed team-log reason
 retro-schedule team-log every_hours discord_message
 retro-change team-log retro proposals
+stowing team-stow machine cause roles
 stowed team-stow machine worktrees roles
+stow-failed team-stow machine reason
 worktree-moved team-open project branch from worktree machine
 injection team-log role source text
 rehome-failed team-resume project branch machine reason
@@ -206,20 +199,32 @@ TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, ([.value.writer] | flatten | join(",")), (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
   assert_equal "$actual" "$expected"
-  assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","brief":"string"}'
+  assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","discord_message":"id","brief":"string","template":"string","admission":"string","past_ask":"array","ticket":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
-  assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id"}'
+  assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id","item":"number"}'
   assert_equal "$(jq -c '.kinds.asked.optional' "$CONTRACT")" '{"discord_message":"id","script":"string","sha256":"string"}'
   assert_equal "$(jq -c '.kinds.ran.required' "$CONTRACT")" '{"id":"string","exit":"number"}'
+  assert_equal "$(jq -c '.kinds.done.optional' "$CONTRACT")" '{"report":"string","report_chars":"number","relay":"id"}'
+  assert_equal "$(jq -c '.kinds.question | [.optional, .one_of]' "$CONTRACT")" '[{"text":"string","chars":"number","discord_message":"id"},[["text","chars"]]]'
   assert_equal "$(jq -c '[.kinds[] | (.required, .optional // {}) | to_entries[] | select(.key | startswith("discord_")) | .value] | unique' "$CONTRACT")" '["id"]'
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
+  # Each park kind's cause, its choices bin/lib/lifecycle.json's causes of the kind, and the fields
+  # beside it: Daniel's message on a held, the ask on a waiting, the worker on a blocked and a paused.
+  assert_equal "$(jq -c '[.kinds.held, .kinds.waiting, .kinds.blocked, .kinds.paused | .optional | del(.since)]' "$CONTRACT")" \
+    '[{"cause":["daniel-hold"],"discord_message":"id","head":"string"},{"cause":["ask","daniel","outside"],"ask":"string"},{"cause":["task","worker","denial"],"role":"string","session":"string"},{"cause":["worker","room","stow","coordinator-hold","offline","limit","machine","shutdown"],"role":"string","session":"string","brief":"string"}]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
   assert_equal "$(jq -c '.kinds["merge-preapproved"].required' "$CONTRACT")" '{"project":"string","ask":"string","discord_message":"id","scope":"array"}'
   assert_equal "$(jq -c '[.kinds["merge-standing", "merge-standing-withdrawn"].required]' "$CONTRACT")" \
     '[{"project":"string","discord_message":"id","discord_channel":"id"},{"project":"string","discord_message":"id","discord_channel":"id"}]'
-  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array","memory":"string"}'
-  assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","plan","standing"]'
+  assert_equal "$(jq -c '[.kinds["merge-default-withdrawn", "merge-default-restored"] | [.required, .push]]' "$CONTRACT")" \
+    '[[{"scope":"string","discord_message":"id","discord_channel":"id"},true],[{"scope":"string","discord_message":"id","discord_channel":"id"},true]]'
+  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array","widening":"numbers","memory":"string"}'
+  assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","default","plan","standing"]'
   assert_equal "$(jq -c '.kinds.walk.required.state' "$CONTRACT")" '["on","off"]'
+  assert_equal "$(jq -c '[.kinds.ci | .required.outcome, .optional]' "$CONTRACT")" '[["passed","failed","infrastructure","pending"],{"failed":"array","look":"boolean"}]'
+  assert_equal "$(jq -c '.kinds["ci-rerun"].required' "$CONTRACT")" '{"url":"string","head":"string","check":"string","run":"digits","job":"digits"}'
+  assert_equal "$(jq -c '.kinds["plan-approved"] | [.required, .optional]' "$CONTRACT")" \
+    '[{"by":["Daniel","coordinator"]},{"ask":"string","discord_message":"id","plan":"object","scope":"array","parallel":"string"}]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
 
@@ -229,14 +234,20 @@ TABLE
   assert_contains "$output" "Ledger contract, strict from $STRICT_FROM"
   # The forms a list and an object take, the whole numbers' type and the one-time conversion.
   assert_contains "$output" "Usage: team-log T<n> <event> [key=value]...
-       team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print]
+       team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--relay <id>] [--print]
        team-log --check [<file>]
+       team-log --check-lifecycle [<file>]
        team-log --fix-sent-back [<file>]"
   grep -Eq 'a comma list as a worker.s message writes it \(commits=a0017cce,9e0e3990' <<<"$output"
   grep -Eq 'none is the empty list' <<<"$output"
   grep -Eq 'key:value pairs .*findings=blocking:0,correctness:1' <<<"$output"
   grep -Eq 'numbers \(a list of whole numbers\)' <<<"$output"
   grep -Eq '^--fix-sent-back .*under the ledger.s lock' <<<"$output"
+  # The checks wait's two kinds, by their forms and their rows.
+  assert_contains "$output" "team-log T<n> ci url=<url> head=<sha> outcome=<passed|failed|infrastructure|pending> [failed=<JSON array>] [look=true]"
+  assert_contains "$output" "team-log T<n> ci-rerun url=<url> head=<sha> check=<name> run=<id> job=<id>"
+  grep -Eq '^  ci +team-log +url, head, outcome \(passed\|failed\|infrastructure\|pending\); optional failed \(list\), look \(boolean\)  \(.*\)$' <<<"$output"
+  grep -Eq '^  ci-rerun +team-log +url, head, check, run \(digits\), job \(digits\)  \(.*\)$' <<<"$output"
   local kind
   for kind in $(jq -r '.kinds | keys_unsorted[]' "$CONTRACT"); do
     grep -Eq "^  $kind +[a-z-]+(, [a-z-]+)* " <<<"$output" || {
@@ -245,63 +256,72 @@ TABLE
     }
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree; optional story  \(story is the backlog story .*team-merge marks done\)$' <<<"$output"
-  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\), memory  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*memory: the file in the task directory of the memories.*\)$' <<<"$output"
-  grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
-  grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
-  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\|standing\)  \(approval: .*\)$' <<<"$output"
-  grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
-  grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
+  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\), widening \(list of whole numbers\), memory  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*widening: the numbers of the new findings that sit in what the last fix added for an earlier finding, so reverting that fix would end them, as a rereview marks them; empty for none; memory: the file in the task directory of the memories.*\)$' <<<"$output"
+  local retired
+  for retired in merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn; do
+    grep -Eq "^  $retired +team-log +.*; pushed at once  \\(Retired \\(T276\\): .*team-log refuses a new one.*\\)$" <<<"$output"
+  done
+  grep -Eq '^  merge-default-withdrawn +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew the default merge word.*task, the task the line is logged under.*the latest of the two whose scope covers it .*decides.*\)$' <<<"$output"
+  grep -Eq '^  merge-default-restored +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel gave the default merge word back.*team-merge holds it only when Discord shows the message .*from an allowFrom author.*\)$' <<<"$output"
+  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|default\|plan\|standing\), phases_left \(list of whole numbers\), check_run \(number\); pushed at once  \(approval: .*\)$' <<<"$output"
+  grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\), approved \(list\)  \(.*approved the ids of the parks the builder approved itself.*\)$' <<<"$output"
+  grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\); pushed at once  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  walk-note +team-thread, team-ui +-; optional discord_message \(id\)  \(a message of Daniel.s on the walk that is on.*never its words.*\)$' <<<"$output"
   grep -Eq '^  walk +team-ui +state \(on\|off\); optional thread \(interview\), reseeded \(id\), reseeded_port \(number\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"
-  grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
-  grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, brief  \(request is the link to Daniel.s Discord message, on an ops launch; model is the --model the session launched on, .*\)$' <<<"$output"
-  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\)  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
+  grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head; pushed at once  \(.*team-log requires head of every new line.*\)$' <<<"$output"
+  grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, discord_message \(id\), brief, template, admission, past_ask \(list\), ticket  \(request is the link to Daniel.s Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on \(team-worker refuses one that did\), which only an ops launch carries; model is the --model the session launched on, .*; admission is the id of the capacity admission the launch was made on \(team-capacity admit.s first line\), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past \(team-worker --past-ask\), which then park nothing, absent when it names none; ticket is the two-digit number of the ticket whose ticket worktree a builder launched in .*\)$' <<<"$output"
+  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\), item \(number\); pushed at once  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask; item: .*team-answer --item alone\)$' <<<"$output"
   grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
-  grep -Eq '^  ran +team-run-approved +id, exit \(number\)  \(.*\)$' <<<"$output"
-  grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
-  grep -Eq '^  resumed +team-log, team-answer +-; optional brief +\(clears held, blocked, paused and waiting; brief: ' <<<"$output"
-  grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
+  grep -Eq '^  ran +team-run-approved +id, exit \(number\); pushed at once  \(.*\)$' <<<"$output"
+  grep -Eq '^  waiting +team-log, team-ask +on, reason; optional cause \(ask\|daniel\|outside\), ask, since  \(.*cause: why, .*daniel when on is Daniel.*\)$' <<<"$output"
+  grep -Eq '^  resumed +team-log, team-answer +-; optional id, all \(boolean\), discord_message \(id\), brief +\(ends standing parks, by bin/lib/lifecycle.json.s causes: id, .*all true, .*brief alone, .*ends none; .*\)$' <<<"$output"
+  grep -Eq '^  blocked +team-log +reason; optional cause \(task\|worker\|denial\), role, session, since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
+  grep -Eq '^  held +team-log +reason; optional cause \(daniel-hold\), discord_message \(id\), head, since  \(Daniel.s hold on the task; .*\)$' <<<"$output"
+  grep -Eq '^  paused +team-log, team-worker +reason; optional cause \(worker\|room\|stow\|coordinator-hold\|offline\|limit\|machine\|shutdown\), role, session, brief, since  \(.*\)$' <<<"$output"
   grep -Eq '^  denied +team-log, denial-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked; denial-log, every worker.s PermissionDenied hook, .*never the tool.s input\)$' <<<"$output"
-  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
+  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\); pushed at once  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  retro-change +team-log +retro, proposals  \(the task it is logged on builds those proposals of retro T<m>, or, logged on T<m> itself, records were changed in place for them; .*team-retro digest.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-stow +machine, worktrees \(list\), roles \(list\); optional sessions \(list\), cause \(level\|handoff\)  \(one per task team-stow stows, every open task at a handoff .*unfinished_roles.*\)$' <<<"$output"
-  grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
+  grep -Eq '^  stowing +team-stow +machine, cause \(level\|handoff\), roles \(list\)  \(a stow of the task under way on machine, logged by team-stow --begin .*stands until the task.s stowed or stow-failed, or a launch.*\)$' <<<"$output"
+  grep -Eq '^  stow-failed +team-stow +machine, reason  \(a stow of the task under way .*the run stopped: <its last error line>.*read as stowed with the stowing.s roles.*\)$' <<<"$output"
+  grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason; optional ticket  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }
 
 @test "an event is appended as one line with ts now, task and event" {
+  opened_task T14
   local before after
   before=$(date -u +%FT%TZ)
   run_bin -0 team-log T14 pr url=https://github.com/chanjdaniel/agent-team/pull/5 head=a1b2c3d
   after=$(date -u +%FT%TZ)
   assert_equal "$output" ""
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "1"
-  assert_equal "$(ledger_without_ts)" \
+  assert_equal "$(logged_after 2 | wc -l)" "1"
+  assert_equal "$(logged_after 2)" \
     '{"task":"T14","event":"pr","url":"https://github.com/chanjdaniel/agent-team/pull/5","head":"a1b2c3d"}'
   local ts
-  ts=$(jq -r .ts "$TEAM_HOME/ledger.jsonl")
+  ts=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
   [[ $ts =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
   [[ ! $ts < $before && ! $ts > $after ]]
 
-  run_bin -0 team-log T14 resumed
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
-  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" '{"task":"T14","event":"resumed"}'
+  run_bin -0 team-log T14 resumed all=true
+  assert_equal "$(logged_after 2 | wc -l)" "2"
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" '{"task":"T14","event":"resumed","all":true}'
 }
 
 @test "values that parse as JSON are stored as JSON, others as strings" {
+  opened_task T14
   run_bin -0 team-log T14 ticket-done ticket=03 'commits=["a1b2c3d", "e4f5a6b"]' count=3 ok=true \
     'extra={"a":1}' 'quoted="7"' 'note=two words, [not a list' nan=nan nothing=null
-  assert_equal "$(ledger_without_ts)" \
+  assert_equal "$(logged_after 2)" \
     '{"task":"T14","event":"ticket-done","ticket":"03","commits":["a1b2c3d","e4f5a6b"],"count":3,"ok":true,"extra":{"a":1},"quoted":"7","note":"two words, [not a list","nan":"nan","nothing":"null"}'
 }
 
 @test "a review names the notes sent back before the merge as a list, which a non-list cannot be" {
+  opened_task T14
   run_bin -0 team-log T14 review verdict=findings head=a1b2c3d 'sent_back=[2, 4]'
   run_bin -0 team-log T14 review verdict=pass head=e4f5a6b
-  assert_equal "$(ledger_without_ts)" "$(
+  assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[2,4]}
 {"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b"}
@@ -311,21 +331,22 @@ LINES
   assert_contains "$output" "sent_back must be a list of whole numbers, got an object"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'sent_back=note 2'
   assert_equal "$output" "team-log: sent_back: note 2 is not a whole number"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+  assert_equal "$(logged_after 2 | wc -l)" "2"
 }
 
 @test "a list field takes a comma list, each item trimmed, none for the empty list, and refuses an empty item" {
+  opened_task T14
   run_bin -0 team-log T14 ticket-done ticket=03 commits=a0017cce,9e0e3990
   run_bin -0 team-log T14 ticket-done ticket=04 'commits= a0017cce , 9e0e3990 '
   run_bin -0 team-log T14 ticket-done ticket=05 commits=1234567
-  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=5,6 guarded=ci,settings before=none
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=5,6 guarded=ci,secrets before=none
   run_bin -0 team-log T14 review verdict=pass head=e4f5a6b sent_back=none guarded=none
-  assert_equal "$(ledger_without_ts)" "$(
+  assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T14","event":"ticket-done","ticket":"03","commits":["a0017cce","9e0e3990"]}
 {"task":"T14","event":"ticket-done","ticket":"04","commits":["a0017cce","9e0e3990"]}
 {"task":"T14","event":"ticket-done","ticket":"05","commits":["1234567"]}
-{"task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[5,6],"guarded":["ci","settings"],"before":[]}
+{"task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[5,6],"guarded":["ci","secrets"],"before":[]}
 {"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b","sent_back":[],"guarded":[]}
 LINES
   )"
@@ -340,17 +361,18 @@ LINES
   assert_equal "$output" "team-log: commits has an empty item in 'a0017cce,,9e0e3990'"
   run_bin -1 team-log T14 ticket-done ticket=06 'commits=[a0017cce]'
   assert_equal "$output" "team-log: commits starts as JSON, but is not JSON: [a0017cce]"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "5"
+  assert_equal "$(logged_after 2 | wc -l)" "5"
 }
 
 @test "an object field takes key:value pairs, logged as the same object as its JSON form, and the finding kinds hold for both" {
+  opened_task T14
   local kinds='blocking:0,correctness:1,security:0,real-data:0,note-change:2,note-before:1'
   run_bin -0 team-log T14 review verdict=pass head=a1b2c3d "findings=$kinds" before=4 guarded=none
   run_bin -0 team-log T14 review verdict=pass head=a1b2c3d \
     'findings={"blocking": 0, "correctness": 1, "security": 0, "real-data": 0, "note-change": 2, "note-before": 1}' 'before=[4]' 'guarded=[]'
-  assert_equal "$(sed -n 1p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+  assert_equal "$(sed -n 3p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
     '{"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","findings":{"blocking":0,"correctness":1,"security":0,"real-data":0,"note-change":2,"note-before":1},"before":[4],"guarded":[]}'
-  assert_equal "$(sed -n 2p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" "$(sed -n 1p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')"
+  assert_equal "$(sed -n 4p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" "$(sed -n 3p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')"
   # Each pair trimmed, a value a number when it reads as one.
   run_bin -0 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=pushed 'minutes=review:3.0, test : 49.9,ci:9'
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c .minutes)" '{"review":3.0,"test":49.9,"ci":9}'
@@ -380,14 +402,15 @@ LINES
   assert_equal "$output" "team-log: findings: blocking is given twice"
   run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=pushed 'minutes={review: 3}'
   assert_equal "$output" "team-log: minutes starts as JSON, but is not JSON: {review: 3}"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+  assert_equal "$(logged_after 2 | wc -l)" "3"
 }
 
 @test "sent_back is stored as whole numbers from a comma list or a JSON list, and anything else is refused naming it" {
+  opened_task T14
   run_bin -0 team-log T14 review verdict=findings head=a1b2c3d 'sent_back=["5",6]'
   run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=5,6
   run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=07
-  assert_equal "$(jq -c .sent_back "$TEAM_HOME/ledger.jsonl")" '[5,6]
+  assert_equal "$(logged_after 2 | jq -c .sent_back)" '[5,6]
 [5,6]
 [7]'
   run_bin -0 team-log --check
@@ -398,15 +421,16 @@ LINES
   assert_equal "$output" "team-log: sent_back: 5a is not a whole number; sent_back: -1 is not a whole number"
   run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'sent_back=["5a", 1.5, true, null]'
   assert_equal "$output" "team-log: sent_back: 5a is not a whole number; sent_back: 1.5 is not a whole number; sent_back: true is not a whole number; sent_back: null is not a whole number"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+  assert_equal "$(logged_after 2 | wc -l)" "3"
 }
 
 @test "a gate run is logged with its run, head and outcome, the cause of a re-run and its minutes per step" {
+  opened_task T14
   run_bin -0 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=pushed \
     'minutes={"review": 3.0, "test": 49.9, "document": 0.6, "push": 0.4, "ci": 9.0}'
   run_bin -0 team-log T14 gate-run run=01M5QDHG head=e4f5a6b outcome=stopped-green cause=notes
   run_bin -0 team-log T14 gate-run run=01M5REA0 head=e4f5a6b outcome=red cause=load
-  assert_equal "$(ledger_without_ts)" "$(
+  assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T14","event":"gate-run","run":"01M5Q9GR","head":"a1b2c3d","outcome":"pushed","minutes":{"review":3.0,"test":49.9,"document":0.6,"push":0.4,"ci":9.0}}
 {"task":"T14","event":"gate-run","run":"01M5QDHG","head":"e4f5a6b","outcome":"stopped-green","cause":"notes"}
@@ -414,6 +438,24 @@ LINES
 LINES
   )"
   run_bin -0 team-log --check
+}
+
+@test "a gate run that re-gates a base merge is logged all the same, with one line saying the brief asks for no such run" {
+  opened_task T14
+  local said="team-log: T14 gate run 01M5Q9GR re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"
+  run_bin -0 --separate-stderr team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=pushed cause=base-merge
+  assert_equal "$output" ""
+  assert_equal "$stderr" "$said"
+  run_bin -0 --separate-stderr team-log T14 gate-run run=01M5QDHG head=a1b2c3d outcome=red cause=base-merge
+  assert_equal "$stderr" "${said//01M5Q9GR/01M5QDHG}"
+  # A run the base's move aborted says nothing more, nor does any other cause.
+  run_bin -0 --separate-stderr team-log T14 gate-run run=01M5REA0 head=e4f5a6b outcome=aborted cause=base-merge
+  assert_equal "$output$stderr" ""
+  run_bin -0 --separate-stderr team-log T14 gate-run run=01M5REA1 head=e4f5a6b outcome=pushed cause=review
+  assert_equal "$output$stderr" ""
+  assert_equal "$(logged_after 2 | jq -r '"\(.run) \(.outcome) \(.cause)"')" "$(
+    printf '%s\n' "01M5Q9GR pushed base-merge" "01M5QDHG red base-merge" "01M5REA0 aborted base-merge" "01M5REA1 pushed review"
+  )"
 }
 
 @test "a gate run with an unknown outcome or cause, or minutes that are not an object, is refused" {
@@ -428,11 +470,64 @@ LINES
   assert_ledger_empty
 }
 
+@test "a checks wait's end is logged as ci, with its failures and a findings round's look, and each rerun as ci-rerun, its ids kept as digits" {
+  opened_task T14
+  local url=https://github.com/owner/proj/pull/5 head=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
+  local shard='{"name":"test-shards (2)","class":"pr","kind":"failed","link":"https://github.com/owner/proj/actions/runs/42/job/43","step":"Run the bats suite"}'
+  local rollup='{"name":"test","class":"rollup","kind":"rollup","link":"https://github.com/owner/proj/actions/runs/42/job/44","step":null}'
+  local runner='{"name":"macos-shards (1)","class":"infrastructure","kind":"never-started","link":"https://github.com/owner/proj/actions/runs/41904778858/job/117300000000000001","step":null}'
+  run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=passed
+  run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=failed "failed=[$shard,$rollup]" look=true
+  run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=infrastructure "failed=[$runner]"
+  run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=pending
+  run_bin -0 team-log T14 ci-rerun "url=$url" "head=$head" 'check=macos-shards (1)' run=41904778858 job=117300000000000001
+  assert_equal "$(logged_after 2)" "$(
+    cat <<LINES
+{"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"passed"}
+{"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"failed","failed":[$shard,$rollup],"look":true}
+{"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"infrastructure","failed":[$runner]}
+{"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"pending"}
+{"task":"T14","event":"ci-rerun","url":"$url","head":"$head","check":"macos-shards (1)","run":"41904778858","job":"117300000000000001"}
+LINES
+  )"
+  run_bin -0 team-log --check
+}
+
+@test "a ci with an outcome outside its four, a missing field or failures that are no list, and a ci-rerun whose run or job is no whole number, are refused" {
+  opened_task T14
+  local url=https://github.com/owner/proj/pull/5
+  run_bin -1 team-log T14 ci "url=$url" head=a1b2c3d outcome=green
+  assert_contains "$output" "outcome must be one of passed, failed, infrastructure, pending"
+  run_bin -1 team-log T14 ci "url=$url" outcome=passed
+  assert_contains "$output" "ci needs head"
+  run_bin -1 team-log T14 ci head=a1b2c3d outcome=passed
+  assert_contains "$output" "ci needs url"
+  run_bin -1 team-log T14 ci "url=$url" head=a1b2c3d
+  assert_contains "$output" "ci needs outcome"
+  run_bin -1 team-log T14 ci "url=$url" head=a1b2c3d outcome=failed 'failed={"name":"test"}'
+  assert_contains "$output" "failed must be a list, got an object"
+  run_bin -1 team-log T14 ci "url=$url" head=a1b2c3d outcome=failed look=yes
+  assert_contains "$output" "look must be a boolean, got a string"
+  local run
+  for run in 4190x 12.5 -3 '4190 1'; do
+    run_bin -1 team-log T14 ci-rerun "url=$url" head=a1b2c3d check=test "run=$run" job=117
+    assert_contains "$output" "run must be a whole number written in digits, got a string that is not one"
+  done
+  run_bin -1 team-log T14 ci-rerun "url=$url" head=a1b2c3d check=test run=4190 job=x
+  assert_contains "$output" "job must be a whole number written in digits, got a string that is not one"
+  run_bin -1 team-log T14 ci-rerun "url=$url" head=a1b2c3d run=4190 job=117
+  assert_contains "$output" "ci-rerun needs check"
+  run_bin -1 team-log T14 ci-rerun "url=$url" head=a1b2c3d check=test job=117
+  assert_contains "$output" "ci-rerun needs run"
+  assert_equal "$(logged_after 2)" ""
+}
+
 @test "a field the contract types as a string stays a string even when it looks like JSON" {
+  opened_task T14
   run_bin -0 team-log T14 ticket-done ticket=12 'commits=["1234567"]'
   run_bin -0 team-log T14 pr url=https://github.com/chanjdaniel/agent-team/pull/5 head=1234567 note=true
   run_bin -0 team-log T14 merge-approved url=https://github.com/chanjdaniel/agent-team/pull/5 discord_message=1563000000000000123456789 head=1234567
-  assert_equal "$(ledger_without_ts)" "$(
+  assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T14","event":"ticket-done","ticket":"12","commits":["1234567"]}
 {"task":"T14","event":"pr","url":"https://github.com/chanjdaniel/agent-team/pull/5","head":"1234567","note":"true"}
@@ -442,18 +537,19 @@ LINES
 }
 
 @test "a Discord id is stored as a string, declared or not, and so is any whole number of 16 digits or more" {
+  opened_task T14
   run_bin -0 team-log T14 asked id=q1 text=Which? discord_message=1564584780744491089
-  run_bin -0 team-log T14 resumed discord_channel=1562486564871995482 ref=1565336870932582522 count=42 big=999999999999999
-  assert_equal "$(ledger_without_ts)" "$(
+  run_bin -0 team-log T14 resumed all=true discord_channel=1562486564871995482 ref=1565336870932582522 count=42 big=999999999999999
+  assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T14","event":"asked","id":"q1","text":"Which?","discord_message":"1564584780744491089"}
-{"task":"T14","event":"resumed","discord_channel":"1562486564871995482","ref":"1565336870932582522","count":42,"big":999999999999999}
+{"task":"T14","event":"resumed","all":true,"discord_channel":"1562486564871995482","ref":"1565336870932582522","count":42,"big":999999999999999}
 LINES
   )"
   # A declared id is a string of digits: anything else is refused.
   run_bin -1 team-log T14 asked id=q2 text=Which? discord_message=m1563
   assert_contains "$output" "discord_message must be a Discord id, a string of digits, got a string that is not one"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+  assert_equal "$(logged_after 2 | wc -l)" "2"
 }
 
 @test "--check accepts a Discord id written as a whole number, as dev's team-log wrote two, and nothing else in its place" {
@@ -474,27 +570,34 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 }
 
 @test "every kind team-log writes is appended with its required fields and a note" {
-  # merge-preapproved names a project of the task that opts in, and an ask it logged before;
-  # branch-renamed a new branch of it that names the task; merge-standing #coordinator's channel,
-  # and merge-standing-withdrawn, after it, the word it logged; retro-change a retro Daniel answered.
+  # The retired kinds, which team-log refuses, are left out; branch-renamed names a new branch of
+  # the task's project that names the task; retro-change a retro Daniel answered;
+  # a kind with one_of sets the first field of each (a question its text); a paused its cause, a
+  # held Daniel's message and a resumed all=true, which team-log requires of each; plan-approved
+  # the coordinator's, of the task's plan, and plan-approval-withdrawn, after it, its withdrawal;
+  # merge-default-withdrawn scope=task, and merge-default-restored, after it, gives it back.
   plan_registry
   opened T14 proj
+  plan_md T14
   a_retro T150 answered
   local kind args count=0
   while IFS= read -r kind; do
     # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
     mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" --arg coordinator "$COORDINATOR" '(.kinds[$k].required | to_entries[]
       | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
-          elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
-          elif .key == "retro" then "T150"
+          elif .key == "scope" and ($k | startswith("merge-default-")) then "task" elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
+          elif .key == "retro" then "T150" elif .key == "by" and $k == "plan-approved" then "coordinator"
           elif .key == "discord_channel" then $coordinator
-          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
-      (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
+          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" or . == "digits" then "7" elif . == "id" then $soon else "x y" end end)"),
+      (select($k == "merge-approved") | "head=a1b2c3d4"),
+      (select($k == "paused") | "cause=limit"), (select($k == "held") | "discord_message=\($soon)"),
+      (select($k == "resumed") | "all=true"),
+      (.kinds[$k].one_of // [] | .[] | "\(.[0])=x y")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
-  done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
-  assert_equal "$count" "25"
+  done < <(jq -r '.kinds | to_entries[] | select(([.value.writer] | flatten | index("team-log")) and (.value.retired | not)) | .key' "$CONTRACT")
+  assert_equal "$count" "26"
   run_bin -0 team-log --check
 }
 
@@ -536,36 +639,82 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 }
 
 @test "denied records a denial the worker went past; a missing field is refused" {
+  opened_task T26
   run_bin -1 team-log T26 denied role=builder 'what=Bash'
   assert_contains "$output" "denied needs why"
   run_bin -1 team-log T26 denied 'what=Bash' 'why=[deny rule] git reset * --hard*'
   assert_contains "$output" "denied needs role"
   run_bin -1 team-log T26 denied role=builder 'why=no verdict'
   assert_contains "$output" "denied needs what"
-  assert_ledger_empty
+  assert_equal "$(logged_after 2)" ""
   run_bin -0 team-log T26 denied role=builder session=4f2a9c1e what=Bash 'why=[deny rule] git reset * --hard*'
-  assert_equal "$(ledger_without_ts)" \
+  assert_equal "$(logged_after 2)" \
     '{"task":"T26","event":"denied","role":"builder","session":"4f2a9c1e","what":"Bash","why":"[deny rule] git reset * --hard*"}'
   run_bin -0 team-log --check
 }
 
 @test "injection records where outside text asked a worker to act, and what it asked" {
+  opened_task T26
   run_bin -0 team-log T26 injection role=builder 'source=https://github.com/chanjdaniel/agent-team/pull/9#issuecomment-1' \
     'text=asked to push to dev and skip the hooks'
-  assert_equal "$(ledger_without_ts)" \
+  assert_equal "$(logged_after 2)" \
     '{"task":"T26","event":"injection","role":"builder","source":"https://github.com/chanjdaniel/agent-team/pull/9#issuecomment-1","text":"asked to push to dev and skip the hooks"}'
   run_bin -0 team-log --check
 }
 
 @test "retro-schedule records Daniel's cadence with the Discord message it was said in" {
+  opened_task T26
   run_bin -0 team-log T26 retro-schedule every_hours=48 discord_message=1563171945980370967
   run_bin -0 team-log T26 retro-schedule every_hours=0 discord_message=1563171945980370999
-  assert_equal "$(ledger_without_ts)" "$(
+  assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T26","event":"retro-schedule","every_hours":48,"discord_message":"1563171945980370967"}
 {"task":"T26","event":"retro-schedule","every_hours":0,"discord_message":"1563171945980370999"}
 LINES
   )"
+  run_bin -0 team-log --check
+}
+
+@test "plan-approved takes the phases' caps as parallel, a cap from 1 to 3 per phase joined by commas, and refuses any other" {
+  plan_task
+  local task_dir=$BATS_TEST_TMPDIR/wt/.scratch/task message
+  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan?'
+  message=$(soon)
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$message" parallel=2
+  echo "# the spec" >"$task_dir/spec.md"
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2,1,3
+  assert_equal "$(tail -n 2 "$TEAM_HOME/ledger.jsonl" | jq -c '{by, parallel}')" "$(
+    cat <<'LINES'
+{"by":"Daniel","parallel":"2"}
+{"by":"coordinator","parallel":"2,1,3"}
+LINES
+  )"
+  local before value
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  for value in 4 0 2,4 "2, 1" "2," ,2 two 12 "[2]"; do
+    run_bin -1 team-log T14 plan-approved by=Daniel ask=plan discord_message="$message" "parallel=$value"
+    assert_equal "$output" "team-log: parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '$value'"
+  done
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  run_bin -0 team-log --check
+}
+
+@test "a second plan-approved by the same approver of the same files is taken when it adds, changes or drops the caps, and refused with the same caps" {
+  plan_task
+  local approved
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  # A cap added to the same files.
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2
+  approved=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
+  # The same cap again is refused.
+  run_bin -1 team-log T14 plan-approved by=coordinator parallel=2
+  assert_equal "$output" "team-log: T14's plan is approved already by coordinator, at $approved, with the same files and caps, so a second approval means nothing"
+  # A cap changed, then dropped, which returns the task to one ticket at a time.
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2,1
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_contains "$output" "with the same files and caps, so a second approval means nothing"
+  assert_equal "$(jq -c 'select(.event == "plan-approved") | .parallel' "$TEAM_HOME/ledger.jsonl" | paste -sd ,)" 'null,"2","2,1",null'
   run_bin -0 team-log --check
 }
 
@@ -651,10 +800,12 @@ LINES
 }
 
 @test "merge-approved names a PR of the task's pr events, by its URL" {
+  opened_task T14
+  opened_task T13
   local five=https://github.com/owner/proj/pull/5 seven=https://github.com/other/repo/pull/7
   run_bin -1 team-log T14 merge-approved url=$five discord_message=1563
   assert_contains "$output" "$five is not a PR of T14's pr events; it has none"
-  assert_ledger_empty
+  assert_equal "$(logged_after 4)" ""
   run_bin -0 team-log T14 pr url=$five/ head=a1b2c3d
   run_bin -0 team-log T14 pr url=$seven head=e4f5a6b
   run_bin -0 team-log T13 pr url=https://github.com/owner/proj/pull/9 head=0a1b2c3
@@ -664,13 +815,14 @@ LINES
   assert_contains "$output" "  $seven"
   run_bin -1 team-log T14 merge-approved pr=5 discord_message=1563
   assert_contains "$output" "merge-approved needs url"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+  assert_equal "$(logged_after 4 | wc -l)" "3"
   run_bin -0 team-log T14 merge-approved url=$five discord_message="$(soon)" head=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
   run_bin -0 team-log T14 merge-approved url=$seven/ discord_message="$(soon)" head=e4f5a6b
   assert_equal "$(tail -n 2 "$TEAM_HOME/ledger.jsonl" | jq -r .url)" "$five"$'\n'"$seven/"
 }
 
 @test "merge-approved names the head Daniel was asked on, one a pr event of its PR or a review since logged" {
+  opened_task T14
   local five=https://github.com/owner/proj/pull/5
   run_bin -0 team-log T14 pr url=$five head=a1b2c3d
   run_bin -0 team-log T14 pr url=$five head=0123456789abcdef0123456789abcdef01234567
@@ -682,13 +834,14 @@ LINES
   a1b2c3d
   0123456789abcdef0123456789abcdef01234567"
   run_bin -1 team-log T14 merge-approved url=$five discord_message=1563 head=a1b2c3
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+  assert_equal "$(logged_after 2 | wc -l)" "3"
   run_bin -0 team-log T14 merge-approved url=$five discord_message="$(soon)" head=A1B2C3D4E5F60718293A4B5C6D7E8F9012345678
   run_bin -0 team-log T14 merge-approved url=$five/ discord_message="$(soon)" head=0123456789abcdef0123456789abcdef01234567
   run_bin -0 team-log --check
 }
 
 @test "merge-approved may name a fix head a review logged after the PR's first pr event, with no pr event of its own" {
+  opened_task T14
   local five=https://github.com/owner/proj/pull/5 fix=b2c3d4e5f60718293a4b5c6d7e8f901234567890
   # A review before the PR's first pr event logs no head of it.
   run_bin -0 team-log T14 review verdict=pass head=c3d4e5f
@@ -703,6 +856,7 @@ LINES
 }
 
 @test "merge-approved's message must be sent no earlier than the first event that logged its head" {
+  opened_task T14
   local five=https://github.com/owner/proj/pull/5 fix=b2c3d4e5f60718293a4b5c6d7e8f901234567890
   # 1562661774950400000 is 2026-10-22T03:00:00Z; the review of the fix is logged now, later.
   run_bin -0 team-log T14 pr url=$five head=a1b2c3d
@@ -711,282 +865,372 @@ LINES
   reviewed=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
   run_bin -1 team-log T14 merge-approved url=$five discord_message=1562661774950400000 head=$fix
   assert_equal "$output" "team-log: Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the review event that first logged head $fix at $reviewed, so it is not Daniel's word on that head"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+  assert_equal "$(logged_after 2 | wc -l)" "2"
 }
 
-@test "merge-preapproved records Daniel's plan-time word on a project of the task, with the ask it answers and the scope" {
+# T14 opened in proj, with its worktree at $BATS_TEST_TMPDIR/wt holding the task directory
+# .scratch/task, the plan written, and the registry naming proj: plan_task
+plan_task() {
   plan_registry
-  opened T14 conv
-  opened T14 proj worktree-added
-  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan, and its merge?'
-  local message
-  message=$(soon)
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$message" \
-    'scope=["src/", "README.md", ".github/x/y.yml", "a/b-c_d.e"]'
+  mkdir -p "$BATS_TEST_TMPDIR/wt/.scratch/task"
+  jq -cn --arg wt "$BATS_TEST_TMPDIR/wt" '"2026-01-01T00:00:00Z" as $ts
+    | {ts: $ts, task: "T14", event: "thread", discord_thread: "1563000000000000000"},
+      {ts: $ts, task: "T14", event: "opened", project: "proj", path: "feature", type: "feat", title: "X",
+       branch: "feat/T14-x", base: "dev", base_sha: "0123456", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
+  plan_md T14
+}
+
+# The sha256 of a file: sha <file>
+sha() {
+  sha256sum -- "$1" | cut -d' ' -f1
+}
+
+@test "plan-approved records who approved, each of the plan's files to its sha256, and scope.txt's lines" {
+  plan_task
+  local task_dir=$BATS_TEST_TMPDIR/wt/.scratch/task plan
+  # With no spec.md or scope.txt, the plan alone, and no scope.
+  run_bin -0 team-log T14 plan-approved by=coordinator
   assert_equal "$output" ""
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
-    "{\"task\":\"T14\",\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"$message\",\"scope\":[\"src/\",\"README.md\",\".github/x/y.yml\",\"a/b-c_d.e\"]}"
+    "{\"task\":\"T14\",\"event\":\"plan-approved\",\"by\":\"coordinator\",\"plan\":{\"tasks/T14/plan.md\":\"$(sha "$TEAM_HOME/tasks/T14/plan.md")\"}}"
+  echo "# the spec" >"$task_dir/spec.md"
+  printf '%s\n' "bin/team-log" "" "  " "tests/" >"$task_dir/scope.txt"
+  plan="{\"tasks/T14/plan.md\":\"$(sha "$TEAM_HOME/tasks/T14/plan.md")\",\".scratch/task/spec.md\":\"$(sha "$task_dir/spec.md")\",\".scratch/task/scope.txt\":\"$(sha "$task_dir/scope.txt")\"}"
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+    "{\"task\":\"T14\",\"event\":\"plan-approved\",\"by\":\"coordinator\",\"plan\":$plan,\"scope\":[\"bin/team-log\",\"tests/\"]}"
+  # Daniel's names the ask it answers and their message.
+  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan?'
+  local message
+  message=$(soon)
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$message"
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+    "{\"task\":\"T14\",\"event\":\"plan-approved\",\"by\":\"Daniel\",\"ask\":\"plan\",\"discord_message\":\"$message\",\"plan\":$plan,\"scope\":[\"bin/team-log\",\"tests/\"]}"
   run_bin -0 team-log --check
+  # The worktree the task moved to is the one read.
+  mkdir -p "$BATS_TEST_TMPDIR/wt2/.scratch/task"
+  echo "# the moved spec" >"$BATS_TEST_TMPDIR/wt2/.scratch/task/spec.md"
+  jq -cn --arg wt "$BATS_TEST_TMPDIR/wt2" '{ts: (now | todate), task: "T14", event: "worktree-moved", project: "proj",
+    branch: "feat/T14-x", from: "/w/old", worktree: $wt, machine: "home-pc"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c '[.plan | keys_unsorted, .scope]')" \
+    '[["tasks/T14/plan.md",".scratch/task/spec.md"],null]'
 }
 
-@test "merge-preapproved is refused for a project that is not the task's, does not opt in now, or is the team's own" {
-  plan_registry
-  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: proj is not a project of T14's opened or worktree-added events; it has none"
-  opened T14 proj
-  opened T14 conv worktree-added
-  opened T15 other
-  run_bin -1 team-log T14 merge-preapproved project=other ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: other is not a project of T14's opened or worktree-added events: proj, conv"
-  run_bin -1 team-log T14 merge-preapproved project=conv ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: conv does not opt in to a plan-time merge approval: its merge_with_plan in projects.toml is false"
-  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
-
-  # agent-team by name, even when the registry says true (which team-project --check refuses).
-  plan_registry "$(plan_project agent-team true)"
-  opened T14 agent-team worktree-added
-  run_bin -1 team-log T14 merge-preapproved project=agent-team ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
-
-  # By repo, which --check does not read, the key set to true; and by path, at the code checkout.
-  own_by_repo_and_path true
-  opened T14 mirror worktree-added
-  opened T14 tools worktree-added
-  run_bin -1 team-log T14 merge-preapproved project=mirror ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: mirror is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
-  run_bin -1 team-log T14 merge-preapproved project=tools ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: tools is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
-  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
-}
-
-@test "merge-preapproved names an ask the task logged, and a Discord message sent no earlier than it" {
-  plan_registry
-  opened T14 proj
-  run_bin -0 team-log T15 asked id=plan 'text=Approve?'
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  assert_equal "$output" "team-log: T14 logged no asked with id plan, so merge-preapproved answers no ask of it"
-  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
+@test "plan-approved is refused, logging nothing, for a wrong by, Daniel's missing or bad ask or message, the coordinator's with either, a plan or scope given, a closed task and no plan" {
+  plan_task
+  local before
+  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan?'
   local asked
   asked=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 plan-approved by=daniel
+  assert_equal "$output" "team-log: by names who approved the plan, Daniel or coordinator, got 'daniel'"
+  run_bin -1 team-log T14 plan-approved
+  assert_equal "$output" "team-log: by names who approved the plan, Daniel or coordinator, got ''"
+  run_bin -1 team-log T14 plan-approved by=Daniel
+  assert_equal "$output" "team-log: Daniel's approval names the ask it answers and their message: team-log T14 plan-approved by=Daniel ask=<id> discord_message=<id>"
+  run_bin -1 team-log T14 plan-approved by=Daniel ask=plan
+  assert_equal "$output" "team-log: Daniel's approval names the ask it answers and their message: team-log T14 plan-approved by=Daniel ask=<id> discord_message=<id>"
+  run_bin -1 team-log T14 plan-approved by=Daniel discord_message="$(soon)"
+  assert_equal "$output" "team-log: Daniel's approval names the ask it answers and their message: team-log T14 plan-approved by=Daniel ask=<id> discord_message=<id>"
+  run_bin -1 team-log T14 plan-approved by=Daniel ask=other discord_message="$(soon)"
+  assert_equal "$output" "team-log: T14 logged no asked with id other, so the plan approval answers no ask of it"
   # 1562661774950400000 is 2026-10-22T03:00:00Z, before the ask logged now.
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=1562661774950400000 'scope=["src/"]'
+  run_bin -1 team-log T14 plan-approved by=Daniel ask=plan discord_message=1562661774950400000
   assert_equal "$output" "team-log: Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the asked plan at $asked, so it is not Daniel's answer to that ask"
   local message
   for message in 0 01563 15630000000000001234567; do
-    run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=$message 'scope=["src/"]'
+    run_bin -1 team-log T14 plan-approved by=Daniel ask=plan discord_message=$message
     assert_equal "$output" "team-log: discord_message $message is not a Discord id"
   done
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=m1563 'scope=["src/"]'
-  assert_contains "$output" "discord_message must be a Discord id"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan 'scope=["src/"]'
-  assert_contains "$output" "merge-preapproved needs discord_message"
-  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  run_bin -1 team-log T14 plan-approved by=coordinator ask=plan
+  assert_equal "$output" "team-log: the coordinator's approval takes no ask, which only Daniel's names: team-log T14 plan-approved by=coordinator"
+  run_bin -1 team-log T14 plan-approved by=coordinator discord_message="$(soon)"
+  assert_equal "$output" "team-log: the coordinator's approval takes no discord_message, which only Daniel's names: team-log T14 plan-approved by=coordinator"
+  run_bin -1 team-log T14 plan-approved by=coordinator 'plan={"tasks/T14/plan.md":"0"}'
+  assert_equal "$output" "team-log: plan is recorded by team-log itself, from the plan's files and scope.txt: give by=Daniel ask=<id> discord_message=<id>, or by=coordinator"
+  run_bin -1 team-log T14 plan-approved by=coordinator scope=src/
+  assert_equal "$output" "team-log: scope is recorded by team-log itself, from the plan's files and scope.txt: give by=Daniel ask=<id> discord_message=<id>, or by=coordinator"
+  rm "$TEAM_HOME/tasks/T14/plan.md"
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: T14 has no plan at tasks/T14/plan.md, so there is no plan to approve"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # A closed task takes no approval, and no withdrawal.
+  plan_md T14
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  echo '{"ts":"2026-11-01T09:00:00Z","task":"T14","event":"closed","archive":[],"returned":[],"kept":[]}' >>"$TEAM_HOME/ledger.jsonl"
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: T14 is closed, so it takes no plan-approved"
+  run_bin -1 team-log T14 plan-approval-withdrawn discord_message="$(soon)"
+  assert_equal "$output" "team-log: T14 is closed, so it takes no plan-approval-withdrawn"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
 
-@test "merge-preapproved's scope is a list of clean repository paths, each a file or a directory ending in /" {
-  plan_registry
-  opened T14 proj
-  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=[]'
-  assert_equal "$output" "team-log: scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=none
-  assert_equal "$output" "team-log: scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope={"src/":1}'
-  assert_contains "$output" "scope must be a list, got an object"
-  # A comma list is checked as its JSON form is.
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=src/,/etc/x
-  assert_equal "$output" "team-log: scope holds entries that are not clean repository paths:
-  \"/etc/x\": a leading /"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" \
-    'scope=["src/", "/etc/x", "/", "./a", "a/./b", "a/..", "..", "a//b", "src/*.py", "a?", "b[1]", "a b", "a\tb", "", 7]'
-  assert_equal "$output" "team-log: scope holds entries that are not clean repository paths:
+@test "plan-approved refuses a task whose worktree is not on this machine, since its spec and scope.txt cannot be hashed" {
+  plan_task
+  local before
+  mkdir "$BATS_TEST_TMPDIR/away"
+  echo "src/" >"$BATS_TEST_TMPDIR/wt/.scratch/task/scope.txt"
+  mv "$BATS_TEST_TMPDIR/wt" "$BATS_TEST_TMPDIR/away/"
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: T14's worktree of proj, $BATS_TEST_TMPDIR/wt, is not a directory on this machine, so its spec.md and scope.txt cannot be hashed: approve the plan on the machine that holds it"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # Back in place, the approval records the plan in full.
+  mv "$BATS_TEST_TMPDIR/away/wt" "$BATS_TEST_TMPDIR/"
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c '[(.plan | keys), .scope]')" \
+    '[[".scratch/task/scope.txt","tasks/T14/plan.md"],["src/"]]'
+}
+
+@test "plan-approved refuses a scope.txt that lists no path or holds one that is no clean path, and a second approval of the same files by the same approver" {
+  plan_task
+  local scope=$BATS_TEST_TMPDIR/wt/.scratch/task/scope.txt before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  printf '\n  \n' >"$scope"
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: .scratch/task/scope.txt lists no path: list every path the plan may change, each a file or a directory ending in /, or remove it for no scope"
+  printf '%s\n' "src/" "/etc/x" "src/*.py" "a b" >"$scope"
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: .scratch/task/scope.txt holds lines that are not clean repository paths:
   \"/etc/x\": a leading /
-  \"/\": a leading /
-  \"./a\": a . or .. segment
-  \"a/./b\": a . or .. segment
-  \"a/..\": a . or .. segment
-  \"..\": a . or .. segment
-  \"a//b\": an empty segment
   \"src/*.py\": a glob character
-  \"a?\": a glob character
-  \"b[1]\": a glob character
-  \"a b\": whitespace
-  \"a\\tb\": whitespace
-  \"\": an empty segment
-  7: not a string"
-  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=src/,docs/README.md
-  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c .scope)" '["src/","docs/README.md"]'
+  \"a b\": whitespace"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  printf '%s\n' "src/" >"$scope"
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  local approved
+  approved=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: T14's plan is approved already by coordinator, at $approved, with the same files and caps, so a second approval means nothing"
+  # Daniel's approval of the same files stands on its own, and a changed file is a new plan.
+  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan?'
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$(soon)"
+  run_bin -1 team-log T14 plan-approved by=Daniel ask=plan discord_message="$(soon)"
+  assert_contains "$output" "team-log: T14's plan is approved already by Daniel, at "
+  printf '%s\n' "src/" "docs/" >"$scope"
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$(soon)"
+  assert_equal "$(jq -r 'select(.event == "plan-approved") | .by' "$TEAM_HOME/ledger.jsonl" | paste -sd ,)" "coordinator,Daniel,Daniel"
+  # An approval logged before T276, with no plan, reads as the coordinator's and never as these files.
+  echo '{"ts":"2026-11-01T00:00:00Z","task":"T14","event":"plan-approved","by":"coordinator"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log T14 plan-approved by=coordinator
 }
 
-@test "merge-preapproval-withdrawn needs a merge-preapproved of its project not withdrawn, and a new one may follow it" {
-  plan_registry "$(plan_project web true)"
-  opened T14 proj
-  opened T14 web worktree-added
-  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no merge-preapproved of proj left to withdraw"
-  # Another task's approval is its own.
-  opened T15 proj
-  run_bin -0 team-log T15 asked id=plan 'text=Approve?'
-  run_bin -0 team-log T15 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=web discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no merge-preapproved of web left to withdraw"
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj
-  assert_contains "$output" "merge-preapproval-withdrawn needs discord_message"
-  run_bin -0 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no merge-preapproved of proj left to withdraw"
-  # A later approval, on a new ask, grants it again, and may be withdrawn in turn.
-  run_bin -0 team-log T14 asked id=plan-2 'text=Approve again?'
-  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan-2 discord_message="$(soon)" 'scope=["src/", "docs/"]'
-  run_bin -0 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  assert_equal "$(jq -r 'select(.task == "T14" and (.event | startswith("merge-pre"))) | "\(.event) \(.project)"' "$TEAM_HOME/ledger.jsonl")" "$(
-    cat <<'LINES'
-merge-preapproved proj
-merge-preapproval-withdrawn proj
-merge-preapproved proj
-merge-preapproval-withdrawn proj
-LINES
-  )"
+@test "plan-approval-withdrawn withdraws the approval standing, and only Daniel's approval may follow it" {
+  plan_task
+  run_bin -1 team-log T14 plan-approval-withdrawn discord_message="$(soon)"
+  assert_equal "$output" "team-log: T14 has no plan approval standing, so plan-approval-withdrawn withdraws nothing"
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  run_bin -1 team-log T14 plan-approval-withdrawn
+  assert_contains "$output" "plan-approval-withdrawn needs discord_message"
+  run_bin -1 team-log T14 plan-approval-withdrawn discord_message=01563
+  assert_equal "$output" "team-log: discord_message 01563 is not a Discord id"
+  local message
+  message=$(soon)
+  run_bin -0 team-log T14 plan-approval-withdrawn discord_message="$message"
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+    "{\"task\":\"T14\",\"event\":\"plan-approval-withdrawn\",\"discord_message\":\"$message\"}"
+  run_bin -1 team-log T14 plan-approval-withdrawn discord_message="$(soon)"
+  assert_equal "$output" "team-log: T14 has no plan approval standing, so plan-approval-withdrawn withdraws nothing"
+  # Only Daniel approves again after their withdrawal: the coordinator alone never undoes it.
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_equal "$output" "team-log: T14's plan approval was withdrawn at $(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts) in Discord message $message, so only Daniel approves it again: team-log T14 plan-approved by=Daniel ask=<id> discord_message=<id>"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # The same files approved again by Daniel, after the withdrawal, are a new approval, and the
+  # coordinator may approve a changed plan once Daniel's stands.
+  run_bin -0 team-log T14 asked id=again 'text=Approve the plan again?'
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=again discord_message="$(soon)"
+  run_bin -0 team-log T14 plan-approval-withdrawn discord_message="$(soon)"
+  run_bin -0 team-log T14 asked id=third 'text=Approve it once more?'
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=third discord_message="$(soon)"
+  echo "# the spec, changed" >"$BATS_TEST_TMPDIR/wt/.scratch/task/spec.md"
+  run_bin -0 team-log T14 plan-approved by=coordinator
   run_bin -0 team-log --check
 }
 
-@test "merge-standing records Daniel's standing word on a project or every project, said in #coordinator or the task's thread" {
+@test "--check takes plan-approved in every shape the real ledger's lines have, and refuses a by but Daniel or coordinator" {
+  # The six shapes of the 220 lines on 2026-11-11: coordinator's and Daniel's, each with and with
+  # no note, and Daniel's with a discord_message, as a string or a whole number.
+  printf '%s\n' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T1","event":"plan-approved","by":"coordinator"}' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T1","event":"plan-approved","by":"coordinator","note":"small"}' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T2","event":"plan-approved","by":"Daniel"}' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T2","event":"plan-approved","by":"Daniel","note":"in the thread"}' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T3","event":"plan-approved","by":"Daniel","discord_message":"1564000000000000020"}' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T3","event":"plan-approved","by":"Daniel","discord_message":1564000000000000020,"note":"x"}' \
+    >"$BATS_TEST_TMPDIR/shapes.jsonl"
+  run_bin -0 team-log --check "$BATS_TEST_TMPDIR/shapes.jsonl"
+  assert_equal "$output" "$BATS_TEST_TMPDIR/shapes.jsonl: 6 lines meet the ledger contract"
+  printf '%s\n' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T1","event":"plan-approved","by":"daniel"}' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T1","event":"plan-approved","by":"coordinator","ask":"plan"}' \
+    >"$BATS_TEST_TMPDIR/bad.jsonl"
+  run_bin -1 team-log --check "$BATS_TEST_TMPDIR/bad.jsonl"
+  assert_equal "${lines[0]}" "$BATS_TEST_TMPDIR/bad.jsonl:1: by must be one of Daniel, coordinator"
+  assert_contains "${lines[1]}" "$BATS_TEST_TMPDIR/bad.jsonl:2: "
+  # Every fixture ledger's plan-approved lines meet the contract too.
+  find "$REPO_ROOT/tests/fixtures" -name 'ledger*.jsonl' -exec jq -cR 'fromjson? | objects | select(.event == "plan-approved")' {} + \
+    >"$BATS_TEST_TMPDIR/fixtures.jsonl"
+  run_bin -0 team-log --check "$BATS_TEST_TMPDIR/fixtures.jsonl"
+  assert_equal "$output" "$BATS_TEST_TMPDIR/fixtures.jsonl: 12 lines meet the ledger contract"
+}
+
+@test "the retired plan-time and standing words are refused, logging nothing, naming the default word in their place" {
   plan_registry
+  opened T14 proj
+  local before kind
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  local -A args=(
+    [merge-preapproved]="project=proj ask=plan discord_message=$(soon) scope=src/"
+    [merge-preapproval-withdrawn]="project=proj discord_message=$(soon)"
+    [merge-standing]="project=proj discord_message=$(soon) discord_channel=$COORDINATOR"
+    [merge-standing-withdrawn]="project=all discord_message=$(soon) discord_channel=$COORDINATOR"
+  )
+  for kind in merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn; do
+    # shellcheck disable=SC2086 # each kind's pairs, split on blanks
+    run_bin -1 team-log T14 "$kind" ${args[$kind]}
+    assert_equal "$output" "team-log: $kind is retired by T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn"
+    run_bin -1 team-log T14 "$kind" 'not a pair'
+    assert_equal "$output" "team-log: $kind is retired by T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn"
+  done
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # The contract keeps the four kinds, retired, so the ledgers that hold them still check; retired
+  # is the one reason team-log gives.
+  assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.retired) | .key] | join(" ")' "$CONTRACT")" \
+    "merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn"
+  printf '%s\n' \
+    "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"1563000000000000002\",\"scope\":[\"src/\"]}" \
+    "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"merge-preapproval-withdrawn\",\"project\":\"proj\",\"discord_message\":\"1563000000000000003\"}" \
+    "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"merge-standing\",\"project\":\"all\",\"discord_message\":\"1563000000000000004\",\"discord_channel\":\"$COORDINATOR\"}" \
+    "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"merge-standing-withdrawn\",\"project\":\"all\",\"discord_message\":\"1563000000000000005\",\"discord_channel\":\"$COORDINATOR\"}" \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log --check
+}
+
+# The default word's withdrawals and givings back logged, one "<event> <task> <scope>" per line.
+default_events() {
+  jq -r 'select(.event | startswith("merge-default-")) | "\(.event) \(.task) \(.scope)"' "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "merge-default-withdrawn and merge-default-restored record Daniel's word on the default for a task, a project or every project" {
+  plan_registry
+  opened_task T14
   thread T14 1563000000000000001
   local message
   message=$(soon)
-  run_bin -0 team-log T14 merge-standing project=proj discord_message="$message" discord_channel=$COORDINATOR
+  run_bin -0 --separate-stderr team-log T14 merge-default-withdrawn scope=task discord_message="$message" discord_channel=1563000000000000001
   assert_equal "$output" ""
+  assert_equal "$stderr" ""
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
-    "{\"task\":\"T14\",\"event\":\"merge-standing\",\"project\":\"proj\",\"discord_message\":\"$message\",\"discord_channel\":\"$COORDINATOR\"}"
-  # Every project, and a project none of the task's events name, which the word needs not.
-  run_bin -0 team-log T14 merge-standing project=all discord_message="$(soon)" discord_channel=$COORDINATOR
-  run_bin -0 team-log T14 merge-standing project=conv discord_message="$(soon)" discord_channel=1563000000000000001
-  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .discord_channel)" 1563000000000000001
-  assert_equal "$(standing_events)" "merge-standing proj
-merge-standing all
-merge-standing conv"
+    "{\"task\":\"T14\",\"event\":\"merge-default-withdrawn\",\"scope\":\"task\",\"discord_message\":\"$message\",\"discord_channel\":\"1563000000000000001\"}"
+  # A project the task's events never name, and every project, in #coordinator.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=conv discord_message="$(soon)" discord_channel=$COORDINATOR
+  run_bin -0 team-log T14 merge-default-withdrawn scope=all discord_message="$(soon)" discord_channel=$COORDINATOR
+  run_bin -0 team-log T14 merge-default-restored scope=all discord_message="$(soon)" discord_channel=$COORDINATOR
+  assert_equal "$(default_events)" "merge-default-withdrawn T14 task
+merge-default-withdrawn T14 conv
+merge-default-withdrawn T14 all
+merge-default-restored T14 all"
   run_bin -0 team-log --check
 }
 
-@test "merge-standing and its withdrawal are refused for an unknown project, a message no Discord id, or a channel neither #coordinator nor the task's thread" {
+@test "the default's withdrawal and giving back are refused for an unknown scope, an id no Discord id, a channel neither #coordinator nor the task's thread, and scope=task on a closed task" {
   plan_registry
-  local kind message channel
-  for kind in merge-standing merge-standing-withdrawn; do
-    run_bin -1 team-log T14 $kind project=web discord_message="$(soon)" discord_channel=$COORDINATOR
-    assert_equal "$output" "team-log: web is neither all, for every project, nor a project projects.toml names: proj, conv"
-    for message in 0 01566 15660000000000001234567; do
-      run_bin -1 team-log T14 $kind project=proj discord_message=$message discord_channel=$COORDINATOR
+  local kind message channel before
+  for kind in merge-default-withdrawn merge-default-restored; do
+    run_bin -1 team-log T14 $kind scope=web discord_message="$(soon)" discord_channel=$COORDINATOR
+    assert_equal "$output" "team-log: scope web is neither task, the task it is logged under, all, every project, nor a project projects.toml names: proj, conv"
+    for message in 0 01566 15660000000000001234567 soon; do
+      run_bin -1 team-log T14 $kind scope=proj discord_message=$message discord_channel=$COORDINATOR
       assert_equal "$output" "team-log: discord_message $message is not a Discord id"
+      run_bin -1 team-log T14 $kind scope=proj discord_message="$(soon)" discord_channel=$message
+      assert_equal "$output" "team-log: discord_channel $message is not a Discord id"
     done
-    run_bin -1 team-log T14 $kind project=proj discord_message="$(soon)" discord_channel=1563000000000000009
+    run_bin -1 team-log T14 $kind scope=proj discord_message="$(soon)" discord_channel=1563000000000000009
     assert_equal "$output" "team-log: discord_channel 1563000000000000009 is neither #coordinator's channel, $COORDINATOR, nor T14's thread: it has none"
   done
   # The task's latest thread, never an earlier one or another task's.
+  opened_task T14
   thread T14 1563000000000000001
   thread T14 1563000000000000002
   thread T15 1563000000000000003
-  for kind in merge-standing merge-standing-withdrawn; do
+  for kind in merge-default-withdrawn merge-default-restored; do
     for channel in 1563000000000000001 1563000000000000003; do
-      run_bin -1 team-log T14 $kind project=all discord_message="$(soon)" discord_channel=$channel
+      run_bin -1 team-log T14 $kind scope=all discord_message="$(soon)" discord_channel=$channel
       assert_equal "$output" "team-log: discord_channel $channel is neither #coordinator's channel, $COORDINATOR, nor T14's thread, 1563000000000000002"
     done
   done
-  run_bin -1 team-log T14 merge-standing project=proj discord_message="$(soon)"
-  assert_contains "$output" "merge-standing needs discord_channel"
-  # A project named all makes all name it, never every project.
-  plan_registry "$(plan_project all false)"
-  run_bin -1 team-log T14 merge-standing project=all discord_message="$(soon)" discord_channel=$COORDINATOR
-  assert_equal "$output" "team-log: projects.toml names a project all, so project=all cannot say every project"
-  assert_equal "$(standing_events)" ""
-  run_bin -0 team-log T14 merge-standing project=proj discord_message="$(soon)" discord_channel=1563000000000000002
+  run_bin -1 team-log T14 merge-default-withdrawn discord_message="$(soon)" discord_channel=$COORDINATOR
+  assert_contains "$output" "merge-default-withdrawn needs scope"
+  run_bin -1 team-log T14 merge-default-withdrawn scope=proj discord_channel=$COORDINATOR
+  assert_contains "$output" "merge-default-withdrawn needs discord_message"
+  run_bin -1 team-log T14 merge-default-withdrawn scope=proj discord_message="$(soon)"
+  assert_contains "$output" "merge-default-withdrawn needs discord_channel"
+  assert_equal "$(default_events)" ""
+  # A closed task's own PRs merge no more, so scope=task names nothing there; a project or all does.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=task discord_message="$(soon)" discord_channel=$COORDINATOR
+  echo '{"ts":"2026-11-01T09:00:00Z","task":"T14","event":"closed","archive":[],"returned":[],"kept":[]}' >>"$TEAM_HOME/ledger.jsonl"
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  for kind in merge-default-withdrawn merge-default-restored; do
+    run_bin -1 team-log T14 $kind scope=task discord_message="$(soon)" discord_channel=$COORDINATOR
+    assert_equal "$output" "team-log: T14 is closed, so scope=task names no PR it may still merge: name its project, or all"
+  done
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  run_bin -0 --separate-stderr team-log T14 merge-default-withdrawn scope=proj discord_message="$(soon)" discord_channel=$COORDINATOR
+  assert_equal "$stderr" ""
 }
 
-@test "merge-standing and its withdrawal are refused for the team's own project, by name, by repo and by path, and all is logged beside it" {
-  local kind said=(discord_message="$(soon)" discord_channel="$COORDINATOR")
-  plan_registry "$(plan_project agent-team false)"
-  for kind in merge-standing merge-standing-withdrawn; do
-    run_bin -1 team-log T14 $kind project=agent-team "${said[@]}"
-    assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
+@test "merge-default-restored needs a withdrawal standing that its scope covers, the latest that covers a PR deciding" {
+  plan_registry "$(plan_project web)"
+  opened_task T14
+  opened_task T15
+  opened T16 conv
+  local said=(discord_message="$(soon)" discord_channel="$COORDINATOR") scope
+  for scope in task proj all; do
+    run_bin -1 team-log T14 merge-default-restored scope=$scope "${said[@]}"
+    assert_equal "$output" "team-log: no withdrawal of the default word stands that scope=$scope of T14 covers, so merge-default-restored gives nothing back"
   done
-
-  # By repo, the origin of the code checkout team-log runs from; and by path, at that checkout.
-  own_by_repo_and_path false
-  for kind in merge-standing merge-standing-withdrawn; do
-    run_bin -1 team-log T14 $kind project=mirror "${said[@]}"
-    assert_equal "$output" "team-log: mirror is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
-    run_bin -1 team-log T14 $kind project=tools "${said[@]}"
-    assert_equal "$output" "team-log: tools is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
+  # A task's withdrawal: given back for that task, its project or all, never another task's or project's.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=task "${said[@]}"
+  run_bin -1 team-log T15 merge-default-restored scope=task "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=conv "${said[@]}"
+  run_bin -0 team-log T15 merge-default-restored scope=proj "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=task "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=all "${said[@]}"
+  # A project's: given back for it or all, or for one task of it, which leaves the others withdrawn.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=proj "${said[@]}"
+  run_bin -1 team-log T16 merge-default-restored scope=task "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=web "${said[@]}"
+  run_bin -0 team-log T14 merge-default-restored scope=task "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=task "${said[@]}"
+  run_bin -0 team-log T16 merge-default-restored scope=proj "${said[@]}"
+  run_bin -1 team-log T15 merge-default-restored scope=task "${said[@]}"
+  # Every project's: given back for one project, one task, or all, which ends every withdrawal.
+  run_bin -0 team-log T14 merge-default-withdrawn scope=all "${said[@]}"
+  run_bin -0 team-log T14 merge-default-restored scope=web "${said[@]}"
+  run_bin -1 team-log T14 merge-default-restored scope=web "${said[@]}"
+  run_bin -0 team-log T16 merge-default-restored scope=task "${said[@]}"
+  run_bin -0 team-log T15 merge-default-withdrawn scope=task "${said[@]}"
+  run_bin -0 team-log T14 merge-default-restored scope=all "${said[@]}"
+  for scope in all proj conv web; do
+    run_bin -1 team-log T15 merge-default-restored scope=$scope "${said[@]}"
   done
-  assert_equal "$(standing_events)" ""
-
-  # Every project, and a project not the team's own, are logged as before.
-  run_bin -0 team-log T14 merge-standing project=all "${said[@]}"
-  run_bin -0 team-log T14 merge-standing project=proj "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
-  assert_equal "$(standing_events)" "merge-standing all
-merge-standing proj
-merge-standing-withdrawn proj
-merge-standing-withdrawn all"
-}
-
-@test "merge-standing-withdrawn needs a standing word for its project, or for any project when it withdraws all" {
-  plan_registry "$(plan_project web false)"
-  local said=(discord_message="$(soon)" discord_channel="$COORDINATOR")
-  run_bin -1 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for proj, so merge-standing-withdrawn withdraws nothing"
-  run_bin -1 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for any project, so merge-standing-withdrawn withdraws nothing"
-  # A word on one project stands for it alone, whichever task logged it.
-  run_bin -0 team-log T15 merge-standing project=proj "${said[@]}"
-  run_bin -1 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for conv, so merge-standing-withdrawn withdraws nothing"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
-  run_bin -1 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
-  # A word on every project, withdrawn for one, stands for the others.
-  run_bin -0 team-log T14 merge-standing project=all "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
-  run_bin -1 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for conv, so merge-standing-withdrawn withdraws nothing"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=web "${said[@]}"
-  # A word given after a withdrawal stands again.
-  run_bin -0 team-log T14 merge-standing project=conv "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
-  # A withdrawal of all ends every word, and none is left to withdraw.
-  run_bin -0 team-log T14 merge-standing project=web "${said[@]}"
-  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
-  local project
-  for project in all proj conv web; do
-    run_bin -1 team-log T14 merge-standing-withdrawn project=$project "${said[@]}"
-  done
-  assert_equal "$output" "team-log: no standing word of Daniel's stands for web, so merge-standing-withdrawn withdraws nothing"
-  # A word on a project no longer registered still stands, and a withdrawal of all ends it.
-  run_bin -0 team-log T14 merge-standing project=web "${said[@]}"
-  plan_registry
-  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
-  assert_equal "$(standing_events)" "$(
-    cat <<'LINES'
-merge-standing proj
-merge-standing-withdrawn proj
-merge-standing all
-merge-standing-withdrawn conv
-merge-standing-withdrawn web
-merge-standing conv
-merge-standing-withdrawn conv
-merge-standing web
-merge-standing-withdrawn all
-merge-standing web
-merge-standing-withdrawn all
-LINES
-  )"
-  run_bin -0 team-log --check
+  run_bin -1 team-log T15 merge-default-restored scope=task "${said[@]}"
+  assert_equal "$output" "team-log: no withdrawal of the default word stands that scope=task of T15 covers, so merge-default-restored gives nothing back"
+  assert_equal "$(default_events)" "merge-default-withdrawn T14 task
+merge-default-restored T15 proj
+merge-default-withdrawn T14 proj
+merge-default-restored T14 task
+merge-default-restored T16 proj
+merge-default-withdrawn T14 all
+merge-default-restored T14 web
+merge-default-restored T16 task
+merge-default-withdrawn T15 task
+merge-default-restored T14 all"
 }
 
 @test "branch-renamed records the task's new branch for one of its projects, which names the task and is not its branch now" {
@@ -1015,13 +1259,14 @@ LINES
 }
 
 @test "a review logs the count of each finding kind and the guarded areas, in their shapes, or neither" {
+  opened_task T14
   run_bin -0 team-log T14 review verdict=pass head=a1b2c3d \
     'findings={"blocking": 0, "correctness": 1, "security": 0, "real-data": 0, "note-change": 2, "note-before": 1}' \
     'before=[4]' 'guarded=["ci", "secrets"]'
   run_bin -0 team-log T14 review verdict=pass head=e4f5a6b \
     'findings={"note-before": 0, "note-change": 0, "real-data": 0, "security": 0, "correctness": 0, "blocking": 0}' 'guarded=[]'
   run_bin -0 team-log T14 review verdict=findings head=e4f5a6b
-  assert_equal "$(ledger_without_ts)" "$(
+  assert_equal "$(logged_after 2)" "$(
     cat <<'LINES'
 {"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","findings":{"blocking":0,"correctness":1,"security":0,"real-data":0,"note-change":2,"note-before":1},"before":[4],"guarded":["ci","secrets"]}
 {"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b","findings":{"note-before":0,"note-change":0,"real-data":0,"security":0,"correctness":0,"blocking":0},"guarded":[]}
@@ -1043,13 +1288,20 @@ LINES
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded={"ci":1}'
   assert_contains "$output" "guarded must be a list, got an object"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded=["ci", "docs", 1]'
-  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, dependencies, migrations, settings, permissions, secrets and guardrails:
+  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, migrations, deploy, permissions, secrets and guardrails:
   \"docs\": not a guarded area
   1: not a guarded area"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+  # dependencies and settings are retired (T276): a review names them no more.
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d guarded=deploy,dependencies,settings
+  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, migrations, deploy, permissions, secrets and guardrails:
+  \"dependencies\": not a guarded area
+  \"settings\": not a guarded area"
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d guarded=ci,migrations,deploy,permissions,secrets,guardrails
+  assert_equal "$(logged_after 2 | wc -l)" "4"
 }
 
 @test "a review names its plain notes on code the PR did not change, and never sends one back" {
+  opened_task T14
   local counts='"blocking": 1, "correctness": 0, "security": 0, "real-data": 0'
   # The before notes are named, the change notes and the blocking finding go back.
   run_bin -0 team-log T14 review verdict=findings head=a1b2c3d \
@@ -1086,7 +1338,40 @@ LINES
   4: listed twice"
   run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'before=2.5,3'
   assert_equal "$output" "team-log: before: 2.5 is not a whole number"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
+  assert_equal "$(logged_after 2 | wc -l)" "4"
+}
+
+@test "a review names its widening findings as distinct numbers above 0, never a before note" {
+  opened_task T14
+  local counts='"blocking": 1, "correctness": 0, "security": 0, "real-data": 0'
+  # A comma list, none and no list at all.
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=3,5 widening=3,5
+  run_bin -0 team-log T14 review verdict=findings head=e4f5a6b sent_back=1 widening=none
+  run_bin -0 team-log T14 review verdict=findings head=e4f5a6b sent_back=1
+  # A widening finding not sent back is logged as given.
+  run_bin -0 team-log T14 review verdict=findings head=e4f5a6b sent_back=1 widening=1,6
+  assert_equal "$(logged_after 2 | jq -c 'select(.event == "review") | .widening')" '[3,5]
+[]
+null
+[1,6]'
+  run_bin -0 team-log --check
+
+  # The list's shape.
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d widening=0
+  assert_equal "$output" "team-log: widening lists the numbers of the findings in what the last fix added, each a whole number above 0, once:
+  0: not a finding number"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d widening=3,3
+  assert_equal "$output" "team-log: widening lists the numbers of the findings in what the last fix added, each a whole number above 0, once:
+  3: listed twice"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d widening=x
+  assert_equal "$output" "team-log: widening: x is not a whole number"
+  # A before note is on code the PR did not change, so it is in no fix's code.
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d \
+    "findings={$counts, \"note-change\": 0, \"note-before\": 1}" before=2 sent_back=1 widening=1,2
+  assert_equal "$output" "team-log: widening names note 2, which before lists as on code the PR did not change"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d before=3,5 sent_back=1 widening=3,5
+  assert_equal "$output" "team-log: widening names notes 3 and 5, which before lists as on code the PR did not change"
+  assert_equal "$(logged_after 2 | wc -l)" "4"
 }
 
 @test "an answered naming a Discord message is refused, naming team-answer, in both forms; one with no message is logged" {
@@ -1109,7 +1394,26 @@ LINES
 {"task":"T7","event":"answered","id":"sign-in","answer":"five"}'
 }
 
+@test "an answered naming an item of the waiting list is refused, naming team-answer --item" {
+  open_t7
+  # team-answer --item checks Daniel's message names the number, so team-log never writes one.
+  run_bin -1 team-log T7 answered id=sign-in answer=five item=3
+  assert_equal "$output" "team-log: an answered that names an item of the waiting list is logged only by team-answer --item, which reads Daniel's message and checks it names that number: team-answer --item 3 <the message's id>"
+  run_bin -1 team-log T7 answered id=sign-in answer=five item=3 discord_message=1564000000000000001
+  assert_contains "$output" "team-answer --item 3 <the message's id>"
+  assert_equal "$(ledger_events)" "opened"
+  # --check takes the field as a number, and refuses it as anything else.
+  echo '{"ts":"2026-11-01T10:00:09Z","task":"T7","event":"answered","id":"sign-in","answer":"3 yes","discord_message":"1564000000000000001","item":3}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log --check
+  echo '{"ts":"2026-11-01T10:00:10Z","task":"T7","event":"answered","id":"sign-in","answer":"3 yes","discord_message":"1564000000000000001","item":"3"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-log --check
+  assert_contains "$output" "item must be a number, got a string"
+}
+
 @test "an asked names no script or sha256: team-ask --script is their one writer" {
+  opened_task T14
   local hash
   hash=$(printf '%064d' 0 | tr 0 a)
   run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="$hash"
@@ -1118,9 +1422,9 @@ LINES
   assert_equal "$output" "team-log: an asked logs no script or sha256: team-ask T14 fix --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
   run_bin -1 team-log T14 asked id=fix text=run-it sha256="$hash"
   assert_equal "$output" "team-log: an asked logs no script or sha256: team-ask T14 fix --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
-  assert_ledger_empty
+  assert_equal "$(logged_after 2)" ""
   run_bin -0 team-log T14 asked id=plain text=no-script
-  assert_equal "$(ledger_without_ts)" '{"task":"T14","event":"asked","id":"plain","text":"no-script"}'
+  assert_equal "$(logged_after 2)" '{"task":"T14","event":"asked","id":"plain","text":"no-script"}'
 }
 
 @test "a kind another script writes is refused with nothing appended" {
@@ -1140,14 +1444,16 @@ LINES
 @test "a park logged after the fact takes since, when it began, on each of the four park kinds" {
   local task
   for task in T14 T15 T16 T17; do
-    echo '{"ts":"2026-10-25T14:51:44Z","task":"'$task'","event":"launch","role":"builder","session":"s","worktree":"/w","toolkits":[]}'
-  done >"$TEAM_HOME/ledger.jsonl"
+    opened_task $task
+    echo '{"ts":"2026-10-25T14:51:44Z","task":"'$task'","event":"launch","role":"builder","session":"s","worktree":"/w","toolkits":[]}' \
+      >>"$TEAM_HOME/ledger.jsonl"
+  done
   # Another task's later event does not bound it.
   echo '{"ts":"2026-10-25T16:00:00Z","task":"T18","event":"resumed"}' >>"$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-log T14 blocked 'reason=usage limit: the weekly limit' since=2026-10-25T14:58:00Z
   run_bin -0 team-log T15 waiting on=Daniel reason=x since=2026-10-25T14:58:00Z
-  run_bin -0 team-log T16 paused reason=x since=2026-10-25T14:51:44Z
-  run_bin -0 team-log T17 held reason=x since=2026-10-25T14:58:00Z
+  run_bin -0 team-log T16 paused cause=machine reason=x since=2026-10-25T14:51:44Z
+  run_bin -0 team-log T17 held discord_message=1564000000000000020 reason=x since=2026-10-25T14:58:00Z
   assert_equal "$(tail -n 4 "$TEAM_HOME/ledger.jsonl" | jq -r '[.event, .since] | join(" ")')" "$(
     printf '%s\n' 'blocked 2026-10-25T14:58:00Z' 'waiting 2026-10-25T14:58:00Z' 'paused 2026-10-25T14:51:44Z' 'held 2026-10-25T14:58:00Z'
   )"
@@ -1168,7 +1474,7 @@ LINES
   assert_contains "$output" "since 2999-01-01T00:00:00Z is later than now ("
   run_bin -1 team-log T14 blocked reason=x since=2026-10-25T14:00:00Z
   assert_contains "$output" "since 2026-10-25T14:00:00Z is earlier than T14's latest event, at 2026-10-25T14:51:44Z"
-  run_bin -1 team-log T14 resumed since=2026-10-25T15:00:00Z
+  run_bin -1 team-log T14 resumed all=true since=2026-10-25T15:00:00Z
   assert_contains "$output" "since is taken only by a park (waiting, blocked, paused, held), not resumed"
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
@@ -1178,6 +1484,7 @@ LINES
   assert_contains "$output" "usage: team-log T<n> <event> [key=value]..."
   run_bin -2 team-log T14
   run_bin -2 team-log --check a b
+  run_bin -2 team-log --check-lifecycle a b
   assert_ledger_empty
 }
 
@@ -1197,17 +1504,68 @@ LEDGER
   assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 8 lines meet the ledger contract"
 }
 
+@test "--check-lifecycle names a closed task's event, and exits 1 only for one from lifecycle_from on" {
+  cat >"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
+{"ts":"2026-11-01T00:00:00Z","task":"T1","event":"thread","discord_thread":"1563"}
+{"ts":"2026-11-01T00:01:00Z","task":"T1","event":"opened","project":"proj","path":"small"}
+{"ts":"2026-11-01T00:02:00Z","task":"T1","event":"closed","archive":[],"returned":[],"kept":[]}
+{"ts":"2026-11-01T00:03:00Z","task":"T1","event":"held","reason":"on hold by Daniel"}
+LEDGER
+  local file=$TEAM_HOME/ledger.jsonl
+  local named="$file:4: T1 held: T1 is closed, and a closed task takes no held"
+  with_lifecycle_from null
+  run_bin -0 --separate-stderr team-log --check-lifecycle
+  assert_equal "$output" "$named
+$file: 1 of 4 lines break the lifecycle table, 0 of them from its lifecycle_from on"
+  assert_equal "$stderr" ""
+  # From a time before the event, it would be refused: exit 1, on stderr.
+  with_lifecycle_from 2026-01-01T00:00:00Z
+  run_bin -1 --separate-stderr team-log --check-lifecycle
+  assert_equal "$output" ""
+  assert_equal "$stderr" "$named
+$file: 1 of 4 lines break the lifecycle table, 1 of them from its lifecycle_from on"
+  # From a time after it, it is named and passes.
+  with_lifecycle_from 2026-11-01T00:03:01Z
+  run_bin -0 team-log --check-lifecycle "$file"
+  assert_contains "$output" "0 of them from its lifecycle_from on"
+  # A ledger the table takes whole.
+  head -3 "$file" >"$BATS_TEST_TMPDIR/clean.jsonl"
+  run_bin -0 team-log --check-lifecycle "$BATS_TEST_TMPDIR/clean.jsonl"
+  assert_equal "$output" "$BATS_TEST_TMPDIR/clean.jsonl: 3 lines meet the lifecycle table"
+  run_bin -1 team-log --check-lifecycle "$BATS_TEST_TMPDIR/none.jsonl"
+  assert_equal "$output" "team-log: no ledger at $BATS_TEST_TMPDIR/none.jsonl"
+}
+
+@test "--check-lifecycle runs over every fixture ledger and passes it while lifecycle_from is null" {
+  with_lifecycle_from null
+  local file count=0
+  while IFS= read -r file; do
+    run_bin -0 team-log --check-lifecycle "$file"
+    assert_contains "${lines[-1]}" "$file: "
+    count=$((count + 1))
+  done < <(find "$REPO_ROOT/tests/fixtures" -name 'ledger*.jsonl' | sort)
+  ((count >= 10))
+  # The early ledger, from before team-open: its tasks are legacy, opened by no event, and its 15
+  # parks of opened tasks carry no cause, which the table holds new lines to (252 before typed parks).
+  file=$REPO_ROOT/tests/fixtures/ledger-2026-10-23.jsonl
+  run_bin -0 team-log --check-lifecycle "$file"
+  assert_equal "${lines[0]}" "$file:1: T1 launch: T1 is not opened (no opened event), and it takes only thread and opened before its opened, not launch"
+  assert_equal "$(grep -c ': a [a-z]* needs a cause, one of ' <<<"$output")" 15
+  assert_equal "${lines[-1]}" "$file: 267 of 436 lines break the lifecycle table, 0 of them from its lifecycle_from on"
+}
+
 # T171 review note 2: the ledger's reviews before the scope split count plain notes as note.
 @test "--check passes a review logged before the scope split, its findings counting note" {
+  opened_task T14
   echo "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"a1b2c3d\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note\":3},\"guarded\":[]}" \
     >>"$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-log --check
-  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 1 line meets the ledger contract"
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 3 lines meet the ledger contract"
   # A new review after it counts the split.
   run_bin -0 team-log T14 review verdict=pass head=e4f5a6b \
     'findings={"blocking": 0, "correctness": 0, "security": 0, "real-data": 0, "note-change": 0, "note-before": 0}' 'guarded=[]'
   run_bin -0 team-log --check
-  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 2 lines meet the ledger contract"
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 4 lines meet the ledger contract"
 }
 
 @test "--check accepts a failed re-home and the re-home that clears it, and refuses one with no reason" {
@@ -1400,32 +1758,168 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
     --from-message 'T7 QUESTION Which store keeps the counters? | options: Mongo TTL / memory'
 }
 
-@test "--from-message logs a BLOCKED and a NEED toolkit as blocked" {
+# An ops session's answer, whose name and order number are production data: OPS_ANSWER, 64 characters, é one of them.
+OPS_ANSWER='3 accounts match; the newest is Jean Dupré, order 1187, on 11-02'
+
+# Asserts that no line of the ledger holds the ops answer's text, or any of its distinctive parts.
+assert_no_answer_logged() {
+  local part
+  for part in Dupré 1187 'accounts match' 'what store'; do
+    if grep -qF "$part" "$TEAM_HOME/ledger.jsonl"; then
+      echo "the ledger holds '$part':" >&2
+      cat "$TEAM_HOME/ledger.jsonl" >&2
+      return 1
+    fi
+  done
+}
+
+@test "--from-message logs an ops session's DONE as its length in characters, never its text, whatever its first word" {
+  open_t7
+  launched T7 ops d0000001
+  assert_equal "${#OPS_ANSWER}" 64
+  logs_events '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":64}' \
+    --from-message "T7 DONE $OPS_ANSWER"
+  # --print prints what it would log, and no more of the text.
+  run_bin -0 team-log T7 --from-message "T7 DONE $OPS_ANSWER" --from T7-ops --print
+  assert_equal "$(jq -c 'del(.ts)' <<<"$output")" '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":64}'
+  # With --from naming the ops session, a first word that is another form's is still the answer.
+  launched T7 builder b0000001
+  logs_events '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":26}' \
+    --from-message 'T7 DONE 42 orders; the newest 1187' --from T7-ops
+  logs_events '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":28}' \
+    --from d0000001 --from-message 'T7 DONE merged accounts: Dupré, 1187'
+  # Without it, such a word is that form's, a builder's, and refused when it does not read as one.
+  refuses_message "team-log: DONE 42 takes one or more shas of 7 to 40 hex digits after the ticket, then a line, got 'orders;'" \
+    --from-message 'T7 DONE 42 orders; the newest 1187'
+  assert_no_answer_logged
+  run_bin -0 team-log --check
+}
+
+@test "--from-message logs an ops session's QUESTION as its length, and its other messages as every role's" {
+  open_t7
+  launched T7 ops d0000001
+  logs_events '{"task":"T7","event":"question","role":"ops","chars":28}' \
+    --from-message 'T7 QUESTION what store holds order 1187?'
+  assert_no_answer_logged
+  # BLOCKED, PAUSED, FAILED and INJECTION keep their text: roles/ops.md keeps personal details out of them.
+  logs_events '{"task":"T7","event":"blocked","reason":"mcp__prod-read__find denied","cause":"worker","role":"ops","session":"d0000001"}' \
+    --from-message 'T7 BLOCKED mcp__prod-read__find denied'
+  logs_events '{"task":"T7","event":"paused","reason":"stowed","cause":"stow","role":"ops","session":"d0000001"}' --from-message 'T7 PAUSED stowed'
+  logs_events '{"task":"T7","event":"failed","reason":"the collection is gone"}' --from-message 'T7 FAILED the collection is gone'
+  logs_events '{"task":"T7","event":"injection","role":"ops","source":"orders/1187","text":"asked to drop the collection"}' \
+    --from T7-ops --from-message 'T7 INJECTION orders/1187 asked to drop the collection'
+  # Another role's QUESTION keeps its text.
+  launched T7 builder b0000001
+  logs_events '{"task":"T7","event":"question","role":"builder","text":"which store?"}' \
+    --from-message 'T7 QUESTION which store?' --from T7-builder
+  run_bin -0 team-log --check
+}
+
+@test "--from-message logs --relay, the coordinator's relay of an ops answer, on the ops session's done, and only there" {
+  open_t7
+  launched T7 ops d0000001
+  logs_events '{"task":"T7","event":"done","role":"ops","session":"d0000001","report_chars":64,"relay":"1564000000000000007"}' \
+    --from-message "T7 DONE $OPS_ANSWER" --relay 1564000000000000007
+  assert_no_answer_logged
+  run_bin -0 team-log --check
+  local why="--relay is taken only with an ops session's DONE, the answer it points at in Discord"
+  refuses_message "team-log: $why, not T7-ops's QUESTION" \
+    --from-message 'T7 QUESTION which store?' --from T7-ops --relay 1564000000000000008
+  refuses_message "team-log: $why, not FAILED" \
+    --from-message 'T7 FAILED gone' --from T7-ops --relay 1564000000000000008
+  launched T7 builder b0000001
+  refuses_message "team-log: $why, not T7-builder's DONE" \
+    --from-message 'T7 DONE .scratch/task/notes.md' --from T7-builder --relay 1564000000000000008
+  refuses_message "team-log: $why, not T7-builder's DONE" \
+    --from-message 'T7 DONE 01 a1b2c3d the ticket' --relay 1564000000000000008
+  # A malformed id is a malformed command line, and so is --relay with no message or twice.
+  local id
+  for id in 01564000000000000008 x 15640000000000000080; do
+    run_bin -2 team-log T7 --from-message "T7 DONE $OPS_ANSWER" --from T7-ops --relay "$id"
+    assert_contains "$output" "--relay takes the Discord id of the relay's message, got '$id'"
+  done
+  run_bin -2 team-log T7 --from-message "T7 DONE $OPS_ANSWER" --from T7-ops --relay
+  assert_contains "$output" "--relay needs a Discord message id"
+  run_bin -2 team-log T7 --from-message "T7 DONE $OPS_ANSWER" --relay 1 --relay 2
+  assert_contains "$output" "--relay is given twice"
+  run_bin -2 team-log T7 --relay 1564000000000000008
+  assert_contains "$output" "--relay is taken only with --from-message"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 4
+}
+
+@test "--from-message logs a BLOCKED and a NEED toolkit as blocked cause=worker, with the sender's role and session" {
   open_t7
   launched T7 builder b0000001
   # roles/builder.md: `BLOCKED <what> <why>`
-  logs_events '{"task":"T7","event":"blocked","reason":"Bash(git push) denied: the push target is a base branch"}' \
+  logs_events '{"task":"T7","event":"blocked","reason":"Bash(git push) denied: the push target is a base branch","cause":"worker","role":"builder","session":"b0000001"}' \
     --from-message 'T7 BLOCKED Bash(git push) denied: the push target is a base branch'
   # roles/builder.md: `NEED toolkit <name>`
-  logs_events '{"task":"T7","event":"blocked","reason":"needs toolkit browser"}' \
+  logs_events '{"task":"T7","event":"blocked","reason":"needs toolkit browser","cause":"worker","role":"builder","session":"b0000001"}' \
     --from-message 'T7 NEED toolkit browser'
   refuses_message "team-log: NEED takes 'NEED toolkit <name>', got 'NEED a browser'" \
     --from-message 'T7 NEED a browser'
 }
 
-@test "--from-message logs a PAUSED stowed as paused reason=stowed" {
+@test "--from-message logs a PAUSED with its why as the reason and its first word's cause, with the sender's role and session" {
   open_t7
   launched T7 builder b0000001
-  # roles/builder.md: reply `T<n> PAUSED stowed`
-  logs_events '{"task":"T7","event":"paused","reason":"stowed"}' --from-message 'T7 PAUSED stowed'
+  local sender='"role":"builder","session":"b0000001"'
+  # roles/builder.md: reply `T<n> PAUSED stowed`, a handoff after it.
+  logs_events '{"task":"T7","event":"paused","reason":"stowed","cause":"stow",'"$sender"'}' --from-message 'T7 PAUSED stowed'
+  logs_events '{"task":"T7","event":"paused","reason":"stowed, handoff written","cause":"stow",'"$sender"'}' \
+    --from-message 'T7 PAUSED stowed, handoff written'
+  # roles/builder.md: `T<n> PAUSED held`, the answer to `T<n> HOLD`.
+  logs_events '{"task":"T7","event":"paused","reason":"held","cause":"coordinator-hold",'"$sender"'}' --from-message 'T7 PAUSED held'
+  # roles/builder.md: `T<n> PAUSED offline <what failed>`
+  logs_events '{"task":"T7","event":"paused","reason":"offline git push could not reach github.com","cause":"offline",'"$sender"'}' \
+    --from-message 'T7 PAUSED offline git push could not reach github.com'
+  logs_events '{"task":"T7","event":"paused","reason":"offline GitHub","cause":"offline",'"$sender"'}' --from-message 'T7 PAUSED offline GitHub'
+  # Any other first word is the worker's own pause.
+  logs_events '{"task":"T7","event":"paused","reason":"waiting for the gate","cause":"worker",'"$sender"'}' \
+    --from-message 'T7 PAUSED waiting for the gate'
+  logs_events '{"task":"T7","event":"paused","reason":"stowedness","cause":"worker",'"$sender"'}' --from-message 'T7 PAUSED stowedness'
+  run_bin -0 team-log --check
 }
 
-@test "--from-message logs a PAUSED with its why" {
+@test "--from-message logs a park with no role or session when its sender is not known, and refuses a --from naming no launch" {
   open_t7
   launched T7 builder b0000001
-  # roles/builder.md: `T<n> PAUSED offline <what failed>`
-  logs_events '{"task":"T7","event":"paused","reason":"offline git push could not reach github.com"}' \
-    --from-message 'T7 PAUSED offline git push could not reach github.com'
+  launched T7 reviewer r0000001
+  logs_events '{"task":"T7","event":"paused","reason":"stowed","cause":"stow"}' --from-message 'T7 PAUSED stowed'
+  logs_events '{"task":"T7","event":"blocked","reason":"the fixture is gone","cause":"worker"}' --from-message 'T7 BLOCKED the fixture is gone'
+  logs_events '{"task":"T7","event":"paused","reason":"held","cause":"coordinator-hold","role":"reviewer","session":"r0000001"}' \
+    --from-message 'T7 PAUSED held' --from T7-reviewer
+  refuses_message "team-log: --from T7-planner names no launch of T7: its sessions are T7-builder (b0000001), T7-reviewer (r0000001)" \
+    --from-message 'T7 PAUSED held' --from T7-planner
+}
+
+@test "a park logged by hand takes the cause its kind and on tell, keeps a cause given, and needs one for a paused and Daniel's message for a held" {
+  opened_task T14
+  run_bin -0 team-log T14 waiting on=Daniel reason="an interview"
+  run_bin -0 team-log T14 waiting on=daniel reason="a login"
+  run_bin -0 team-log T14 waiting on=GitHub reason="a support ticket"
+  run_bin -0 team-log T14 blocked on=T31 reason="its PR first"
+  run_bin -0 team-log T14 blocked reason="the fixture server is down"
+  run_bin -0 team-log T14 blocked cause=denial reason="Bash(git push) denied"
+  run_bin -0 team-log T14 waiting on=Daniel cause=outside reason="kept as given"
+  run_bin -0 team-log T14 paused cause=limit reason="the weekly limit"
+  run_bin -0 team-log T14 held discord_message=1564000000000000020 reason="Daniel holds it for the release"
+  assert_equal "$(logged_after 2 | jq -r '[.event, .on // "-", .cause] | join(" ")')" "$(printf '%s\n' \
+    "waiting Daniel daniel" "waiting daniel daniel" "waiting GitHub outside" "blocked T31 task" "blocked - worker" \
+    "blocked - denial" "waiting Daniel outside" "paused - limit" "held - daniel-hold")"
+  run_bin -0 team-log --check
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 paused reason="the machine is busy"
+  assert_equal "$output" "team-log: a paused needs cause=, one of limit, machine, shutdown, worker"
+  run_bin -1 team-log T14 held reason="Daniel holds it"
+  assert_equal "$output" "team-log: a held is Daniel's hold, and needs discord_message, the id of Daniel's message saying so"
+  # A cause the kind does not take is the contract's refusal.
+  run_bin -1 team-log T14 held discord_message=1564000000000000020 cause=limit reason="x"
+  assert_contains "$output" "cause must be one of daniel-hold"
+  run_bin -1 team-log T14 blocked cause=stow reason="x"
+  assert_contains "$output" "cause must be one of task, worker, denial"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
 
 @test "--from-message logs a PR with its head from GitHub, and a branch-renamed when the gate moved the branch" {
@@ -1530,14 +2024,42 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   launched T7 reviewer c0000001 brief-rereview-2
   brief_record T7 brief-rereview-2 "{\"pr\": \"$URL\", \"head\": \"$HEAD_B\", \"reviewed\": \"$HEAD_A\"}"
   # templates/briefs/rereview.md: `{{task}} DONE findings {{task_dir}}/review.md findings=... before=... guarded=...`
-  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"$HEAD_B\",\"findings\":{\"blocking\":1,\"correctness\":1,\"security\":0,\"real-data\":0,\"note-change\":1,\"note-before\":0},\"before\":[],\"guarded\":[\"ci\",\"settings\"],\"sent_back\":[1,2,3]}
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"$HEAD_B\",\"findings\":{\"blocking\":1,\"correctness\":1,\"security\":0,\"real-data\":0,\"note-change\":1,\"note-before\":0},\"before\":[],\"guarded\":[\"ci\",\"secrets\"],\"sent_back\":[1,2,3]}
 {\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000001\"}" \
-    --from-message "T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:1,security:0,real-data:0,note-change:1,note-before:0 before=none guarded=ci,settings" \
+    --from-message "T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:1,security:0,real-data:0,note-change:1,note-before:0 before=none guarded=ci,secrets" \
     --sent-back 1,2,3
   # The review's own checks hold: a before note is never sent back.
   refuses_message "team-log: sent_back names note 2, which before lists as a plain note on code the PR did not change: such a note is queued as a follow-up, never sent back" \
     --from-message "T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:0,security:0,real-data:0,note-change:0,note-before:1 before=2 guarded=none" \
     --sent-back 1,2
+}
+
+@test "--from-message logs a rereview's widening= on its review, none as an empty list, and no field when the message has none" {
+  open_t7
+  launched T7 builder b0000001
+  launched T7 reviewer c0000001 brief-rereview
+  brief_record T7 brief-rereview "{\"pr\": \"$URL\", \"head\": \"$HEAD_B\", \"reviewed\": \"$HEAD_A\"}"
+  local counts='blocking:1,correctness:0,security:0,real-data:0,note-change:1,note-before:0'
+  local logged='"findings":{"blocking":1,"correctness":0,"security":0,"real-data":0,"note-change":1,"note-before":0},"before":[],"guarded":[]'
+  # templates/briefs/rereview.md: `... guarded=<areas, ...> widening=<the widening findings' numbers, ...>`
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"$HEAD_B\",$logged,\"widening\":[3,5],\"sent_back\":[3,5]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000001\"}" \
+    --from-message "T7 DONE findings .scratch/task/review.md findings=$counts before=none guarded=none widening=3,5" --sent-back 3,5
+  launched T7 reviewer c0000002 brief-rereview
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"$HEAD_B\",$logged,\"widening\":[]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000002\"}" \
+    --from-message "T7 DONE pass $URL findings=$counts before=none guarded=none widening=none"
+  launched T7 reviewer c0000003 brief-rereview
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"$HEAD_B\",$logged,\"sent_back\":[1]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000003\"}" \
+    --from-message "T7 DONE findings .scratch/task/review.md findings=$counts before=none guarded=none" --sent-back 1
+  run_bin -0 team-log --check
+  # The review's own checks hold on a message too.
+  launched T7 reviewer c0000004 brief-rereview
+  refuses_message "team-log: widening: x is not a whole number" \
+    --from-message "T7 DONE findings .scratch/task/review.md findings=$counts before=none guarded=none widening=x" --sent-back 1
+  refuses_message "team-log: widening names note 2, which before lists as on code the PR did not change" \
+    --from-message "T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:0,security:0,real-data:0,note-change:0,note-before:1 before=2 guarded=none widening=2" --sent-back 1
 }
 
 @test "a pass that sends findings back is logged as findings, by hand and from a message, and one that sends none stays a pass" {
@@ -1568,8 +2090,19 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   open_t7
   launched T7 builder b0000002 brief-deliver
   # templates/briefs/delivery/no-mistakes.md: `{{task}} DONE gate run=<its id> head=<sha> outcome=<...> minutes=<one JSON object>`, with `cause=<...>`
+  # and `approved=<ids>`; a line with no approved, as every one before it, still parses.
   logs_events "{\"task\":\"T7\",\"event\":\"gate-run\",\"run\":\"01KR2B3C4D\",\"head\":\"$HEAD_A\",\"outcome\":\"pushed\",\"minutes\":{\"review\":3.5,\"test\":12},\"cause\":\"review\"}" \
     --from-message "T7 DONE gate run=01KR2B3C4D head=$HEAD_A outcome=pushed minutes={\"review\": 3.5, \"test\": 12} cause=review"
+  # A run that re-gates a base merge is logged, with the line saying the brief asks for none.
+  run_bin -0 --separate-stderr team-log T7 --from-message "T7 DONE gate run=01KR2B3C4E head=$HEAD_A outcome=pushed cause=base-merge"
+  assert_equal "$stderr" "team-log: T7 gate run 01KR2B3C4E re-gates a base merge, which the gated delivery brief asks no gate run for: a merge of the base is re-reviewed and checked by CI"
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '"\(.run) \(.cause)"')" "01KR2B3C4E base-merge"
+  # --print logs nothing, so it says nothing of it either: team-next prints, then logs.
+  run_bin -0 --separate-stderr team-log T7 --print --from-message "T7 DONE gate run=01KR2B3C4F head=$HEAD_A outcome=pushed cause=base-merge"
+  assert_equal "$stderr" ""
+  # The parks the builder approved itself, by the ids its brief names, are a list.
+  logs_events "{\"task\":\"T7\",\"event\":\"gate-run\",\"run\":\"01KR2B3C5E\",\"head\":\"$HEAD_A\",\"outcome\":\"pushed\",\"minutes\":{\"review\":2},\"approved\":[\"review-coverage\",\"lint-before\"]}" \
+    --from-message "T7 DONE gate run=01KR2B3C5E head=$HEAD_A outcome=pushed minutes={\"review\": 2} approved=review-coverage, lint-before"
   refuses_message "team-log: refusing a ledger event: outcome must be one of pushed, red, aborted, stopped-green" \
     --from-message "T7 DONE gate run=01KR2B3C4D head=$HEAD_A outcome=green minutes={}"
   refuses_message "team-log: DONE gate takes key=value pairs, got 'run 01KR2B3C4D' before the first" \
@@ -1647,6 +2180,80 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
     --from-message 'T7 DONE review-ready a1b2c3d' --from T7-reviewer
 }
 
+@test "--from-message takes a verdict on a project with the reviewer App on only with --from naming the task's latest reviewer session" {
+  plan_registry "$(plan_project agent-team)"
+  opened T7 agent-team
+  review_app_on
+  launched T7 builder b0000001 '' agent-team
+  launched T7 reviewer c0000001 '' agent-team
+  launched T7 reviewer c0000002 '' agent-team
+  local pass="T7 DONE pass $HEAD_A findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none"
+  local findings="T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none"
+  local needs="the reviewer App posts agent-review on agent-team, so its verdict is taken only from T7's latest reviewer session, T7-reviewer (c0000002)"
+  # No --from, or one naming the builder, an earlier reviewer or the role alone: refused, naming it.
+  refuses_message "team-log: $needs: run it again with --from c0000002 once the message came from that session" \
+    --from-message "$pass"
+  refuses_message "team-log: $needs: run it again with --from c0000002 once the message came from that session" \
+    --from-message "$findings" --sent-back 1
+  local from
+  for from in b0000001 c0000001 T7-reviewer x0000009; do
+    refuses_message "team-log: --from $from is not T7's latest reviewer session, T7-reviewer (c0000002): the reviewer App posts agent-review on agent-team, so its verdict is taken only from that session" \
+      --from-message "$pass" --from "$from"
+  done
+  # The latest reviewer's session: logged.
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"$HEAD_A\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0},\"before\":[],\"guarded\":[]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000002\"}" \
+    --from-message "$pass" --from c0000002
+  # A builder's message there takes no --from, as before.
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000001","report":"review-ready a1b2c3d"}' \
+    --from-message 'T7 DONE review-ready a1b2c3d'
+  # With the App off, a verdict takes no --from there either.
+  rm "$CODE_CHECKOUT/bin/lib/review-app"
+  launched T7 reviewer c0000003 '' agent-team
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"$HEAD_A\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0},\"before\":[],\"guarded\":[]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000003\"}" \
+    --from-message "$pass"
+}
+
+# A ticket builder's launch, as team-worker logs it in ticket NN's worktree: ticket_launched <task> <NN> <session>
+ticket_launched() {
+  jq -cn --arg task "$1" --arg ticket "$2" --arg session "$3" \
+    '{ts: (now | todate), task: $task, event: "launch", role: "builder", session: $session, worktree: "/w/proj--\($ticket)",
+      toolkits: [], project: "proj", branch: "feat/\($task)-x--\($ticket)", machine: "m", brief: "brief-build-\($ticket)",
+      ticket: $ticket}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "--from-message reads a DONE <NN> as ticket NN's builder's, and names each ticket builder by its session" {
+  open_t7
+  launched T7 builder b0000001 brief-build-01
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"01","commits":["a1b2c3d"],"note":"one"}
+{"task":"T7","event":"done","role":"builder","session":"b0000001"}' --from-message 'T7 DONE 01 a1b2c3d one'
+  ticket_launched T7 03 b0000003
+  ticket_launched T7 04 b0000004
+  # Neither ticket builder has reported: each is named by its session name.
+  refuses_message "team-log: the message's sender is not known: T7-builder-03 (b0000003) and T7-builder-04 (b0000004) have no report since their launch; name it with --from <session>" \
+    --from-message 'T7 QUESTION which store?'
+  refuses_message "team-log: --from T7-builder-05 names no launch of T7: its sessions are T7-builder (b0000001), T7-builder-03 (b0000003), T7-builder-04 (b0000004)" \
+    --from-message 'T7 QUESTION which store?' --from T7-builder-05
+  # A DONE of a ticket with no ticket launch is the latest builder's, as before.
+  run_bin -0 team-log T7 --from-message 'T7 DONE 02 a1b2c3e two' --print
+  assert_equal "$(jq -c 'select(.event == "done") | .session' <<<"$output")" '"b0000004"'
+  # Each DONE <NN> is its own ticket's builder's, though 04's launched last.
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"03","commits":["a1b2c3f"],"note":"three"}
+{"task":"T7","event":"done","role":"builder","session":"b0000003"}' --from-message 'T7 DONE 03 a1b2c3f three'
+  # 03's report leaves 04's builder the only one without one.
+  logs_events '{"task":"T7","event":"question","role":"builder","text":"which store?"}' --from-message 'T7 QUESTION which store?'
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"04","commits":["a1b2c40"],"note":"four"}
+{"task":"T7","event":"done","role":"builder","session":"b0000004"}' --from-message 'T7 DONE 04 a1b2c40 four'
+  # --from names a ticket builder by its session name or its id, for a DONE of the kind's role too.
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000003","report":"review-ready a1b2c41"}' \
+    --from-message 'T7 DONE review-ready a1b2c41' --from T7-builder-03
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000003","report":"review-ready a1b2c42"}' \
+    --from b0000003 --from-message 'T7 DONE review-ready a1b2c42'
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000001","report":"review-ready a1b2c43"}' \
+    --from-message 'T7 DONE review-ready a1b2c43' --from T7-builder
+}
+
 @test "--from-message refuses a kind whose role has no launch, and a sender none is without a report" {
   open_t7
   refuses_message "team-log: the message is a builder's, but T7 has no builder launch" \
@@ -1669,7 +2276,7 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   refuses_message "team-log: the message is for T8, not T7" --from-message 'T8 DONE 01 a1b2c3d x'
   refuses_message "team-log: a worker's message starts with its task, T7, then its kind; got 'DONE 01 a1b2c3d x'" \
     --from-message 'DONE 01 a1b2c3d x'
-  local forms="QUESTION <text>, BLOCKED <what> <why>, NEED toolkit <name>, PAUSED <why>, PR <full url> [merged <base> conflicts: <files or none>], DONE <NN> <sha>... <line>, DONE review-ready <sha>, DONE merged <base> <sha> conflicts: <files or none>, DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list> [memory=<path>], DONE findings <path> findings=<kind:n,...> [before=<list>] guarded=<list> [memory=<path>], DONE gate <key=value>..., DONE <report>, FAILED <why>, INJECTION <where> <what it asked>"
+  local forms="QUESTION <text>, BLOCKED <what> <why>, NEED toolkit <name>, PAUSED <why>, PR <full url> [merged <base> conflicts: <files or none>], DONE <NN> <sha>... <line>, DONE review-ready <sha>, DONE merged <base> <sha> conflicts: <files or none>, DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list> [widening=<list>] [memory=<path>], DONE findings <path> findings=<kind:n,...> [before=<list>] guarded=<list> [widening=<list>] [memory=<path>], DONE gate <key=value>..., DONE <report>, FAILED <why>, INJECTION <where> <what it asked>"
   refuses_message "team-log: cannot read 'T7 HELLO there': expected one of $forms" --from-message 'T7 HELLO there'
   refuses_message "team-log: cannot read 'T7 QUESTION': expected one of $forms" --from-message 'T7 QUESTION'
   # Malformed parts of a review, each named.
@@ -1677,7 +2284,7 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   assert_contains "$output" "findings holds the count of each finding kind"
   refuses_message "team-log: findings: blocking is not a key:value pair" \
     --from-message 'T7 DONE pass a1b2c3d findings=blocking,correctness:1 guarded=none'
-  refuses_message "team-log: DONE pass takes findings=<kind:n,...>, before=<list>, guarded=<list> and memory=<path>, got bogus" \
+  refuses_message "team-log: DONE pass takes findings=<kind:n,...>, before=<list>, guarded=<list>, widening=<list> and memory=<path>, got bogus" \
     --from-message 'T7 DONE pass a1b2c3d findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 guarded=none bogus=1'
   refuses_message "team-log: DONE pass needs findings= and guarded=" \
     --from-message 'T7 DONE pass a1b2c3d guarded=none'
@@ -1735,15 +2342,17 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 3
 }
 
-@test "refused in a worker session, whatever its role and form, --print and --check included; --help and the coordinator are not" {
+@test "refused in a worker session, whatever its role and form, --print, --check and --check-lifecycle included; --help and the coordinator are not" {
   worker_refused team-log "runs no team-log" T7 review verdict=pass
   worker_refused team-log "runs no team-log" T7 --from-message 'T7 DONE 01 abc1234 the ticket' --print
   worker_refused team-log "runs no team-log" --check
+  worker_refused team-log "runs no team-log" --check-lifecycle
   worker_refused team-log "runs no team-log" --fix-sent-back
   AGENT_TEAM_ROLE=builder run_bin -0 team-log --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-log")"
-  AGENT_TEAM_ROLE=coordinator run_bin -0 team-log T14 resumed
-  assert_equal "$(ledger_without_ts)" '{"task":"T14","event":"resumed"}'
+  opened_task T14
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-log T14 resumed all=true
+  assert_equal "$(logged_after 2)" '{"task":"T14","event":"resumed","all":true}'
 }
 
 @test "an event holding an address at a public provider is refused, naming its field and never the value, since the records hook would refuse every later ledger commit" {
@@ -1755,7 +2364,7 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   [[ $output != *someone.else* ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
   # Two string fields are both named (a list's item, tests/ledger.bats).
-  run_bin -1 team-log T7 paused "reason=from a@$provider" "note=and b@$provider, c@$provider"
+  run_bin -1 team-log T7 paused cause=machine "reason=from a@$provider" "note=and b@$provider, c@$provider"
   assert_contains "$output" "refusing a ledger event: reason holds 1 email address at a public provider; note holds 2 email addresses at a public provider"
   [[ $output != *"@$provider"* ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
@@ -1770,4 +2379,269 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   run_bin -1 team-log T7 waiting on=Daniel "reason=mail "$'\x01'"daniel@$provider"
   assert_contains "$output" "team-log: refusing a ledger event: reason holds 1 email address at a public provider"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$(($(wc -l <<<"$before") + 2))"
+}
+
+# The ledger's immediate push: the team home a clone of a bare origin, home-pc holding the lease,
+# and the ledger's lock file ignored, as the team home's .gitignore has it.
+push_home() {
+  printf 'ledger.jsonl.lock\n' >"$TEAM_HOME/.gitignore"
+  team_origin=$(hold_lease home-pc)
+}
+
+# The subject of the commit at the tip of the team home's dev on its origin.
+origin_subject() {
+  git -C "$team_origin" log -1 --format=%s dev
+}
+
+@test "every push kind team-log writes is committed alone and on origin at once, with no checkpoint; no other kind commits" {
+  push_home
+  plan_registry
+  opened T14 proj
+  plan_md T14
+  a_retro T150 answered
+  local kind args tip pushed=()
+  while IFS= read -r kind; do
+    mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" --arg coordinator "$COORDINATOR" '(.kinds[$k].required | to_entries[]
+      | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
+          elif .key == "scope" and ($k | startswith("merge-default-")) then "task" elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
+          elif .key == "retro" then "T150" elif .key == "by" and $k == "plan-approved" then "coordinator"
+          elif .key == "discord_channel" then $coordinator
+          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" or . == "digits" then "7" elif . == "id" then $soon else "x y" end end)"),
+      (select($k == "merge-approved") | "head=a1b2c3d4"),
+      (select($k == "paused") | "cause=limit"), (select($k == "held") | "discord_message=\($soon)"),
+      (select($k == "resumed") | "all=true"),
+      (.kinds[$k].one_of // [] | .[] | "\(.[0])=x y")' "$CONTRACT")
+    tip=$(git -C "$team_origin" rev-parse dev)
+    run_bin -0 --separate-stderr team-log T14 "$kind" "${args[@]}"
+    assert_equal "$output" ""
+    assert_equal "$stderr" ""
+    if jq -e --arg k "$kind" '.kinds[$k].push == true' "$CONTRACT" >/dev/null; then
+      pushed+=("$kind")
+      assert_equal "$(origin_subject)" "chore: ledger T14 $kind"
+      assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
+      assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+      assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl)" "$(cat "$TEAM_HOME/ledger.jsonl")"
+      assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$(git -C "$team_origin" rev-parse dev)"
+    else
+      assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+    fi
+  done < <(jq -r '.kinds | to_entries[] | select(([.value.writer] | flatten | index("team-log")) and (.value.retired | not)) | .key' "$CONTRACT")
+  # The answered among them is one given at the terminal, with no discord_message, and the
+  # plan-approved the coordinator's, which the plan-approval-withdrawn after it withdraws, and the
+  # merge-default-restored gives back the task's default word the merge-default-withdrawn withdrew.
+  assert_equal "${pushed[*]}" "answered plan-approved plan-approval-withdrawn merge-approved merge-default-withdrawn merge-default-restored retro-schedule"
+  [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
+}
+
+@test "a worker's message --from-message logs, of no push kind, makes no commit and no push" {
+  push_home
+  open_t7
+  launched T7 builder b0000001
+  local tip head
+  tip=$(git -C "$team_origin" rev-parse dev) head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-log T7 --from-message 'T7 DONE 01 a1b2c3d done'
+  assert_equal "$stderr" ""
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .event)" "done"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+}
+
+@test "a push that fails leaves the exit and stdout as they were, says why in one line, and the next checkpoint pushes the commit" {
+  push_home
+  plan_registry
+  opened T14 proj
+  plan_md T14
+  git -C "$TEAM_HOME" remote set-url origin "$BATS_TEST_TMPDIR/gone.git"
+  local tip
+  tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (cannot push dev: '$BATS_TEST_TMPDIR/gone.git' does not appear to be a git repository); the next checkpoint pushes it"
+  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: ledger T14 plan-approved"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+
+  git -C "$TEAM_HOME" remote set-url origin "$team_origin"
+  run_bin -0 team-checkpoint --force
+  assert_equal "$(git -C "$team_origin" log --format=%s "$tip..dev" | grep -c '^chore: ledger T14 plan-approved$')" 1
+  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | tail -n 1 | jq -r .event)" "plan-approved"
+}
+
+@test "a ledger the records hook refuses is the same one line with the hook's reason, and the exit stands" {
+  push_home
+  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  # A line written before the ledger's check, holding an address at a public provider.
+  local provider=gmail.com head tip
+  plan_registry
+  opened T14 proj
+  plan_md T14
+  jq -cn --arg a "someone@$provider" '{ts: "2026-10-22T02:00:00Z", task: "T14", event: "paused", reason: "mail \($a)"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
+  assert_equal "$output" ""
+  assert_equal "$(wc -l <<<"$stderr")" 1
+  # The hook's first line, which names the ledger, without the list of refusals it ends with.
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (cannot commit the records: data-check: refused: ledger.jsonl adds an email address at a public provider or an image, which the records never take: other people's addresses and screenshots stay out of git; take each out, then commit again); the next checkpoint pushes it"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .event)" "plan-approved"
+}
+
+@test "a fenced machine, and one that lost the lease, commits and pushes no ledger, saying why" {
+  push_home
+  plan_registry
+  opened T14 proj
+  plan_md T14
+  local head tip
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine commits and pushes no ledger)"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+
+  rm "$HOME/.local/state/agent-team/fenced"
+  make_machine laptop
+  steal_lease laptop home-pc
+  rm -f "$HOME/.local/state/agent-team/probe.json"
+  plan_md T14 "# T14 plan, changed"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
+  assert_equal "$output" ""
+  [[ $stderr == "team-log: the ledger is not on origin yet (home-pc no longer holds the lease: origin names laptop ("*"): a machine that lost the lease commits and pushes no ledger)" ]]
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(logged_after 1 | jq -r .event)" "plan-approved
+plan-approved"
+}
+
+@test "while the team holds offline, the push is skipped at once with no network call, saying the next checkpoint pushes it" {
+  push_home
+  plan_registry
+  opened T14 proj
+  plan_md T14
+  local head tip
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  echo '{"since": "2026-10-22T14:00:00Z"}' >"$HOME/.local/state/agent-team/offline"
+  rm -f "$HOME/.local/state/agent-team/probe.json"
+  # An origin that would hang every call: the skip makes none.
+  git -C "$TEAM_HOME" remote set-url origin "http://127.0.0.1:9/agent-team.git"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-log: the ledger is not on origin yet (GitHub is unreachable since $(date -d 2026-10-22T14:00:00Z +%H:%M), and the team is holding); the next checkpoint pushes it"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  [[ ! -e $HOME/.local/state/agent-team/probe.json ]]
+
+  # A fenced machine says it is fenced, offline or not.
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  plan_md T14 "# T14 plan, changed"
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
+  [[ $stderr == "team-log: the ledger is not on origin yet (home-pc is fenced since "* ]]
+}
+
+@test "a team home with no origin, or that is no git checkout, prints nothing and fails nothing" {
+  plan_registry
+  opened T14 proj
+  plan_md T14
+  run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  git -C "$TEAM_HOME" init -q -b dev
+  run_bin -0 --separate-stderr team-log T14 retro-schedule every_hours=48 discord_message="$(soon)"
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  assert_equal "$(git -C "$TEAM_HOME" rev-list --all | wc -l)" 0
+  assert_equal "$(logged_after 1 | jq -r .event)" "plan-approved
+retro-schedule"
+}
+
+# T278's A-closed-task: team-log appended to a closed task and to one the ledger never opened.
+@test "a closed task's held and asked, and a review of a task with no event, are warned and logged, and refused from lifecycle_from on" {
+  printf '%s\n' \
+    '{"ts":"2026-11-01T00:00:00Z","task":"T1","event":"opened","project":"p","path":"feature","branch":"feat/T1-x","worktree":"/w","title":"x"}' \
+    '{"ts":"2026-11-01T09:00:00Z","task":"T1","event":"closed","archive":[],"returned":[],"kept":[]}' \
+    >"$TEAM_HOME/ledger.jsonl"
+  local note="(logged anyway; bin/lib/lifecycle.json refuses it from its lifecycle_from, not set yet)"
+  local closed="T1 is closed, and a closed task takes no"
+  local unopened="T99 is not opened (no opened event), and it takes only thread and opened before its opened, not review"
+  with_lifecycle_from null
+  run_bin -0 --separate-stderr team-log T1 held discord_message=1564000000000000020 reason="after close"
+  assert_equal "$stderr" "team-log: lifecycle: $closed held $note"
+  run_bin -0 --separate-stderr team-log T1 asked id=late text="asked after close"
+  assert_equal "$stderr" "team-log: lifecycle: $closed asked $note"
+  run_bin -0 --separate-stderr team-log T99 review verdict=pass head=abcdef1234567
+  assert_equal "$stderr" "team-log: lifecycle: $unopened $note"
+  assert_equal "$(jq -r '"\(.task) \(.event)"' "$TEAM_HOME/ledger.jsonl" | tail -n +3 | paste -sd ,)" \
+    "T1 held,T1 asked,T99 review"
+  # From a time before the events, each is refused and nothing is logged.
+  head -2 "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/before.jsonl"
+  cp "$BATS_TEST_TMPDIR/before.jsonl" "$TEAM_HOME/ledger.jsonl"
+  with_lifecycle_from 2026-01-01T00:00:00Z
+  run_bin -1 team-log T1 held discord_message=1564000000000000020 reason="after close"
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $closed held"
+  run_bin -1 team-log T1 asked id=late text="asked after close"
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $closed asked"
+  run_bin -1 team-log T99 review verdict=pass head=abcdef1234567
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $unopened"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+}
+
+# T14's phase and standing parks' ids, by the fold over the ledger.
+T14_state() {
+  jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map(select(.task == "T14")) | [phase, (lifecycle.parks | map(.id))]' \
+    "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "a resumed names what it ends, and one the fold would not end, or a second held, is warned and then refused" {
+  opened_task T14
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T14 resumed
+  assert_equal "$output" "team-log: resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T14 lists the standing parks"
+  run_bin -1 team-log T14 resumed all=false
+  assert_equal "$output" "team-log: resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T14 lists the standing parks"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  run_bin -0 team-log T14 resumed all=true
+  run_bin -0 team-log T14 resumed brief=brief-merge-base
+  assert_equal "$(logged_after 2)" '{"task":"T14","event":"resumed","all":true}
+{"task":"T14","event":"resumed","brief":"brief-merge-base"}'
+  # Daniel's hold, a typed wait on an ask, then each resumed or held the fold would not take.
+  printf '%s\n' \
+    '{"ts":"2026-01-01T00:01:00Z","task":"T14","event":"held","cause":"daniel-hold","discord_message":"1564000000000000020","reason":"hold"}' \
+    '{"ts":"2026-01-01T00:02:00Z","task":"T14","event":"asked","id":"door","text":"Which door?"}' \
+    '{"ts":"2026-01-01T00:03:00Z","task":"T14","event":"waiting","on":"Daniel","cause":"ask","ask":"door","reason":"ask door"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  local note="(logged anyway; bin/lib/lifecycle.json refuses it from its lifecycle_from, not set yet)"
+  local hold="held-1 is Daniel's hold, which only a resumed with discord_message, Daniel's word, lifts"
+  local again="T14 is on Daniel's hold already: held-1 since 2026-01-01T00:01:00Z"
+  local none="T14 has no standing park blocked-1; its standing parks: held-1, waiting-1"
+  local ask="waiting-1 is the wait on ask door, which ends when the ask is answered (team-answer), not with a resumed"
+  with_lifecycle_from null
+  run_bin -0 --separate-stderr team-log T14 resumed id=held-1
+  assert_equal "$stderr" "team-log: lifecycle: $hold $note"
+  run_bin -0 --separate-stderr team-log T14 held discord_message=1567157155797139609 reason=again
+  assert_equal "$stderr" "team-log: lifecycle: $again $note"
+  run_bin -0 --separate-stderr team-log T14 resumed id=blocked-1
+  assert_equal "$stderr" "team-log: lifecycle: $none, held-2 $note"
+  run_bin -0 --separate-stderr team-log T14 resumed id=waiting-1
+  assert_equal "$stderr" "team-log: lifecycle: $ask $note"
+  # Each was logged, and the fold ended none of them: the hold and the wait stand.
+  assert_equal "$(T14_state)" '["held",["held-1","waiting-1","held-2"]]'
+  # From a time before them, each is refused and nothing is logged; Daniel's word lifts the hold.
+  cp "$BATS_TEST_TMPDIR/before.jsonl" "$TEAM_HOME/ledger.jsonl"
+  with_lifecycle_from 2026-01-01T00:00:00Z
+  run_bin -1 team-log T14 resumed id=held-1
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $hold"
+  run_bin -1 team-log T14 held discord_message=1567157155797139609 reason=again
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $again"
+  run_bin -1 team-log T14 resumed id=blocked-1
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $none"
+  run_bin -1 team-log T14 resumed id=waiting-1
+  assert_equal "$output" "team-log: refusing a ledger event: lifecycle: $ask"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  run_bin -0 --separate-stderr team-log T14 resumed id=held-1 discord_message=1567157155797139610
+  assert_equal "$stderr" ""
+  assert_equal "$(T14_state)" '["planning",["waiting-1"]]'
 }

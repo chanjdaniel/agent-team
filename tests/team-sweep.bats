@@ -232,9 +232,30 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   event T7 merged '{pr: 5, merge: "abcdef0", head: "1234567", by: "daniel"}'
   run_bin -1 team-sweep
   assert_equal "$output" "T7 no-worker: merged and not closed, with no live worker (latest T7-builder 22222222); next: close it with team-close T7"
-  # Blocked after the merge, a later part is still to come: the task is parked, not to be closed.
+  # Blocked after the merge, the task is parked, not to be closed.
   event T7 blocked '{reason: "the second half waits on T31"}'
   run_bin -0 team-sweep
+}
+
+@test "no-worker: a merged part is told to launch the next phase, and its last part to close" {
+  opened T7
+  launch T7 builder 22222222
+  event T7 merged '{pr: 5, merge: "abcdef0", head: "1234567", by: "daniel", phases_left: [2, 3]}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: a part merged, with phase 2, 3 still to build, with no live worker (latest T7-builder 22222222); next: launch the next phase's first ticket's builder (team-tickets T7 names it)"
+  sessions "$(session 22222222 T7-builder idle working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: a part merged, with phase 2, 3 still to build, with every live worker idle (latest T7-builder 22222222); next: launch the next phase's first ticket's builder (team-tickets T7 names it)"
+  # The next phase's builder at work is enough.
+  launch T7 builder 33333333
+  sessions "$(session 33333333 T7-builder busy working)"
+  run_bin -0 team-sweep
+  # Its part merged with every ticket done, the task is merged and told to close.
+  event T7 merged '{pr: 6, merge: "abcdef1", head: "2345678", by: "daniel", phases_left: []}'
+  sessions "$(session 33333333 T7-builder idle working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: merged and not closed, with every live worker idle (latest T7-builder 33333333); next: close it with team-close T7"
+  no_github
 }
 
 @test "no-worker: every live worker idle since a report leaves the next step to the coordinator" {
@@ -298,6 +319,26 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   run_bin -1 team-sweep
   assert_equal "${#lines[@]}" 1
   assert_contains "$output" "T8 no-worker: every live worker is idle with a ledger event since its launch"
+}
+
+@test "T278's B5: a launch past an open ask parks nothing, so the sweep watches its worker; an ask no launch passed parks the task" {
+  opened T8
+  event T8 plan-approved '{by: "coordinator"}'
+  launch T8 builder 4f2a9c1e
+  event T8 asked '{id: "q1", text: "which import?"}'
+  event T8 waiting '{on: "Daniel", cause: "ask", ask: "q1", reason: "ask q1"}'
+  ledger_line '{ts: "2026-10-22T02:20:00Z", task: "T8", event: "launch", role: "builder", session: "5e5e5e5e",
+    worktree: "/w/1", toolkits: [], project: "proj", branch: "feat/T8-work"}'
+  sessions "$(session 5e5e5e5e T8-builder idle)"
+  # A launch that did not name the ask leaves the task parked on it: no finding.
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+  # One that went past it (team-worker --past-ask q1) is watched: idle with no event, it is silent.
+  ledger_line '{ts: "2026-10-22T02:30:00Z", task: "T8", event: "launch", role: "builder", session: "6e6e6e6e",
+    worktree: "/w/1", toolkits: [], project: "proj", branch: "feat/T8-work", past_ask: ["q1"]}'
+  sessions "$(session 6e6e6e6e T8-builder idle)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T8 silent: T8-builder 6e6e6e6e is idle with no ledger event since its launch at 2026-10-22T02:30:00Z; next: read claude logs 6e6e6e6e, then send it one line or log what is known with team-log"
 }
 
 @test "a denied finds nothing new: it is no report, parks nothing and clears no park" {
@@ -709,6 +750,40 @@ EOF
 T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: read claude logs 88888888 for anything left to log, then stop it with claude stop 88888888"
 }
 
+@test "coordinator-twin: another session named coordinator on this machine, beside the one the sweep runs in" {
+  sessions "$(session 3169fcbd coordinator busy working)" "$(session 5e7b1c04 coordinator idle blocked 1762596000000)" \
+    "$(jq -cn '{pid: 5151, cwd: "/home/x", kind: "interactive", startedAt: 1762682400000,
+      sessionId: "c0ffee00-1111-4222-8333-444455556666", name: "coordinator", status: "idle"}')"
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -1 team-sweep
+  assert_equal "$output" "coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-11-08T10:00:00Z) is a second session named coordinator on this machine; next: read claude logs 5e7b1c04 for anything left to log, then stop it with claude stop 5e7b1c04
+coordinator-twin: coordinator c0ffee00 (interactive, idle, started 2025-11-09T10:00:00Z) is a second session named coordinator on this machine; next: ask Daniel to end it, an interactive session, pid 5151"
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map([.task, .kind, .session, .name])' <<<"$output")" \
+    '[[null,"coordinator-twin","5e7b1c04","coordinator"],[null,"coordinator-twin","c0ffee00","coordinator"]]'
+}
+
+@test "coordinator-twin: with no session of its own to tell apart, the sweep names every coordinator, each if it is not you" {
+  sessions "$(session 3169fcbd coordinator busy working)" "$(session 5e7b1c04 coordinator idle blocked)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "coordinator-twin: coordinator 3169fcbd (background, working, started 2025-10-22T02:00:00Z) is one of 2 sessions named coordinator on this machine; next: if it is not you, read claude logs 3169fcbd for anything left to log, then stop it with claude stop 3169fcbd
+coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-10-22T02:00:00Z) is one of 2 sessions named coordinator on this machine; next: if it is not you, read claude logs 5e7b1c04 for anything left to log, then stop it with claude stop 5e7b1c04"
+}
+
+@test "coordinator-twin: a twin with no startedAt reads as started at an unknown time, and the sweep still runs" {
+  sessions "$(session 3169fcbd coordinator busy working)" \
+    "$(session 5e7b1c04 coordinator idle blocked | jq -c 'del(.startedAt)')"
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "coordinator-twin: coordinator 5e7b1c04 (background, blocked, started at an unknown time) is a second session named coordinator on this machine; next: read claude logs 5e7b1c04 for anything left to log, then stop it with claude stop 5e7b1c04"
+}
+
+@test "coordinator-twin: one coordinator, the sweep's own or another, finds nothing" {
+  sessions "$(session 3169fcbd coordinator busy working)"
+  run_bin -0 team-sweep
+  CLAUDE_CODE_SESSION_ID=3169fcbd-1111-4222-8333-444455556666 run_bin -0 team-sweep
+  CLAUDE_CODE_SESSION_ID=0badf00d-1111-4222-8333-444455556666 run_bin -0 team-sweep
+}
+
 @test "the load check's T0 sessions are never stray: T0 is the load check, not a task" {
   sessions "$(session 6f93fe38 T0-ops busy blocked)" "$(session 4f2a9c1e T0-planner idle)"
   run_bin -0 team-sweep
@@ -765,6 +840,7 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   launch T3 reviewer 11111111
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   event T3 review '{verdict: "pass", head: "a1b2c3d4e5"}'
+  ci T3 passed
   run_bin -0 team-sweep
   event T3 review '{verdict: "findings", head: "a1b2c3d"}'
   run_bin -1 team-sweep
@@ -772,23 +848,59 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   no_github
 }
 
-# Task <task>'s PR 5 of proj reviewed and passed at its head, with Daniel's plan-time word on proj
-# logged, answering the plan ask.
-preapproved_pr() {
-  event "$1" asked '{id: "plan", text: "Approve the plan, and its merge?"}'
-  event "$1" merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}'
-  event "$1" plan-approved '{by: "Daniel"}'
-  event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
-  event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+# ci <task> <outcome> [<head>] [<ts>]: team-next <task> --ci's end on PR 5 of proj at <head>
+# (a1b2c3d4e5 by default), logged at <ts> (02:00 on 2026-10-22 by default).
+ci() {
+  ledger_line --arg t "$1" --arg o "$2" --arg head "${3:-a1b2c3d4e5}" --arg ts "${4:-2026-10-22T02:00:00Z}" \
+    '{ts: $ts, task: $t, event: "ci", url: "https://github.com/owner/proj/pull/5", head: $head, outcome: $o}'
 }
 
-@test "merge-due: an awaiting-merge task with Daniel's plan-time word not withdrawn and nothing else parking it" {
+# Task <task>'s PR 5 of proj reviewed and passed at its head, and its checks wait ended green,
+# with no plan approved.
+passed_pr() {
+  event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  ci "$1" passed
+}
+
+# Task <task>'s plan approved by the coordinator, as team-log records it.
+approved() {
+  event "$1" plan-approved '{by: "coordinator", plan: {"tasks/T3/plan.md": "0000"}, scope: ["src/"]}'
+}
+
+# Task <task>'s PR 5 of proj reviewed and passed at its head, its plan approved: the default word
+# holds on the ledger.
+approved_pr() {
+  approved "$1"
+  passed_pr "$1"
+}
+
+# said <task> <kind> <scope> <message>: Daniel's withdrawal of the default word
+# (merge-default-withdrawn) or its giving back (merge-default-restored) for <scope> (task, a
+# project or all), logged under <task>, in #coordinator.
+said() {
+  event "$1" "$2" "{scope: \"$3\", discord_message: \"$4\", discord_channel: \"1562000000000000000\"}"
+}
+
+# Register <project> beside proj, at owner/<project>: register <project>
+register() {
+  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "direct-pr"' \
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
+    "[$1.pool]" 'provider = "git"' "slots = [\"slots/$1/1\"]" >>"$TEAM_HOME/projects.toml"
+}
+
+# T3's merge-due line for PR 5.
+due() {
+  echo "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on the default word, the approved plan, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+}
+
+@test "merge-due: an awaiting-merge task whose default word holds and nothing else parking it" {
   opened T3
   launch T3 reviewer 11111111
-  preapproved_pr T3
+  approved_pr T3
   sessions "$(session 11111111 T3-reviewer idle)"
   run_bin -1 team-sweep
-  assert_equal "$output" "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's plan-time word on proj, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+  assert_equal "$output" "$(due)"
   run_bin -1 team-sweep --json
   assert_equal "$(jq -c 'map([.task, .kind, .session, .name, .next])' <<<"$output")" \
     '[["T3","merge-due",null,null,"run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"]]'
@@ -810,7 +922,7 @@ preapproved_pr() {
 @test "merge-due: none while the latest review, a pass logged through team-log, sent findings back" {
   opened T3
   launch T3 builder 11111111
-  preapproved_pr T3
+  approved_pr T3
   local counts='findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0'
   run_bin -0 team-log T3 review verdict=pass head=a1b2c3d4e5 "$counts" sent_back=1 guarded=none
   # The builder's live session holds the fix round.
@@ -819,22 +931,27 @@ preapproved_pr() {
   assert_equal "$output" ""
   # The verify pass that sends nothing back makes it due again.
   run_bin -0 team-log T3 review verdict=pass head=a1b2c3d4e5 "$counts" sent_back=none guarded=none
+  ci T3 passed
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
   no_github
 }
 
-@test "merge-due: none once the word is withdrawn, while another park stands, or before the review passed" {
+@test "merge-due: none with no plan approved or the approval withdrawn, while another park stands, or before the review passed" {
   opened T3
   launch T3 builder 11111111
-  preapproved_pr T3
-  run_bin -1 team-sweep
-  assert_contains "$output" "T3 merge-due"
-
-  # A withdrawn word leaves the task awaiting Daniel's per-head word: parked.
-  event T3 merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000002"}'
+  passed_pr T3
+  # No plan approved: the task waits on Daniel's per-head word.
   run_bin -0 team-sweep
-  event T3 merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000003", scope: ["src/"]}'
+  # A plan-approved logged before T276, with no plan, is the coordinator's and holds for proj.
+  event T3 plan-approved '{by: "Daniel"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
+
+  # A withdrawn approval leaves the task awaiting Daniel's per-head word: parked.
+  event T3 plan-approval-withdrawn '{discord_message: "1563000000000000002"}'
+  run_bin -0 team-sweep
+  approved T3
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
 
@@ -854,7 +971,7 @@ preapproved_pr() {
     event T3 resumed
   done
   run_bin -1 team-sweep
-  assert_equal "$output" "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's plan-time word on proj, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+  assert_equal "$output" "$(due)"
 
   # A new head under review is no merge yet: the task's worker findings come back.
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "b2c3d4e"}'
@@ -862,165 +979,127 @@ preapproved_pr() {
   assert_equal "$output" "T3 no-worker: no live session among its 1 launch (latest T3-builder 11111111); next: read claude logs 11111111 for how it ended, then launch the next worker with team-worker or log what is known with team-log"
 }
 
-# Task <task>'s PR 5 of proj reviewed and passed at its head, with no word of Daniel's on it.
-passed_pr() {
-  event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
-  event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
-}
-
-# standing <task> <kind> <project> <message>: Daniel's standing merge word (merge-standing) or its
-# withdrawal (merge-standing-withdrawn) on <project>, logged under <task>, in #coordinator.
-standing() {
-  event "$1" "$2" "{project: \"$3\", discord_message: \"$4\", discord_channel: \"1562000000000000000\"}"
-}
-
-# Register <project> beside proj, at owner/<project>: register <project>
-register() {
-  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "direct-pr"' \
-    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
-    "[$1.pool]" 'provider = "git"' "slots = [\"slots/$1/1\"]" >>"$TEAM_HOME/projects.toml"
-}
-
-standing_due() {
-  echo "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's $1, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
-}
-
-@test "merge-due: an awaiting-merge task with Daniel's standing word on its project, or on every project" {
+@test "merge-due: none while the default word is withdrawn for the task, its project or all, by any task, until it is given back" {
   opened T3
   launch T3 reviewer 11111111
-  passed_pr T3
+  approved_pr T3
   sessions "$(session 11111111 T3-reviewer idle)"
-  run_bin -0 team-sweep
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
 
-  # The word is team-wide: one logged under another task stands for this one.
-  standing T2 merge-standing proj 1563000000000000001
+  # A withdrawal of its project, logged under another task, holds it back.
+  said T2 merge-default-withdrawn proj 1563000000000000001
   event T2 closed
-  run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
-  run_bin -1 team-sweep --json
-  assert_equal "$(jq -c 'map([.task, .kind, .session, .name, .next])' <<<"$output")" \
-    '[["T3","merge-due",null,null,"run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"]]'
-
-  # Withdrawn, the task is parked awaiting Daniel's per-head word; a word on every project stands
-  # for it again, named by the task's projects (its opened and worktree-added events').
-  standing T3 merge-standing-withdrawn proj 1563000000000000002
   run_bin -0 team-sweep
+  # Given back for every project (T278's C3), it is due again.
+  said T3 merge-default-restored all 1563000000000000002
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
+  # Withdrawn for another project, or for another task, it still is.
   register conv
-  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
-  standing T3 merge-standing all 1563000000000000003
+  said T3 merge-default-withdrawn conv 1563000000000000003
+  said T2 merge-default-withdrawn task 1563000000000000004
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj, conv")"
-
-  # An every-project word withdrawn for one project still stands for the other.
-  standing T3 merge-standing-withdrawn proj 1563000000000000004
+  assert_equal "$output" "$(due)"
+  # Withdrawn for the task, then for all and given back for the project, it is held back, then due.
+  said T3 merge-default-withdrawn task 1563000000000000005
+  run_bin -0 team-sweep
+  said T3 merge-default-withdrawn all 1563000000000000006
+  said T3 merge-default-restored proj 1563000000000000007
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on conv")"
+  assert_equal "$output" "$(due)"
   no_github
 }
 
-@test "merge-due: none on the standing word for the team's own project, by name, repo or path, and still for another's" {
-  opened T3
-  launch T3 reviewer 11111111
-  passed_pr T3
-  sessions "$(session 11111111 T3-reviewer idle)"
-  standing T2 merge-standing all 1563000000000000001
+@test "merge-due: none for the team's own project, by name, repo or path, whoever approved the plan" {
+  # The queued note's case: an agent-team task with the coordinator's approval is never due.
   register agent-team
-  event T3 worktree-added '{project: "agent-team", branch: "feat/T3-work", worktree: "/w/2"}'
-  run_bin -1 --separate-stderr team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
-  assert_equal "$stderr" ""
-
-  # An old ledger's word on the team's own project by name is no word.
-  : >"$TEAM_HOME/ledger.jsonl"
   event T3 opened '{project: "agent-team", path: "feature", type: "feat", title: "Work",
     branch: "feat/T3-work", base: "main", base_sha: "0123456", worktree: "/w/1"}'
   launch T3 reviewer 11111111
-  passed_pr T3
-  standing T2 merge-standing agent-team 1563000000000000002
-  run_bin -0 team-sweep
-  standing T2 merge-standing all 1563000000000000003
+  approved_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  # Nor with Daniel's.
+  event T3 asked '{id: "plan", text: "Approve the plan?"}'
+  event T3 plan-approved '{by: "Daniel", ask: "plan", discord_message: "1563000000000000001", plan: {"tasks/T3/plan.md": "0000"}}'
   run_bin -0 team-sweep
 
   # proj is the team's own by the code checkout's repo, and conv by its path.
   : >"$TEAM_HOME/ledger.jsonl"
   opened T3
   launch T3 reviewer 11111111
-  passed_pr T3
-  standing T2 merge-standing all 1563000000000000001
-  register conv
-  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
+  approved_pr T3
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj, conv")"
+  assert_equal "$output" "$(due)"
   export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo proj)
+  copy_bin "$CODE_CHECKOUT/bin"
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  run_bin -0 team-sweep
+  # conv is, by its path, the code checkout, whose origin is no project's: its PR is never due,
+  # while proj's is.
+  register conv
   CODE_CHECKOUT=$(make_repo conv)
   copy_bin "$CODE_CHECKOUT/bin"
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
-  run_bin -0 team-sweep
+  assert_equal "$output" "$(due)"
+  event T3 pr '{url: "https://github.com/owner/conv/pull/7", head: "c3d4e5f", project: "conv"}'
+  event T3 review '{verdict: "pass", head: "c3d4e5f", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  event T3 ci '{url: "https://github.com/owner/conv/pull/7", head: "c3d4e5f", outcome: "passed"}'
+  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
 }
 
-@test "merge-due: with the registry unreadable, no standing word counts, and stderr says why" {
+@test "merge-due: with the registry unreadable, none, and stderr says why" {
   opened T3
   launch T3 reviewer 11111111
-  passed_pr T3
+  approved_pr T3
   sessions "$(session 11111111 T3-reviewer idle)"
-  standing T2 merge-standing proj 1563000000000000001
   rm "$TEAM_HOME/projects.toml"
   run_bin -0 --separate-stderr team-sweep
   assert_equal "$output" ""
-  assert_equal "$stderr" "team-sweep: counts no standing word of Daniel's, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
-  # Nor is it read with no standing word in the ledger.
-  : >"$TEAM_HOME/ledger.jsonl"
-  opened T3
-  launch T3 reviewer 11111111
-  passed_pr T3
-  run_bin -0 --separate-stderr team-sweep
-  assert_equal "$stderr" ""
-}
-
-@test "merge-due: the plan-time and standing words both named, the plan-time word alone as before" {
-  opened T3
-  launch T3 reviewer 11111111
-  preapproved_pr T3
-  sessions "$(session 11111111 T3-reviewer idle)"
-  run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "plan-time word on proj")"
-  standing T3 merge-standing all 1563000000000000002
-  run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "plan-time word on proj and standing word on proj")"
-  event T3 merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000003"}'
-  run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
+  assert_equal "$stderr" "team-sweep: finds no task merge-due, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
 }
 
 @test "merge-due: none for a head the word does not cover, as team-state reads it" {
   opened T3
   launch T3 reviewer 11111111
   sessions "$(session 11111111 T3-reviewer idle)"
-  standing T2 merge-standing proj 1563000000000000001
-  event T2 closed
+  approved T3
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
   # The reviewer found guarded areas, or logged none, or an earlier review counted a security
   # finding: team-merge would refuse the word, so the coordinator is not sent to it.
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"ci\"]}"
+  ci T3 passed a1b2c3d4e5
   run_bin -0 team-sweep
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts}"
+  ci T3 passed a1b2c3d4e5
   run_bin -0 team-sweep
   # A pass that names none is covered again, until a review that counted a security finding.
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: []}"
+  ci T3 passed a1b2c3d4e5
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
+  assert_equal "$output" "$(due)"
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: ($counts + {security: 1}), guarded: []}"
+  ci T3 passed a1b2c3d4e5
   run_bin -0 team-sweep
-  # The plan-time word is held to the same.
   : >"$TEAM_HOME/ledger.jsonl"
   opened T3
   launch T3 reviewer 11111111
-  preapproved_pr T3
-  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"settings\"]}"
+  approved_pr T3
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"secrets\"]}"
+  ci T3 passed a1b2c3d4e5
   run_bin -0 team-sweep
+  # An area retired since (T276), which a review logged before may name, holds nothing back.
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"settings\", \"dependencies\"]}"
+  ci T3 passed a1b2c3d4e5
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
   no_github
 }
 
@@ -1029,8 +1108,7 @@ standing_due() {
   launch T3 builder 11111111
   launch T3 reviewer 22222222
   passed_pr T3
-  standing T2 merge-standing proj 1563000000000000001
-  event T2 closed
+  approved T3
   sessions "$(session 11111111 T3-builder idle)"
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
@@ -1057,6 +1135,7 @@ standing_due() {
   sessions "$(session 33333333 T3-reviewer busy)"
   run_bin -0 team-sweep
   event T3 review '{verdict: "pass", head: "f00ba47", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  ci T3 passed f00ba47
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
 }
@@ -1065,11 +1144,11 @@ standing_due() {
   opened T3
   launch T3 reviewer 11111111
   sessions "$(session 11111111 T3-reviewer idle)"
-  standing T2 merge-standing proj 1563000000000000001
-  event T2 closed
+  approved T3
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d\", findings: $counts, guarded: []}"
+  ci T3 passed a1b2c3d
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
   # A review of a newer head sends findings back: the pass on the pr event's head no longer counts.
@@ -1077,9 +1156,11 @@ standing_due() {
   run_bin -0 team-sweep
   # The fix passes, naming a guarded area, which the word does not cover.
   event T3 review "{verdict: \"pass\", head: \"c3d4e5f\", findings: $counts, guarded: [\"ci\"]}"
+  ci T3 passed c3d4e5f
   run_bin -0 team-sweep
   # The next pass names none: the word covers it again.
   event T3 review "{verdict: \"pass\", head: \"d4e5f6a\", findings: $counts, guarded: []}"
+  ci T3 passed d4e5f6a
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
   no_github
@@ -1089,30 +1170,29 @@ standing_due() {
   opened T3
   launch T3 builder 11111111
   passed_pr T3
-  standing T2 merge-standing proj 1563000000000000001
-  event T2 closed
+  approved T3
   sessions "$(session 44444444 T3-builder busy)"
   ledger_line '{ts: "2026-10-22T02:30:00Z", task: "T3", event: "launch", role: "builder", session: "44444444", worktree: "/w/1",
     toolkits: [], project: "proj", branch: "feat/T3-work", brief: "brief-merge-base"}'
   run_bin -0 team-sweep
   # A clean catch-up settles the base with no round left to wait for.
   event T3 caught-up '{url: "https://github.com/owner/proj/pull/5", from: "a1b2c3d", head: "f00ba47", base: "main"}'
+  # Its checks wait on the merge is still to end: no merge yet, until it ends green.
+  run_bin -1 team-sweep
+  [[ $output != *merge-due* ]]
+  ci T3 passed f00ba47
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
 }
 
-@test "merge-due: none under a standing word withdrawn, on another project, or with another park" {
+@test "merge-due: under a withdrawal for another project, and parked by an ask, a pause, a wait or a withdrawal of all" {
   opened T3
   launch T3 builder 11111111
-  passed_pr T3
-
-  # A word on a project that is none of the task's leaves it parked.
+  approved_pr T3
   register conv
-  standing T3 merge-standing conv 1563000000000000001
-  run_bin -0 team-sweep
-  standing T3 merge-standing proj 1563000000000000002
+  said T3 merge-default-withdrawn conv 1563000000000000001
   run_bin -1 team-sweep
-  assert_equal "$output" "$(standing_due "standing word on proj")"
+  assert_equal "$output" "$(due)"
 
   # An ask nothing settled, a pause or a wait parks it.
   event T3 asked '{id: "q1", text: "Which name?"}'
@@ -1127,9 +1207,141 @@ standing_due() {
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
 
-  # A withdrawal of every word parks it.
-  standing T3 merge-standing-withdrawn all 1563000000000000003
+  # A withdrawal for every project parks it.
+  said T3 merge-default-withdrawn all 1563000000000000003
   run_bin -0 team-sweep
+}
+
+@test "merge-due: none until the checks of the pass passed, as team-next --ci logs it; ci-due while no wait has ended" {
+  opened T3
+  launch T3 reviewer 11111111
+  sessions "$(session 11111111 T3-reviewer idle)"
+  approved T3
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  event T3 review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  # The pass's checks no wait has ended since 2026-10-22: no merge yet, and the wait to arm.
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 ci-due: the checks of https://github.com/owner/proj/pull/5 at a1b2c3d4 have had no wait end for "
+  [[ $output != *merge-due* ]]
+  # A wait that ended at its deadline, or failed, or failed as infrastructure, is no merge either.
+  local outcome
+  for outcome in pending failed infrastructure; do
+    ci T3 "$outcome"
+    run_bin team-sweep
+    [[ $output != *merge-due* ]]
+  done
+  # A ci of another head is not the pass's.
+  ci T3 passed f00ba47
+  run_bin -0 team-sweep
+  # The checks of the passed head passed: merge-due, and no ci-due.
+  ci T3 passed
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
+  no_github
+}
+
+# T3's ci-due line for PR 5 at a1b2c3d4, no wait ended for <duration>.
+ci_due() {
+  echo "T3 ci-due: the checks of https://github.com/owner/proj/pull/5 at a1b2c3d4 have had no wait end for $1; next: arm team-next T3 --ci with Bash run_in_background unless it is running"
+}
+
+# minutes_ago <n>: the UTC time that many minutes before now.
+minutes_ago() {
+  date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ
+}
+
+# T3's PR 5 passed at a1b2c3d4e5, <minutes> ago, its plan not approved: passed_at <minutes>
+passed_at() {
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T3
+  launch T3 reviewer 11111111
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  ledger_line --arg ts "$(minutes_ago "$1")" '{ts: $ts, task: "T3", event: "review", verdict: "pass", head: "a1b2c3d4e5"}'
+}
+
+@test "ci-due: a pass whose checks no wait has ended and no check was rerun for 100 minutes, not at 99, with session null" {
+  sessions "$(session 11111111 T3-reviewer idle)"
+  passed_at 99
+  run_bin -0 team-sweep
+  passed_at 100
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(ci_due 1h40m)"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map([.task, .kind, .session, .name, .next])' <<<"$output")" \
+    '[["T3","ci-due",null,null,"arm team-next T3 --ci with Bash run_in_background unless it is running"]]'
+
+  # A wait that ended at its deadline dates it from that end.
+  ci T3 pending a1b2c3d4e5 "$(minutes_ago 99)"
+  run_bin -0 team-sweep
+  passed_at 300
+  ci T3 pending a1b2c3d4e5 "$(minutes_ago 125)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(ci_due 2h05m)"
+
+  # A rerun starts the wait again, so it dates it from the rerun.
+  passed_at 300
+  ledger_line --arg ts "$(minutes_ago 99)" '{ts: $ts, task: "T3", event: "ci-rerun", url: "https://github.com/owner/proj/pull/5",
+    head: "a1b2c3d4e5", check: "test-shards (1)", run: "7", job: "10"}'
+  run_bin -0 team-sweep
+  passed_at 300
+  ledger_line --arg ts "$(minutes_ago 100)" '{ts: $ts, task: "T3", event: "ci-rerun", url: "https://github.com/owner/proj/pull/5",
+    head: "a1b2c3d4e5", check: "test-shards (1)", run: "7", job: "10"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(ci_due 1h40m)"
+
+  # A wait that ended green, red or as infrastructure leaves none to arm.
+  local outcome
+  for outcome in passed failed infrastructure; do
+    passed_at 300
+    ci T3 "$outcome" a1b2c3d4e5 "$(minutes_ago 200)"
+    run_bin -0 team-sweep
+  done
+
+  # After a catch-up, the wait on the merge dates from it.
+  passed_at 300
+  ci T3 passed a1b2c3d4e5 "$(minutes_ago 200)"
+  ledger_line --arg ts "$(minutes_ago 100)" \
+    '{ts: $ts, task: "T3", event: "caught-up", url: "https://github.com/owner/proj/pull/5", from: "a1b2c3d4e5", head: "f00ba47aa", base: "main"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 ci-due: the checks of https://github.com/owner/proj/pull/5 at f00ba47a have had no wait end for 1h40m; next: arm team-next T3 --ci with Bash run_in_background unless it is running"
+  no_github
+}
+
+@test "ci-due: none while an ask is unsettled or a park stands, nor once findings went back or the PR merged" {
+  sessions "$(session 11111111 T3-reviewer idle)"
+  passed_at 300
+  event T3 asked '{id: "q1", text: "Which name?"}'
+  run_bin -0 team-sweep
+  event T3 answered '{id: "q1", answer: "Kim"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 ci-due"
+  local kind
+  for kind in held blocked paused waiting; do
+    event T3 "$kind" '{reason: "OS update", on: "Daniel"}'
+    run_bin -0 team-sweep
+    event T3 resumed
+  done
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 ci-due"
+
+  # Findings sent back: no pass waits.
+  event T3 review '{verdict: "findings", head: "a1b2c3d4e5", sent_back: [1]}'
+  run_bin team-sweep
+  [[ $output != *ci-due* ]]
+  # Merged: no checks wait for a merge.
+  passed_at 300
+  event T3 merged '{pr: 5, merge: "9999999", head: "a1b2c3d", by: "1563000000000000002", url: "https://github.com/owner/proj/pull/5"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 no-worker: merged and not closed, with every live worker idle (latest T3-reviewer 11111111); next: close it with team-close T3"
+  no_github
+}
+
+@test "--help documents ci-due beside merge-due, and still says the sweep reads no GitHub" {
+  run_bin -0 team-sweep --help
+  assert_contains "$output" "ci-due"
+  assert_contains "$output" "have had no wait end for <h>h<mm>m"
+  assert_contains "$output" "arm team-next"
+  assert_contains "$output" "never GitHub"
 }
 
 @test "a resumed or a later launch ends a pause or a block, and resumed ends a hold" {
@@ -1645,6 +1857,125 @@ level_record() {
   assert_equal "$output" ""
 }
 
+@test "stowing: a stow under way 30 minutes with no stowed is named, whatever parks the task, and none at 29" {
+  # T7's builder answered its STOW (a paused, so the task is parked) and the run never came.
+  level_task T7 03:00 builder:7a7a7a7a
+  ledger_line --arg ts "$(date -u -d '30 minutes ago' +%FT%TZ)" '{ts: $ts, task: "T7", event: "stowing",
+    machine: "home-pc", cause: "level", roles: ["builder"]}'
+  event T7 paused '{reason: "stowed", cause: "stow"}'
+  local since
+  since=$(jq -r 'select(.event == "stowing") | .ts' "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T7 stowing: stowing since $since (level), with no stowed; next: run team-stow T7, which finishes the stow or logs stow-failed"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[] | [.task, .kind, .session, .name, .next]' <<<"$output")" \
+    '["T7","stowing",null,null,"run team-stow T7, which finishes the stow or logs stow-failed"]'
+
+  # At 29 minutes it is not named yet.
+  jq -c --arg ts "$(date -u -d '29 minutes ago' +%FT%TZ)" 'if .event == "stowing" then .ts = $ts else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger.next"
+  mv "$BATS_TEST_TMPDIR/ledger.next" "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+
+  # A stowed, or a stow-failed, ends it.
+  for kind in stowed stow-failed; do
+    jq -c --arg ts "$(date -u -d '40 minutes ago' +%FT%TZ)" 'if .event == "stowing" then .ts = $ts else . end' \
+      "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger.next"
+    mv "$BATS_TEST_TMPDIR/ledger.next" "$TEAM_HOME/ledger.jsonl"
+    cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+    ledger_line --arg kind "$kind" '{ts: "2026-10-22T04:00:00Z", task: "T7", event: $kind, machine: "home-pc",
+      worktrees: [], roles: [], reason: "x"}'
+    run_bin -0 --separate-stderr team-sweep
+    assert_equal "$output$stderr" ""
+    mv "$BATS_TEST_TMPDIR/ledger.before" "$TEAM_HOME/ledger.jsonl"
+  done
+}
+
+# held_pair [<T3 event>...] -- [<T3 event>...]: the ledger afresh, T3 stowed for the level at 04:00
+# with its planner and T4 at 05:00 with its builder, each paused stowed, with each T3 event
+# (<kind>:<jq object of more fields>) logged before T3's stow, or after it when it follows the --.
+held_pair() {
+  local spec at=03:30
+  : >"$TEAM_HOME/ledger.jsonl"
+  level_task T3 03:00
+  level_task T4 03:00
+  for spec in "$@"; do
+    if [[ $spec == -- ]]; then
+      ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T3", event: "stowed", machine: "home-pc", worktrees: [],
+        roles: ["planner"], cause: "level"}'
+      ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T3", event: "paused", reason: "stowed"}'
+      at=04:30
+    else
+      ledger_line --arg e "${spec%%:*}" --arg ts "2026-10-22T$at:00Z" "{ts: \$ts, task: \"T3\", event: \$e} + ${spec#*:}"
+    fi
+  done
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T4", event: "stowed", machine: "home-pc", worktrees: [],
+    roles: ["builder"], cause: "level"}'
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T4", event: "paused", reason: "stowed"}'
+}
+
+# relaunch_t4: T4's builder launched again since its stow, and live.
+relaunch_t4() {
+  ledger_line '{ts: "2026-10-22T06:00:00Z", task: "T4", event: "launch", role: "builder", session: "4e4e4e4e",
+    worktree: "/w/4", toolkits: []}'
+  sessions "$(session 4e4e4e4e T4-builder busy working)"
+}
+
+@test "level-resume: a stowed task held, or waiting or blocked since its stow, is never named, until resumed" {
+  level_record minor
+  # Room for both stowed tasks' roles.
+  capacity_reading 0 8
+  local hold='{reason: "on hold by Daniel (1500000000000000001)"}'
+  # T3 stowed first, then Daniel put it on hold: the finding names T4, the next that fits.
+  held_pair -- "waiting:{on: \"Daniel\", reason: \"on hold by Daniel (1500000000000000001)\"}"
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T4 fits again: relaunch its builder"
+  # With T4 relaunched, T3 is the only one stowed: a held before its stow keeps it stowed.
+  held_pair "held:$hold" --
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # So does a block logged after its stow.
+  held_pair -- "blocked:{reason: \"the fixture server is down\"}"
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # A wait logged before the stow is the stowed planner's own interview, which its relaunch resumes.
+  held_pair "waiting:{on: \"Daniel\", reason: \"interview in <#1563>\"}" --
+  relaunch_t4
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T3 fits again: relaunch its planner"
+  # A resumed lifts the hold (and the stow's pause, so T3's own findings come back too).
+  held_pair "held:$hold" -- "resumed:{}"
+  relaunch_t4
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -r '.[] | select(.task == null) | .text' <<<"$output")" "level: T3 fits again: relaunch its planner"
+}
+
+@test "T278's D1: Daniel's typed hold logged before a level stow keeps level-resume quiet; an outside wait before it does not" {
+  level_record minor
+  capacity_reading 0 8
+  # T3 is held by Daniel before its stow, T4 relaunched: T3 is on hold, and nothing is named.
+  held_pair 'held:{reason: "Daniel: not before the release", cause: "daniel-hold", discord_message: "1500000000000000001"}' --
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '.resume | map([.task, .hold])' <<<"$output")" '[["T3","held: Daniel: not before the release"]]'
+  # An outside wait before the stow was the stowed worker's own state, which its relaunch resumes.
+  held_pair 'waiting:{on: "CI", cause: "outside", reason: "the runner queue"}' --
+  relaunch_t4
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T3 fits again: relaunch its planner"
+  # An ask before the stow that no launch went past holds it, wherever it was logged.
+  held_pair 'asked:{id: "q1", text: "Which name?"}' --
+  relaunch_t4
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+}
+
 @test "level-launch: a launch refused for room, not stowed, is named once its role fits again, until it launches" {
   # T5's builder opened its PR; the coordinator's reviewer launch was refused for room at minor.
   level_task T5 03:00 builder:5b5b5b5b
@@ -1671,6 +2002,61 @@ level_record() {
   sessions "$(session 5e5e5e5e T5-reviewer busy working)"
   run_bin -0 team-sweep
   assert_equal "$output" ""
+}
+
+# refused_t5 [<T5 event>...] -- [<T5 event>...]: the ledger afresh, T5's builder launched and its
+# PR opened, then its reviewer's launch refused for room at 04:40, with each T5 event
+# (<kind>:<jq object of more fields>) logged before the refusal, or after it when it follows the --.
+refused_t5() {
+  local spec at=04:35
+  : >"$TEAM_HOME/ledger.jsonl"
+  level_task T5 03:00 builder:5b5b5b5b
+  ledger_line '{ts: "2026-10-22T04:30:00Z", task: "T5", event: "pr", url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  for spec in "$@"; do
+    if [[ $spec == -- ]]; then
+      ledger_line '{ts: "2026-10-22T04:40:00Z", task: "T5", event: "paused",
+        reason: "team-worker: no room for session:reviewer at minor (30%): 9.3 GiB of 9.6 GiB reserved, a reviewer needs 0.5 GiB"}'
+      at=04:50
+    else
+      ledger_line --arg e "${spec%%:*}" --arg ts "2026-10-22T$at:00Z" "{ts: \$ts, task: \"T5\", event: \$e} + ${spec#*:}"
+    fi
+  done
+}
+
+@test "level-launch: a refused launch held, or waiting or blocked since its refusal, is never named, until resumed" {
+  level_record minor
+  # Room for a reviewer.
+  capacity_reading 0 8 T9:builder:9c9c9c9c:8.9
+  local level='.[] | select(.task == null) | .text'
+  # Held after the refusal: no level finding.
+  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # Held before it holds it too, since a held stands wherever it falls.
+  refused_t5 'held:{reason: "on hold by Daniel (1500000000000000001)"}' --
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # Waiting on Daniel, or blocked, since the refusal: none.
+  refused_t5 -- 'waiting:{on: "Daniel", reason: "on hold by Daniel (1500000000000000001)"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  refused_t5 -- 'blocked:{reason: "the fixture server is down"}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
+  # A wait before the refusal did not stop the launch tried then, so the finding names T5.
+  refused_t5 'waiting:{on: "Daniel", reason: "the merge"}' --
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
+  # A resumed lifts the hold.
+  refused_t5 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}' --
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" "level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"
+  # A resumed after the refusal ends the refusal too, since the refusal is a standing park and a
+  # resumed with no id, all or brief ends every park (T278's A4: parked and refused_launches
+  # agree), so nothing is named.
+  refused_t5 -- 'held:{reason: "on hold by Daniel (1500000000000000001)"}' 'resumed:{}'
+  run_bin team-sweep --json
+  assert_equal "$(jq -r "$level" <<<"$output")" ""
 }
 
 @test "level: a team-capacity plan that fails is one finding naming its reason, and the task findings still come" {
