@@ -217,7 +217,8 @@ TABLE
   assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array","widening":"numbers","memory":"string"}'
   assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","default","plan","standing"]'
   assert_equal "$(jq -c '.kinds.walk.required.state' "$CONTRACT")" '["on","off"]'
-  assert_equal "$(jq -c '.kinds["plan-approved"] | [.required, .optional]' "$CONTRACT")" '[{"by":"string"},{"parallel":"string"}]'
+  assert_equal "$(jq -c '.kinds["plan-approved"] | [.required, .optional]' "$CONTRACT")" \
+    '[{"by":["Daniel","coordinator"]},{"ask":"string","discord_message":"id","plan":"object","scope":"array","parallel":"string"}]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
 

@@ -293,6 +293,7 @@ launched T7-builder c0000001"
   local named="T7's plan approval was withdrawn at 2026-11-01T10:00:00Z in Discord message 1563000000000000047"
   refused "team-next: $named, so no ticket hand-off; approve the plan again first (step 3 of the manual)" T7 -- "T7 DONE 01 $sha done"
   refused "team-next: $named, so no review hand-off; approve the plan again first (step 3 of the manual)" T7 -- "T7 DONE review-ready $sha"
+  refused "team-next: $named, so no fill hand-off; approve the plan again first (step 3 of the manual)" T7 --fill
   # A message that launches no one meets the same refusal once it would hand off.
   launched r0000001 brief-review '[]' reviewer
   refused "team-next: $named, so no verdict hand-off; approve the plan again first (step 3 of the manual)" T7 --from r0000001 -- \
