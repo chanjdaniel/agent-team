@@ -840,6 +840,7 @@ coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-10-22T
   launch T3 reviewer 11111111
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   event T3 review '{verdict: "pass", head: "a1b2c3d4e5"}'
+  ci T3 passed
   run_bin -0 team-sweep
   event T3 review '{verdict: "findings", head: "a1b2c3d"}'
   run_bin -1 team-sweep
@@ -847,10 +848,19 @@ coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-10-22T
   no_github
 }
 
-# Task <task>'s PR 5 of proj reviewed and passed at its head, with no plan approved.
+# ci <task> <outcome> [<head>] [<ts>]: team-next <task> --ci's end on PR 5 of proj at <head>
+# (a1b2c3d4e5 by default), logged at <ts> (02:00 on 2026-10-22 by default).
+ci() {
+  ledger_line --arg t "$1" --arg o "$2" --arg head "${3:-a1b2c3d4e5}" --arg ts "${4:-2026-10-22T02:00:00Z}" \
+    '{ts: $ts, task: $t, event: "ci", url: "https://github.com/owner/proj/pull/5", head: $head, outcome: $o}'
+}
+
+# Task <task>'s PR 5 of proj reviewed and passed at its head, and its checks wait ended green,
+# with no plan approved.
 passed_pr() {
   event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  ci "$1" passed
 }
 
 # Task <task>'s plan approved by the coordinator, as team-log records it.
@@ -921,6 +931,7 @@ due() {
   assert_equal "$output" ""
   # The verify pass that sends nothing back makes it due again.
   run_bin -0 team-log T3 review verdict=pass head=a1b2c3d4e5 "$counts" sent_back=none guarded=none
+  ci T3 passed
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
   no_github
@@ -1037,6 +1048,7 @@ due() {
   assert_equal "$output" "$(due)"
   event T3 pr '{url: "https://github.com/owner/conv/pull/7", head: "c3d4e5f", project: "conv"}'
   event T3 review '{verdict: "pass", head: "c3d4e5f", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  event T3 ci '{url: "https://github.com/owner/conv/pull/7", head: "c3d4e5f", outcome: "passed"}'
   event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
   run_bin -1 team-sweep
   assert_equal "$output" "$(due)"
@@ -1063,23 +1075,29 @@ due() {
   # The reviewer found guarded areas, or logged none, or an earlier review counted a security
   # finding: team-merge would refuse the word, so the coordinator is not sent to it.
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"ci\"]}"
+  ci T3 passed a1b2c3d4e5
   run_bin -0 team-sweep
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts}"
+  ci T3 passed a1b2c3d4e5
   run_bin -0 team-sweep
   # A pass that names none is covered again, until a review that counted a security finding.
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: []}"
+  ci T3 passed a1b2c3d4e5
   run_bin -1 team-sweep
   assert_equal "$output" "$(due)"
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: ($counts + {security: 1}), guarded: []}"
+  ci T3 passed a1b2c3d4e5
   run_bin -0 team-sweep
   : >"$TEAM_HOME/ledger.jsonl"
   opened T3
   launch T3 reviewer 11111111
   approved_pr T3
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"secrets\"]}"
+  ci T3 passed a1b2c3d4e5
   run_bin -0 team-sweep
   # An area retired since (T276), which a review logged before may name, holds nothing back.
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"settings\", \"dependencies\"]}"
+  ci T3 passed a1b2c3d4e5
   run_bin -1 team-sweep
   assert_equal "$output" "$(due)"
   no_github
@@ -1117,6 +1135,7 @@ due() {
   sessions "$(session 33333333 T3-reviewer busy)"
   run_bin -0 team-sweep
   event T3 review '{verdict: "pass", head: "f00ba47", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  ci T3 passed f00ba47
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
 }
@@ -1129,6 +1148,7 @@ due() {
   event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
   local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
   event T3 review "{verdict: \"pass\", head: \"a1b2c3d\", findings: $counts, guarded: []}"
+  ci T3 passed a1b2c3d
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
   # A review of a newer head sends findings back: the pass on the pr event's head no longer counts.
@@ -1136,9 +1156,11 @@ due() {
   run_bin -0 team-sweep
   # The fix passes, naming a guarded area, which the word does not cover.
   event T3 review "{verdict: \"pass\", head: \"c3d4e5f\", findings: $counts, guarded: [\"ci\"]}"
+  ci T3 passed c3d4e5f
   run_bin -0 team-sweep
   # The next pass names none: the word covers it again.
   event T3 review "{verdict: \"pass\", head: \"d4e5f6a\", findings: $counts, guarded: []}"
+  ci T3 passed d4e5f6a
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
   no_github
@@ -1155,6 +1177,10 @@ due() {
   run_bin -0 team-sweep
   # A clean catch-up settles the base with no round left to wait for.
   event T3 caught-up '{url: "https://github.com/owner/proj/pull/5", from: "a1b2c3d", head: "f00ba47", base: "main"}'
+  # Its checks wait on the merge is still to end: no merge yet, until it ends green.
+  run_bin -1 team-sweep
+  [[ $output != *merge-due* ]]
+  ci T3 passed f00ba47
   run_bin -1 team-sweep
   assert_contains "$output" "T3 merge-due"
 }
@@ -1184,6 +1210,138 @@ due() {
   # A withdrawal for every project parks it.
   said T3 merge-default-withdrawn all 1563000000000000003
   run_bin -0 team-sweep
+}
+
+@test "merge-due: none until the checks of the pass passed, as team-next --ci logs it; ci-due while no wait has ended" {
+  opened T3
+  launch T3 reviewer 11111111
+  sessions "$(session 11111111 T3-reviewer idle)"
+  approved T3
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  event T3 review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  # The pass's checks no wait has ended since 2026-10-22: no merge yet, and the wait to arm.
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 ci-due: the checks of https://github.com/owner/proj/pull/5 at a1b2c3d4 have had no wait end for "
+  [[ $output != *merge-due* ]]
+  # A wait that ended at its deadline, or failed, or failed as infrastructure, is no merge either.
+  local outcome
+  for outcome in pending failed infrastructure; do
+    ci T3 "$outcome"
+    run_bin team-sweep
+    [[ $output != *merge-due* ]]
+  done
+  # A ci of another head is not the pass's.
+  ci T3 passed f00ba47
+  run_bin -0 team-sweep
+  # The checks of the passed head passed: merge-due, and no ci-due.
+  ci T3 passed
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(due)"
+  no_github
+}
+
+# T3's ci-due line for PR 5 at a1b2c3d4, no wait ended for <duration>.
+ci_due() {
+  echo "T3 ci-due: the checks of https://github.com/owner/proj/pull/5 at a1b2c3d4 have had no wait end for $1; next: arm team-next T3 --ci with Bash run_in_background unless it is running"
+}
+
+# minutes_ago <n>: the UTC time that many minutes before now.
+minutes_ago() {
+  date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ
+}
+
+# T3's PR 5 passed at a1b2c3d4e5, <minutes> ago, its plan not approved: passed_at <minutes>
+passed_at() {
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T3
+  launch T3 reviewer 11111111
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  ledger_line --arg ts "$(minutes_ago "$1")" '{ts: $ts, task: "T3", event: "review", verdict: "pass", head: "a1b2c3d4e5"}'
+}
+
+@test "ci-due: a pass whose checks no wait has ended and no check was rerun for 100 minutes, not at 99, with session null" {
+  sessions "$(session 11111111 T3-reviewer idle)"
+  passed_at 99
+  run_bin -0 team-sweep
+  passed_at 100
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(ci_due 1h40m)"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map([.task, .kind, .session, .name, .next])' <<<"$output")" \
+    '[["T3","ci-due",null,null,"arm team-next T3 --ci with Bash run_in_background unless it is running"]]'
+
+  # A wait that ended at its deadline dates it from that end.
+  ci T3 pending a1b2c3d4e5 "$(minutes_ago 99)"
+  run_bin -0 team-sweep
+  passed_at 300
+  ci T3 pending a1b2c3d4e5 "$(minutes_ago 125)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(ci_due 2h05m)"
+
+  # A rerun starts the wait again, so it dates it from the rerun.
+  passed_at 300
+  ledger_line --arg ts "$(minutes_ago 99)" '{ts: $ts, task: "T3", event: "ci-rerun", url: "https://github.com/owner/proj/pull/5",
+    head: "a1b2c3d4e5", check: "test-shards (1)", run: "7", job: "10"}'
+  run_bin -0 team-sweep
+  passed_at 300
+  ledger_line --arg ts "$(minutes_ago 100)" '{ts: $ts, task: "T3", event: "ci-rerun", url: "https://github.com/owner/proj/pull/5",
+    head: "a1b2c3d4e5", check: "test-shards (1)", run: "7", job: "10"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(ci_due 1h40m)"
+
+  # A wait that ended green, red or as infrastructure leaves none to arm.
+  local outcome
+  for outcome in passed failed infrastructure; do
+    passed_at 300
+    ci T3 "$outcome" a1b2c3d4e5 "$(minutes_ago 200)"
+    run_bin -0 team-sweep
+  done
+
+  # After a catch-up, the wait on the merge dates from it.
+  passed_at 300
+  ci T3 passed a1b2c3d4e5 "$(minutes_ago 200)"
+  ledger_line --arg ts "$(minutes_ago 100)" \
+    '{ts: $ts, task: "T3", event: "caught-up", url: "https://github.com/owner/proj/pull/5", from: "a1b2c3d4e5", head: "f00ba47aa", base: "main"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 ci-due: the checks of https://github.com/owner/proj/pull/5 at f00ba47a have had no wait end for 1h40m; next: arm team-next T3 --ci with Bash run_in_background unless it is running"
+  no_github
+}
+
+@test "ci-due: none while an ask is unsettled or a park stands, nor once findings went back or the PR merged" {
+  sessions "$(session 11111111 T3-reviewer idle)"
+  passed_at 300
+  event T3 asked '{id: "q1", text: "Which name?"}'
+  run_bin -0 team-sweep
+  event T3 answered '{id: "q1", answer: "Kim"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 ci-due"
+  local kind
+  for kind in held blocked paused waiting; do
+    event T3 "$kind" '{reason: "OS update", on: "Daniel"}'
+    run_bin -0 team-sweep
+    event T3 resumed
+  done
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 ci-due"
+
+  # Findings sent back: no pass waits.
+  event T3 review '{verdict: "findings", head: "a1b2c3d4e5", sent_back: [1]}'
+  run_bin team-sweep
+  [[ $output != *ci-due* ]]
+  # Merged: no checks wait for a merge.
+  passed_at 300
+  event T3 merged '{pr: 5, merge: "9999999", head: "a1b2c3d", by: "1563000000000000002", url: "https://github.com/owner/proj/pull/5"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 no-worker: merged and not closed, with every live worker idle (latest T3-reviewer 11111111); next: close it with team-close T3"
+  no_github
+}
+
+@test "--help documents ci-due beside merge-due, and still says the sweep reads no GitHub" {
+  run_bin -0 team-sweep --help
+  assert_contains "$output" "ci-due"
+  assert_contains "$output" "have had no wait end for <h>h<mm>m"
+  assert_contains "$output" "arm team-next"
+  assert_contains "$output" "never GitHub"
 }
 
 @test "a resumed or a later launch ends a pause or a block, and resumed ends a hold" {

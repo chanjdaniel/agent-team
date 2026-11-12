@@ -281,6 +281,24 @@ with_lifecycle_from() {
   mv -f "$table.new" "$table"
 }
 
+# ci_wait_ends <outcome> <head> [<status>] [<text>] [<failures as JSON>]: run_bin runs from a code
+# checkout whose team-ci-wait is the logging stub, printing team-ci-wait --json's object of that
+# end (schema team-ci-wait/1; text "team-ci-wait: <outcome>" by default, failures [] by default)
+# and exiting <status> (default 0) on every call, for a test of a script that waits with it
+# (team-next T<n> --ci). It is CODE_CHECKOUT when a test made one (code_checkout first), else a
+# copy of bin/ made here, as with_lifecycle_from's; its calls are stub_calls team-ci-wait.
+ci_wait_ends() {
+  if [[ -z ${CODE_CHECKOUT:-} ]]; then
+    export CODE_CHECKOUT=$BATS_TEST_TMPDIR/ci-wait-code
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+  fi
+  shared_make stub "$REPO_ROOT/tests/helpers/stub"
+  ln -f "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-ci-wait"
+  stub_reply team-ci-wait "$(jq -cn --arg o "$1" --arg h "$2" --arg t "${4:-team-ci-wait: $1}" --argjson f "${5:-[]}" \
+    '{schema: "team-ci-wait/1", outcome: $o, head: (if $h == "" then null else $h end), text: $t, failures: $f}')" "${3:-0}"
+}
+
 # review_app_on: the reviewer App on for the scripts run_bin runs: CODE_CHECKOUT (a copy of bin/
 # made here when the test made none) gets bin/lib/review-app, id 123456 and slug team-reviewer,
 # and its bin/team-review-check is the logging stub (tests/helpers/stub), its calls in
