@@ -77,7 +77,9 @@ $(id_of "$second") ${second#- }"
     assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
     assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
   }
-  check_refusal "kind 'todo' is not ask, owe, next, queued or watch" todo - a thing --where tasks/queued/node-pin.md
+  check_refusal "kind 'todo' is not ask, owe, next or watch" todo - a thing --where tasks/queued/node-pin.md
+  check_refusal "queued work is a file in tasks/queued/ with front matter, which team-queue index lists, never a current item" \
+    queued - the Node pin --where tasks/queued/node-pin.md
   check_refusal "task 'T4a' is not T<n> or -" next T4a a thing --where tasks/queued/node-pin.md
   check_refusal "task '-:' is not T<n> or -" next -: a thing --where tasks/queued/node-pin.md
   check_refusal "the text holds ' | '" next - "a | b" --where tasks/queued/node-pin.md
@@ -140,7 +142,7 @@ b" --where tasks/queued/node-pin.md
 # Current items
 
 - next T4 open the Node pin task | tasks/queued/node-pin.md
-- queued -: branch cleanup | tasks/queued/node-pin.md
+- next -: branch cleanup | tasks/queued/node-pin.md
 - next T4 a progress line | ledger
 - todo - something | tasks/queued/node-pin.md
 - ask - two wheres | tasks/queued/node-pin.md | ledger 2026-11-01T07:08:11Z
@@ -153,7 +155,7 @@ EOF
   run_bin -1 team-current check
   assert_equal "$output" "tasks/current.md:4: task '-:' is not T<n> or -
 tasks/current.md:5: the where 'ledger' is not a file in the team home
-tasks/current.md:6: kind 'todo' is not ask, owe, next, queued or watch
+tasks/current.md:6: kind 'todo' is not ask, owe, next or watch
 tasks/current.md:7: the line holds ' | ' more than once
 tasks/current.md:8: the line has no ' | <where>'
 tasks/current.md:9: the where '/tmp/watch.log' is a temp path
