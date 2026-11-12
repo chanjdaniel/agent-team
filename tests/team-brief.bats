@@ -2571,3 +2571,47 @@ Task directory: '
     assert_equal "$(grep -A1 '^Worktree: ' "$TEAM_HOME/tasks/T14/brief-resume-builder.md" | sed -n 2p | cut -c1-15)" "Task directory:"
   done
 }
+
+@test "a delivery or rereview brief for a session with the browser toolkit asks for the UI's captures in the PR body, and one without it does not" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  open_t12
+  local brief
+  local asks="This task changes a UI, so the PR body shows it: capture each screen the change touches with your session's own headless browser (\`chrome-devtools-axi\`)"
+  # No --toolkit and no launch with the browser toolkit: no captures.
+  run_bin -0 team-brief T14 builder-deliver --name plain --set "goal=the goal"
+  refute_grep -F -e "$asks" -e '--attach' "$output"
+  # --toolkit browser names the session's toolkits before any launch, as for a small fix's builder.
+  run_bin -0 team-brief T14 builder-fix --name fix --toolkit browser --set "goal=the goal" --set commits=feat \
+    --set read=nothing
+  brief=$(<"$output")
+  assert_contains "$brief" "then a line naming the local checks that passed and the head they passed on.
+   $asks, on the worktree's own stack seeded with fixture data alone, never production's or any real person's data:"
+  assert_contains "$brief" "at your head, and, where the screen exists on \`origin/main\`, before it, from there: commit everything, \`git switch --detach origin/main\`, capture, then \`git switch feat/T14-team-tooling\`"
+  assert_contains "$brief" "keep them in the worktree's \`.scratch/shots/\`, outside the task directory, which \`team-close\` removes"
+  assert_contains "$brief" "\`gh pr create ... --body-file <file> --attach '<file>#<what it shows>'\`"
+  assert_contains "$brief" "\`gh pr edit <full url> --body-file <file> --attach '<file>#<what it shows>'\`"
+  # Else the task's latest builder launch gives the toolkits, as team-next's hand-off launches with.
+  event T14 launch "$(jq -cn --arg wt "$HOME/agent-team/.claude/worktrees/2" \
+    '{role: "builder", session: "b1", worktree: $wt, toolkits: ["browser"]}')"
+  run_bin -0 team-brief T14 builder-deliver --name ui --set "goal=the goal"
+  assert_contains "$(<"$output")" "$asks"
+  # A gated project's builder fixes the body the gate drafted, captures and all.
+  event T12 launch "$(jq -cn --arg wt "$HOME/.treehouse/Conventioner-d4c77a/4/Conventioner" \
+    '{role: "builder", session: "b2", worktree: $wt, toolkits: ["browser"]}')"
+  run_bin -0 team-brief T12 builder-deliver --name ui --set "goal=the goal"
+  assert_contains "$(<"$output")" "an edit of the PR is no commit, so it runs no gate.
+   $asks"
+  # A rereview reads the captures against the head, its toolkits the latest reviewer launch's, else the builder's.
+  reviewed_branch T14 main
+  run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head="$head"
+  assert_contains "$(<"$output")" "   This task changes a UI: the PR body's captures show each screen the change since the last review touches as it is at the head you review"
+  event T14 launch "$(jq -cn --arg wt "$HOME/agent-team/.claude/worktrees/2" \
+    '{role: "reviewer", session: "r1", worktree: $wt, toolkits: []}')"
+  run_bin -0 team-brief T14 rereview --name rereview-2 --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head="$head"
+  refute_grep -F "This task changes a UI" "$output"
+  # A toolkit that is none of the code checkout's is refused.
+  run_bin -2 --separate-stderr team-brief T14 builder-deliver --name nope --toolkit nope --set "goal=the goal"
+  assert_contains "$stderr" "--toolkit nope names no toolkit in"
+}

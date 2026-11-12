@@ -652,7 +652,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 118 lines and 27730 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 118 lines and 27780 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -695,9 +695,10 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # what it prints at its end and its re-arm after a catch-up and on exit 75, and the sanctioned
   # actions team-catch-up and its reruns, and 118 lines and 27730 bytes once the plan step named
   # the Parallel: caps and parallel= and the build step the one line on a parallel phase,
-  # team-next --fill and its integration).
+  # team-next --fill and its integration, and 27780 once the build step named --toolkit browser on
+  # team-brief for a UI task's builder-fix, whose brief then asks for the PR body's captures).
   (($(wc -l <"$manual") <= 118))
-  (($(wc -c <"$manual") <= 27730))
+  (($(wc -c <"$manual") <= 27780))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

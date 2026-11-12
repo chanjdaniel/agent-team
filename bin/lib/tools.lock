@@ -200,7 +200,7 @@
       "name": "gh",
       "version_cmd": "gh --version",
       "version_pattern": "gh version ([0-9]+\\.[0-9]+\\.[0-9]+)",
-      "min": "2.40.0",
+      "min": "2.99.0",
       "source": {
         "arch": "sudo pacman -S --needed github-cli",
         "macos": "brew install gh"

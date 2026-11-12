@@ -20,7 +20,7 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, and `rev
    Start no wait on the PR's GitHub checks: deliver on `{{head}}`, the head you read, since the coordinator's script waits on the checks of a pass, and the merge needs every one green.
 {{> rereview}}
 3. Every finding in `{{task_dir}}/review.md` that went back to the builder (each `blocking`, `note: correctness`, `note: security` and `note: real-data`, and each plain `note` whose scope is `change`) is fixed at `{{head}}`, or the PR records Daniel's decision to keep it; a plain `note` whose scope is `before`, on code the PR did not change, is queued as a follow-up, not for this PR.
-   A finding with a test plan is answered by the test it planned, passing at `{{head}}`, and a note in `{{task_dir}}/build-notes/` saying whether it failed before the fix or the suspicion was wrong.
+   A finding with a test plan is answered by the test it planned, passing at `{{head}}`, and a note in `{{task_dir}}/build-notes/` saying whether it failed before the fix or the suspicion was wrong.{{captures}}
 {{> review-rules}}
 
 ## Deliver
