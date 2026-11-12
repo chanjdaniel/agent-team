@@ -12,6 +12,10 @@ setup() {
   printf '%s\n' '[proj]' 'repo = "owner/proj"' 'path = "projects/proj"' 'base = "main"' 'delivery = "direct-pr"' \
     'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
     '[proj.pool]' 'provider = "git"' 'slots = ["slots/proj/1"]' >"$TEAM_HOME/projects.toml"
+  # #coordinator's guild, as team-inbox keeps it after its first read, so team-log's refresh of the
+  # waiting list calls Discord for nothing.
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"channel":"1562486564871995482","guild":"1560000000000000000"}' >"$HOME/.local/state/agent-team/inbox.json"
 }
 
 # ledger_line [jq options...] <filter>: append the line jq builds, standing in for its writer.

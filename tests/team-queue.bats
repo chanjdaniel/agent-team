@@ -15,7 +15,7 @@ setup() {
   printf -- '---\nsummary: drill the bootstrap; waits on T258\ntask: T258\n---\n# Bootstrap drill\n\nThe body.\n' \
     >"$queued/bootstrap-drill.md"
   printf '# Current items\n' >"$TEAM_HOME/tasks/current.md"
-  team_origin=$(make_team_home)
+  make_team_home >/dev/null
 }
 
 # The subject of the team home's last commit, and the paths it changed, on one line each.
@@ -55,7 +55,7 @@ tasks/queued/bad.md: front matter line \"owner: kim\" is no summary: or task:
 tasks/queued/bad.md: task \"soon\" is not T<n> or -
 tasks/queued/open.md: front matter has no closing ---
 tasks/queued/index.md: not as team-queue index writes it"
-  [[ ! -e $queued/index.md.* ]]
+  assert_equal "$(find "$queued" -name 'index.md.*')" ""
 }
 
 @test "migrate moves each queued line into its file's front matter, joining two for one file, and a second run changes nothing" {
