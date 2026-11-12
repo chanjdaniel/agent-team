@@ -806,7 +806,8 @@ counts="findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,n
 
 # pr_on_github <head> [<behind_by>] [<checks as JSON>]: the gh stub answers team-state's reads
 # of PR 9 (open, against main, at <head>), its checks (agent-review passed by default), its
-# required checks (none) and the compare of main with <head> (0 behind by default).
+# required checks (none), the compare of main with <head> (0 behind by default), and, read only
+# with the reviewer App on, the head's agent-review check runs and commit statuses (none).
 pr_on_github() {
   export GH_HEAD=$1 GH_BEHIND=${2:-0}
   export GH_CHECKS=${3:-'[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'}
@@ -819,6 +820,9 @@ case "$*" in
   "pr checks 9 --repo owner/proj"*) echo "$GH_CHECKS" ;;
   "api repos/owner/proj/compare/main...$GH_HEAD --jq .behind_by") echo "$GH_BEHIND" ;;
   "api repos/owner/proj/pulls/9/files --paginate") echo '[{"filename": "one.txt"}]' ;;
+  "api repos/owner/proj/commits/$GH_HEAD/check-runs?check_name=agent-review&filter=latest&per_page=100")
+    echo '{"total_count": 0, "check_runs": []}' ;;
+  "api repos/owner/proj/commits/$GH_HEAD/status") echo '{"state": "pending", "statuses": []}' ;;
   *) echo "unplanned gh call: $*" >&2; exit 1 ;;
 esac
 SH
@@ -854,7 +858,8 @@ live() {
 # The calls that could reach Discord, merge or post: curl's, and gh's beyond team-state's reads.
 outside_calls() {
   stub_calls curl
-  stub_calls gh | jq -c 'select((.[0] == "pr" and (.[1] == "view" or .[1] == "checks")) or (.[0] == "api" and (.[1] | test("/compare/|/pulls/[0-9]+/files$"))) | not)'
+  stub_calls gh | jq -c 'select((.[0] == "pr" and (.[1] == "view" or .[1] == "checks"))
+    or (.[0] == "api" and (.[1] | test("/compare/|/pulls/[0-9]+/files$|/commits/[0-9a-f]+/(check-runs[?]|status$)"))) | not)'
 }
 
 @test "a pass whose PR head moved past the reviewed head is refused naming both, nothing logged" {
@@ -1084,6 +1089,118 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: guardrails"
   [[ $output != *"default word"* ]]
+}
+
+# own_app: proj is the team's own project (its repo the code checkout's origin), with the reviewer
+# App on and team-review-check the stub, which keeps how many reviews the ledger held when called.
+own_app() {
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  review_app_on
+  stub_script team-review-check <<'SH'
+grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl" >>"$STUB_FIXTURES/reviews-at-post"
+echo 4242
+SH
+}
+
+@test "a verdict on a PR of the team's own project with the reviewer App on is taken only from the latest reviewer's session, and its check is posted after the log" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  local pass="T7 DONE pass $url $counts before=none guarded=none" reviews
+  # No --from, or one naming the builder: refused before anything is logged or posted.
+  refused "team-log: the reviewer App posts agent-review on proj, so its verdict is taken only from T7's latest reviewer session, T7-reviewer (r0000002): run it again with --from r0000002 once the message came from that session" \
+    T7 -- "$pass"
+  refused "team-log: --from b0000001 is not T7's latest reviewer session, T7-reviewer (r0000002)" T7 --from b0000001 -- "$pass"
+  assert_equal "$(stub_calls team-review-check)" ""
+  # The latest reviewer's: the review is logged, then the App's check posted on the reviewed head.
+  reviews=$(grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl" || true)
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "$pass"
+  assert_equal "$output" "logged review verdict=pass head=$sha findings={\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0} before=[] guarded=[]
+logged done role=reviewer session=r0000002
+posted agent-review success on ${sha:0:8} as the reviewer App's check run 4242
+merge ask: $url at $sha, agent-review success, checks green"
+  assert_equal "$(stub_calls team-review-check)" "$(jq -cn --arg url "$url" --arg sha "$sha" '[$url, $sha, "success", "T7'"'"'s review of \($sha[:8]) passed"]')"
+  assert_equal "$(cat "$STUB_FIXTURES/reviews-at-post")" "$((reviews + 1))"
+  assert_equal "$(outside_calls)" ""
+  # The manual's review step says so.
+  grep -E '^5\. \*\*Review\.\*\*' "$REPO_ROOT/roles/coordinator.md" |
+    grep -qF 'which `team-next` runs on a verdict where the App is on, taken only with `--from <the reviewer'"'"'s session id>`'
+}
+
+@test "a findings verdict with the reviewer App on posts its check as failure, and a post that fails exits 1 naming the command, the review logged" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 120000
+  local findings="T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:2} before=none guarded=none"
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 --sent-back 3,5 -- "$findings"
+  assert_equal "$(stub_calls team-review-check)" "$(jq -cn --arg url "$url" --arg sha "$sha" '[$url, $sha, "failure", "T7'"'"'s review of \($sha[:8]) found findings"]')"
+  assert_contains "$output" "posted agent-review failure on ${sha:0:8} as the reviewer App's check run 4242"
+  assert_contains "$(tail -n 1 <<<"$output")" "send to T7-builder (b0000001, 120k): T7 fix findings 3 and 5"
+
+  # A post that fails: exit 1 after the command to run again, the review staying logged.
+  launched r0000003 brief-review '["browser"]' reviewer
+  stub_script team-review-check <<'SH'
+echo "team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)" >&2
+exit 1
+SH
+  local before
+  before=$(grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-next T7 --from r0000003 --sent-back 3,5 -- "$findings"
+  assert_equal "$(grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl")" "$((before + 1))"
+  assert_contains "$stderr" "team-next: T7's review of ${sha:0:8} is logged, but posting the reviewer App's check on it failed: team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)"
+  assert_contains "$stderr" "  run: team-review-check $url $sha failure 'T7'\''s review of ${sha:0:8} found findings'"
+  assert_contains "$stderr" "  then team-next T7 again for the next step, which logs nothing twice"
+  [[ $output != *"send to"* ]]
+}
+
+@test "with the reviewer App on, a verdict on the team's own PR needs the latest reviewer's session though that launch names no project" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  event launch "$(jq -cn --arg wt "$wt" '{role: "reviewer", session: "r0000003", worktree: $wt, toolkits: [],
+    branch: "feat/T7-toil", machine: "home-pc", brief: "brief-review"}')"
+  refused "team-log: the reviewer App posts agent-review on proj, so its verdict is taken only from T7's latest reviewer session, T7-reviewer (r0000003): run it again with --from r0000003 once the message came from that session" \
+    T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(stub_calls team-review-check)" ""
+}
+
+@test "with the reviewer App on, a review logged on a short head posts no check on the PR's full head" {
+  own_app
+  reviewing "${sha:0:7}"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(stub_calls team-review-check)" ""
+  assert_contains "$output" "posted no agent-review: T7's review names its head ${sha:0:7} by a prefix, not in full, so the reviewer App's check is not posted on the PR's head ${sha:0:8}; a review whose brief records the full head posts it"
+}
+
+@test "with the reviewer App on, a check posted whose token was not revoked is said as posted, and the step goes on" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  stub_script team-review-check <<'SH'
+echo 4242
+echo "team-review-check: revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour" >&2
+exit 1
+SH
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "posted agent-review success on ${sha:0:8} as the reviewer App's check run 4242, but revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour"
+  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
+}
+
+@test "a findings verdict on a head the PR moved past posts no check with the reviewer App on, and says so" {
+  own_app
+  reviewing "$sha"
+  local moved
+  moved=$(commit two.txt "feat: after the review")
+  pr_on_github "$moved"
+  live b0000001 120000
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 --sent-back 1 -- \
+    "T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:1} before=none guarded=none"
+  assert_equal "$(stub_calls team-review-check)" ""
+  assert_contains "$output" "posted no agent-review: the PR's head ${moved:0:8} moved past the reviewed head ${sha:0:8}, whose check would not count"
+  assert_contains "$(tail -n 1 <<<"$output")" "send to T7-builder (b0000001, 120k): T7 fix findings 1"
 }
 
 @test "a pass with no PR yet, a gated project's, tells the holding builder to go on" {

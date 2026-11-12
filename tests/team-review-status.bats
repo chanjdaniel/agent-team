@@ -159,3 +159,32 @@ SH
   done
   assert_equal "$(stub_calls gh | grep -c statuses)" 3
 }
+
+@test "on the team's own project with the reviewer App on, it sets nothing and sends the reviewer to the coordinator; on another project and with the App off, it sets the status" {
+  # proj is the team's own once its repo is the code checkout's origin.
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  review_app_on
+  local role
+  for role in reviewer coordinator ''; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 --separate-stderr team-review-status \
+      https://github.com/owner/proj/pull/5 "$HEAD_SHA" success "no blocking findings"
+    assert_equal "$output" ""
+    assert_equal "$stderr" "team-review-status: the reviewer App posts agent-review on proj: send your verdict to the coordinator, whose team-next posts it"
+  done
+  assert_equal "$(stub_calls gh)" ""
+  assert_equal "$(stub_calls team-review-check)" ""
+  # Another project's PR, with the App on: the status, as before.
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/agent-team.git
+  run_bin -0 team-review-status https://github.com/owner/proj/pull/5 "$HEAD_SHA" success "no blocking findings"
+  assert_equal "$output" "agent-review success on Owner/Proj@$HEAD_SHA"
+  # The team's own project with the App off: the status, as before.
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  rm "$CODE_CHECKOUT/bin/lib/review-app"
+  run_bin -0 team-review-status https://github.com/owner/proj/pull/5 "$HEAD_SHA" failure "2 blocking"
+  assert_equal "$output" "agent-review failure on Owner/Proj@$HEAD_SHA"
+  assert_equal "$(stub_calls gh | grep -c statuses)" 2
+  # The reviewer's role says the verdict alone goes there.
+  grep -qF 'On a project whose `agent-review` the reviewer App posts, `team-review-status` refuses and says so: set no status there, and send your verdict alone' \
+    "$REPO_ROOT/roles/reviewer.md"
+}

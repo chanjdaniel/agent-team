@@ -447,6 +447,12 @@
       "Bash(*.claude/channels/*access.json*)",
       "Bash(cd *.claude/channels*)",
       "Bash(pushd *.claude/channels*)",
+      "Read(~/.config/agent-team/review-app*)",
+      "Edit(~/.config/agent-team/review-app*)",
+      "Bash(*agent-team/review-app*)",
+      "Bash(*.config/agent-team/*.pem*)",
+      "Bash(cd *.config/agent-team*)",
+      "Bash(pushd *.config/agent-team*)",
       "Bash(*:9222*)",
       "Bash(*port 9222*)",
       "Bash(*port=9222*)",
@@ -465,7 +471,7 @@
       "**Team source under review**: in a worktree of agent-team, bin/, settings/, roles/, templates/, plugins/, toolkits/ and coordinator.settings.json are the team's source code under review, not this session's configuration: every task's session takes them from the primary checkout ~/agent-team, so a change reaches a task's session only after Daniel merges its pull request. The same paths in ~/agent-team are the live configuration of every task's session. A planner, builder or reviewer session loads none of a worktree's .claude/ (no project or local settings, hooks, rules, skills or agents) and no CLAUDE.md or AGENTS.md of the worktree: team-worker gives it its project's instructions from the base branch, so a change to any of them reaches a session only after it merges.",
       "**Org-specific CLIs**: the team-* scripts in ~/agent-team/bin, which write the team home's ledger and commits; team-stack, the one way the team starts, stops and removes a worktree's throwaway Docker stack; no-mistakes, a local gate with its own daemon that reviews, tests and pushes a branch and opens its pull request; treehouse, a local pool of pre-warmed worktrees; gh and gh-axi for GitHub; chrome-devtools-axi, a headless Chrome for UI checks; codegraph, a local code index.",
       "**Key internal services**: the no-mistakes daemon, with its state and worktrees under ~/.no-mistakes and its bare mirrors under ~/.no-mistakes/repos, whose linked worktrees are its runs' worktrees and share their refs, and which a worker changes only through no-mistakes commands and plain pushes to the no-mistakes remote; the Docker stacks of the team's worktrees, which workers start, stop and remove only through team-stack (a gate run starts its own, labelled kind gate), each labelled with its owner and task (io.github.chanjdaniel.team.owner and io.github.chanjdaniel.team.task), a task's own stacks being those labelled with its task, and team-stack's up, stop and down acting on one worktree's stack, the current directory's unless --worktree names another; on Linux, the team's systemd user slice, in which team-capacity places each task's sessions.",
-      "**Sensitive data locations & audiences**: ~/.claude.json, ~/.claude/.credentials.json, ~/.claude/channels/ (the Discord bot's files), every .env file, ~/.no-mistakes/config.yaml and the 1Password vaults the op CLI reaches; no worker reads them.",
+      "**Sensitive data locations & audiences**: ~/.claude.json, ~/.claude/.credentials.json, ~/.claude/channels/ (the Discord bot's files), ~/.config/agent-team/review-app.pem (the reviewer App's key), every .env file, ~/.no-mistakes/config.yaml and the 1Password vaults the op CLI reaches; no worker reads them.",
       "**Sensitive remote targets**: Conventioner's production MongoDB Atlas cluster, its production deployment and its two Vercel projects (makers-market-management-front-end and makers-market-management-back-end); only an ops session, which has no shell, reaches production, on Daniel's request, through the MCP servers of its prod-read and prod-write toolkits, and the Vercel projects, read-only, through its vercel-read toolkit's."
     ]
   },

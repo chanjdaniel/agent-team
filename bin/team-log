@@ -137,6 +137,11 @@
 # that ends it: a done of its role, a review, a ticket-done or a pr, and for a ticket builder only
 # a done of its session or its ticket's ticket-done); two or more are refused, naming each by its
 # session name and id.
+# A DONE pass or DONE findings on a project whose agent-review the reviewer App posts (the project
+# of any of the task's pr events, by its project or its URL's repo, or of the task's latest
+# reviewer launch, when own_bar in bin/lib/team.sh gives it the App) is refused, logging nothing,
+# unless --from is the session id of the task's latest reviewer launch, the refusal naming it; the
+# name T<n>-reviewer is refused there too.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
@@ -652,10 +657,32 @@ if ((${#files[@]})); then
 fi
 
 task_events_once
+# A reviewer's verdict on a project whose agent-review the reviewer App posts is taken only from the
+# session of the task's latest reviewer launch (message_app_sender in bin/lib/messages.jq): the
+# first, when own_bar gives it the App, of the project of each of the task's pr events (by its
+# project, else the registered project of its URL's repo), whose PR team-next posts the check
+# for, and the project of that latest launch, which may name another project or none.
+app=''
+if [[ $message =~ ^[[:space:]]*T[0-9]+[[:space:]]+DONE[[:space:]]+(pass|findings)([[:space:]]|$) ]]; then
+  while IFS= read -r reviewed_in; do
+    if [[ $reviewed_in == repo:* ]]; then
+      reviewed_in=$(team_project --find repo "${reviewed_in#repo:}") || exit 1
+      reviewed_in=${reviewed_in%%$'\n'*}
+    fi
+    [[ -n $reviewed_in ]] || continue
+    bar=$(own_bar "$reviewed_in") || exit 1
+    if [[ $(jq -r '.app? // empty' <<<"$bar") ]]; then
+      app=$reviewed_in
+      break
+    fi
+  done < <(jq -r '(.[] | select(.event == "pr") | .project // (.url | strings
+      | capture("^https://github\\.com/(?<repo>[^/]+/[^/]+)/pull/").repo | "repo:\(.)") // empty),
+    (map(select(.event == "launch" and .role == "reviewer")) | last | .project // empty)' <<<"$TASK_EVENTS")
+fi
 parsed=$(jq -L "$TEAM_LIB" -c --arg task "$task" --arg message "$message" --arg from "$from" \
-  --arg sent_back "$sent_back" --arg relay "$relay" --argjson records "$brief_records" \
+  --arg sent_back "$sent_back" --arg relay "$relay" --arg app "$app" --argjson records "$brief_records" \
   'include "messages"; include "ledger"; . as $events
-    | $message | parse_message($task; $events; $records; $from; $sent_back) | message_relay($task; $message; $relay)' <<<"$TASK_EVENTS")
+    | $message | parse_message($task; $events; $records; $from; $sent_back; $app) | message_relay($task; $message; $relay)' <<<"$TASK_EVENTS")
 problem=$(jq -r '.problems // empty | join("; ")' <<<"$parsed")
 [[ -z $problem ]] || die "$problem"
 

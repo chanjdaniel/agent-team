@@ -25,10 +25,12 @@
 # A PR ready to merge is left out while it waits on no word of Daniel's: its default word, the
 # approved plan, holds on the ledger (merge_authority in bin/lib/ledger.jq, as team-sweep's
 # merge-due reads it: the plan approved and not withdrawn, the PR's project not the team's own by
-# own_project in bin/lib/team.sh, the default not withdrawn for it, the task's branch logged and
-# its reviews letting it merge unasked), so team-merge merges it on that word; one it refuses
-# comes back as the coordinator's ask, its text naming the PR's URL, listed with the asks. The
-# team's own project's ready PRs are listed, since they merge only on the per-head word.
+# own_project in bin/lib/team.sh, or the team's own on a plan Daniel approved with the reviewer App
+# on, the default not withdrawn for it, the task's branch logged and its reviews letting it merge
+# unasked), so team-merge merges it on that word; one it refuses comes back as the coordinator's
+# ask, its text naming the PR's URL, listed with the asks. While the reviewer App is off (no
+# bin/lib/review-app), the team's own project's ready PRs are listed, since they merge only on the
+# per-head word.
 # While a withdrawal of the default word stands (the latest merge-default-withdrawn or
 # merge-default-restored of any task covering some PR is that withdrawal), one line per withdrawal
 # after the items names what it is for and links Daniel's message: "-# Default merge word
@@ -210,10 +212,10 @@ fi
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 
-# The registered projects that are the team's own, for the default word, read only while an open
-# task awaits merge with its plan approved; null, listing every PR ready to merge, when the
-# registry cannot be read.
-own='[]'
+# The registered projects that are the team's own and the reviewer App's id (own_projects), for
+# the default word, read only while an open task awaits merge with its plan approved; null,
+# listing every PR ready to merge, when the registry cannot be read.
+own='{"projects": [], "app": null}'
 if ledger_jq 'ledger_events | default_may_hold' -nRe "$ledger" >/dev/null; then
   if ! own=$(own_projects 2>"$scratch/registry"); then
     own=null
