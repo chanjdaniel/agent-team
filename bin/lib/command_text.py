@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""The text of a Bash command that runs as code, for a guard that reads where a command starts.
+"""The text of a Bash command that runs as code, and the walk of each simple command it runs.
 
 Usage: python3 -I command_text.py              (the command on stdin; prints the text on stdout)
        python3 -I command_text.py --commands   (the command on stdin; prints its walk, below)
 
 bin/lib/command_rules.py, the rule table bin/hooks/command-guard runs, imports code_text,
 read_command and commands, the walk of each simple command, from it; outbound.py imports commands
-and team-tokens without_heredocs.
+and the option readers long_options and short_cluster, and team-tokens without_heredocs.
 It reads the command far enough to know its quotes ('...', "..." and $'...'), backslashes, comments,
 arithmetic ($[, and $(( or (( whose two closing parentheses are adjacent, matched as Bash's
 parse_matched_pair does, past quotes, backticks and a $(...) read by this scan: ((cmd) ) is two
@@ -15,7 +15,9 @@ which a comment and a newline's heredoc bodies are read as outside it, a { ... }
 array assignment's list, a word's part in which no word is reserved), case's patterns,
 pipelines, here-strings and heredocs, whose marker is its word up to a blank or an operator with
 its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic, ${ or [[ opens
-none.
+none. In arithmetic ($((, $[, (( and for's ((, in a double quote too) only its quotes, a $(, a
+backtick and a nested $(( are read, to its close: each substitution in it is a group, whose commands
+Bash runs.
 A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it as one, as its
 reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
 a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time, its -p or the -- after
@@ -25,8 +27,8 @@ The text it prints is the command with:
     whole, as code, when a shell may read it as its script: the heredoc is a shell's own, or its
     command, or a group it is in, is piped into a shell. Else a body under an unquoted marker
     keeps, each on a line of its own, the text of each of its lines from its first command
-    substitution ($( or a backtick) on, since Bash runs those. A heredoc with no closing line is
-    left as it is, all of it read as code;
+    substitution ($( or a backtick, an escaped one, \\$( or \\`, no substitution) on, since Bash
+    runs those. A heredoc with no closing line is left as it is, all of it read as code;
   - the string after a shell's -c (bash, sh, zsh, dash or ksh, by any path), su's, script's and
     flock's -c, eval, env's -S or --split-string and find's -exec, -execdir, -ok and -okdir, to
     the end of its line, added on a line of its own with a leading -- and its opening quotes
@@ -40,17 +42,18 @@ stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock with its f
 read with its quotes removed (a backslash in $'...' quoting the next character, as in \\', so an
 escape such as \\x62 is not decoded); or a command a group or substitution in which starts one, as
 (bash) or tee >(bash) does; so a shell or . named as an argument feeds it nothing.
-It reads no quoting beyond that: a guard matching the text sees a separator inside quotes as one,
-which refuses more, never less.
+It reads no quoting beyond that, so the words it adds of a command piped into a shell split at a
+separator inside quotes too: a walk of the text sees more commands there, never fewer.
 
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
 too): the assignments before its name, env's among them; its words from the name of what runs on,
 past the wrappers env, command, exec, nohup, time, nice, ionice, stdbuf, timeout, setsid, sudo,
-doas, xargs, parallel, watch and flock with their options, numbers and flock's file, parallel's
-inputs after its ::: or :::: left out but for those with a scheme (https://host/u), read as URLs;
-the wrappers it ran behind, each its own words, the outermost first, with the command that ran
-its string, its find, or the shell or source that ran its file; and how it was reached: directly,
+doas, xargs, parallel, watch and flock with their options (env's lone - among them), numbers and
+flock's file, parallel's inputs after its ::: or :::: left out but for those with a scheme
+(https://host/u), read as URLs; the wrappers it ran behind, each its own words, the outermost
+first, with the command that ran its string, its find, or the shell or source that ran its file;
+and how it was reached: directly,
 in a string a tool runs, by find -exec, in a string watch or parallel join, as a shell's script
 file or by source.
 A command string is walked in turn, its commands yielded after the command that runs it, where
@@ -58,8 +61,9 @@ the tool itself takes one: what watch and parallel join of their command's words
 word that is no option, and the next too when an option may take that one), env's -S or
 --split-string value with the words after it, and flock's -c or --command value, each after the
 assignments before it, quoted; a shell's -c string (bash, sh, zsh, dash or ksh), su's -c, -C,
---command or --session-command, script's -c or --command and eval's words; and each command
-find's -exec, -execdir, -ok or -okdir runs is walked as a simple command of its own.
+--command or --session-command, script's -c or --command, eval's words and trap's action (its
+first operand past a --, when a signal follows it and it is no -); and each command find's -exec,
+-execdir, -ok or -okdir runs is walked as a simple command of its own.
 env's, flock's, su's and script's long options are taken by any prefix getopt_long takes as one
 alone (su --comm), and their short ones in a cluster as getopt reads it (env -uSPATH is -u SPATH).
 A shell with no -c or -s whose first operand, past its options (-o and -O, --rcfile and
@@ -71,7 +75,7 @@ Not walked: a command word built by a substitution ($(command -v curl)), a comma
 string where its tool takes words (sudo -s escapes each word it passes its shell), a watch or
 parallel command string after an option's value followed by another option (watch -n 5 -d '...'),
 ssh's remote command (it runs on the other host), and a command another tool runs from its
-arguments (nsenter, chroot, unshare, systemd-run, tmux send-keys).
+arguments (nsenter, chroot, unshare, systemd-run, tmux send-keys, git rebase's --exec).
 """
 
 import functools
@@ -102,8 +106,6 @@ WORD = re.compile(r"[^\s;&|()<>]+")
 # reserved_word_acceptable).
 OPENS = {word: True for word in ("!", "if", "then", "else", "elif", "do", "while", "until", "fi", "done")}
 OPENS.update(function="name", coproc="coproc", time="time")
-# Where a heredoc body's line starts a command substitution.
-SUBSTITUTION = re.compile(r"\$\(|`")
 # A string the shell runs as a command: what follows a shell's -c, eval, env's -S or find's -exec.
 RUNS_STRING = re.compile(
     r"(?<![\w.-])(?:(?:(?:ba|z|da|k)?sh|su|script|flock)(?:[ \t]+[^\s;&|]+)*?[ \t]+-[A-Za-z]*c[A-Za-z]*[ \t]+"
@@ -279,6 +281,11 @@ def read_command(text, start=0, group=False):
     # time's -p), and that state for its parent once it ends: a compound command's end lets one
     # come, a word's part does not.
     frames = []
+    # Each arithmetic open at i, $((, $[ or ((, read only for the substitutions in it, which Bash
+    # runs: the depth of the frames it sits in, where its closing )) or ] starts, where it ends, the
+    # quote to go back to after it, and whether it is an arithmetic command, after which a reserved
+    # word may come.
+    ariths = []
     quote, i, n = None, start, len(text)
 
     def here():
@@ -342,23 +349,49 @@ def read_command(text, start=0, group=False):
             continue
         if quote == '"':
             if text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
-                i = arith
+                ariths.append((len(frames), arith - 2, arith, '"', False))
+                quote, i = None, i + 3
             elif text.startswith("$(", i) or text.startswith("${", i) or c == "`":
                 push("`" if c == "`" else "(" if text[i + 1] == "(" else "${", i + 1 + (c == "$"), '"')
                 quote, i = None, i + 1 + (c == "$")
             else:
                 quote, i = None if c == '"' else quote, i + 1
             continue
+        if ariths and ariths[-1][0] == len(frames):
+            # In arithmetic only a quote, a $(, a backtick and a nested $(( are read, to its close.
+            _, close, end, resume, command = ariths[-1]
+            if i >= close:
+                ariths.pop()
+                quote, i = resume, max(i, end)
+                if command:
+                    frames[-1][5] = True
+            elif c in "'\"" or text.startswith("$'", i):
+                quote, i = "$'" if c == "$" else c, i + 1 + (c == "$")
+            elif text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
+                ariths.append((len(frames), arith - 2, arith, None, False))
+                i += 3
+            elif text.startswith("$(", i) or c == "`":
+                push("`" if c == "`" else "(", i + 1 + (c == "$"))
+                i += 1 + (c == "$")
+            else:
+                i += 1
+            continue
         if c in "'\"" or text.startswith("$'", i):
             word_at(i)
             quote, i = "$'" if c == "$" else c, i + 1 + (c == "$")
-        elif text.startswith("$((", i) and (arith := _arith_end(text, i + 1)) or text.startswith("$[", i):
+        elif text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
             word_at(i)
-            i = arith if text[i + 1] == "(" else _pair_end(text, i + 2, "[", "]")
+            ariths.append((len(frames), arith - 2, arith, None, False))
+            i += 3
+        elif text.startswith("$[", i):
+            word_at(i)
+            end = _pair_end(text, i + 2, "[", "]")
+            ariths.append((len(frames), end - (text[end - 1 : end] == "]"), end, None, False))
+            i += 2
         elif kind not in ("${", "[[") and text.startswith("((", i) and (arith := _arith_end(text, i)):
             # An arithmetic command, a compound one.
-            i = arith
-            frames[-1][5] = True
+            ariths.append((len(frames), arith - 2, arith, None, True))
+            i += 2
         elif text.startswith("$(", i) or text.startswith("${", i):
             word_at(i)
             push("(" if text[i + 1] == "(" else "${", i + 2)
@@ -497,6 +530,20 @@ def without_heredocs(command):
     return "".join(out) + command[start:]
 
 
+def _substitution(line):
+    """Where the first command substitution ($( or a backtick) of an unquoted heredoc body's line
+    starts, past each backslash and the character it escapes, as Bash reads the body, or None."""
+    i = 0
+    while i < len(line):
+        if line[i] == "\\":
+            i += 2
+            continue
+        if line.startswith("$(", i) or line[i] == "`":
+            return i
+        i += 1
+    return None
+
+
 def _fed(reading, shells, pipeline, segment):
     """Whether a shell may read what the segment's command writes or reads as its script."""
     while not any(shells[pipeline][segment:]):
@@ -524,7 +571,7 @@ def code_text(command):
         elif heredoc.quoted:
             code = []
         else:
-            code = [line[found.start() :] for line in lines if (found := SUBSTITUTION.search(line))]
+            code = [line[found:] for line in lines if (found := _substitution(line)) is not None]
         out += [command[start : heredoc.body[0] - 1]] + ["\n" + line for line in code]
         start = heredoc.end
     text = "".join(out) + command[start:]
@@ -742,8 +789,31 @@ PARALLEL_INPUTS = frozenset((":::", "::::", ":::+", "::::+"))
 
 # A URL's scheme, which keeps a parallel input among its command's words.
 SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+# How a Command was reached: directly, as a simple command of the text; in a string a tool runs (a
+# shell's -c, eval, trap's action, su's and script's -c, env -S, flock -c); by find's -exec; in
+# what watch or parallel join; as a shell's script file; or by source or `.`.
+DIRECT, STRING, FIND, JOINED = "direct", "string", "find -exec", "joined"
+SCRIPT, SOURCE = "script", "source"
+# The depth of strings within strings past which commands raises.
+DEPTH = 20
+# A shell's long options that take a value.
+SHELL_VALUE_LONG = frozenset(("--rcfile", "--init-file"))
 
-def _long_options(name, options):
+
+@dataclass(frozen=True)
+class Command:
+    """A simple command a Bash call runs: the assignments before its name, env's among them; its
+    words from the name of what runs on; the wrappers it ran behind, each its own words, the
+    outermost first, the command that ran its string, its find, or the shell or source that ran its
+    file among them; and how it was reached (DIRECT and the rest)."""
+
+    assignments: tuple
+    words: tuple
+    wrappers: tuple
+    reached: str
+
+
+def long_options(name, options):
     """The long options name stands for, as getopt_long takes it: itself, or those it is a prefix
     of."""
     if name in options:
@@ -756,10 +826,10 @@ def _string_option(word, shorts, longs, options, values):
     the text joined to it, "" when it is the next word, or None when word is not it."""
     if word.startswith("--"):
         name, eq, value = word[2:].partition("=")
-        named = _long_options(name, options)
+        named = long_options(name, options)
         return (value if eq else "") if len(named) == 1 and named <= longs else None
     if word.startswith("-") and word != "-":
-        _, flag, joined = _short(word, values)
+        _, flag, joined = short_cluster(word, values)
         return joined if flag and flag in shorts else None
     return None
 
@@ -827,6 +897,9 @@ def _command(words):
                 option = False
             elif os.path.basename(word) in TOOLS | WRAPPERS:
                 break
+            elif wrapper == "env" and word == "-":
+                # env's lone -, -i's other name, takes no value.
+                option = False
             elif word.startswith("-") and word != "-":
                 option = True
             elif NUMBER.fullmatch(word):
@@ -890,37 +963,13 @@ def _shell_string(args):
     return args[k] if runs and k < len(args) else None
 
 
-
-def _short(word, value_flags):
+def short_cluster(word, value_flags):
     """A cluster of short options read as getopt reads it: its flags up to the first that takes a
     value, that flag or None, and the value joined to it ("" when it is the next word)."""
     for k, flag in enumerate(word[1:], 1):
         if flag in value_flags:
             return word[1:k], flag, word[k + 1 :]
     return word[1:], None, ""
-
-# How a Command was reached: directly, as a simple command of the text; in a string a tool runs (a
-# shell's -c, eval, su's and script's -c, env -S, flock -c); by find's -exec; in what watch or
-# parallel join; as a shell's script file; or by source or `.`.
-DIRECT, STRING, FIND, JOINED = "direct", "string", "find -exec", "joined"
-SCRIPT, SOURCE = "script", "source"
-# The depth of strings within strings past which commands raises.
-DEPTH = 20
-# A shell's long options that take a value.
-SHELL_VALUE_LONG = frozenset(("--rcfile", "--init-file"))
-
-
-@dataclass(frozen=True)
-class Command:
-    """A simple command a Bash call runs: the assignments before its name, env's among them; its
-    words from the name of what runs on; the wrappers it ran behind, each its own words, the
-    outermost first, the command that ran its string, its find, or the shell or source that ran its
-    file among them; and how it was reached (DIRECT and the rest)."""
-
-    assignments: tuple
-    words: tuple
-    wrappers: tuple
-    reached: str
 
 
 def _shell_script(args):
@@ -943,6 +992,16 @@ def _shell_script(args):
             continue
         break
     return k if k < len(args) else None
+
+
+def _trap_action(args):
+    """The action trap sets, its first operand past a --, when a signal follows it and it is no -;
+    None when it has none, or an option (-p, -l or -P) makes it print."""
+    if args[:1] == ["--"]:
+        args = args[1:]
+    elif args[:1] and args[0].startswith("-") and args[0] != "-":
+        return None
+    return args[0] if len(args) > 1 and args[0] != "-" else None
 
 
 def _walk(words, text, depth, outer, reached):
@@ -981,6 +1040,8 @@ def _walk(words, text, depth, outer, reached):
         yield from run(_option_string(args, *STRING_OPTIONS[name]), STRING, here)
     elif name == "eval":
         yield from run(" ".join(args), STRING, here)
+    elif name == "trap":
+        yield from run(_trap_action(args), STRING, here)
 
 
 def _commands(text, depth, outer, reached):

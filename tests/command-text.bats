@@ -51,6 +51,24 @@ walks() {
 @test "env's assignments join the command's own, and env is kept as a wrapper" {
   walks 'A=1 env -u X B=2 run x' \
     '{"reached":"direct","assignments":["A=1","B=2"],"wrappers":[["env","-u","X","B=2"]],"words":["run","x"]}'
+  walks 'env - B=2 run x' \
+    '{"reached":"direct","assignments":["B=2"],"wrappers":[["env","-","B=2"]],"words":["run","x"]}'
+}
+
+@test "a substitution inside arithmetic is walked, in \$((...)), \$[...], ((...)) and a double quote" {
+  walks 'echo $(( $(run x) + 1 ))' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["echo","$(( $(run x) + 1 ))"]}' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["run","x"]}'
+  walks '(( n = `run x` ))' '{"reached":"direct","assignments":[],"wrappers":[],"words":["run","x"]}'
+  walks 'echo "$[ $(run x) ]"' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["echo","$[ $(run x) ]"]}' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["run","x"]}'
+  walks 'echo "$(( $(run x) ))" y' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["echo","$(( $(run x) ))","y"]}' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["run","x"]}'
+  walks 'for ((i = 0; i < 3; i++)); do run $i; done' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["for"]}' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["run","$i"]}'
 }
 
 @test "a shell's -c string is walked as a string the shell runs, the shell among its wrappers" {
@@ -60,13 +78,22 @@ walks() {
     '{"reached":"string","assignments":[],"wrappers":[["sudo"],["bash","-xc","run 1; other 2"]],"words":["other","2"]}'
 }
 
-@test "eval's words, su's and script's -c, env -S and flock -c are walked as strings their tools run" {
+@test "eval's words, su's and script's -c, trap's action, env -S and flock -c are walked as strings their tools run" {
   walks 'eval run "x y"' \
     '{"reached":"direct","assignments":[],"wrappers":[],"words":["eval","run","x y"]}' \
     '{"reached":"string","assignments":[],"wrappers":[["eval","run","x y"]],"words":["run","x","y"]}'
   walks "su - bob --comm 'run x'" \
     '{"reached":"direct","assignments":[],"wrappers":[],"words":["su","-","bob","--comm","run x"]}' \
     '{"reached":"string","assignments":[],"wrappers":[["su","-","bob","--comm","run x"]],"words":["run","x"]}'
+  walks "su -c 'run x' bob" \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["su","-c","run x","bob"]}' \
+    '{"reached":"string","assignments":[],"wrappers":[["su","-c","run x","bob"]],"words":["run","x"]}'
+  walks "su bob -C 'run x'" \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["su","bob","-C","run x"]}' \
+    '{"reached":"string","assignments":[],"wrappers":[["su","bob","-C","run x"]],"words":["run","x"]}'
+  walks "trap -- 'run x' EXIT" \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["trap","--","run x","EXIT"]}' \
+    '{"reached":"string","assignments":[],"wrappers":[["trap","--","run x","EXIT"]],"words":["run","x"]}'
   walks "script -qc 'run x' /dev/null" \
     '{"reached":"direct","assignments":[],"wrappers":[],"words":["script","-qc","run x","/dev/null"]}' \
     '{"reached":"string","assignments":[],"wrappers":[["script","-qc","run x","/dev/null"]],"words":["run","x"]}'

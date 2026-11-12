@@ -22,8 +22,8 @@
 # holds each row's wording and what the guard does not see.
 # It fails closed: when command_rules.py exits non-zero, the call is refused with "it could not
 # check the command for an upload (bin/lib/outbound.py: <the error>)" when the upload row raised,
-# else "it could not read the command (bin/lib/command_rules.py: <its last stderr line>)", and so
-# when what it prints holds no reason.
+# else "it could not read the command (bin/lib/command_rules.py: <its last stderr line>)", and so,
+# naming its last line, when what it prints holds no reason.
 # It reads nothing of the team home, so it decides on a machine that names none. A wrong argument
 # on its command line refuses every call, and any command of its own that fails ends as an exit 2
 # naming the hook and the exit code (team_guard in bin/lib/team.sh): a guard that cannot decide
@@ -66,5 +66,5 @@ rules=$(python3 -I "$TEAM_LIB/command_rules.py" <<<"$input" 2>&1) || {
 }
 [[ -n $rules ]] || exit 0
 reason=$(jq -er '.reason | strings' <<<"$rules" 2>/dev/null) ||
-  block "it could not read the command (bin/lib/command_rules.py printed no reason: ${rules##*$'\n'})"
+  block "it could not read the command (bin/lib/command_rules.py: ${rules##*$'\n'})"
 block "$reason"

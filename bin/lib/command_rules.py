@@ -9,12 +9,13 @@ text as command_text.code_text prints it (each heredoc's body left out unless a 
 and the strings a shell, eval, env -S and find -exec run, and what is piped into a shell, added as
 code), each heredoc that text still opens blanked so that every line of it is code, and walks
 each simple command that text runs, then each one the command's own text runs (its heredocs'
-bodies left out as Bash reads them, so a body's escaped backtick, kept in the code text, hides
+bodies left out as Bash reads them, so a substitution a body leaves open in the code text hides
 no line after it), as command_text.commands yields them: past the wrappers env, nohup, command,
 exec, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock
-with its file, their options and env's assignments, and into the strings a shell's -c, eval,
-su's and script's -c, env -S, flock -c, watch and parallel, and find -exec run, a shell's script
-file and what source or . reads among them, by its name.
+with its file, their options and env's assignments, into the substitutions in arithmetic, and
+into the strings a shell's -c, eval, trap's action, su's and script's -c, env -S, flock -c, watch
+and parallel, and find -exec run, a shell's script file and what source or . reads among them,
+by its name.
 For each row of the table in order, and each command in the walk's order, the first command a
 row refuses ends the walk: it prints one JSON line, {"rule": <id>, "reason": <text>, "allowed":
 <text or null>}, the reason being the text command-guard puts after "Blocked by command-guard: ",
@@ -25,8 +26,8 @@ that cannot decide refuses.
 
 A command's name is its first word's basename, its quotes removed, so a path or a quoted name is
 the name; and as a reading of where a command starts took it, a word past a wrapper's options
-(and flock's file) that the walk took as an option's value, or past env's lone -, may be the name
-too, the words after it its arguments; a word holding a blank never is.
+(and flock's file) that the walk took as an option's value may be the name too, the words after
+it its arguments; a word holding a blank never is.
 The rows, in order:
   ops-launch: team-worker or team-load-check with ops among its words before team-worker's --, or
     a word ending in =ops (--role=ops). Reason: an ops session is the coordinator's to launch, on
@@ -34,12 +35,13 @@ The rows, in order:
   capture-script: the frontend toolkit's capture script, a command named ui-capture, or run by
     node, deno (run), bun (run), npx, source or . past their options. Reason: it is Daniel's own
     sessions'.
-  role-assigned: an assignment of AGENT_TEAM_ROLE or AGENT_TEAM_TASK (+= too), alone, before a
-    command or through env; either named by export, declare, typeset, local, readonly, let, read,
-    mapfile or readarray; or by printf -v. Reason: a worker's role and task are its settings'
-    (bin/lib/team.sh's worker_refusal reads them).
-  role-unset: either named by unset, or by env's -u (alone or ending a short cluster, its value
-    joined or next) or --unset. The same reason.
+  role-assigned: an assignment of AGENT_TEAM_ROLE or AGENT_TEAM_TASK (+= too), or of an element
+    of either (AGENT_TEAM_ROLE[0]=x), alone, before a command or through env; either, or an
+    element, named by export, declare, typeset, local, readonly, let, read, mapfile or readarray;
+    or by printf -v. Reason: a worker's role and task are its settings' (bin/lib/team.sh's
+    worker_refusal reads them).
+  role-unset: either, or an element of either, named by unset, or either by env's -u (alone or
+    ending a short cluster, its value joined or next) or --unset. The same reason.
   environment-emptied: a command named team-<anything> or claude-coordinator behind env -i (alone
     or among env's short options), env --ignore-environment (or a prefix GNU takes), env - or
     exec -c, past any wrappers between or in a string a shell runs there: it would run with no
@@ -59,9 +61,9 @@ Not seen: a name built by a substitution or held in a variable; a script or func
 own, or a copy or link of a guarded one; a string another interpreter runs (python3 -c, node -e,
 perl -e, a require of the capture script); a file a shell reads on stdin (cat x | bash); what
 command_text.commands does not walk (its header lists it: ssh's remote command, nsenter, chroot,
-unshare, systemd-run, tmux send-keys); each under an emptied environment too, so a team script
-one of those runs there goes unseen. It is a speed bump, as a deny rule is, which the role's rule
-against reaching a refused thing another way holds.
+unshare, systemd-run, tmux send-keys, git rebase's --exec); each under an emptied environment
+too, so a team script one of those runs there goes unseen. It is a speed bump, as a deny rule is,
+which the role's rule against reaching a refused thing another way holds.
 """
 
 import json
@@ -79,6 +81,9 @@ from command_text import (  # noqa: E402
 import outbound  # noqa: E402
 
 ROLE_VARIABLES = ("AGENT_TEAM_ROLE", "AGENT_TEAM_TASK")
+# An assignment, of a variable or of an array's element, as a command's word: the walk takes an
+# element's one (X[0]=1) as the command's name.
+ANY_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(?:\[[^]]*\])?\+?=")
 DECLARERS = frozenset("export declare typeset local readonly let read mapfile readarray".split())
 # What runs a script by its path, with its options before it.
 INTERPRETERS = frozenset(("node", "deno", "bun", "npx", "source", "."))
@@ -130,7 +135,10 @@ def _leads(words, starts=(0,), wrappers=True):
     """Where a command's name may stand among words, from the starts on, as a reading of where a
     command starts takes them: past options (each with or without the next word as its value,
     when that word is no option), numbers and assignments, and, with wrappers, past a wrapper or
-    a shell (flock with its options and file); a word holding a blank ends the reading."""
+    a shell (flock with its options and file); a word holding a blank ends the reading.
+    It is a second reader of the wrappers' options beside command_text._command, which knows
+    which option takes a value and so reads one name; this one reads each name an option's value
+    may hide, as the regexes did. A wrapper or option _command learns may need reading here too."""
     reach, n = set(starts), len(words)
     for k, word in enumerate(words):
         if k not in reach:
@@ -164,8 +172,7 @@ def _from_wrappers(command: Command):
 def _heads(command: Command):
     """Each way of reading the command's words from its name on: the walk's own, and from each word
     after a wrapper that may be the name of what it runs, where the walk took it as an option's
-    value or as no name at all (env's lone -); a word holding a blank, or an option, is never a
-    name."""
+    value; a word holding a blank, or an option, is never a name."""
     yield command.words
     for words in _from_wrappers(command):
         for k in _leads(words):
@@ -221,14 +228,24 @@ def _role_word(word, ends):
     return False
 
 
+def _leading(words):
+    """The assignments a command's words start with, an element's among them."""
+    for word in words:
+        if not ANY_ASSIGNMENT.match(word):
+            return
+        yield word
+
+
 def _assigned(command, context):
     if any(_role_word(word, "=+") and ASSIGNMENT.match(word) for word in command.assignments):
         return True
     for words in _heads(command):
         if not words:
             continue
+        if any(_role_word(word, "[") for word in _leading(words)):
+            return True
         name, args = _name(words[0]), list(words[1:])
-        if name in DECLARERS and any(_role_word(word, "=+<) \t\n'\";&|") for word in args):
+        if name in DECLARERS and any(_role_word(word, "=+[<) \t\n'\";&|") for word in args):
             return True
         if name == "printf":
             for k, word in enumerate(args):
@@ -256,7 +273,7 @@ def _env_unsets(words):
 
 def _unset(command, context):
     for words in _heads(command):
-        if words and _name(words[0]) == "unset" and any(word in ROLE_VARIABLES for word in words[1:]):
+        if words and _name(words[0]) == "unset" and any(_role_word(word, "[") for word in words[1:]):
             return True
         if words and _name(words[0]) == "env" and _env_unsets(list(words[1:])):
             return True
@@ -313,7 +330,7 @@ def _coordinator(command, context):
 
 
 def _upload(command, context):
-    return outbound._uploads(command)
+    return outbound.uploads_outside(command)
 
 
 ROLE_REASON = "a worker's role and task are its settings' ({})"

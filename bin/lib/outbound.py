@@ -3,8 +3,8 @@
 
 Usage: python3 -I outbound.py   (the command on stdin; prints the reason when it uploads)
 
-bin/lib/command_rules.py's upload row decides each command of a Bash call with _uploads, and
-bin/hooks/command-guard refuses the call with REASON; so every role whose settings layer on
+bin/lib/command_rules.py's upload row decides each command of a Bash call with uploads_outside,
+and bin/hooks/command-guard refuses the call with REASON; so every role whose settings layer on
 settings/worker.json gets the refusal, ops among them. Run as a file, it reads a command's text
 on stdin and prints the reason when it uploads; it exits 0 either way, and input that is not
 UTF-8, or an error of its own, exits 1 naming it on stderr. An error in the upload row refuses
@@ -54,7 +54,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from command_text import (  # noqa: E402
-    SCHEME, SCRIPT, SOURCE, Command, _long_options, _short, commands,
+    SCHEME, SCRIPT, SOURCE, Command, long_options, short_cluster, commands,
 )
 
 REASON = "an upload to a host outside the team's own; a file's contents never go to an outside host"
@@ -187,7 +187,7 @@ def _curl(args):
                 urls.append(value)
             via += _curl_via(name, value)
         elif word.startswith("-") and word != "-":
-            flags, flag, value = _short(word, CURL_VALUE_SHORT)
+            flags, flag, value = short_cluster(word, CURL_VALUE_SHORT)
             uploads = uploads or bool(set(flags + (flag or "")) & CURL_UPLOAD_SHORT)
             if flag and not value:
                 value = args[k] if k < len(args) else ""
@@ -215,7 +215,7 @@ def _wget(args):
             break
         if word.startswith("--"):
             name, eq, value = word[2:].partition("=")
-            options = _long_options(name, WGET_LONG)
+            options = long_options(name, WGET_LONG)
             # A prefix of more than one option is refused by wget, so it sends nothing either way.
             uploads = uploads or bool(options & set(WGET_UPLOAD))
             if options and options <= WGET_VALUE_LONG and not eq:
@@ -223,7 +223,7 @@ def _wget(args):
                 k += 1
             executes = options == {"execute"}
         elif word.startswith("-") and word != "-":
-            _, flag, value = _short(word, WGET_VALUE_SHORT)
+            _, flag, value = short_cluster(word, WGET_VALUE_SHORT)
             if flag and not value:
                 value = args[k] if k < len(args) else ""
                 k += 1
@@ -265,7 +265,7 @@ def _outside(url):
     return bool(re.search(r"[A-Za-z0-9]", host)) and not local
 
 
-def _uploads(command: Command) -> bool:
+def uploads_outside(command: Command) -> bool:
     """Whether one Command of the walk uploads to a host outside the team's own: a curl or wget
     reached any way but as a script file or a sourced one, whose words are a file's name."""
     if command.reached in (SCRIPT, SOURCE) or not command.words:
@@ -280,7 +280,7 @@ def _uploads(command: Command) -> bool:
 
 def outbound_upload(command: str) -> str | None:
     """The reason the command uploads to a host outside the team's own, or None when it does not."""
-    return REASON if any(_uploads(found) for found in commands(command)) else None
+    return REASON if any(uploads_outside(found) for found in commands(command)) else None
 
 
 def main():
