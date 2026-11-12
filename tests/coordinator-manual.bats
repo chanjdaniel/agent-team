@@ -652,7 +652,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 118 lines and 27780 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 118 lines and 27730 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -695,10 +695,9 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # what it prints at its end and its re-arm after a catch-up and on exit 75, and the sanctioned
   # actions team-catch-up and its reruns, and 118 lines and 27730 bytes once the plan step named
   # the Parallel: caps and parallel= and the build step the one line on a parallel phase,
-  # team-next --fill and its integration, and 27780 once the build step named --toolkit browser on
-  # team-brief for a UI task's builder-fix, whose brief then asks for the PR body's captures).
+  # team-next --fill and its integration).
   (($(wc -l <"$manual") <= 118))
-  (($(wc -c <"$manual") <= 27780))
+  (($(wc -c <"$manual") <= 27730))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {
@@ -707,7 +706,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   discord=$(section coordinator Discord)
   # The manual's Discord section: the thread, the file and who writes it, the post, the routing.
   grep -qxF -- "- Every task has its thread under \`#coordinator\`; the task's updates go there, and cross-task news in \`#coordinator\` itself." <<<"$discord"
-  grep -qxF -- "  What waits on Daniel, every open ask, PR ready to merge and interview, is numbered in the team home's \`waiting.md\`, which \`team-inbox\` writes: \`team-ask\`, \`team-answer\`, \`team-merge\`, \`team-close\`, the heartbeat and \`team-log\` (after any event that changes the list) run it." <<<"$discord"
+  grep -qxF -- "  What waits on Daniel, every open ask, PR ready to merge and interview, is numbered in the team home's \`waiting.md\`, which \`team-inbox\` writes, run by the heartbeat and by each script that changes the list, \`team-log\` included." <<<"$discord"
   grep -qxF -- "  When Daniel asks what waits, \`team-inbox --post\` posts it as a new message at the bottom of \`#coordinator\`; nothing edits an old one." <<<"$discord"
   grep -qxF -- "- A reply that answers by number (\"3 yes, 5 no\") goes to each number's item, which \`team-inbox --item <n>\` names: an ask's answer is \`team-answer --item <n> <message id>\`, a PR's merge word its \`merge-approved\` as step 6 says, and an interview is answered in its thread; tell Daniel of a number that no longer waits, as \`--item\` says." <<<"$discord"
   # Step 6 is the one that logs the merge word, as the routing line points.

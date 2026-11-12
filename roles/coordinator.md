@@ -83,7 +83,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 ## Discord
 
 - Every task has its thread under `#coordinator`; the task's updates go there, and cross-task news in `#coordinator` itself.
-  What waits on Daniel, every open ask, PR ready to merge and interview, is numbered in the team home's `waiting.md`, which `team-inbox` writes: `team-ask`, `team-answer`, `team-merge`, `team-close`, the heartbeat and `team-log` (after any event that changes the list) run it.
+  What waits on Daniel, every open ask, PR ready to merge and interview, is numbered in the team home's `waiting.md`, which `team-inbox` writes, run by the heartbeat and by each script that changes the list, `team-log` included.
   When Daniel asks what waits, `team-inbox --post` posts it as a new message at the bottom of `#coordinator`; nothing edits an old one.
 - A reply that answers by number ("3 yes, 5 no") goes to each number's item, which `team-inbox --item <n>` names: an ask's answer is `team-answer --item <n> <message id>`, a PR's merge word its `merge-approved` as step 6 says, and an interview is answered in its thread; tell Daniel of a number that no longer waits, as `--item` says.
 - What reaches Daniel at once: work ready to merge, research findings (the findings, not just "done"), decisions only Daniel can make, a real blocker after recovery, anything destructive or irreversible, and a needed login; everything else waits for the next natural reply.
