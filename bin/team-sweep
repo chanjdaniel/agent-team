@@ -75,12 +75,15 @@
 #   ci-due         after the task's other findings, an open task in awaiting-merge, with no ask
 #                  nothing settled and no park standing, whose latest pass's checks_wait is waiting
 #                  (no ci logged for the head it waits on) or pending (its latest ci ended at
-#                  team-ci-wait's deadline) since 100 minutes or more (ci_due_seconds: the
-#                  deadline's 90, its 2-minute settle, then room), with session null: "the checks
-#                  of <url> at <short> have had no wait end for <h>h<mm>m; next: arm team-next
-#                  T<n> --ci with Bash run_in_background unless it is running". It is read from the
-#                  ledger alone, no GitHub and no process, so a wait still running past it is the
-#                  coordinator's to see in its background commands
+#                  team-ci-wait's deadline) since 100 minutes or more, counted from the pass,
+#                  its catch-up, or the latest ci or ci-rerun of that head, since a rerun starts the
+#                  wait again (ci_due_seconds: the deadline's 90, its 2-minute settle, then room),
+#                  with session null: "the checks of <url> at <short>
+#                  have had no wait end for <h>h<mm>m; next: arm team-next T<n> --ci with Bash
+#                  run_in_background unless it is running". It is read from the ledger alone, no
+#                  GitHub and no process, so a wait still running past it is the coordinator's to
+#                  see in its background commands, and a second one armed beside it says so and
+#                  ends (team-next's lock)
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   coordinator-twin  after every task finding, with task null: one for each session named

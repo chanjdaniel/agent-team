@@ -1127,8 +1127,9 @@ def review_app_pin_problems($app):
 # caught-up made from that one (reviewed_head's rule, forward), else reviewed; state the outcome of
 # the latest ci of head on the PR logged after the pass and that catch-up (passed, failed,
 # infrastructure or pending), waiting when none; since the ts of the latest of the pass, that
-# catch-up and that ci; reruns the names of the checks with a ci-rerun of head on the PR, each once,
-# in the order first rerun. URLs compare with a trailing slash aside.
+# catch-up, and each ci and ci-rerun of head on the PR logged after them (a rerun starts the wait
+# again); reruns the names of the checks with a ci-rerun of head on the PR, whenever logged, each
+# once, in the order first rerun. URLs compare with a trailing slash aside.
 def checks_wait:
   . as $events
   | def url_of: .url // "" | tostring | rtrimstr("/");
@@ -1144,9 +1145,11 @@ def checks_wait:
           $events[$i] as $e
           | if $e.event == "caught-up" and ($e | url_of) == $url and same_head($e.from; .head) then {head: $e.head, at: $i}
             else . end)) as $up
-      | ([range($up.at + 1; length) | $events[.]
-          | select(.event == "ci" and url_of == $url and same_head(.head; $up.head))] | last) as $ci
-      | {url: $pr.url, reviewed: $pass.head, head: $up.head, since: ($ci.ts // $events[$up.at].ts), state: ($ci.outcome // "waiting"),
+      | [range($up.at + 1; length) | $events[.]
+          | select((.event == "ci" or .event == "ci-rerun") and url_of == $url and same_head(.head; $up.head))] as $ends
+      | ([$ends[] | select(.event == "ci")] | last) as $ci
+      | {url: $pr.url, reviewed: $pass.head, head: $up.head, since: ($ends | last | .ts // $events[$up.at].ts),
+         state: ($ci.outcome // "waiting"),
          reruns: (reduce ($events[] | select(.event == "ci-rerun" and url_of == $url and same_head(.head; $up.head)) | .check) as $c
            ([]; if any(.[]; . == $c) then . else . + [$c] end))}
       end
@@ -1443,7 +1446,7 @@ def ci_due_seconds: 6000;
 # team-sweep's ci-due finding, over a task's events, or nothing: the task awaits merge with no ask
 # nothing settled and no standing park, and its checks_wait is waiting or pending since
 # ci_due_seconds or more, so no team-next T<n> --ci has ended on the checks of the head its pass
-# waits on for that long; with session null. It reads no GitHub and no process: a wait still
+# waits on, or rerun one of them (whose wait then starts again), for that long; with session null. It reads no GitHub and no process: a wait still
 # running is the coordinator's to see in its background commands.
 def ci_due_finding:
   .[0].task as $task

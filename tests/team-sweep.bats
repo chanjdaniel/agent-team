@@ -1259,7 +1259,7 @@ passed_at() {
   ledger_line --arg ts "$(minutes_ago "$1")" '{ts: $ts, task: "T3", event: "review", verdict: "pass", head: "a1b2c3d4e5"}'
 }
 
-@test "ci-due: a pass whose checks no wait has ended for 100 minutes, not at 99, with session null" {
+@test "ci-due: a pass whose checks no wait has ended and no check was rerun for 100 minutes, not at 99, with session null" {
   sessions "$(session 11111111 T3-reviewer idle)"
   passed_at 99
   run_bin -0 team-sweep
@@ -1277,6 +1277,17 @@ passed_at() {
   ci T3 pending a1b2c3d4e5 "$(minutes_ago 125)"
   run_bin -1 team-sweep
   assert_equal "$output" "$(ci_due 2h05m)"
+
+  # A rerun starts the wait again, so it dates it from the rerun.
+  passed_at 300
+  ledger_line --arg ts "$(minutes_ago 99)" '{ts: $ts, task: "T3", event: "ci-rerun", url: "https://github.com/owner/proj/pull/5",
+    head: "a1b2c3d4e5", check: "test-shards (1)", run: "7", job: "10"}'
+  run_bin -0 team-sweep
+  passed_at 300
+  ledger_line --arg ts "$(minutes_ago 100)" '{ts: $ts, task: "T3", event: "ci-rerun", url: "https://github.com/owner/proj/pull/5",
+    head: "a1b2c3d4e5", check: "test-shards (1)", run: "7", job: "10"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(ci_due 1h40m)"
 
   # A wait that ended green, red or as infrastructure leaves none to arm.
   local outcome
