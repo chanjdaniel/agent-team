@@ -19,9 +19,9 @@
 # stands in the ledger's lifecycle fold; an ask a launch went past (team-worker --past-ask) and its
 # wait park nothing, so that launch's worker is watched; a park of one ticket's builder in a
 # parallel phase (one naming the session of a builder in a ticket worktree, T<n>-builder-NN, or
-# team-worker's room refusal of its brief-build-NN while its ticket worktree is open) parks the
-# task only while every running ticket's builder has one, so the tickets building beside it are
-# still watched; an awaiting-merge task that nothing else parks is merge-due instead
+# team-worker's room refusal of its brief-build-NN, or of a relaunch's brief-resume-build-NN,
+# while its ticket worktree is open) parks the task only while every running ticket's builder has
+# one or a stowed after its launch, so the tickets building beside it are still watched; an awaiting-merge task that nothing else parks is merge-due instead
 # while the default merge word, the approved plan, holds for one of its PRs. Findings, one line
 # each with the task,
 # the session and the next step:

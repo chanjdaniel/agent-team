@@ -406,11 +406,12 @@ def park_role:
 
 # A park event's ticket in the state $state (lifecycle_start's fields tickets and
 # ticket_worktrees): the ticket of the launch its session names, a builder's in a ticket worktree,
-# else for team-worker's room refusal of a brief brief-build-NN while ticket NN's worktree is open
+# else for team-worker's room refusal of a brief brief-build-NN, or of team-next --fill's relaunch
+# brief brief-resume-build-NN (-<k> after it for a later one), while ticket NN's worktree is open
 # (the refused launch was that ticket's, into its worktree) NN, else null.
 def park_ticket($state):
   (if (.session | type) == "string" then $state.tickets[.session] else null end)
-  // (if park_cause == "room" then first(.brief | strings | capture("^brief-build-(?<n>[0-9]{2})$") | .n
+  // (if park_cause == "room" then first(.brief | strings | capture("^brief-(resume-)?build-(?<n>[0-9]{2})(-[0-9]+)?$") | .n
         | select(IN($state.ticket_worktrees[]; .))) // null
       else null end);
 
@@ -1361,7 +1362,8 @@ def running_ticket_launches:
 # a park standing (held, blocked, waiting or paused), or an ask nothing settled (settles); an ask a
 # launch passed (past_ask), and its wait, park nothing, so the sweep watches that launch's worker.
 # A ticket's park (park_ticket's) parks the task only while every running ticket launch's ticket
-# has one standing, so the sweep still watches the tickets that build beside it.
+# has one standing, or a stowed after that launch (a builder the stow stopped without its answer),
+# so the sweep still watches the tickets that build beside it.
 def parked:
   . as $events
   | lifecycle as $state
@@ -1369,7 +1371,8 @@ def parked:
   | ($state | lifecycle_phase) == "awaiting-merge"
     or any($state.parks[]; (.passed | not) and .ticket == null)
     or any($state.asks[]; .passed | not)
-    or ($tickets != [] and all($events | running_ticket_launches[]; IN(.ticket; $tickets[])));
+    or ($tickets != [] and all($events | running_ticket_launches[];
+          IN(.ticket; $tickets[]) or (.i as $i | any($events[$i + 1:][]; .event == "stowed"))));
 
 # One of team-sweep's findings: {task, kind, session, name, next, text}, text being its one line.
 def finding($task; $kind; $session; $name; $detail; $next):

@@ -526,7 +526,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # A ticket builder is recovered in its own ticket worktree, on its ticket's brief.
   grep -qF 'in its own ticket worktree, on its ticket'"'"'s brief' "$skills/recover-worker/SKILL.md"
   grep -qF '`ticket-gone`' "$skills/recover-worker/SKILL.md"
-  grep -qF 'session=<its session id>' "$skills/recover-worker/SKILL.md"
+  grep -qF 'session=<its 8-character session id>' "$skills/recover-worker/SKILL.md"
 }
 
 @test "the level skill holds Daniel's words, the stows and the relaunches, and the manual points at it" {

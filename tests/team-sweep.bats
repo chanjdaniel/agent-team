@@ -1950,6 +1950,49 @@ T7 ticket-gone: ticket 03: its builder T7-builder-03 33333333 is gone with the t
   no_github
 }
 
+@test "T287: a room refusal of a ticket builder's relaunch parks only its ticket, so the builders beside it are still watched" {
+  parallel_phase T7 02 03
+  ticket_launch T7 02 22222222
+  ticket_launch T7 03 33333333
+  event T7 stowed '{machine: "home-pc", cause: "level", roles: ["builder"], worktrees: []}'
+  # team-next --fill relaunches 02, and 03's relaunch is refused for room on its resume brief.
+  ticket_launch T7 02 24242424 2026-10-22T02:20:00Z
+  event T7 paused '{reason: "no room for session:builder", cause: "room", role: "builder", brief: "brief-resume-build-03"}'
+  sessions "$(session 24242424 T7-builder-02 idle)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 silent: T7-builder-02 24242424 is idle with no ledger event since its launch at 2026-10-22T02:20:00Z; next: read claude logs 24242424, then send it one line or log what is known with team-log"
+  # A later resume brief of the same ticket, -2 after its name, is that ticket's too.
+  event T7 resumed '{id: "paused-1"}'
+  event T7 paused '{reason: "no room for session:builder", cause: "room", role: "builder", brief: "brief-resume-build-03-2"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T7 silent: T7-builder-02 24242424"
+  # Ended only by a launch of ticket 03.
+  ticket_launch T7 02 25252525 2026-10-22T02:30:00Z
+  sessions "$(session 25252525 T7-builder-02 busy working)"
+  run_bin -0 team-sweep
+  ticket_launch T7 03 35353535 2026-10-22T02:40:00Z
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 ticket-gone: ticket 03: its builder T7-builder-03 35353535 is gone with the ticket not done; next: recover it (the recover-worker skill)"
+  no_github
+}
+
+@test "T287: a stow where one ticket builder answered and another was stopped parks the task, with no no-worker" {
+  parallel_phase T7 02 03
+  ticket_launch T7 02 22222222
+  ticket_launch T7 03 33333333
+  # 02's builder answered STOW; 03's did not in time, and team-stow stopped it as it stood.
+  event T7 paused '{reason: "stowed", cause: "stow", role: "builder", session: "22222222"}'
+  event T7 stowed '{machine: "home-pc", cause: "level", roles: ["builder"], worktrees: []}'
+  sessions
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+  # Ticket 03 relaunched after the stow is no longer accounted for by it: gone again, it is named.
+  ticket_launch T7 03 34343434 2026-10-22T02:20:00Z
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 ticket-gone: ticket 03: its builder T7-builder-03 34343434 is gone with the ticket not done; next: recover it (the recover-worker skill)"
+  no_github
+}
+
 @test "T287: a ticket builder of a closed or unknown task is a stray, by its session's name" {
   parallel_phase T7 02
   ticket_launch T7 02 22222222
