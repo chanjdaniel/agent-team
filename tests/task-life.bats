@@ -111,8 +111,8 @@ session_is() {
 }
 
 # gh: GitHub as the PRs under $GH_DIR (<owner>_<repo>-<n>.json, with the checks on the head in
-# checks/<owner>_<repo>-<n>.json) and the bare origins. pr merge merges the PR's branch into its
-# base on the origin for real, with a merge commit.
+# checks/<owner>_<repo>-<n>.json), with no workflow run of any head, and the bare origins. pr
+# merge merges the PR's branch into its base on the origin for real, with a merge commit.
 fake_github() {
   stub_script gh <<'SH'
 pr_file() { echo "$GH_DIR/${1//\//_}-$2.json"; }
@@ -147,6 +147,9 @@ case "$1 $2" in
     elif [[ $2 =~ ^repos/[^/]+/([^/]+)/compare/([^.]+)\.\.\.(.+)$ && $3 == --jq && $4 == .behind_by ]]; then
       # How many commits the base has that the head lacks.
       git --git-dir "$ORIGINS/${BASH_REMATCH[1]}.git" rev-list --count "${BASH_REMATCH[3]}..${BASH_REMATCH[2]}"
+    elif [[ $2 =~ ^repos/[^/]+/[^/]+/actions/runs\?head_sha=[0-9a-f]+\&per_page=100$ ]]; then
+      # No workflow runs: this GitHub runs no Actions, so team-ci-wait's look reads only the checks.
+      echo '{"total_count": 0, "workflow_runs": []}'
     elif [[ $2 =~ ^repos/([^/]+/([^/]+))/pulls/([0-9]+)/commits$ ]]; then
       file=$(pr_file "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}")
       git=(git --git-dir "$ORIGINS/${BASH_REMATCH[2]}.git")

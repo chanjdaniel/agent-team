@@ -76,8 +76,8 @@
 # findings_file that ci's report, tasks/T<n>/ci-<those 8>.md in the team home, refused as unfilled
 # while it does not exist; for a round on findings sent back whose reviewed head's look
 # (team-next's, on the findings verdict) logged such a ci, findings adds ", and the failed checks
-# <names> in <that report>", refused as unfilled while the report does not exist; goal the first
-# sentence of the plan's ## Goal section, its first line of
+# <names> in <that report>", refused as unfilled while the report does not exist;
+# goal the first sentence of the plan's ## Goal section, its first line of
 # text past any HTML comment, a list marker dropped. A derived fact with no source is refused as
 # unfilled, naming its --set, only when the template uses it; GitHub unreadable for head is
 # refused naming --set head=.
