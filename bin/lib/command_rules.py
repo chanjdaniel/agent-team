@@ -42,8 +42,8 @@ The rows, in order:
     joined or next) or --unset. The same reason.
   environment-emptied: a command named team-<anything> or claude-coordinator behind env -i (alone
     or among env's short options), env --ignore-environment (or a prefix GNU takes), env - or
-    exec -c, past any wrappers between or in a string a shell runs there: it would run with no AGENT_TEAM_ROLE, so its own
-    worker_refusal would not see the worker.
+    exec -c, past any wrappers between or in a string a shell runs there: it would run with no
+    AGENT_TEAM_ROLE, so its own worker_refusal would not see the worker.
   lease-steal: team-lease or team-resume with --steal among its words before its --. Reason: a
     lease steal is Daniel's word, through the coordinator.
   coordinator-commands: team-ask, team-answer, team-inbox or team-run-approved with any words or
