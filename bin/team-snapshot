@@ -41,7 +41,8 @@
 # level is {error}), default_withdrawn (each withdrawal of the default merge word that stands, as
 # its merge-default-withdrawn event, in ledger order), production (team-uptime status --json's
 # object, its line null with no check, or {error} with the last line team-uptime said when it
-# fails), sessions ({task, role, name, session, status, state, logged}), strays (the same with
+# fails), sessions ({task, role, name, session, status, state, logged}, with ticket after role
+# for a ticket's builder, T<n>-builder-NN), strays (the same with
 # task_state closed, unknown or load-check instead of logged), prs ({project, repo, prs: [{number,
 # title, url, branch, base, draft, task}]}, or {project, repo, error}), pending_asks ({task, id,
 # text, ts}), and items (every current item, its "- " left off, as a string).
