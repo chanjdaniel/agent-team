@@ -1565,6 +1565,49 @@ EOF
   assert_equal "$(waits)" 20
 }
 
+@test "--wait's unreadable exit names the failing look's last line on stderr, or its exit code with none" {
+  opened T3
+  # A session list the sweep cannot read fails the look in jq, which says no "team-sweep: " line.
+  looks '["x"]'
+  run_bin -1 --separate-stderr team-sweep --wait
+  assert_equal "$output" ""
+  assert_equal "${stderr//"$TEAM_HOME/ledger.jsonl"/<the ledger>}" \
+    'team-sweep: jq: error (at <the ledger>:1): Cannot index string with string "name", for 5 minutes running'
+  assert_equal "$(waits)" 10
+
+  # A look that fails with nothing on stderr is named by its exit code.
+  code_checkout
+  local lib=$BATS_TEST_TMPDIR/code/bin/lib
+  rm -f "$lib/ledger.jq"
+  { cat "$REPO_ROOT/bin/lib/ledger.jq"; echo 'def sweep($a; $b; $c; $d; $e; $f): "" | halt_error(4);'; } >"$lib/ledger.jq"
+  looks '[]'
+  run_bin -1 --separate-stderr team-sweep --wait
+  assert_equal "$stderr" "team-sweep: a look failed with exit 4 and nothing on stderr, for 5 minutes running"
+}
+
+@test "--wait ends at once on a failing look once its own code changed under it, naming the files" {
+  opened T3
+  code_checkout
+  looks '[]'
+  # A merge replaces the library under the running watch, and its next look fails on the new
+  # definitions, as PR 111's change of own_covered's shape did on 2026-11-12.
+  local code=$BATS_TEST_TMPDIR/code lib=$BATS_TEST_TMPDIR/code/bin/lib
+  printf '%s\n' "{ cat '$lib/ledger.jq'; echo 'def sweep(\$a; \$b; \$c; \$d; \$e; \$f): error(\"Cannot index array\");'; } >'$lib/ledger.jq.new'" \
+    "mv '$lib/ledger.jq.new' '$lib/ledger.jq'" >"$BATS_TEST_TMPDIR/at-look.2"
+  run_bin -1 --separate-stderr team-sweep --wait
+  assert_equal "$output" ""
+  assert_equal "${stderr//"$TEAM_HOME/ledger.jsonl"/<the ledger>}" "team-sweep: jq: error (at <the ledger>:1): Cannot index array, after its code changed under this watch (bin/lib/ledger.jq): re-arm it to run the new code"
+  assert_equal "$(waits)" 2
+
+  # A change the looks still read through leaves the watch looking, until the stub sleep stops it.
+  rm -f "$lib/ledger.jq"
+  cat "$REPO_ROOT/bin/lib/ledger.jq" >"$lib/ledger.jq"
+  printf '%s\n' "{ cat '$code/bin/team-sweep'; echo '# a later line'; } >'$code/bin/team-sweep.new'" \
+    "mv '$code/bin/team-sweep.new' '$code/bin/team-sweep'" >"$BATS_TEST_TMPDIR/at-look.2"
+  looks '[]'
+  LOOK_LIMIT=4 run_bin -99 team-sweep --wait
+}
+
 @test "retro-due: none without a schedule, with every_hours 0, or before the due time" {
   retro "$(ago 200)" T2
   event T2 closed '{archive: [], returned: [], kept: []}'
