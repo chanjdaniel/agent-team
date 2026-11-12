@@ -63,6 +63,17 @@ out of git; take each out, then commit again:
   assert_contains "${stderr%%$'\n'*}" "refused: tasks/T1/notes.md adds an email address at a public provider"
 }
 
+@test "a minified bundle of one long line is scanned whole, as the checkpoint commits it" {
+  # T76's shape: a vite bundle whose library header names its author's address mid-line.
+  local line
+  line="$(printf 'var a%d=1;' {1..20000})/*! @author ow <ow@$provider> */$(printf 'var b%d=2;' {1..20000})"
+  record tasks/T1/scratch/baseline/dist/assets/index-Bgg7i7NB.js "$line"
+  git -C "$TEAM_HOME" add tasks
+  run -1 --separate-stderr env GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "chore: checkpoint" \
+    --only -- tasks/T1/scratch/baseline/dist/assets/index-Bgg7i7NB.js
+  assert_contains "${stderr%%$'\n'*}" "refused: tasks/T1/scratch/baseline/dist/assets/index-Bgg7i7NB.js adds an email address at a public provider"
+}
+
 @test "a screenshot is refused, and git's own address is not" {
   git -C "$TEAM_HOME" config user.email "Daniel@$provider"
   record tasks/T1/notes.md "signed in as daniel@$provider"
