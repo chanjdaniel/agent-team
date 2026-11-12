@@ -583,7 +583,8 @@ file_reasons() {
     bin/lib/records bin/lib/code bin/lib/command_text.py bin/lib/outbound.py bin/hooks/git/pre-push \
     bin/hooks/records-git/pre-commit bin/hooks/lease-fence settings/worker.json settings/reviewer.json coordinator.settings.json \
     bin/lib/team.sh bin/lib/platform.sh bin/lib/ledger.jq bin/lib/messages.jq bin/lib/review-app bin/team-next \
-    bin/team-catch-up bin/team-review-check roles/reviewer.md roles/coordinator.md; do
+    bin/team-catch-up bin/team-review-check bin/team-log bin/team-project bin/lib/lifecycle.json roles/reviewer.md \
+    roles/coordinator.md; do
     paths+=("$path")
     expected+=("$path is a guarded path (guardrails): a change there comes back to Daniel")
   done
