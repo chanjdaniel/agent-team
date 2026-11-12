@@ -706,14 +706,15 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   discord=$(section coordinator Discord)
   # The manual's Discord section: the thread, the file and who writes it, the post, the routing.
   grep -qxF -- "- Every task has its thread under \`#coordinator\`; the task's updates go there, and cross-task news in \`#coordinator\` itself." <<<"$discord"
-  grep -qxF -- "  What waits on Daniel, every open ask, PR ready to merge and interview, is numbered in the team home's \`waiting.md\`, which \`team-inbox\` writes: \`team-ask\`, \`team-answer\`, \`team-merge\`, \`team-close\` and the heartbeat run it, and you run it after logging an \`asked\`, \`answered\` or any merge word or its withdrawal with \`team-log\`." <<<"$discord"
+  grep -qxF -- "  What waits on Daniel, every open ask, PR ready to merge and interview, is numbered in the team home's \`waiting.md\`, which \`team-inbox\` writes, run by the heartbeat and by each script that changes the list, \`team-log\` included." <<<"$discord"
   grep -qxF -- "  When Daniel asks what waits, \`team-inbox --post\` posts it as a new message at the bottom of \`#coordinator\`; nothing edits an old one." <<<"$discord"
   grep -qxF -- "- A reply that answers by number (\"3 yes, 5 no\") goes to each number's item, which \`team-inbox --item <n>\` names: an ask's answer is \`team-answer --item <n> <message id>\`, a PR's merge word its \`merge-approved\` as step 6 says, and an interview is answered in its thread; tell Daniel of a number that no longer waits, as \`--item\` says." <<<"$discord"
   # Step 6 is the one that logs the merge word, as the routing line points.
   grep -qE '^6\. \*\*Merge\.\*\*' "$manual"
   grep -qF 'log the message it came in with `team-log T<n> merge-approved url=<PR url> discord_message=<id> head=<the full sha you asked on>`' "$manual"
-  # The status-report skill leads with the count and posts the list once the answer is sent.
-  grep -qxF -- "- Lead with what waits on Daniel: say in the answer's first line how many items wait, or that nothing does, and once the answer is sent run \`team-inbox --post\`, which posts the numbered list as the newest message in \`#coordinator\`, so Daniel answers right under it; never repeat its list, and in a task's thread name that task's items by their numbers in the team home's \`waiting.md\`; when it fails, list them yourself from the snapshot." "$skill"
+  # The status-report skill leads with the count and the item that unblocks the most, and posts the
+  # ranked list once the answer is sent.
+  grep -qxF -- "- Lead with what waits on Daniel: say in the answer's first line how many items wait, or that nothing does, and name the first item of \`waiting.md\`, the one whose answer unblocks the most; once the answer is sent run \`team-inbox --post\`, which posts the numbered list as the newest message in \`#coordinator\`, ranked by how much work each answer unblocks with the count on each line, so Daniel answers right under it; never repeat its list, and in a task's thread name that task's items by their numbers in the team home's \`waiting.md\`; when it fails, list them yourself from the snapshot, the ones holding the most work first." "$skill"
   grep -qxF -- "- When Daniel asks only what waits on them, run \`team-inbox --post\` alone, with no status." "$skill"
   # The commands those lines name are team-inbox's and team-answer's forms.
   "$REPO_ROOT/bin/team-inbox" --help | grep -qF -- '--item <n>'

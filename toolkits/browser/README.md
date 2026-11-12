@@ -16,6 +16,7 @@ To the builder and the reviewer of a task that changes a UI, who open the page t
 A project whose tasks mostly change a UI lists it in its `toolkits` in `projects.toml` (Conventioner does), so a worker that asks with `NEED toolkit browser` is relaunched with it at once.
 A planner, a task with no UI, and ops never get it.
 The builder and reviewer roles name `ui-check` for a session that lists it, so a session with the toolkit runs it and one without reads the line and does nothing: a ticket builder spot-checks its ticket's states, the builder who delivers runs it on the whole change and puts a "UI check" section in the PR body, a fix round rechecks what the fix touched and its siblings, and the reviewer runs it on the head under review and writes each finding into `review.md` with its tile.
+A delivering builder's brief for such a session (`team-brief`'s `captures`, from `--toolkit browser` or the task's latest builder launch) also asks for before and after captures of the changed screens in that section, kept in the worktree's `.scratch/shots/` and attached with `gh pr create` or `gh pr edit --attach`, so Daniel can judge the change from a phone, and a rereview's asks the reviewer to read them against the head.
 
 ## How a UI is built
 

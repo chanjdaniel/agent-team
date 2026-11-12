@@ -122,7 +122,6 @@ PASS T93 is blocked on T92
 PASS T94 has its builder at work
 PASS the owe item: the weekly status report (message 1300000000000000001)
 PASS the next item: the licence file task once q1 is answered
-PASS the queued item: the lint cleanup (tasks/queued/lint-cleanup.md)
 PASS the new promise: a task to pin Node 22, in the answer
 PASS the new promise: a next item to pin Node 22, in tasks/current.md
 == tokens"
@@ -138,11 +137,11 @@ turn 1 (Daniel's message): 10 1000 20000 100 0.25
 turn 2 (/compact): 20 2000 40000 200 0.50
 turn 3 (the question): 30 3000 60000 300 0.75
 total: 60 6000 120000 600 1.50
-== 11 of 11 checks passed
+== 10 of 10 checks passed
 team-drill: recorded compaction pass on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
   assert_equal "${lines[-1]}" "team-drill: recorded compaction pass on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
   # One line in the team home the drill was run with, never the sandbox's.
-  assert_equal "$(drill_lines)" "$(drill_line pass "11 of 11 checks passed, 1.50 USD")"
+  assert_equal "$(drill_lines)" "$(drill_line pass "10 of 10 checks passed, 1.50 USD")"
 }
 
 @test "it runs three print-mode turns on one session, coordinator-shaped, then purges it" {
@@ -209,13 +208,13 @@ Open PRs:
   drill (example/drill): none
 Pending asks (1):
   T91 q1: Which licence should the drill project ship under, MIT or Apache 2.0?
-Current items (3):
+Current items (2):
   - owe - the weekly status report Daniel asked for, mine to send | https://discord.com/channels/1100000000000000000/1200000000000000000/1300000000000000001
   - next T91 open the licence file task once Daniel answers q1, mine | ledger T91 asked q1
-  - queued - the drill project's lint cleanup, approved by Daniel, mine to open | tasks/queued/lint-cleanup.md
+Queued work: 1 file, listed in tasks/queued/index.md
 "
   # Turn 3's digest has the promise turn 1 wrote.
-  assert_contains "$(cat "$STUB_FIXTURES/turn-3.digest")" "Current items (4):"
+  assert_contains "$(cat "$STUB_FIXTURES/turn-3.digest")" "Current items (3):"
 }
 
 @test "a claude and gh in the machine's tool directories, which the library puts first on PATH, never reach the session's hooks" {
@@ -273,15 +272,15 @@ $TEAM_HOME/ledger.jsonl"
   assert_contains "$output" "PASS T92 waits on Daniel to rotate the staging database password
 FAIL T93 is blocked on T92
 PASS T94 has its builder at work"
-  assert_contains "$output" "PASS the queued item: the lint cleanup (tasks/queued/lint-cleanup.md)
+  assert_contains "$output" "PASS the next item: the licence file task once q1 is answered
 FAIL the new promise: a task to pin Node 22, in the answer
 FAIL the new promise: a next item to pin Node 22, in tasks/current.md
 == tokens"
-  assert_contains "$output" "== 8 of 11 checks passed
+  assert_contains "$output" "== 7 of 10 checks passed
 team-drill: recorded compaction fail on home-pc at "
   [[ ! -e $(drill_sandbox) ]]
   assert_equal "$(calls | sed -n 4p | jq -r '.[0]')" purge
-  assert_equal "$(drill_lines)" "$(drill_line fail "8 of 11 checks passed, 1.50 USD")"
+  assert_equal "$(drill_lines)" "$(drill_line fail "7 of 10 checks passed, 1.50 USD")"
 }
 
 @test "an answer that gives T94's builder as no longer live fails its check, though it names the builder" {
@@ -297,7 +296,7 @@ team-drill: recorded compaction fail on home-pc at "
       "next T92 open a task to pin Node 22 in CI once T92 merges"]}'
   run -1 "$REPO_ROOT/tests/compaction-drill"
   assert_contains "$output" "FAIL T94 has its builder at work"
-  assert_contains "$output" "== 10 of 11 checks passed
+  assert_contains "$output" "== 9 of 10 checks passed
 team-drill: recorded compaction fail"
 }
 
@@ -306,7 +305,7 @@ team-drill: recorded compaction fail"
   touch "$STUB_FIXTURES/no-compact"
   run -1 "$REPO_ROOT/tests/compaction-drill"
   assert_contains "$output" "FAIL the compaction ran (turn 2 reported a compact_boundary)"
-  assert_contains "$output" "== 10 of 11 checks passed
+  assert_contains "$output" "== 9 of 10 checks passed
 team-drill: recorded compaction fail"
 }
 
@@ -317,9 +316,9 @@ team-drill: recorded compaction fail"
 FAIL T91 waits on its unanswered ask, q1 on the licence"
   assert_contains "$output" "PASS the new promise: a next item to pin Node 22, in tasks/current.md
 == tokens"
-  assert_contains "$output" "== 2 of 11 checks passed
+  assert_contains "$output" "== 2 of 10 checks passed
 team-drill: recorded compaction fail"
-  assert_equal "$(drill_lines)" "$(drill_line fail "2 of 11 checks passed, 1.50 USD")"
+  assert_equal "$(drill_lines)" "$(drill_line fail "2 of 10 checks passed, 1.50 USD")"
 }
 
 @test "a turn that fails stops the drill with its error, exit 1, and still cleans up" {
@@ -366,14 +365,14 @@ API Error: the stub's turn 2 failed"
   full_answer
   rm "$HOME/.config/agent-team/machine"
   run -0 --separate-stderr "$REPO_ROOT/tests/compaction-drill"
-  assert_equal "${lines[-1]}" "== 11 of 11 checks passed"
+  assert_equal "${lines[-1]}" "== 10 of 10 checks passed"
   assert_equal "$stderr" "compaction-drill: not recorded: team-drill: this machine has no team name; write one with: echo <name> > ~/.config/agent-team/machine"
   [[ ! -e $TEAM_HOME/drills.jsonl ]]
   # A failing drill keeps its exit 1. The stub counts its turns afresh.
   rm "$STUB_CALLS/claude.log"
   touch "$STUB_FIXTURES/no-compact"
   run -1 --separate-stderr "$REPO_ROOT/tests/compaction-drill"
-  assert_equal "${lines[-1]}" "== 10 of 11 checks passed"
+  assert_equal "${lines[-1]}" "== 9 of 10 checks passed"
   assert_contains "$stderr" "compaction-drill: not recorded: team-drill: this machine has no team name"
 }
 
@@ -382,7 +381,7 @@ API Error: the stub's turn 2 failed"
   unset TEAM_HOME
   [[ ! -e $HOME/.config/agent-team/home ]]
   run -0 --separate-stderr "$REPO_ROOT/tests/compaction-drill"
-  assert_equal "${lines[-1]}" "== 11 of 11 checks passed"
+  assert_equal "${lines[-1]}" "== 10 of 10 checks passed"
   assert_equal "$stderr" "compaction-drill: not recorded: team-drill: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
 }
 

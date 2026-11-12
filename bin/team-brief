@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Write a worker's brief from a template, with the task's facts already filled in.
 #
-# Usage: team-brief T<n> <template> [--project <name>] [--ticket <NN>] [--set key=value]...
-#                   [--set-file key=path]... [--name <suffix>] [--force]
+# Usage: team-brief T<n> <template> [--project <name>] [--ticket <NN>] [--toolkit <name>]...
+#                   [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]
 #   template    one of templates/briefs/: planner-feature, planner-interview (a planner that
 #               interviews Daniel in the task's interview thread, which team-thread T<n>
 #               --interview opens first), planner-research, builder-ticket, builder-fix,
@@ -24,6 +24,9 @@
 #               in its project, so worktree and branch are that worktree's; it fills ticket, which a
 #               --set ticket= may repeat but not change; refused when NN has no open ticket worktree
 #               or --project names another project
+#   --toolkit   a toolkit of this checkout's toolkits/ the brief's session launches with, for a
+#               launch before any of the task's shows its toolkits (a small fix's builder-fix);
+#               without it they are the task's latest launch's, as captures says
 #   --set       fill the placeholder {{key}} with value; --set-file with the file's text, without
 #               its final newline. A value is literal and never empty.
 #   --name      write tasks/T<n>/brief-<suffix>.md (kebab case) instead of tasks/T<n>/brief.md
@@ -33,7 +36,16 @@
 # without one), team_home, team_code (this code checkout, where a brief points for code such as
 # sops/), team_bin, local_checks (the project's, each in backticks and joined with ", ", or
 # "none"), ui, task_branch and task_worktree (the task worktree's branch and path, the same as
-# branch and worktree without --ticket) and parallel, from the ledger and projects.toml. parallel
+# branch and worktree without --ticket), parallel and captures, from the ledger and projects.toml.
+# captures is empty unless the brief's session has the browser toolkit (--toolkit browser, else the
+# task's latest launch of the template's role, for rereview its latest reviewer launch else its
+# latest builder launch, as team-next's hand-off launches with): then, for builder-fix,
+# builder-deliver and builder-round, whose delivery partials place it, a newline and two lines
+# asking for before and after captures of each screen the change touches through the session's
+# own headless browser, from the worktree's stack with fixture data alone, kept in the worktree's
+# .scratch/shots/ and attached in the PR body's "UI check" section with gh pr create or gh pr
+# edit --attach; and for rereview a newline and one line asking the reviewer to read them against
+# the head. parallel
 # is empty without --ticket; with it, a newline and three lines telling a ticket worktree's
 # builder that its branch is local and never pushed, where the task branch is, to merge the task
 # branch's tip into its branch and run its checks again on that head before its DONE, listing it
@@ -127,10 +139,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # Templates are code: they come from this checkout, beside bin/.
 code=$(dirname "$(dirname "$TEAM_LIB")")
 briefs=$code/templates/briefs
-usage="usage: team-brief T<n> <template> [--project <name>] [--ticket <NN>] [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]"
-fact_keys=(task title path project repo base branch worktree task_dir plan thread interview_thread team_home team_code team_bin local_checks ui task_branch task_worktree parallel)
+usage="usage: team-brief T<n> <template> [--project <name>] [--ticket <NN>] [--toolkit <name>]... [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]"
+fact_keys=(task title path project repo base branch worktree task_dir plan thread interview_thread team_home team_code team_bin local_checks ui task_branch task_worktree parallel captures)
 
-positionals=() project='' ticket='' name='' force=''
+positionals=() project='' ticket='' name='' force='' toolkits=()
 declare -A sets=()
 # set_value <key> <value> <how it was given>: one value per key, never empty.
 set_value() {
@@ -140,10 +152,15 @@ set_value() {
 }
 while (($#)); do
   case $1 in
-    --project | --ticket | --name | --set | --set-file)
+    --project | --ticket | --toolkit | --name | --set | --set-file)
       [[ $# -ge 2 ]] || usage_error "$1 needs a value"
       case $1 in
         --project) project=$2 ;;
+        --toolkit)
+          [[ $2 =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && -d $code/toolkits/$2 ]] ||
+            usage_error "--toolkit $2 names no toolkit in $code/toolkits/"
+          toolkits+=("$2")
+          ;;
         --ticket)
           [[ $2 =~ ^[0-9]{2}$ ]] || usage_error "--ticket takes a ticket's two digits, got '$2'"
           ticket=$2
@@ -307,6 +324,25 @@ elif ((${#ui_files[@]})); then
     values[ui]+="."
   fi
   values[ui]+=$'\n'"$ui_outside"$'\n'"$ui_rule"
+fi
+# The UI's captures in the PR body, for a session with the browser toolkit: the toolkits given with
+# --toolkit, else the task's latest launch of the template's role, a reviewer template's else its
+# latest builder launch, as team-next's hand-off launches with.
+case $template in
+  builder-fix | builder-deliver | builder-round) role=builder ;;
+  rereview) role=reviewer ;;
+  *) role='' ;;
+esac
+values[captures]=''
+if [[ -n $role ]]; then
+  ((${#toolkits[@]})) || mapfile -t toolkits < <(jq -r --arg role "$role" '(map(select(.event == "launch" and .role == $role)) | last)
+    // (map(select(.event == "launch" and .role == "builder")) | last) | .toolkits[]?' <<<"$events")
+  if [[ " ${toolkits[*]} " == *" browser "* && $role == builder ]]; then
+    values[captures]=$'\n'"   This task changes a UI, so the PR body shows it: capture each screen the change touches with your session's own headless browser (\`chrome-devtools-axi\`), on the worktree's own stack seeded with fixture data alone, never production's or any real person's data: at your head, and, where the screen exists on \`origin/$base\`, before it, from there: commit everything, \`git switch --detach origin/$base\`, capture, then \`git switch $branch\`; for a change that moves (an animation, a flow), a short WebM or MP4 recording, under 10 MB."
+    values[captures]+=$'\n'"   Name each file for its state and screen (\`before-<screen>.png\`, \`after-<screen>.png\`), keep them in the worktree's \`.scratch/shots/\`, outside the task directory, which \`team-close\` removes, look at each one before it goes, and put them in the body's \"UI check\" section, each where a \`![<what it shows>](./<file>)\` line of the body file stands, with \`gh pr create ... --body-file <file> --attach '<file>#<what it shows>'\` (gh 2.99 or later) or, on a PR that exists, \`gh pr edit <full url> --body-file <file> --attach '<file>#<what it shows>'\`, recapturing what a fix round changed; an upload stays reachable at its link after the body drops it, so attach nothing you have not looked at."
+  elif [[ " ${toolkits[*]} " == *" browser "* ]]; then
+    values[captures]=$'\n'"   This task changes a UI: the PR body's captures show each screen the change since the last review touches as it is at the head you review, a before beside each that existed on \`origin/$base\`, and nothing but fixture data; a capture that shows real data is a \`note: real-data\`, and one that is missing or shows the screen as it was before the fix is a plain \`note\` of scope \`change\`."
+  fi
 fi
 [[ -z $thread ]] || values[thread]=$thread
 [[ -z $interview ]] || values[interview_thread]=$interview

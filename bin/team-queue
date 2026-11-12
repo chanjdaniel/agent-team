@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# Keep the index of queued work, the team home's tasks/queued/index.md, from the files beside it.
+#
+# Usage: team-queue index [--check]
+#        team-queue migrate
+# Queued work is work Daniel approved and no task has opened yet: one file per piece of work in
+# tasks/queued/, its first line its "# <title>". The file may open with front matter, a "---" line,
+# then "summary: <one line>" and "task: <T<n> or ->" lines (each at most once, any order), then a
+# "---" line; the summary says what the work is and what it waits on, and task names the task it
+# came from or waits on.
+# index writes tasks/queued/index.md: its title "# Queued work", a line saying it is written by
+# team-queue index from the files' front matter, then one line per file but index.md, in name order:
+# "- <file>: <summary>", "- <file> (<task>): <summary>" with a task other than -, the summary its
+# front matter's, else its title. It writes through a temporary file, under the ledger's lock, and
+# commits the index alone (commit_records), as "chore: queued index", then pushes the team home's
+# branch; an index already as written commits nothing. It prints "wrote tasks/queued/index.md: <n>
+# files" ("1 file"). --check writes nothing, and prints, as "tasks/queued/<file>: <reason>", each
+# file whose front matter is malformed (no closing "---", a line that is no "summary:" or "task:",
+# either twice, an empty summary, a task that is not T<n> or -) or that has neither a summary nor a
+# title, and whether the index is stale ("tasks/queued/index.md: not as team-queue index writes
+# it"), exiting 1 when it prints any.
+# migrate moves the queued lines of tasks/current.md (team-current's, "- queued <task> <text> |
+# <where>") into front matter, once, after which team-current takes no queued line: each line whose
+# where names a file in tasks/queued/ (relative to the team home, in full, or under ~/) gives that
+# file's front matter its text as the summary and its task, the lines naming one file joined in
+# their order ("; " between texts, ", " between tasks other than -, else -); a file's other front
+# matter is replaced, its body kept. Those lines leave current.md, the index is written, and all is
+# one commit, "chore: queued migrate", under the ledger's lock. A line whose where names no file in
+# tasks/queued/ stays in current.md and is printed, "tasks/current.md:<n>: <where> is no file in
+# tasks/queued/", and the exit is 1, after the rest is migrated. With no queued line it migrates
+# nothing, writes the index and exits 0, so a second run changes nothing. It prints "migrated <n>
+# lines into <m> files" and the index's line.
+# A push that fails keeps the commit for the next checkpoint to push, saying so on stderr, and
+# exits 0; a commit that fails (the team home's hooks refuse it) leaves the change written for the
+# next checkpoint to commit, saying so on stderr, and exits 1.
+# It refuses in a worker session (worker_refusal in bin/lib/team.sh).
+# Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-queue index [--check] | migrate"
+queued=$TEAM_HOME/tasks/queued
+index_rel=tasks/queued/index.md
+index=$TEAM_HOME/$index_rel
+current_rel=tasks/current.md
+current=$TEAM_HOME/$current_rel
+
+# A file's front matter and title as JSON, {summary, task, title, problems}, every control
+# character escaped, so a carriage return of a CRLF file never makes jq reject it: card <file>
+card() {
+  awk '
+    BEGIN { for (i = 1; i < 32; i++) ctl[sprintf("%c", i)] = sprintf("\\u%04x", i) }
+    function esc(s,  out, c, i) {
+      out = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" || c == "\"") out = out "\\" c
+        else if (c in ctl) out = out ctl[c]
+        else out = out c
+      }
+      return out
+    }
+    function add(p) { problems = problems (problems == "" ? "" : "\t") p }
+    NR == 1 && $0 == "---" { in_front = 1; next }
+    in_front && $0 == "---" { in_front = 0; closed = 1; next }
+    in_front {
+      if (match($0, /^summary:[ ]*/)) { if (has_summary++) add("summary given twice"); summary = substr($0, RLENGTH + 1) }
+      else if (match($0, /^task:[ ]*/)) { if (has_task++) add("task given twice"); task = substr($0, RLENGTH + 1) }
+      else add("front matter line \"" $0 "\" is no summary: or task:")
+      next
+    }
+    title == "" && /^# / { title = substr($0, 3) }
+    END {
+      if (in_front) add("front matter has no closing ---")
+      if (has_summary && summary == "") add("its summary is empty")
+      if (has_task && task !~ /^(T[0-9]+|-)$/) add("task \"" task "\" is not T<n> or -")
+      if (summary == "" && title == "") add("it has no summary and no title")
+      printf "{\"summary\":\"%s\",\"task\":\"%s\",\"title\":\"%s\",\"problems\":\"%s\"}\n", esc(summary), esc(task), esc(title), esc(problems)
+    }' "$1"
+}
+
+# The queued files but the index, by name, one path a line: files
+files() {
+  find "$queued" -mindepth 1 -maxdepth 1 -type f -name '*.md' ! -name index.md -printf '%f\n' 2>/dev/null | LC_ALL=C sort
+}
+
+# The index as team-queue index writes it, on stdout: index_text
+index_text() {
+  local name entry
+  echo "# Queued work"
+  echo
+  echo "Written by \`team-queue index\` from each file's front matter (its title when it has none); edit the files, never this index."
+  echo
+  while IFS= read -r name; do
+    entry=$(card "$queued/$name")
+    jq -r --arg name "$name" '(if .summary != "" then .summary else .title end) as $what
+      | "- \($name)" + (if .task != "" and .task != "-" then " (\(.task))" else "" end) + ": \($what)"' <<<"$entry"
+  done < <(files)
+}
+
+# Write the index, under the lock commit_records holds: edit_index
+edit_index() {
+  mkdir -p "$queued"
+  if ! { index_text >"$index.$$" && mv -f "$index.$$" "$index"; }; then
+    rm -f "$index.$$"
+    die "cannot write $index"
+  fi
+}
+
+# How many files the index lists, as "<n> files": counted
+counted() {
+  local n
+  n=$(files | grep -c . || true)
+  if ((n == 1)); then echo "1 file"; else echo "$n files"; fi
+}
+
+# The resolved path a where names, as team-current reads one: where_path <where>
+where_path() {
+  local path=$1
+  # shellcheck disable=SC2088 # a literal ~/, as the coordinator writes it
+  [[ $path != '~/'* ]] || path=$HOME/${path#'~/'}
+  [[ $path == /* ]] || path=$TEAM_HOME/$path
+  realpath -m -- "$path"
+}
+
+# The front matter a file is given, its body kept, through a temporary file: give <file> <summary> <task>
+give() {
+  local file=$1
+  {
+    printf -- '---\nsummary: %s\ntask: %s\n---\n' "$2" "$3"
+    awk 'NR == 1 && $0 == "---" { skip = 1; next } skip && $0 == "---" { skip = 0; next } !skip' "$file"
+  } >"$file.$$" || { rm -f "$file.$$"; die "cannot write $file"; }
+  mv -f "$file.$$" "$file" || { rm -f "$file.$$"; die "cannot write $file"; }
+}
+
+# Move the queued lines into front matter, under the lock commit_records holds; sets moved,
+# touched and left (the unmatched lines' reports): edit_migrate
+edit_migrate() {
+  local -a lines kept=()
+  local -A texts=() tasks=() order=()
+  local i line body head where text task name resolved real_queued
+  moved=0 touched=0 left=''
+  [[ ! -e $current ]] || mapfile -t lines <"$current"
+  real_queued=$(realpath -m -- "$queued")
+  for i in "${!lines[@]}"; do
+    line=${lines[i]}
+    if [[ $line != '- queued '* || $line != *' | '* ]]; then
+      kept+=("$line")
+      continue
+    fi
+    body=${line#- queued }
+    head=${body% | *} where=${body##* | }
+    task=${head%% *} text=${head#* }
+    resolved=$(where_path "$where")
+    if [[ $(dirname -- "$resolved") != "$real_queued" || ! -f $resolved || $resolved == "$real_queued/index.md" ]]; then
+      left+="$current_rel:$((i + 1)): $where is no file in tasks/queued/"$'\n'
+      kept+=("$line")
+      continue
+    fi
+    name=${resolved##*/}
+    [[ -v order[$name] ]] || order[$name]=${#order[@]}
+    texts[$name]+="${texts[$name]:+; }$text"
+    if [[ $task != - && ", ${tasks[$name]:-}, " != *", $task, "* ]]; then
+      tasks[$name]+="${tasks[$name]:+, }$task"
+    fi
+    moved=$((moved + 1))
+  done
+  for name in "${!texts[@]}"; do
+    give "$queued/$name" "${texts[$name]}" "${tasks[$name]:--}"
+    touched=$((touched + 1))
+  done
+  if ((moved)); then
+    if ! { printf '%s\n' "${kept[@]}" >"$current.$$" && mv -f "$current.$$" "$current"; }; then
+      rm -f "$current.$$"
+      die "cannot write $current"
+    fi
+  fi
+  edit_index
+}
+
+# Commit <path>... as <message> through commit_records, which runs records_edit first: a push that
+# failed (commit_records said why) is no failure here, a commit that failed is: commit <message> <path>...
+commit() {
+  local rc=0
+  commit_records "$@" >/dev/null || rc=$?
+  ((rc)) || return 0
+  [[ -n $(git -C "$TEAM_HOME" status --porcelain -- "${@:2}") ]] || return 0
+  die "the change is written but not committed; the next checkpoint commits it"
+}
+
+why=$(worker_refusal "" "edits no records") && die "$why"
+(($#)) || usage_error "$usage"
+command=$1
+shift
+case $command in
+  index)
+    check=''
+    case $#:${1:-} in
+      0:) ;;
+      1:--check) check=1 ;;
+      *) usage_error "$usage" ;;
+    esac
+    if [[ -n $check ]]; then
+      bad=0
+      while IFS= read -r name; do
+        while IFS= read -r problem; do
+          [[ -n $problem ]] || continue
+          echo "tasks/queued/$name: $problem"
+          bad=1
+        done < <(card "$queued/$name" | jq -r '.problems | split("\t")[]')
+      done < <(files)
+      # Compared whole, never piped to cmp, which on macOS stops reading at the first difference,
+      # so index_text's later writes would fail on stderr; the trailing "." keeps final newlines.
+      expected=$(index_text && echo .)
+      actual=$(cat "$index" 2>/dev/null && echo .) || actual=''
+      if [[ $actual != "$expected" ]]; then
+        echo "$index_rel: not as team-queue index writes it"
+        bad=1
+      fi
+      exit "$bad"
+    fi
+    NET_ERR=$(mktemp)
+    trap 'rm -f "$NET_ERR"' EXIT
+    # shellcheck disable=SC2034 # read by commit_records
+    records_edit=edit_index
+    commit "chore: queued index" "$index_rel"
+    echo "wrote $index_rel: $(counted)"
+    ;;
+  migrate)
+    (($# == 0)) || usage_error "$usage"
+    NET_ERR=$(mktemp)
+    trap 'rm -f "$NET_ERR"' EXIT
+    moved=0 touched=0 left=''
+    # shellcheck disable=SC2034 # read by commit_records
+    records_edit=edit_migrate
+    commit "chore: queued migrate" tasks/queued "$current_rel"
+    echo "migrated $moved line$( ((moved == 1)) || echo s) into $touched file$( ((touched == 1)) || echo s)"
+    echo "wrote $index_rel: $(counted)"
+    if [[ -n $left ]]; then
+      printf '%s' "$left"
+      exit 1
+    fi
+    ;;
+  *) usage_error "$usage" ;;
+esac
