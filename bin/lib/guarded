@@ -17,7 +17,7 @@
 # and key files, and files named for a secret or credential), and guardrails, the team's own
 # guards on its code repository: team-merge with the library and jq it runs, the scripts whose
 # events and checks it reads (team-checks, team-heavy, team-next, team-catch-up,
-# team-review-status, and team-review-check with bin/lib/review-app once they exist), team-ask
+# team-review-status, team-review-check, and bin/lib/review-app once it exists), team-ask
 # and team-run-approved, the launchers (team-worker, claude-coordinator), the lease, the hooks,
 # the permission settings, the role prompts, the ledger contract, data-check, the records and code
 # lists, the command guard's readers (command_text.py, outbound.py) and this file.

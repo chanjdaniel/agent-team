@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, memory_setting, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, own_projects, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
+# own_project, own_projects, review_app, base64url, review_app_jwt, review_app_api, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
 # discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_merge_authority, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, OPS_REQUEST_MAX_AGE, and
 # LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push.
@@ -1672,6 +1672,57 @@ own_projects() (
   done <<<"$list"
   jq -cn '$ARGS.positional' --args "${owned[@]}"
 )
+
+# The reviewer App, the one GitHub App whose agent-review check run the team's own project merges
+# behind: its id and slug, "<id> <slug>" on one line, from this checkout's bin/lib/review-app, a
+# committed constant of exactly two lines, id=<a positive whole number> and then slug=<lowercase
+# letters, digits and dashes>, never a registry key, since the registry is a record any session
+# can edit. Nothing, success, when the file is missing (the App is off); fails, printing nothing
+# and naming the file on stderr, when it holds anything else: review_app
+review_app() {
+  local file=$TEAM_LIB/review-app lines=()
+  [[ -e $file ]] || return 0
+  if [[ -f $file ]]; then mapfile -t lines <"$file"; fi
+  if ((${#lines[@]} != 2)) || [[ ! ${lines[0]} =~ ^id=[1-9][0-9]*$ || ! ${lines[1]} =~ ^slug=[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+    echo "${0##*/}: $file is not one id=<n> line and one slug=<s> line" >&2
+    return 1
+  fi
+  printf '%s %s\n' "${lines[0]#id=}" "${lines[1]#slug=}"
+}
+
+# stdin as base64url with no padding, the encoding of a JWT's parts: base64url
+base64url() {
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+# A JWT the reviewer App <id> authenticates to GitHub with, signed RS256 by the key file <key>,
+# issued 60 seconds back (for a clock running ahead of GitHub's) and expiring 9 minutes on, within
+# GitHub's 10; the key is read by openssl alone, and the JWT is printed, for the caller to hold in a
+# variable and hand only to review_app_api: review_app_jwt <id> <key>
+review_app_jwt() {
+  local now header payload signature
+  now=$(date +%s)
+  header=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | base64url)
+  payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$1" | base64url)
+  signature=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$2" -binary | base64url) || return 1
+  [[ -n $signature ]] || return 1
+  printf '%s.%s.%s\n' "$header" "$payload" "$signature"
+}
+
+# Call GitHub's REST API as the reviewer App with <bearer>, its JWT or an installation token, which
+# goes to curl only on stdin through --config -, from printf, a builtin, so it is in no process's
+# arguments and no child's environment; not through gh, which takes a token only from its
+# environment or its login. The answer's body goes to <out> and its HTTP status is printed; a call
+# curl cannot make fails with curl's exit, its error on stderr. <bearer> is refused unless it
+# is the characters a JWT or a token is made of, so no answer GitHub gives can add to curl's
+# config: review_app_api <method> <path> <bearer> <out> [<JSON body file>]
+review_app_api() {
+  local args=(--silent --show-error --config - --request "$1" --output "$4" --write-out '%{http_code}' --max-time 30
+    --header 'Accept: application/vnd.github+json' --header 'X-GitHub-Api-Version: 2022-11-28')
+  [[ $3 =~ ^[A-Za-z0-9._-]+$ ]] || { echo "the bearer is not a JWT or a token" >&2; return 1; }
+  [[ -z ${5:-} ]] || args+=(--header 'Content-Type: application/json' --data-binary "@$5")
+  printf 'header = "Authorization: Bearer %s"\n' "$3" | curl "${args[@]}" "https://api.github.com/$2"
+}
 
 # The ledger's merge-default-withdrawn and merge-default-restored events, every task's, as one JSON
 # array (default_events in bin/lib/ledger.jq: each giving back with the thread of the task it was

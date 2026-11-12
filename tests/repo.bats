@@ -2366,3 +2366,18 @@ briefs_without_gotchas() {
   assert_equal "$(grep '@own$' <<<"$fields" | sort -u)" guardrails@own
   assert_equal "$(grep '@conventioner$' <<<"$fields" | sort -u)" permissions@conventioner
 }
+
+# The reviewer App's constant (review_app in bin/lib/team.sh) is committed code, never a record:
+# when present, one id=<n> line and one slug=<s> line; present or not, the short list holds its
+# path and team-review-check's as the team's own guardrails.
+@test "bin/lib/review-app, when present, is one id and one slug, and it and team-review-check are guardrails" {
+  local file=$REPO_ROOT/bin/lib/review-app path patterns form=$'^id=[1-9][0-9]*\nslug=[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+  if [[ -e $file ]]; then
+    [[ $(cat "$file") =~ $form ]] ||
+      { echo "bin/lib/review-app is not one id=<n> line and one slug=<s> line" >&2; return 1; }
+  fi
+  patterns=$(sed -n 's/^guardrails@own //p' "$REPO_ROOT/bin/lib/guarded")
+  for path in bin/lib/review-app bin/team-review-check; do
+    grep -Eiqx -f <(printf '%s\n' "$patterns") <<<"$path" || { echo "bin/lib/guarded holds no guardrails@own line for $path" >&2; return 1; }
+  done
+}
