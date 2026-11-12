@@ -2330,6 +2330,56 @@ Nor guess them.'
   assert_contains "$(<"$output")" '(the task'"'"'s goal is "the given goal.":'
 }
 
+# ci_failed <task> <url> <head>: the ci team-next T<n> --ci logs when a pass's checks failed on
+# <head>: a roll-up, a shard and a lint step of the PR's own, and a runner that never started.
+ci_failed() {
+  local job=https://github.com/chanjdaniel/agent-team/actions/runs/7/job
+  event "$1" ci "$(jq -cn --arg url "$2" --arg h "$3" --arg j "$job" '{url: $url, head: $h, outcome: "failed", failed: [
+    {name: "test", class: "rollup", kind: "rollup", link: "\($j)/9", step: null},
+    {name: "test-shards (2)", class: "pr", kind: "failed", link: "\($j)/8", step: "Run the tests"},
+    {name: "macos-shards (1)", class: "infrastructure", kind: "never-started", link: "\($j)/10", step: null},
+    {name: "lint", class: "pr", kind: "failed", link: "\($j)/11", step: "Lint"}]}')"
+}
+
+@test "a round on a pass's failed checks takes the PR's own failures of the ci and its report, which must exist; a review since takes it back" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 cut=0123456789abcdef0123456789abcdef01234567 brief
+  event T14 pr "$(jq -cn --arg url "$pr" --arg h "$cut" '{url: $url, head: $h}')"
+  event T14 review "$(jq -cn --arg h "$cut" '{verdict: "pass", head: $h, sent_back: []}')"
+  plan_goal T14 'The team has its tooling.'
+  ci_failed T14 "$pr" "$cut"
+  # The report team-next writes is not there: refused, naming it.
+  run_bin -1 team-brief T14 builder-round
+  assert_equal "$output" "team-brief: unfilled placeholders: findings_file; nothing to derive them from: findings_file (no report of the failed checks at ~/agent-team-records/tasks/T14/ci-01234567.md; --set findings_file=)"
+  [[ ! -e $TEAM_HOME/tasks/T14/brief.md ]]
+  echo "# The failed checks" >"$TEAM_HOME/tasks/T14/ci-01234567.md"
+  run_bin -0 --separate-stderr team-brief T14 builder-round --name round-1
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief-round-1.json")" \
+    "{\"findings\":\"the failed checks test-shards (2) and lint of 01234567\",\"findings_file\":\"~/agent-team-records/tasks/T14/ci-01234567.md\",\"goal\":\"The team has its tooling.\",\"pr\":\"$pr\"}"
+  brief=$(<"$output")
+  assert_contains "$brief" "and findings the failed checks test-shards (2) and lint of 01234567 in \`~/agent-team-records/tasks/T14/ci-01234567.md\`."
+  # A review logged after the ci takes over: its findings, or none sent back.
+  event T14 review "$(jq -cn --arg h "$cut" '{verdict: "pass", head: $h, sent_back: []}')"
+  run_bin -1 team-brief T14 builder-round --name round-2
+  assert_contains "$output" "findings (T14's latest review sent nothing back; --set findings=)"
+}
+
+@test "a rereview after a round on a pass's failed checks says in its since that they failed on the pass and this round fixed them" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 tree=$HOME/agent-team/.claude/worktrees/2 cut fix
+  task_repo T14 main
+  cut=$(commit "$tree" work.txt "feat: the first cut")
+  event T14 review "$(jq -cn --arg h "$cut" '{verdict: "pass", head: $h, sent_back: []}')"
+  ci_failed T14 "$pr" "$cut"
+  fix=$(commit "$tree" fix.txt "fix: the failed shard and lint")
+  run_bin -0 team-brief T14 rereview --name rereview-2 --set pr="$pr" --set head="$fix"
+  assert_equal "$(since_section "$output")" "$(printf '%s\n' '## Since the last review' '' \
+    "The last review, of \`${cut:0:8}\`, passed; then the checks test-shards (2) and lint failed on it, which this round fixed." '' \
+    "The branch's own commits since \`$(git -C "$tree" rev-parse --short=8 "$cut")\`, the ones to review:" '' \
+    "$(listed "$fix")" '' '## Instruction and settings files')"
+}
+
 @test "a deliver brief takes the goal from the plan's Goal section, its first sentence; a plan with none is refused naming --set goal=" {
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local plan=$TEAM_HOME/tasks/T14/plan.md

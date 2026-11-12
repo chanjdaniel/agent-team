@@ -106,7 +106,17 @@
 #                    merged: its checks no longer matter", exit 0, when it shows it merged), logs
 #                    ci outcome=passed of the head (already logged when checks_wait's state is
 #                    passed), then prints the merge line below, exit 0
-#   failed           team-ci-wait's text, exit 1, nothing logged
+#   failed           with a failure of class pr (the PR's own): writes the report
+#                    tasks/T<n>/ci-<the head's first 8 characters>.md in the team home (a heading
+#                    naming the PR and head, one line per failure, the PR's, then infrastructure,
+#                    then roll-ups, each with its class, name, kind, failing step, link and rerun
+#                    command, and a closing line: the PR's are the round's blocking findings, the
+#                    others not), logs ci outcome=failed failed=<every failure's name, class,
+#                    kind, link and step>, reruns nothing, and prints the round's hand-off as a
+#                    findings round's: the message to fix "the failed checks <the PR's names> of
+#                    <short> in <the report>" for the holder under 250k, else its STOW, after
+#                    recovering it when gone, exit 0; with none of the PR's own, team-ci-wait's
+#                    text, exit 1, nothing logged
 #   deadline         logs ci outcome=pending, then "re-arm: the checks of <short> are still
 #                    pending after 90 minutes (<team-ci-wait's text>): run team-next T<n> --ci
 #                    again with Bash run_in_background", exit 75
@@ -157,11 +167,14 @@
 # review, or a first review, marks no widening, so either breaks a chain, and so does a phase's
 # first review, which follows a pass.
 # A PAUSED stowed (its reason the word stowed, alone or with more after it) while the latest
-# review sent findings back, with no launch since
-# it but an ops session's, launches the fix round: team-brief T<n> builder-round --name
-# round-<k>, the lowest k from 1 whose brief no launch read, every fact derived (the findings,
-# the newest findings file, the PR and the plan's goal), in the project of the task's latest
-# builder launch, as a builder with its toolkits; any other PAUSED stowed has no hand-off.
+# review sent findings back, or a ci of outcome failed (--ci's round on a pass's checks) was
+# logged after it, with no launch since that review or that ci but an ops session's, launches the
+# fix round: team-brief T<n> builder-round --name round-<k>, the lowest k from 1 whose brief no
+# launch read, every fact derived (the findings, the newest findings file, or the failed checks
+# and their report, the PR and the plan's goal), in the project of the task's latest builder
+# launch, as a builder with its toolkits; any other PAUSED stowed has no hand-off. The builder's
+# next PR after a round on failed checks gets a rereview, since the latest review is a pass that
+# sent nothing back, whose derived since says those checks failed on the pass.
 # A ticket's brief is refused when a launch already read it (the deliverer, round and rereview
 # names take the next free one instead), and each brief is rendered again with --force when none
 # did (a rerun after a failed launch). The brief is rendered before the events
@@ -271,6 +284,18 @@ read_state() {
   [[ $holder == true ]] || die "$task has no builder launch, so no builder holds the review's work"
   who="$task-builder ($session, $context)"
   gone="$task-builder $session is gone: recover it (the recover-worker skill), then send it"
+}
+
+# round_line <what>: a fix round's hand-off, from read_state's variables, for findings sent back
+# or for the failed checks of a pass: the message to fix <what> for the holder under 250k, else
+# the STOW to send it, after recovering it when gone.
+round_line() {
+  local stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
+  case $holds in
+    holds) echo "send to $who: $task fix $1 on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a $task QUESTION first), then deliver again as your brief says" ;;
+    full) echo "send to $who: $stow" ;;
+    gone) echo "$gone $stow" ;;
+  esac
 }
 
 # merge_line: what is left once the checks of the reviewed head ($reviewed, in full) passed, from
@@ -388,16 +413,18 @@ if [[ -n $ci ]]; then
   same_commit() {
     [[ -n $1 && -n $2 && ($1 == "$2"* || $2 == "$1"*) ]]
   }
-  # log_ci <outcome>: logs the ci of the waited head (in full when the wait read it so), but a
-  # passed one checks_wait already holds.
+  # The head a ci names: the waited head, in full when the wait read it so.
+  ci_head=$wait_head
+  if same_commit "$end_head" "$wait_head"; then ci_head=$end_head; fi
+  # log_ci <outcome> [<field>=<value>]...: logs the ci of ci_head, but a passed one checks_wait
+  # already holds.
   log_ci() {
-    local head=$wait_head
-    if same_commit "$end_head" "$wait_head"; then head=$end_head; fi
+    local fields=("url=$wait_url" "head=$ci_head" "outcome=$1" "${@:2}")
     if [[ $1 == passed && $wait_state == passed ]]; then
-      echo "already logged ci url=$wait_url head=$head outcome=$1"
+      echo "already logged ci ${fields[*]}"
     else
-      sibling team-log "$task" ci "url=$wait_url" "head=$head" "outcome=$1" || exit
-      echo "logged ci url=$wait_url head=$head outcome=$1"
+      sibling team-log "$task" ci "${fields[@]}" || exit
+      echo "logged ci ${fields[*]}"
     fi
   }
   moved_line() {
@@ -424,8 +451,32 @@ if [[ -n $ci ]]; then
       exit 0
       ;;
     failed)
-      echo "$end_text"
-      exit 1
+      # A failure of the PR's own goes back to the builder as a round, with every failure in the
+      # report; infrastructure alone is not the PR's to fix.
+      names=$(jq -c '[.failures[]? | select(.class == "pr") | .name]' <<<"$ended")
+      if [[ $names == '[]' ]]; then
+        echo "$end_text"
+        exit 1
+      fi
+      review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
+      read_state
+      report=$TEAM_HOME/tasks/$task/ci-${wait_head:0:8}.md
+      # The report: a heading, one line per failure in class order, and the closing line.
+      jq -r --arg url "$wait_url" --arg head "$ci_head" --arg q "'" '
+        {pr: "the PR\($q)s", infrastructure: "infrastructure", rollup: "roll-up"} as $words
+        | (.failures | sort_by({pr: 0, infrastructure: 1, rollup: 2}[.class] // 3)) as $failures
+        | [$failures[] | select(.class == "pr") | "`\(.name)`"] as $own
+        | "# The failed checks of \($url) at \($head)", "",
+          "The checks wait after the pass ended on these failures, one a line, the PR\($q)s first: each one\($q)s class, check, kind, failing step, link and rerun command.",
+          "",
+          ($failures[] | "- \($words[.class] // .class): `\(.name)`, \(.kind), at \(if .step then "the step \"\(.step)\"" else "no step" end), \(.link // "no link"), \(if .rerun then "rerun with `\(.rerun)`" else "no rerun" end)"),
+          "",
+          "The PR\($q)s failures, \($own | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end), are this round\($q)s `blocking` findings; the others are not, since an infrastructure failure or a roll-up is no defect of the PR, and the round\($q)s new head runs every check again."' \
+        <<<"$ended" >"$report"
+      echo "report $report"
+      log_ci failed "failed=$(jq -c '.failures | map({name, class, kind, link, step})' <<<"$ended")"
+      round_line "the failed checks $(and_list "$names") of $wait_short in $report"
+      exit 0
       ;;
     deadline)
       log_ci pending
@@ -616,13 +667,18 @@ project_worktree() {
   echo "$worktree"
 }
 
-# A stow hands a round on only while the latest review (findings, or a pass logged before team-log made it so)
-# sent findings back and no launch (an ops session's aside) has taken them since.
-if [[ $handoff == round ]] && ! jq -e '(to_entries | map(select(.value.event == "review")) | last) as $r
-    | $r != null and ($r.value.sent_back // []) != []
-      and (any(.[$r.key + 1:][]; .event == "launch" and .role != "ops") | not)' <<<"$events" >/dev/null; then
+# A stow hands a round on only while the latest review (findings, or a pass logged before team-log
+# made it so) sent findings back, or a ci of outcome failed was logged after it (a pass's checks
+# that --ci handed back), and no launch (an ops session's aside) has taken them since.
+if [[ $handoff == round ]] && ! jq -e '. as $events
+    | def untaken($at): any($events[$at + 1:][]; .event == "launch" and .role != "ops") | not;
+    (to_entries | map(select(.value.event == "review")) | last) as $r
+    | $r != null
+      and ((($r.value.sent_back // []) != [] and untaken($r.key))
+        or ([to_entries[] | select(.key > $r.key and .value.event == "ci" and .value.outcome == "failed") | .key] | last
+          | . != null and untaken(.)))' <<<"$events" >/dev/null; then
   log_events
-  echo "no hand-off for $kind: no review's sent-back findings wait for a round"
+  echo "no hand-off for $kind: no review's sent-back findings or failed checks wait for a round"
   exit 0
 fi
 
@@ -671,12 +727,7 @@ if [[ $handoff == verdict ]]; then
         file=$(holder_findings_file)
       fi
       where=${file:+in $file}
-      stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
-      case $holds in
-        holds) fix="send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $short} on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a $task QUESTION first), then deliver again as your brief says" ;;
-        full) fix="send to $who: $stow" ;;
-        gone) fix="$gone $stow" ;;
-      esac
+      fix=$(round_line "findings $(and_list "$sent") ${where:-of the review of $short}")
       # The churn rule (see the header), over the ledger as it was before this run logged anything,
       # the previous review on a rerun the latest before the index that holds this one.
       churn=$(jq -c --argjson review "$review" --argjson held "$held" '

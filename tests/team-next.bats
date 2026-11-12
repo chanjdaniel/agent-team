@@ -129,6 +129,31 @@ ci_logged() {
   jq -c 'select(.event == "ci") | [.url, .head, .outcome]' "$TEAM_HOME/ledger.jsonl"
 }
 
+# red_checks <head>: --ci's wait ends failed on <head>, exit 1, with a roll-up, a failed shard of
+# the PR's own, a runner that never started, a required check not reported and a lint step of the
+# PR's own, in that order, as team-ci-wait --json gives them.
+red_checks() {
+  local job=https://github.com/owner/proj/actions/runs/7/job
+  ci_wait_ends failed "$1" 1 "team-ci-wait: the checks on ${1:0:7} did not pass" "$(jq -cn --arg j "$job" '[
+    {name: "test", class: "rollup", kind: "rollup", state: "FAILURE", link: "\($j)/9", run: 7, job: 9, step: null, rerun: null},
+    {name: "test-shards (2)", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/8", run: 7, job: 8,
+     step: "Run the tests", rerun: null},
+    {name: "macos-shards (1)", class: "infrastructure", kind: "never-started", state: "CANCELLED", link: "\($j)/10", run: 7,
+     job: 10, step: null, rerun: "gh run rerun 7 --job 10 --repo owner/proj"},
+    {name: "build", class: "pr", kind: "missing", state: null, link: null, run: null, job: null, step: null, rerun: null},
+    {name: "lint", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/11", run: 7, job: 11, step: "Lint", rerun: null}]')"
+}
+
+# The failures red_checks logs on its ci: each one's name, class, kind, link and step.
+red_logged() {
+  jq -c '.failures | map({name, class, kind, link, step})' "$STUB_FIXTURES/team-ci-wait.out"
+}
+
+# ci_fix <who> <head>: the fix message --ci prints to the holder <who> for red_checks on <head>.
+ci_fix() {
+  echo "send to $1: T7 fix the failed checks test-shards (2), build and lint of ${2:0:8} in $TEAM_HOME/tasks/T7/ci-${2:0:8}.md on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a T7 QUESTION first), then deliver again as your brief says"
+}
+
 @test "a builder's DONE logs the ticket and the done, renders the next ready ticket's brief and launches its builder" {
   local count
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
@@ -363,10 +388,10 @@ launched T7-builder c0000001"
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   run_bin -0 team-next T7 -- "T7 PAUSED stowed"
   assert_equal "$output" "logged paused reason=stowed cause=stow role=builder session=b0000001
-no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
+no hand-off for PAUSED stowed: no review's sent-back findings or failed checks wait for a round"
   # A stow with detail is a stow too, by park_cause, as every reader of a stow has it.
   run_bin -0 team-next T7 -- "T7 PAUSED stowed ad6520fc for shutdown; next: re-run the gate"
-  assert_equal "${lines[1]}" "no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
+  assert_equal "${lines[1]}" "no hand-off for PAUSED stowed: no review's sent-back findings or failed checks wait for a round"
   run_bin -0 team-next T7 -- "T7 QUESTION Which file holds the goal?"
   assert_equal "$output" "logged question role=builder text=Which file holds the goal?
 no hand-off for QUESTION"
@@ -1047,23 +1072,13 @@ merge on the default word: run team-merge T7 for $url at $sha, agent-review succ
 [\"$url\",\"$merge\",\"passed\"]"
 }
 
-@test "--ci's other ends: a failure prints the wait's text, the deadline re-arms, a moved head stops, an unreadable GitHub re-arms, a closed PR ends" {
+@test "--ci's other ends: an infrastructure failure prints the wait's text, the deadline re-arms, a moved head stops, an unreadable GitHub re-arms, a closed PR ends" {
   local count other=fedcba9876543210fedcba9876543210fedcba98 text
   reviewing "$sha"
   pr_on_github "$sha"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
-  # A failure of the PR's own, and one of infrastructure alone: the wait's text, exit 1, nothing
-  # logged yet.
-  text="team-ci-wait: the checks on ${sha:0:7} did not pass:
-  the PR's: test-shards (2) failed: https://github.com/owner/proj/actions/runs/7/job/8
-  roll-up: test, of test-shards (2), left out"
-  ci_wait_ends failed "$sha" 1 "$text" '[{"name": "test-shards (2)", "class": "pr", "kind": "failed", "state": "FAILURE",
-    "link": "https://github.com/owner/proj/actions/runs/7/job/8", "run": 7, "job": 8, "step": "Run the tests", "rerun": null},
-    {"name": "test", "class": "rollup", "kind": "rollup", "state": "FAILURE", "link": "https://github.com/owner/proj/actions/runs/7/job/9",
-    "run": 7, "job": 9, "step": null, "rerun": null}]'
-  run_bin -1 --separate-stderr team-next T7 --ci
-  assert_equal "$output" "$text"
+  # A failure of infrastructure alone: the wait's text, exit 1, nothing logged yet.
   text="team-ci-wait: the checks on ${sha:0:7} did not pass:
   infrastructure: macos-shards (1) never started: no runner took it (https://github.com/owner/proj/actions/runs/7/job/8); rerun it with gh run rerun 7 --job 8 --repo owner/proj, then run team-ci-wait again"
   ci_wait_ends failed "$sha" 1 "$text" '[{"name": "macos-shards (1)", "class": "infrastructure", "kind": "never-started",
@@ -1102,6 +1117,97 @@ re-arm: the checks of ${sha:0:8} are still pending after 90 minutes ($text): run
   assert_equal "$(bg_calls)" ""
 }
 
+@test "--ci on a failure of the PR's own logs one ci failed holding every failure, writes their report in class order, reruns nothing and hands the round on as a findings round's" {
+  local count short=${sha:0:8} job=https://github.com/owner/proj/actions/runs/7/job
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 120000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  red_checks "$sha"
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "report $TEAM_HOME/tasks/T7/ci-$short.md
+logged ci url=$url head=$sha outcome=failed failed=$(red_logged)
+$(ci_fix "T7-builder (b0000001, 120k)" "$sha")"
+  # One ci, holding every failure, the infrastructure one and the roll-up among them.
+  assert_equal "$(logged_from $((count + 1)) | jq -c 'del(.task)')" \
+    "$(jq -cn --arg url "$url" --arg h "$sha" --argjson f "$(red_logged)" '{event: "ci", url: $url, head: $h, outcome: "failed", failed: $f}')"
+  assert_equal "$(red_logged | jq -r 'map(.name) | join(",")')" "test,test-shards (2),macos-shards (1),build,lint"
+  # The report: the PR's failures first, then infrastructure, then the roll-up, each with its
+  # class, name, kind, step, link and rerun, and the closing line.
+  assert_equal "$(<"$TEAM_HOME/tasks/T7/ci-$short.md")" "# The failed checks of $url at $sha
+
+The checks wait after the pass ended on these failures, one a line, the PR's first: each one's class, check, kind, failing step, link and rerun command.
+
+- the PR's: \`test-shards (2)\`, failed, at the step \"Run the tests\", $job/8, no rerun
+- the PR's: \`build\`, missing, at no step, no link, no rerun
+- the PR's: \`lint\`, failed, at the step \"Lint\", $job/11, no rerun
+- infrastructure: \`macos-shards (1)\`, never-started, at no step, $job/10, rerun with \`gh run rerun 7 --job 10 --repo owner/proj\`
+- roll-up: \`test\`, rollup, at no step, $job/9, no rerun
+
+The PR's failures, \`test-shards (2)\`, \`build\` and \`lint\`, are this round's \`blocking\` findings; the others are not, since an infrastructure failure or a roll-up is no defect of the PR, and the round's new head runs every check again."
+  # Nothing was rerun, posted or launched.
+  assert_equal "$(outside_calls)" ""
+  assert_equal "$(bg_calls)" ""
+  # The checks went back as a round, so --ci is refused until the next pass.
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_contains "$stderr" "team-next: the checks of $short failed and went back as a round on "
+  # A holder at 250k or more gets the STOW, a gone one is recovered first, as a findings round's.
+  review_logged pass "$sha" '[]'
+  live b0000001 260000
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 260k): T7 STOW; its PAUSED stowed goes to team-next, which launches the round"
+  review_logged pass "$sha" '[]'
+  live
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "T7-builder b0000001 is gone: recover it (the recover-worker skill), then send it T7 STOW; its PAUSED stowed goes to team-next, which launches the round"
+  assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"failed\"]
+[\"$url\",\"$sha\",\"failed\"]
+[\"$url\",\"$sha\",\"failed\"]"
+  assert_equal "$(stub_calls team-ci-wait | wc -l)" 3
+}
+
+@test "a PAUSED stowed after a failed ci launches builder-round on the failed checks and their report, and the next PR a rereview whose since says this round fixed them" {
+  local short=${sha:0:8} report fix
+  report=${TEAM_HOME/#"$HOME"/\~}/tasks/T7/ci-$short.md
+  # The round's launch renders its brief from the code checkout --ci runs from.
+  code_checkout
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 260000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  red_checks "$sha"
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 260k): T7 STOW; its PAUSED stowed goes to team-next, which launches the round"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_equal "$(tail -n 2 <<<"$output")" "brief $TEAM_HOME/tasks/T7/brief-round-1.md
+launched T7-builder c0000001"
+  assert_equal "$(record round-1 | jq -cS .)" "$(jq -cnS --arg url "$url" --arg r "$report" --arg s "$short" '{template: "builder-round",
+    values: {findings: "the failed checks test-shards (2), build and lint of \($s)", findings_file: $r,
+      goal: "Coordinator toil goes to the scripts.", pr: $url}}')"
+  assert_contains "$(<"$TEAM_HOME/tasks/T7/brief-round-1.md")" \
+    "and findings the failed checks test-shards (2), build and lint of $short in \`$report\`."
+  # A second stow after that launch launches nothing.
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_equal "$(tail -n 1 <<<"$output")" "no hand-off for PAUSED stowed: no review's sent-back findings or failed checks wait for a round"
+  # The round's PR goes to a rereview, not a verify, whose since says the checks failed on the pass.
+  fix=$(commit two.txt "fix: the failed checks")
+  on_github 9 "$fix"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PR $url"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-rereview-2.md"
+  assert_equal "$(record rereview-2 | jq -r .template)" rereview
+  grep -qxF "The last review, of \`$short\`, passed; then the checks test-shards (2), build and lint failed on it, which this round fixed." \
+    "$TEAM_HOME/tasks/T7/brief-rereview-2.md"
+  # A stow after a pass with no failed ci since launches nothing.
+  review_logged pass "$fix" '[]'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_equal "$(tail -n 1 <<<"$output")" "no hand-off for PAUSED stowed: no review's sent-back findings or failed checks wait for a round"
+  assert_equal "$(bg_calls | wc -l)" 2
+}
+
 @test "--ci is refused, logging nothing and waiting on nothing: no pass on an open PR, checks that failed, a closed or held task, an ask, a worker" {
   ci_wait_ends passed "$sha"
   local none="team-next: T7's latest review is not a pass on an open PR, so no checks wait for a merge"
@@ -1125,7 +1231,7 @@ re-arm: the checks of ${sha:0:8} are still pending after 90 minutes ($text): run
   worker_refused team-next "runs no team-next" T7 --ci
 }
 
-@test "--ci takes no message and no other option, and --help documents it and the pass's arm line" {
+@test "--ci takes no message and no other option, and --help documents it, the pass's arm line and the round on failed checks" {
   run_bin -2 team-next T7 --ci -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_contains "$output" "--ci takes no message and no other option: team-next T<n> --ci"
   run_bin -2 team-next T7 --from r0000002 --ci
@@ -1138,6 +1244,9 @@ re-arm: the checks of ${sha:0:8} are still pending after 90 minutes ($text): run
   assert_contains "$output" "       team-next T<n> --ci"
   assert_contains "$output" "checks: arm team-next T<n> --ci with Bash run_in_background"
   assert_contains "$output" "team-ci-wait --no-agent-review --json <url> <head>"
+  assert_contains "$output" "writes the report"
+  assert_contains "$output" "tasks/T<n>/ci-<the head's first 8 characters>.md in the team home"
+  assert_contains "$output" "or a ci of outcome failed (--ci's round on a pass's checks) was"
 }
 
 @test "--ci after a pass while the default word holds says to merge on it, unless the review found guarded areas or the default is withdrawn" {
@@ -1472,7 +1581,7 @@ launched T7-builder c0000001"
   # A second stow after that launch launches nothing.
   run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
   assert_equal "$output" "logged paused reason=stowed cause=stow role=builder session=c0000001
-no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
+no hand-off for PAUSED stowed: no review's sent-back findings or failed checks wait for a round"
   assert_equal "$(bg_calls | wc -l)" 1
 }
 
