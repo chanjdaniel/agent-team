@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Say what this machine still lacks to run the team: one PASS, WARN or FAIL line per check, each
-# WARN and FAIL with its reason and its fix ("FAIL tool jq: 1.6, below the minimum 1.7.1; fix: ...").
+# WARN and FAIL with its reason and its fix ("FAIL tool jq: 1.6, below the minimum 1.8.1; fix: ...").
 #
 # Usage: team-doctor [--json]
 #   --json   One array of {check, verdict, reason, fix} instead of the lines; fix is "" on a PASS.
