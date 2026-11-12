@@ -22,6 +22,13 @@ EMPTIED="a worker's role and task are its settings' (a team script run with its 
 STEAL="a lease steal is Daniel's word, through the coordinator (team-lease or team-resume with --steal)"
 COORDINATOR="the coordinator's commands (team-ask, team-answer, team-inbox, team-thread T<n> and team-run-approved)"
 
+# A code checkout of its own for the hook, whose bin a test may change: copied_checkout
+copied_checkout() {
+  export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  copy_bin "$CODE_CHECKOUT/bin"
+}
+
 # The hook on a Bash call of <command>, as Claude Code sends it: guard <status> <command>
 guard() {
   run_bin "$1" --separate-stderr hooks/command-guard <<<"$(jq -cn --arg c "$2" \
@@ -512,9 +519,7 @@ passes() {
 }
 
 @test "a curl upload fails closed when bin/lib/outbound.py cannot decide" {
-  export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
-  mkdir -p "$CODE_CHECKOUT"
-  copy_bin "$CODE_CHECKOUT/bin"
+  copied_checkout
   # The shared hard link is replaced, never written through.
   local outbound=$CODE_CHECKOUT/bin/lib/outbound.py
   { cat "$REPO_ROOT/bin/lib/outbound.py"; printf '\n\ndef uploads_outside(command):\n    raise RuntimeError("boom")\n'; } >"$outbound.new"
@@ -525,9 +530,7 @@ passes() {
 }
 
 @test "a line from the rule table with no reason is refused, naming that line" {
-  export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
-  mkdir -p "$CODE_CHECKOUT"
-  copy_bin "$CODE_CHECKOUT/bin"
+  copied_checkout
   # The shared hard link is replaced, never written through.
   local rules=$CODE_CHECKOUT/bin/lib/command_rules.py
   printf 'print(%s)\n' "'{\"rule\": \"x\"}'" >"$rules.new"
