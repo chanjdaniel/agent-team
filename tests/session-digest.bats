@@ -2,7 +2,8 @@
 # hooks/session-digest: the coordinator's SessionStart hook prints the team snapshot (its current
 # items included) with the instruction to reconcile it before new work, on any start but a
 # compaction the ListAgents call for a Remote Control coordinator twin, then the two standing
-# watches to arm in the background: the sweep watch and the offline watch.
+# watches to arm in the background: the sweep watch and the offline watch, and each checks wait
+# the snapshot lists.
 
 load helpers/common
 
@@ -165,6 +166,35 @@ Current items (2):
 
 Reconcile these before taking new work"
   done
+}
+
+@test "after the standing watches, it says to arm each checks wait the snapshot lists, by its command" {
+  local head=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 task
+  # GitHub down: each PR part carries its error, and the ledger alone says what waits.
+  stub_reply gh "error connecting to api.github.com" 1
+  for task in T3 T5; do
+    event "$task" opened "{project: \"proj\", path: \"feature\", type: \"feat\", title: \"Work\", branch: \"feat/$task-work\",
+      base: \"main\", base_sha: \"0123456\", worktree: \"/w/1\"}"
+    event "$task" pr "{url: \"https://github.com/owner/proj/pull/${task#T}\", head: \"$head\"}"
+    event "$task" review "{verdict: \"pass\", head: \"$head\"}"
+  done
+  # T5's checks passed: nothing to arm for it.
+  event T5 ci "{url: \"https://github.com/owner/proj/pull/5\", head: \"$head\", outcome: \"passed\"}"
+  start -0 compact
+  assert_contains "$output" "
+Checks waits to arm unless running: team-next T3 --ci (https://github.com/owner/proj/pull/3 at a1b2c3d4, since 2026-10-22T02:00:00Z)
+"
+  [[ $output != *"team-next T5"* ]]
+  assert_equal "$(tail -n 5 <<<"$output")" "$(watch_lines)
+Arm each checks wait the same way unless it is already running; it ends when its checks do, and what it prints is the next step (the merge ask, the round, or a re-arm):
+  checks wait of T3, ends when the checks of https://github.com/owner/proj/pull/3 at a1b2c3d4 do: \"$REPO_ROOT/bin/team-next\" T3 --ci"
+  [[ -x $REPO_ROOT/bin/team-next ]]
+
+  # With no checks wait to arm, the standing watches end the digest, as when the snapshot fails.
+  event T3 ci "{url: \"https://github.com/owner/proj/pull/3\", head: \"$head\", outcome: \"failed\"}"
+  start -0 compact
+  assert_equal "$(tail -n 3 <<<"$output")" "$(watch_lines)"
+  [[ $output != *"Checks waits"* ]]
 }
 
 @test "with no live workers the closing lines are the same, strays aside" {

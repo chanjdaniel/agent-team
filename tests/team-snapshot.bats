@@ -204,6 +204,50 @@ Live team sessions: none"
   [[ ! -e $HOME/.local/state/agent-team ]]
 }
 
+# passed <task> <number>: the task's PR <number> in owner/proj reviewed and passed at $head.
+passed() {
+  pr_event "$1" "$2"
+  event "$1" review "{verdict: \"pass\", head: \"$head\", findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: []}"
+}
+
+# ci <task> <number> <outcome>: team-next <task> --ci's end on PR <number> at $head, at 03:00.
+ci() {
+  ledger_line --arg t "$1" --arg url "https://github.com/owner/proj/pull/$2" --arg head "$head" --arg o "$3" \
+    '{ts: "2026-10-22T03:00:00Z", task: $t, event: "ci", url: $url, head: $head, outcome: $o}'
+}
+
+@test "each pass whose checks no wait has ended is a checks wait to arm, after the open tasks; none is no line" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  # No pass, and a pass whose checks passed or failed: nothing to arm.
+  opened T3
+  opened T5
+  passed T5 7
+  ci T5 7 passed
+  opened T6
+  passed T6 8
+  ci T6 8 failed
+  run_bin -0 team-snapshot
+  [[ $output != *"Checks waits"* ]]
+  assert_equal "$(sed -n 4p <<<"$output")" "  T6 proj feature awaiting-merge | no live worker | review 1 pass | PR #8 a1b2c3d checks 0/0 agent-review missing | checks failed"
+  assert_contains "$(sed -n 5p <<<"$output")" "Resources: "
+
+  # T3's pass waits with no wait ended, and T4's wait ended at its deadline: both are to arm, in
+  # task number order, after the open tasks and before the resources line.
+  passed T3 5
+  opened T4
+  passed T4 6
+  ci T4 6 pending
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n '6,7p' <<<"$output")" \
+    "Checks waits to arm unless running: team-next T3 --ci (https://github.com/owner/proj/pull/5 at a1b2c3d4, since 2026-10-22T02:00:00Z)
+Checks waits to arm unless running: team-next T4 --ci (https://github.com/owner/proj/pull/6 at a1b2c3d4, since 2026-10-22T03:00:00Z)"
+  assert_contains "$(sed -n 8p <<<"$output")" "Resources: "
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c '[.tasks[] | [.task, .checks_wait.state]]' <<<"$output")" \
+    '[["T3","waiting"],["T4","pending"],["T5","passed"],["T6","failed"]]'
+}
+
 @test "the resources line follows the open tasks, naming the tasks stowed, waiting to resume, and --json carries it" {
   open_prs owner/proj '[]'
   open_prs owner/conv '[]'

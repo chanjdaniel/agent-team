@@ -1245,13 +1245,14 @@ def task_state($sessions; $home):
      thread: (map(select(.event == "thread") | .discord_thread) | last),
      workers: $workers, last_event: last, pending_asks: ($state | lifecycle_pending_asks),
      waiting: ($state | lifecycle_waiting), parks: ($state | lifecycle_parks), stowing: ($state | lifecycle_stowing), walk: qc_walk,
-     rehome_failures: rehome_failures, pr: null,
+     rehome_failures: rehome_failures, checks_wait: checks_wait, pr: null,
      progress: progress($workers)};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands
 # and the brief it is on, then the tickets done, with the graph fresh or stale when there is one,
-# the latest review, the PR and the words on it, the walk, a stow under way, and last the standing
-# parks:
+# the latest review, the PR, the state of the checks wait of its latest pass while one stands
+# ("checks <state>", checks_wait's), the words on the PR, the walk, a stow under way, and last the
+# standing parks:
 # T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7, graph stale | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
 def state_line:
   .task as $task
@@ -1285,6 +1286,7 @@ def state_line:
            + " agent-review \(.agent_review)"
          end
      end)
+  + (if .checks_wait == null then "" else " | checks \(.checks_wait.state)" end)
   + (if (.rehome_failures // []) == [] then ""
      else " | not re-homed: " + (.rehome_failures | map("\(.project) on \(.machine): \(.reason)") | join("; ")) end)
   + (if .phase != "awaiting-merge" then ""
@@ -1340,8 +1342,9 @@ def default_holds($pr; $withdrawals; $own):
          | any(.words[]; .word == "default" and .holds));
 
 # team-sweep's merge-due finding, over a task's events and the session list, or nothing: the task
-# awaits merge, nothing else parks it (no ask nothing settled, pause or wait), no merge-base round
-# is in flight, and a PR not merged has the default word holding on the ledger (default_holds,
+# awaits merge, nothing else parks it (no ask nothing settled, pause or wait), the checks of its
+# latest pass have passed (checks_wait's state is passed: team-next T<n> --ci logged a ci passed of
+# the head it waits on), no merge-base round is in flight, and a PR not merged has the default word holding on the ledger (default_holds,
 # merge_authority's word: the plan approved, on a project not the team's own, not withdrawn for the
 # task, its project or all, the task's branch logged, and no review-side reason, as team-state and
 # team-merge read them: the sweep reads no GitHub, so a guarded path a reviewer did not name, a plan
@@ -1353,7 +1356,8 @@ def merge_due_finding($withdrawals; $sessions; $own):
   .[0].task as $task
   | . as $events
   | lifecycle as $state
-  | if $own != null and ($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == [] then
+  | if $own != null and ($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == []
+      and ($events | checks_wait | .state) == "passed" then
       select($events | merge_base_round($sessions) | not)
       | task_prs as $prs
       | [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
@@ -1378,6 +1382,26 @@ def stowing_finding:
 def duration:
   (. / 60 | floor) as $m
   | if $m < 60 then "\($m)m" else "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" end;
+
+# How long, in seconds, a pass's checks may go with no wait of them ending before team-sweep calls
+# it ci-due: 100 minutes, team-ci-wait's 90-minute deadline, then its 2-minute settle, then room.
+def ci_due_seconds: 6000;
+
+# team-sweep's ci-due finding, over a task's events, or nothing: the task awaits merge with no ask
+# nothing settled and no standing park, and its checks_wait is waiting or pending since
+# ci_due_seconds or more, so no team-next T<n> --ci has ended on the checks of the head its pass
+# waits on for that long; with session null. It reads no GitHub and no process: a wait still
+# running is the coordinator's to see in its background commands.
+def ci_due_finding:
+  .[0].task as $task
+  | lifecycle as $state
+  | select(($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == [])
+  | checks_wait
+  | select(. != null and (.state | IN("waiting", "pending")))
+  | (now - (.since | fromdate)) as $age
+  | select($age >= ci_due_seconds)
+  | finding($task; "ci-due"; null; null; "the checks of \(.url) at \(.head[:8]) have had no wait end for \($age | duration)";
+      "arm team-next \($task) --ci with Bash run_in_background unless it is running");
 
 # The stall limits, in seconds: how long a busy session's transcripts may go unwritten before
 # team-sweep calls it stalled. default, 50 minutes, so with the sweep watch's three-minute stand
@@ -1635,7 +1659,7 @@ def coordinator_twin_findings($self):
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
 # takes it): each open task's stowing finding, then its merge-due (on the default word, judged with
-# every task's withdrawals), else its findings unless it is parked, then the stray sessions (named
+# every task's withdrawals), else its findings unless it is parked, then its ci-due, then the stray sessions (named
 # like a team worker whose task is closed or not in the ledger, never the load check's T0, whose
 # session the coordinator waits on for up to 30 minutes), in task number order; then the
 # coordinator-twin, activity, level, retro-due and health findings. $own is the registered projects
@@ -1649,7 +1673,8 @@ def sweep($sessions; $plan; $activity; $own; $health; $self):
   | ([($tasks[] | select(is_open) | stowing_finding,
         ([merge_due_finding($withdrawals; $sessions; $own)] as $due
          | if $due != [] then $due[] elif parked then empty
-           else task_findings($sessions; $activity) end)),
+           else task_findings($sessions; $activity) end),
+        ci_due_finding),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";
@@ -1737,10 +1762,19 @@ def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
 def session_text:
   "\(.name) \(.session) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end;
 
+# The checks waits to arm, over team-snapshot's JSON: each open task whose checks_wait (in its
+# team-state JSON) is waiting or pending, as {task, url, head, since}, in task number order, so a
+# restart or a compaction rearms each team-next T<n> --ci not running.
+def checks_waits_to_arm:
+  [.tasks[] | select(.error == null and (.checks_wait.state // null | IN("waiting", "pending")))
+   | {task} + (.checks_wait | {url, head, since})];
+
 # team-snapshot's text form, one line per string, from its JSON. Lines are cut at 120 columns, so
 # ten open tasks fit one screen, but an open task's state, the resources line, the Production line
 # and a current item at 200, each being a whole thought (a task's progress and its PR part come
-# last on its line). After the resources line, one line per withdrawal of the default merge word
+# last on its line). After the open tasks, one line per checks wait to arm (checks_waits_to_arm):
+# "Checks waits to arm unless running: team-next T<n> --ci (<url> at <short>, since <ts>)", none
+# when there is none. After the resources line, one line per withdrawal of the default merge word
 # that stands. The Production line, after them, is team-uptime's status line, or "Production
 # unreadable: <error>", and there is none when no project has a check.
 def snapshot_text:
@@ -1748,6 +1782,8 @@ def snapshot_text:
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
   def section($title; $lines): section($title; $lines; 120);
   section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]; 200),
+  (checks_waits_to_arm[]
+   | "Checks waits to arm unless running: team-next \(.task) --ci (\(.url) at \(.head[:8]), since \(.since))" | clip(200)),
   (.resources // "Resources unreadable: \(.level.error // "team-level said nothing")" | clip(200)),
   ((.default_withdrawn // [])[]
    | "Default merge word withdrawn for \(default_scope_text) since \(.ts) (Discord message \(.discord_message), \(.task))" | clip(120)),

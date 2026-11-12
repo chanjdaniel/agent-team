@@ -946,7 +946,35 @@ files_read() {
     '[false,["T14 has no approved plan: no plan-approved is logged"]]'
   run ! files_read
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing"
+  assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | checks waiting"
+}
+
+@test "checks_wait is what the latest pass waits on, null with none, and the line says checks <state> while one stands" {
+  awaiting_merge
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .checks_wait <<<"$output")" \
+    "$(jq -cn --arg head "$head" '{url: "https://github.com/owner/proj/pull/5", reviewed: $head[:8], head: $head[:8],
+      since: "2026-10-22T02:00:00Z", state: "waiting", reruns: []}')"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | checks waiting"
+
+  # The checks wait's ends, as team-next T14 --ci logs them, each the state shown.
+  local outcome
+  for outcome in pending infrastructure failed passed; do
+    ledger_line --arg head "$head" --arg o "$outcome" \
+      '{ts: "2026-10-22T03:00:00Z", task: "T14", event: "ci", url: "https://github.com/owner/proj/pull/5", head: $head, outcome: $o}'
+    run_bin -0 team-state T14 --json
+    assert_equal "$(jq -c '.checks_wait | [.state, .since]' <<<"$output")" "[\"$outcome\",\"2026-10-22T03:00:00Z\"]"
+    run_bin -0 team-state T14
+    assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | checks $outcome"
+  done
+
+  # A review that is not a pass stands no wait: null, and nothing on the line.
+  event T14 review "{verdict: \"findings\", head: \"$head\", findings: {blocking: 1, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, sent_back: [1], guarded: []}"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .checks_wait <<<"$output")" null
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature in-review | no live worker | review 2 findings, sent back 1 | PR #5 a1b2c3d checks 1/1 agent-review missing"
 }
 
 # The task T14 of project proj opened in a worktree that is a real directory, with <n> tickets in
@@ -1129,7 +1157,7 @@ SH
     '{"tickets":{"done":[],"total":0,"graph":null},"on":[],"reviews":{"count":0,"verdict":null,"head":null,"sent_back":null}}'
 }
 
-@test "--help documents progress, the tickets' graph, each worker's brief and the PR's behind_by and caught_up" {
+@test "--help documents progress, the tickets' graph, each worker's brief, the PR's behind_by and caught_up, and checks_wait" {
   run_bin -0 team-state --help
   assert_contains "$output" "progress"
   assert_contains "$output" "behind_by"
@@ -1141,4 +1169,6 @@ SH
   assert_contains "$output" "(caught up cleanly with <base>)"
   assert_contains "$output" "walk on since <ts>"
   assert_contains "$output" '{"since": "<ts>"}'
+  assert_contains "$output" "checks_wait"
+  assert_contains "$output" '"checks <state>"'
 }
