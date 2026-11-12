@@ -2,7 +2,7 @@
 
 Path: {{path}}; you are the {{role}}, resuming the task after {{from}}.
 Project: {{project}} (`{{repo}}`), base `{{base}}`.
-Worktree: `{{worktree}}`, branch `{{branch}}`: the one you left, when it stayed on this machine, else made here from what was pushed and archived.
+Worktree: `{{worktree}}`, branch `{{branch}}`: the one you left, when it stayed on this machine, else made here from what was pushed and archived.{{parallel}}
 Task directory: `{{task_dir}}/` in the worktree, as you left it, or restored from the task's archive with the worktree.
 
 ## Uncommitted work

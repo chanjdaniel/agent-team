@@ -6,9 +6,11 @@
 # NET_TIMEOUT (origin_git's), and defines team <script> <arguments...> (a sibling of this
 # checkout run with TEAM_HOME) and first_error (the first line of $err without its "<script>: "
 # prefix). It provides:
-#   stow_open [T<n>...]          STOW_OPEN, one {task, worktrees: [{project, branch, worktree}]}
-#                                per open task in task number order: the named ones, or all.
-#   stow_branches [quiet]        checks each STOW_OPEN task's branches against origin's.
+#   stow_open [T<n>...]          STOW_OPEN, one {task, worktrees: [{project, branch, worktree,
+#                                ticket}]} per open task in task number order: the named ones, or
+#                                all; ticket is a ticket worktree's NN, else null.
+#   stow_branches [quiet]        checks each STOW_OPEN task's branches against origin's, and each
+#                                ticket worktree's work against its wip ref.
 #   stow_push                    pushes STOW_PUSHES.
 #   stow_live [T<n>...]          STOW_LIVE, the live worker sessions of those tasks, or of all.
 #   stow_end_ops                 ends STOW_LIVE's ops sessions with team-ops-end, STOW_ENDED.
@@ -35,7 +37,7 @@ stow_open() {
   [[ -e $TEAM_HOME/ledger.jsonl ]] || return 0
   mapfile -t STOW_OPEN < <(ledger_jq 'ledger_events | by_task | . as $tasks | open_tasks[]
       | select($named == [] or IN($named[]; .))
-      | {task: ., worktrees: [open_worktrees($tasks[.][]; $home) | {project, branch, worktree}]}' \
+      | {task: ., worktrees: [open_worktrees($tasks[.][]; $home) | {project, branch, worktree, ticket}]}' \
     -nRc --argjson named "$(jq -cn '$ARGS.positional' --args -- "$@")" "$TEAM_HOME/ledger.jsonl")
 }
 
@@ -49,16 +51,23 @@ stow_say() {
 # STOW_NOTES, the branches to push in STOW_PUSHES ("<label>\t<repo>\t<branch>\t<head>"); a branch
 # that is neither here nor on origin, or has diverged from origin's, refuses its task
 # (STOW_REFUSED, and "<task>: <reason>" in STOW_PROBLEMS). An origin that cannot be read refuses
-# the run (die). stow_branches [quiet]
+# the run (die). A ticket worktree's branch is never pushed, nor read on origin: unless <quiet>,
+# once the checkpoint has run, its wip/<project>/T<n>--NN on the team home's origin must hold its
+# head, or its snapshot (stow_wip_holds), with the worktree on its ticket branch, or its task is
+# refused as stow_ticket says. stow_branches [quiet]
 stow_branches() {
   STOW_QUIET=${1:-0}
-  local entry task list note project branch wt label repo mine rc remote origin_head head
+  local entry task list note project branch wt ticket label repo mine rc remote origin_head head
   local uncommitted left problem
   STOW_WORKTREES=() STOW_NOTES=() STOW_PROBLEMS=() STOW_PUSHES=()
   for entry in "${STOW_OPEN[@]}"; do
     task=$(jq -r .task <<<"$entry")
     list='[]' note=''
-    while IFS=$'\t' read -r project branch wt; do
+    while IFS=$'\t' read -r project branch wt ticket; do
+      if [[ -n $ticket ]]; then
+        ((STOW_QUIET)) || stow_ticket "$task" "$project" "$branch" "$wt" "$ticket"
+        continue
+      fi
       label="$task $project"
       repo=$wt
       git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || repo=$(team_project "$project" path)
@@ -108,7 +117,7 @@ stow_branches() {
       fi
       list=$(jq -c --arg p "$project" --arg b "$branch" --arg h "$head" --argjson u "$uncommitted" \
         '. + [{project: $p, branch: $b, head: $h} + if $u then {uncommitted: true} else {} end]' <<<"$list")
-    done < <(jq -r '.worktrees[] | [.project, .branch, .worktree] | @tsv' <<<"$entry")
+    done < <(jq -r '.worktrees[] | [.project, .branch, .worktree, .ticket // ""] | @tsv' <<<"$entry")
     STOW_WORKTREES[$task]=$list
     STOW_NOTES[$task]=${note%; }
   done
@@ -118,13 +127,61 @@ stow_branches() {
 # worktree <wt> as it is now: a snapshot whose parent is its HEAD and whose tree is its tree:
 # stow_kept_in_wip <task> <project> <wt>
 stow_kept_in_wip() {
-  local task=$1 project=$2 wt=$3 url remote wip
+  stow_wip_holds "$1" "wip/$2/$1" "$3" && [[ ${REPLY%% *} == snapshot ]]
+}
+
+# Whether the ref <wip> on the team home's origin holds the worktree <wt> as it is now, by the
+# checkpoint's snapshot rule: its HEAD, with nothing uncommitted (but the files left out as
+# secrets), REPLY head; or a snapshot of <task> whose parent is its HEAD and whose tree is its
+# tree, REPLY snapshot; REPLY the ref's commit either way: stow_wip_holds <task> <wip> <wt>
+stow_wip_holds() {
+  local task=$1 wip=$2 wt=$3 url remote ref head tree
+  REPLY=''
   url=$(wip_origin) || return 1
-  remote=$(origin_git -C "$wt" ls-remote "$url" "refs/heads/wip/$project/$task") || return 1
-  wip=${remote%%[[:space:]]*}
-  [[ -n $wip ]] && git -C "$wt" cat-file -e "$wip^{commit}" 2>/dev/null && is_snapshot "$wt" "$wip" "$task" &&
-    [[ $(git -C "$wt" rev-parse "$wip^1") == "$(git -C "$wt" rev-parse HEAD)" ]] &&
-    [[ $(git -C "$wt" rev-parse "$wip^{tree}") == "$(worktree_tree "$wt")" ]]
+  remote=$(origin_git -C "$wt" ls-remote "$url" "refs/heads/$wip") || return 1
+  ref=${remote%%[[:space:]]*}
+  [[ -n $ref ]] && git -C "$wt" cat-file -e "$ref^{commit}" 2>/dev/null || return 1
+  head=$(git -C "$wt" rev-parse HEAD) && tree=$(worktree_tree "$wt") || return 1
+  if [[ $ref == "$head" && $tree == "$(git -C "$wt" rev-parse "$head^{tree}")" ]]; then
+    REPLY='head'
+  elif is_snapshot "$wt" "$ref" "$task" && [[ $(git -C "$wt" rev-parse "$ref^1") == "$head" ]] &&
+    [[ $(git -C "$wt" rev-parse "$ref^{tree}") == "$tree" ]]; then
+    REPLY=snapshot
+  else
+    return 1
+  fi
+  REPLY+=" $ref"
+}
+
+# The ticket worktree <wt> of <task>'s ticket <NN>, on its ticket branch <branch>, never pushed:
+# kept when wip/<project>/<task>--<NN> on the team home's origin holds its work (stow_wip_holds)
+# with the worktree on <branch>, added to the caller's list (with ticket, and uncommitted for a
+# snapshot) and note, else its task refused ("<branch> (<project>, ticket <NN>) is not kept: ...").
+# stow_ticket <task> <project> <branch> <wt> <NN>
+stow_ticket() {
+  local task=$1 project=$2 branch=$3 wt=$4 ticket=$5 label="$1 $2--$5" wip="wip/$2/$1--$5" mine kind ref
+  local left problem
+  if [[ -d $wt && $(git -C "$wt" symbolic-ref -q HEAD 2>/dev/null) == "refs/heads/$branch" ]] &&
+    mine=$(git -C "$wt" rev-parse -q --verify "refs/heads/$branch^{commit}") && stow_wip_holds "$task" "$wip" "$wt"; then
+    kind=${REPLY%% *} ref=${REPLY#* }
+  else
+    problem="$branch ($project, ticket $ticket) is not kept: $wip on the team home's origin does not hold the head and uncommitted changes of $wt on $branch, and a ticket branch is never pushed"
+    STOW_PROBLEMS+=("$task: $problem")
+    [[ -n ${STOW_REFUSED[$task]:-} ]] || STOW_REFUSED[$task]=$problem
+    return 0
+  fi
+  if [[ $kind == snapshot ]]; then
+    stow_say "branches: $label: $branch with its uncommitted changes in $wt is kept as $wip at ${ref:0:7}, never pushed"
+  else
+    stow_say "branches: $label: $branch is kept as $wip at ${ref:0:7}, never pushed"
+  fi
+  left=$(snapshot_left_out "$wt" | paste -sd ' ')
+  if [[ -n $left ]]; then
+    stow_say "branches: $label: untracked files that may hold a secret, left out of $wip, stay on $machine: $left"
+    note+="untracked files left out of $wip stay on $machine in $wt: $left; "
+  fi
+  list=$(jq -c --arg p "$project" --arg b "$branch" --arg h "$mine" --arg t "$ticket" --argjson u "$([[ $kind == snapshot ]] && echo true || echo false)" \
+    '. + [{project: $p, branch: $b, head: $h} + (if $u then {uncommitted: true} else {} end) + {ticket: $t}]' <<<"$list")
 }
 
 # Push each of STOW_PUSHES, saying each; one that fails refuses its task (STOW_REFUSED), and the
@@ -251,7 +308,8 @@ stow_record() {
   local task=$1 workers=$2 cause=${3:-} event
   event=$(task_events "$task" | ledger_jq '{ts: (now | todate), task: $task, event: "stowed", machine: $machine,
       worktrees: $worktrees, roles: unfinished_roles,
-      sessions: [$workers[] | select(startswith("\($task)-")) | ltrimstr("\($task)-") | select(. != "ops")] | unique}
+      sessions: [$workers[] | select(startswith("\($task)-")) | ltrimstr("\($task)-") | sub("-[0-9]{2}$"; "")
+        | select(. != "ops")] | unique}
      + if $note == "" then {} else {note: $note} end
      + if $cause == "" then {} else {cause: $cause} end' \
     -sc --arg task "$task" --arg machine "$machine" --argjson worktrees "${STOW_WORKTREES[$task]}" \
@@ -263,6 +321,6 @@ stow_record() {
   else
     ledger_append "$event"
     unset 'STOW_STOWING[$task]'
-    echo "stowed: $task $(jq -r '"roles \(.roles | join(", ") | if . == "" then "none" else . end); " + ([.worktrees[] | "\(.project) \(.branch) at \(.head[:7])" + if .uncommitted then " with uncommitted changes" else "" end] | join(", ") | if . == "" then "no worktree" else . end) + if .cause then "; cause \(.cause)" else "" end' <<<"$event")"
+    echo "stowed: $task $(jq -r '"roles \(.roles | join(", ") | if . == "" then "none" else . end); " + ([.worktrees[] | "\(.project) \(.branch) at \(.head[:7])" + (if .ticket then " (ticket \(.ticket))" else "" end) + if .uncommitted then " with uncommitted changes" else "" end] | join(", ") | if . == "" then "no worktree" else . end) + if .cause then "; cause \(.cause)" else "" end' <<<"$event")"
   fi
 }
