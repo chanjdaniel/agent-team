@@ -354,7 +354,7 @@ probe_denies() {
 @test "every writer of a push kind calls ledger_push" {
   local contract=$REPO_ROOT/bin/lib/ledger-contract.json writer missing=()
   assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.push == true) | .key] | sort | join(" ")' "$contract")" \
-    "answered closed merge-approved merge-preapproval-withdrawn merge-preapproved merge-standing merge-standing-withdrawn merged plan-approved ran retro-schedule"
+    "answered closed merge-approved merge-default-restored merge-default-withdrawn merge-preapproval-withdrawn merge-preapproved merge-standing merge-standing-withdrawn merged plan-approval-withdrawn plan-approved ran retro-schedule"
   for writer in $(jq -r '[.kinds[] | select(.push == true) | .writer] | flatten | unique[]' "$contract"); do
     grep -qE '^[[:space:]]*ledger_push$' "$REPO_ROOT/bin/$writer" || missing+=("$writer")
   done
@@ -2342,4 +2342,27 @@ briefs_without_gotchas() {
   run grep -nE '\{\{(team_home|team_code|team_bin|plan)\}\}|platform-gotchas' "$REPO_ROOT/templates/briefs/ops.md"
   assert_equal "$status" 1
   assert_equal "$output" ""
+}
+
+@test "bin/lib/guarded's areas are the ledger's guarded areas in their order, each @ naming own or a registered project" {
+  local lines fields names
+  lines=$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/guarded")
+  fields=$(cut -d ' ' -f 1 <<<"$lines")
+  assert_equal "$(cut -d @ -f 1 <<<"$fields" | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    '["ci","migrations","deploy","permissions","secrets","guardrails"]'
+  assert_equal "$(cut -d @ -f 1 <<<"$fields" | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    "$(jq -L "$REPO_ROOT/bin/lib" -nc 'include "ledger"; guarded_areas')"
+  # Every line is its area, an optional @<project>, one space and a pattern.
+  assert_equal "$(grep -Evc '^[a-z]+(@[a-z0-9-]+)? [^ ]' <<<"$lines" || true)" 0
+  names=$(sed -n 's/^\[\([a-z0-9-]*\)\]$/\1/p' "$REPO_ROOT/tests/fixtures/projects.toml")
+  [[ -n $names ]]
+  while IFS= read -r field; do
+    [[ $field == *@* ]] || continue
+    [[ ${field#*@} == own ]] || grep -Fxq -- "${field#*@}" <<<"$names" ||
+      { echo "bin/lib/guarded's $field names no project of the registry fixture" >&2; return 1; }
+  done <<<"$fields"
+  # The team's own lines are its guardrails, and Conventioner's its permissions.
+  assert_equal "$(grep -o '@[a-z0-9-]*' <<<"$fields" | sort -u | jq -Rsc 'split("\n")[:-1]')" '["@conventioner","@own"]'
+  assert_equal "$(grep '@own$' <<<"$fields" | sort -u)" guardrails@own
+  assert_equal "$(grep '@conventioner$' <<<"$fields" | sort -u)" permissions@conventioner
 }

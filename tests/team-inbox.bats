@@ -83,7 +83,7 @@ posted_as() {
 Nothing waits on you."
   # The file ends with its newline.
   [[ -z $(tail -c 1 "$TEAM_HOME/waiting.md") ]]
-  assert_equal "$(jq -c . "$TEAM_HOME/waiting.json")" '{"schema":"team-waiting/1","items":[],"standing":[],"posted":null}'
+  assert_equal "$(jq -c . "$TEAM_HOME/waiting.json")" '{"schema":"team-waiting/1","items":[],"withdrawn":[],"posted":null}'
   assert_equal "$(jq -c . "$state")" "{\"channel\":\"1562486564871995482\",\"guild\":\"$INBOX_GUILD\"}"
 
   # The guild is kept, so the next run calls Discord for nothing.
@@ -271,13 +271,13 @@ Nothing waits on you."
 
 @test "when the guild cannot be read it links each ask to its thread alone, says why, and exits 0" {
   waiting_ledger
-  standing merge-standing all 1564100000000000001
+  said merge-default-withdrawn all 1564100000000000001
   echo "403" >"$STUB_FIXTURES/inbox/fail"
   run_bin -0 --separate-stderr team-inbox
   assert_contains "$stderr" "team-inbox: links each ask to its thread alone, since Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 403"
   assert_equal "$(waiting_items_shown | sed -n 2p)" "- **1** T3 plan: Approve the plan? <#3333>"
   assert_equal "$(waiting_items_shown | tail -n 1)" \
-    "-# Standing merge word on every project since message 1564100000000000001 in <#1562486564871995482>"
+    "-# Default merge word withdrawn for every project since message 1564100000000000001 in <#1562486564871995482>"
   [[ ! -e $state ]]
 
   # With no token, it asks Discord nothing.
@@ -365,7 +365,7 @@ post_foot() {
 
 @test "--post writes the list, then posts it as a new message with the resources line and the foot, pinging no one and previewing nothing" {
   waiting_ledger
-  standing merge-standing all 1564100000000000001
+  said merge-default-withdrawn all 1564100000000000001
   run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$output" "wrote waiting.md: 5 items
 posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"
@@ -392,7 +392,7 @@ posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/15690000000
   [[ -f $body ]]
 }
 
-@test "--post with nothing waiting posts the title, "Nothing waits on you.", the resources line and the posted foot, a standing word line or not" {
+@test "--post with nothing waiting posts the title, "Nothing waits on you.", the resources line and the posted foot, a withdrawal line or not" {
   inbox_guild_kept
   run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$stderr" ""
@@ -402,10 +402,10 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
   post_foot "$(posted_shown | tail -n 1)"
   assert_equal "$(jq -c '.posted.items' "$TEAM_HOME/waiting.json")" '[]'
 
-  # A standing word's line is no item, so nothing waits still.
-  standing merge-standing all 1564100000000000001
+  # A withdrawal's line is no item, so nothing waits still.
+  said merge-default-withdrawn all 1564100000000000001
   run_bin -0 --separate-stderr team-inbox --post
-  assert_equal "$(posted_shown | sed -n 3p)" "-# Standing merge word on every project since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
+  assert_equal "$(posted_shown | sed -n 3p)" "-# Default merge word withdrawn for every project since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
   post_foot "$(posted_shown | tail -n 1)"
 }
 
@@ -586,20 +586,17 @@ posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/15690000000
   assert_equal "$(find "$TEAM_HOME" -maxdepth 1 -name '.waiting*')" ""
 }
 
-# A registry where proj opts in to plan-time merges, conv does not, and agent-team, the team's own
-# project, has its key left out, as the registry must.
-plan_registry() {
-  local name with
+# A registry of proj, conv and agent-team, the team's own project.
+registry() {
+  local name
   for name in proj conv agent-team; do
-    with=''
-    [[ $name != proj ]] || with=$'\nmerge_with_plan = true'
     cat >>"$TEAM_HOME/projects.toml" <<TOML
 [$name]
 repo = "owner/$name"
 path = "projects/$name"
 base = "main"
 delivery = "direct-pr"
-merge_method = "merge"$with
+merge_method = "merge"
 required_checks = []
 task_dir = ".scratch/task"
 docs = []
@@ -613,105 +610,63 @@ TOML
   done
 }
 
-# Task <task> of <project>, its PR <n> in that project's repo reviewed and passed, and Daniel's
-# plan-time word on it logged.
-preapproved_pr() {
-  jq -nc --arg task "$1" --arg project "$2" '{ts: "2026-10-01T10:00:00Z", task: $task, event: "opened",
-    project: $project, path: "feature", type: "feat", title: "Task \($task)", branch: "feat/\($task)",
-    base: "main", base_sha: "0123456", worktree: "/w/\($task)"}' >>"$TEAM_HOME/ledger.jsonl"
-  log_events "{\"task\":\"$1\",\"event\":\"asked\",\"id\":\"plan\",\"text\":\"Approve the plan, and its merge?\"}" \
-    "{\"task\":\"$1\",\"event\":\"merge-preapproved\",\"project\":\"$2\",\"ask\":\"plan\",\"discord_message\":\"1564000000000000001\",\"scope\":[\"src/\"]}" \
-    "{\"task\":\"$1\",\"event\":\"pr\",\"url\":\"https://github.com/owner/$2/pull/$3\",\"head\":\"abc1234def\"}" \
-    "{\"task\":\"$1\",\"event\":\"review\",\"head\":\"abc1234def\",\"verdict\":\"pass\"}"
-}
-
-@test "a PR with Daniel's plan-time word not withdrawn, in a project that opts in and is not the team's own, waits on no word of theirs" {
-  plan_registry
-  preapproved_pr T4 proj 4
-  preapproved_pr T5 conv 5
-  preapproved_pr T6 agent-team 6
-  preapproved_pr T7 proj 7
-  log_events '{"task":"T7","event":"merge-preapproval-withdrawn","project":"proj","discord_message":"1564000000000000002"}'
-  run_bin -0 --separate-stderr team-inbox
-  assert_equal "$stderr" ""
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T5 Task T5: <https://github.com/owner/conv/pull/5>
-- **2** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
-- **3** T7 Task T7: <https://github.com/owner/proj/pull/7>"
-
-  # A refused plan-time merge comes back as an ask naming the PR's URL, which merge-approved settles.
-  log_events '{"task":"T4","event":"asked","id":"merge-4","text":"Merge https://github.com/owner/proj/pull/4 at abc1234?"}'
-  run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown | head -n 2)" "**Asks**
-- **4** T4 merge-4: Merge https://github.com/owner/proj/pull/4 at abc1234?"
-  assert_equal "$(waiting_items_shown | grep -c 'pull/4')" 1
-  log_events '{"task":"T4","event":"merge-approved","url":"https://github.com/owner/proj/pull/4","discord_message":"1564000000000000003","head":"abc1234def"}'
-  run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown | grep -c 'pull/4')" 0
-
-  # The registry is read at each run: proj no longer opting in brings its PR back.
-  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
-  log_events '{"task":"T4","event":"merged","pr":4,"merge":"9999999aaa","head":"abc1234def","by":"x","url":"https://github.com/owner/proj/pull/4"}'
-  preapproved_pr T8 proj 8
-  run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown | grep 'pull/8')" "- **4** T8 Task T8: <https://github.com/owner/proj/pull/8>"
-}
-
-@test "with a plan-time word logged and the registry unreadable, every PR ready to merge is listed and stderr says why" {
-  preapproved_pr T4 proj 4
-  run_bin -0 --separate-stderr team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>"
-  assert_equal "$stderr" "team-inbox: lists every PR ready to merge, Daniel's plan-time word aside, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
-}
-
 # Task <task> of <project>, its PR <n> in that project's repo reviewed and passed, ready to merge.
 ready_pr() {
   jq -nc --arg task "$1" --arg project "$2" '{ts: "2026-10-01T10:00:00Z", task: $task, event: "opened",
     project: $project, path: "feature", type: "feat", title: "Task \($task)", branch: "feat/\($task)",
     base: "main", base_sha: "0123456", worktree: "/w/\($task)"}' >>"$TEAM_HOME/ledger.jsonl"
   log_events "{\"task\":\"$1\",\"event\":\"pr\",\"url\":\"https://github.com/owner/$2/pull/$3\",\"head\":\"abc1234def\"}" \
-    "{\"task\":\"$1\",\"event\":\"review\",\"head\":\"abc1234def\",\"verdict\":\"pass\"}"
+    "{\"task\":\"$1\",\"event\":\"review\",\"head\":\"abc1234def\",\"verdict\":\"pass\",\"guarded\":[],
+      \"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0}}"
 }
 
-# standing <kind> <project> <message> [<channel>] [<task>]: Daniel's standing word on <project>
-# (merge-standing) or its withdrawal (merge-standing-withdrawn), in #coordinator by default,
-# logged under T4.
-standing() {
-  log_events "$(jq -nc --arg kind "$1" --arg project "$2" --arg message "$3" --arg channel "${4:-1562486564871995482}" \
-    --arg task "${5:-T4}" '{task: $task, event: $kind, project: $project, discord_message: $message, discord_channel: $channel}')"
+# Task <task> of <project>, its PR <n> ready to merge, its plan approved by the coordinator.
+approved_pr() {
+  ready_pr "$@"
+  log_events "{\"task\":\"$1\",\"event\":\"plan-approved\",\"by\":\"coordinator\",\"plan\":{\"tasks/$1/plan.md\":\"0000\"}}"
 }
 
-@test "a standing word on every project names each registered project but the team's own after the items, and leaves out their ready PRs" {
-  plan_registry
-  ready_pr T4 proj 4
-  ready_pr T5 conv 5
-  ready_pr T6 agent-team 6
-  standing merge-standing all 1564100000000000001
+# said <kind> <scope> <message> [<channel>] [<task>]: Daniel's withdrawal of the default merge word
+# (merge-default-withdrawn) or its giving back (merge-default-restored) for <scope> (task, a
+# project or all), in #coordinator by default, logged under T4.
+said() {
+  log_events "$(jq -nc --arg kind "$1" --arg scope "$2" --arg message "$3" --arg channel "${4:-1562486564871995482}" \
+    --arg task "${5:-T4}" '{task: $task, event: $kind, scope: $scope, discord_message: $message, discord_channel: $channel}')"
+}
+
+@test "a PR the default word covers waits on no word of Daniel's, while the team's own project's and one with no approval are listed" {
+  registry
+  approved_pr T4 proj 4
+  approved_pr T5 conv 5
+  approved_pr T6 agent-team 6
+  ready_pr T7 proj 7
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
-  assert_equal "$(waiting_shown)" "**Waiting on you**
-**PRs ready to merge**
+  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
 - **1** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
--# Standing merge word on proj, conv since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
-  assert_equal "$(jq -c '.standing | map([.projects, .word.discord_message])' "$TEAM_HOME/waiting.json")" \
-    '[[["proj","conv"],"1564100000000000001"]]'
+- **2** T7 Task T7: <https://github.com/owner/proj/pull/7>"
 
-  # A merge team-merge refused comes back as the coordinator's ask, which names the PR.
+  # A refused default merge comes back as an ask naming the PR's URL, which merge-approved settles.
   log_events '{"task":"T4","event":"asked","id":"merge-4","text":"Merge https://github.com/owner/proj/pull/4 at abc1234?"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **2** T4 merge-4: Merge https://github.com/owner/proj/pull/4 at abc1234?
-**PRs ready to merge**
-- **1** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
--# Standing merge word on proj, conv since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
+  assert_equal "$(waiting_items_shown | head -n 2)" "**Asks**
+- **3** T4 merge-4: Merge https://github.com/owner/proj/pull/4 at abc1234?"
+  assert_equal "$(waiting_items_shown | grep -c 'pull/4')" 1
+  log_events '{"task":"T4","event":"merge-approved","url":"https://github.com/owner/proj/pull/4","discord_message":"1564000000000000003","head":"abc1234def"}'
+  run_bin -0 team-inbox
+  assert_equal "$(waiting_items_shown | grep -c 'pull/4')" 0
+
+  # A review that found a guarded area brings its PR back.
+  log_events '{"task":"T5","event":"review","head":"abc1234def","verdict":"pass","guarded":["ci"],
+    "findings":{"blocking":0,"correctness":0,"security":0,"real-data":0,"note-change":0,"note-before":0}}'
+  run_bin -0 team-inbox
+  assert_equal "$(waiting_items_shown | grep 'pull/5')" "- **3** T5 Task T5: <https://github.com/owner/conv/pull/5>"
 }
 
-@test "the team's own project is left out of a standing word by its repo or its path as well as by its name" {
-  plan_registry
-  ready_pr T4 proj 4
-  ready_pr T5 conv 5
-  standing merge-standing all 1564100000000000001
+@test "the team's own project's PR is listed whatever approval it has, by its repo or its path as well as by its name" {
+  registry
+  approved_pr T4 proj 4
+  approved_pr T5 conv 5
   # conv's path is the code checkout run_bin runs from, whose origin is proj's repo.
   export CODE_CHECKOUT
   CODE_CHECKOUT=$(make_repo conv)
@@ -724,73 +679,68 @@ standing() {
 - **2** T5 Task T5: <https://github.com/owner/conv/pull/5>"
 }
 
-@test "only the projects a standing word stands for are named, one line per word, and only their PRs are left out" {
-  plan_registry
-  ready_pr T4 proj 4
-  ready_pr T5 conv 5
-  ready_pr T6 agent-team 6
+@test "each withdrawal that stands is named after the items, and its PRs are listed until it is given back" {
+  registry
+  approved_pr T4 proj 4
+  approved_pr T5 conv 5
   log_events '{"task":"T5","event":"thread","discord_thread":"5555"}'
-  standing merge-standing proj 1564100000000000001
-  standing merge-standing conv 1564100000000000002 5555 T5
-  run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
--# Standing merge word on proj since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>
--# Standing merge word on conv since <https://discord.com/channels/$INBOX_GUILD/5555/1564100000000000002>"
-
-  # T5's PR comes back with the next free number, shown after T6's, which keeps its own.
-  standing merge-standing-withdrawn conv 1564100000000000003
-  run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
-- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>
--# Standing merge word on proj since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
-
-  # A word on every project, withdrawn for one, stands for the others but the team's own under
-  # its own message.
-  standing merge-standing all 1564100000000000004
-  standing merge-standing-withdrawn conv 1564100000000000005
-  run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
-- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>
--# Standing merge word on proj since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000004>"
-
-  # An old ledger's word on the team's own project names it nowhere and leaves its PR listed.
-  standing merge-standing agent-team 1564100000000000006
-  run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
-- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>
--# Standing merge word on proj since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000004>"
-}
-
-@test "with every standing word withdrawn no standing line shows and every ready PR is listed" {
-  plan_registry
-  ready_pr T4 proj 4
-  ready_pr T5 conv 5
-  standing merge-standing all 1564100000000000001
-  standing merge-standing proj 1564100000000000002
-  standing merge-standing-withdrawn all 1564100000000000003
+  said merge-default-withdrawn proj 1564100000000000001
+  said merge-default-withdrawn task 1564100000000000002 5555 T5
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
+  assert_equal "$(waiting_shown)" "**Waiting on you**
+**PRs ready to merge**
+- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>
+- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>
+-# Default merge word withdrawn for project proj since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>
+-# Default merge word withdrawn for T5 since <https://discord.com/channels/$INBOX_GUILD/5555/1564100000000000002>"
+  assert_equal "$(jq -c '.withdrawn | map([.task, .scope, .discord_message])' "$TEAM_HOME/waiting.json")" \
+    '[["T4","proj","1564100000000000001"],["T5","task","1564100000000000002"]]'
+
+  # T5's giving back leaves proj's withdrawal standing, and T5's PR merges on the default word.
+  said merge-default-restored task 1564100000000000003 5555 T5
+  run_bin -0 team-inbox
   assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
 - **1** T4 Task T4: <https://github.com/owner/proj/pull/4>
-- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>"
+-# Default merge word withdrawn for project proj since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
+
+  # A withdrawal of every project is one line, and a giving back of all ends every withdrawal
+  # (T278's C3).
+  said merge-default-withdrawn all 1564100000000000004
+  run_bin -0 team-inbox
+  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
+- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>
+- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>
+-# Default merge word withdrawn for every project since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000004>"
+  said merge-default-restored all 1564100000000000005
+  run_bin -0 team-inbox
+  assert_equal "$(waiting_shown)" "**Waiting on you**
+Nothing waits on you."
 }
 
-@test "with a standing word logged and the registry unreadable, every PR is listed, the word as logged, and stderr says why" {
+@test "the retired words' events are history: they leave no PR out and name nothing" {
+  registry
   ready_pr T4 proj 4
-  standing merge-standing all 1564100000000000001
+  log_events '{"task":"T4","event":"merge-standing","project":"all","discord_message":"1564100000000000001","discord_channel":"1562486564871995482"}' \
+    '{"task":"T4","event":"merge-preapproved","project":"proj","ask":"plan","discord_message":"1564000000000000001","scope":["src/"]}'
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$(waiting_shown)" "**Waiting on you**
+**PRs ready to merge**
+- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>"
+}
+
+@test "with an approved plan awaiting merge and the registry unreadable, every PR ready to merge is listed and stderr says why" {
+  approved_pr T4 proj 4
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>
--# Standing merge word on every project since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
-  assert_equal "$stderr" "team-inbox: lists every PR ready to merge, Daniel's standing word aside, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
-
-  preapproved_pr T5 proj 5
+- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>"
+  assert_equal "$stderr" "team-inbox: lists every PR ready to merge, the default word aside, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
+  # Nor is it read with no approved plan awaiting merge.
+  : >"$TEAM_HOME/ledger.jsonl"
+  ready_pr T4 proj 4
   run_bin -0 --separate-stderr team-inbox
-  assert_equal "$stderr" "team-inbox: lists every PR ready to merge, Daniel's plan-time and standing words aside, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
+  assert_equal "$stderr" ""
 }
 
 @test "the post's resources line follows the items, naming the open tasks stowed, waiting to resume" {

@@ -159,7 +159,7 @@ library() {
   merge=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
   [[ $merge != "$head" ]]
   assert_equal "${lines[-2]}" "$merge"
-  assert_equal "${lines[-1]}" "next: wait for the checks on ${merge:0:7} (team-ci-wait $url $merge, in the background), then ask Daniel to merge $url at $head, whose word holds through this merge, or run team-merge T14 when team-state says a plan-time or standing word covers it"
+  assert_equal "${lines[-1]}" "next: wait for the checks on ${merge:0:7} (team-ci-wait $url $merge, in the background), then ask Daniel to merge $url at $head, whose word holds through this merge, or run team-merge T14 when team-state says the default word covers it"
   assert_contains "$output" "merged dev ${base:0:7} cleanly onto ${head:0:7} as ${merge:0:7} and pushed it to $branch"
 
   # The merge: the head and origin's dev as parents, git's own message, the checkout's identity.
@@ -270,7 +270,7 @@ library() {
   second=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
   assert_equal "$(git --git-dir="$PROJ_ORIGIN" rev-list --parents -n 1 "$second")" "$second $first $base"
   assert_contains "$output" "merged dev ${base:0:7} cleanly onto ${first:0:7} as ${second:0:7} and pushed it to $branch"
-  assert_equal "${lines[-1]}" "next: wait for the checks on ${second:0:7} (team-ci-wait $url $second, in the background), then ask Daniel to merge $url at $head, whose word holds through this merge, or run team-merge T14 when team-state says a plan-time or standing word covers it"
+  assert_equal "${lines[-1]}" "next: wait for the checks on ${second:0:7} (team-ci-wait $url $second, in the background), then ask Daniel to merge $url at $head, whose word holds through this merge, or run team-merge T14 when team-state says the default word covers it"
   assert_equal "$(jq -c 'select(.event == "caught-up") | [.from, .head]' "$TEAM_HOME/ledger.jsonl")" \
     "$(jq -cn --arg h "$head" --arg f "$first" --arg s "$second" '[$h, $f], [$h, $s]')"
   assert_equal "$(tail -n 1 "$GH_DIR/statuses" | jq -r '.[-1]')" "description=clean merge of dev ${base:0:7} onto ${first:0:7}, reviewed"

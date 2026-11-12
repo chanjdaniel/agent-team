@@ -16,10 +16,11 @@ on() {
     '{ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1", event: $e} + ('"${2:-{\}}"')')")
 }
 
-# fold_read <filter>: the filter's output over the events so far, with ledger.jq's definitions, the
-# contract as $contract and the sandbox's HOME as $home, compact, strings raw.
+# fold_read <filter>: the filter's output over the events so far, with ledger.jq's definitions (from
+# FOLD_LIB when a test set it to a library of its own, else this checkout's), the contract as
+# $contract and the sandbox's HOME as $home, compact, strings raw.
 fold_read() {
-  printf '%s\n' "${events[@]}" | jq -L "$REPO_ROOT/bin/lib" -scr --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" \
+  printf '%s\n' "${events[@]}" | jq -L "${FOLD_LIB:-$REPO_ROOT/bin/lib}" -scr --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" \
     --arg home "$HOME" "include \"ledger\"; \$contract[0] as \$contract | $1"
 }
 
@@ -381,6 +382,8 @@ problems() {
   assert_equal "$(problems retro-change '{retro: "T1", proposals: "1, 2"}')" ""
   assert_equal "$(problems retro-change '{retro: "T5", proposals: "1"}')" "T1 is closed, and a closed task takes no retro-change"
   assert_equal "$(problems merge-standing '{project: "proj", discord_message: "1", discord_channel: "2"}')" ""
+  assert_equal "$(problems merge-default-withdrawn '{scope: "all", discord_message: "1", discord_channel: "2"}')" ""
+  assert_equal "$(problems merge-default-restored '{scope: "proj", discord_message: "1", discord_channel: "2"}')" ""
   assert_equal "$(problems asked '{id: "a1", text: "which?"}')" "T1 is closed, and a closed task takes no asked"
   # A closed task of another path takes no retro-change, even one naming it.
   events=()
@@ -412,8 +415,16 @@ problems() {
 }
 
 @test "a kind the table takes only in some phases is refused in the others, naming them" {
+  # The table gives no kind phases now, so a table of the test's own gives plan-approved those it
+  # had before T276, when a re-approval of a changed plan was no step.
   opened feature
   on pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  assert_equal "$(problems plan-approved)" ""
+  FOLD_LIB=$BATS_TEST_TMPDIR/lib
+  mkdir -p "$FOLD_LIB"
+  cp "$REPO_ROOT/bin/lib/ledger.jq" "$FOLD_LIB/"
+  jq '.kinds["plan-approved"].phases = ["planning", "building", "merged-part", "merged"]' "$REPO_ROOT/bin/lib/lifecycle.json" \
+    >"$FOLD_LIB/lifecycle.json"
   assert_equal "$(problems plan-approved)" \
     "T1 is in-review since 2026-11-01T00:01:00Z, and plan-approved is taken only while it is planning, building, merged-part or merged"
   on review '{verdict: "pass", head: "a1b2c3d"}'
@@ -599,6 +610,42 @@ refusal() {
   # Closed: one reason, whatever stands.
   on closed '{archive: [], returned: [], kept: []}'
   assert_equal "$(refusal builder)" "T1 is closed"
+}
+
+@test "a withdrawn plan approval refuses a builder and a reviewer on every path and in every phase, until Daniel approves the plan again" {
+  local withdrawn="T1's plan approval was withdrawn at 2026-11-01T00:05:00Z in Discord message 9, so it takes no"
+  # A feature task between phases: merged-part, where a later phase's builder is launched by hand.
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  on pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  on review '{verdict: "pass", head: "1111111"}'
+  on merged '{pr: 5, merge: "fedcba9", head: "1111111", by: "Daniel", url: "https://github.com/owner/proj/pull/5", phases_left: [2]}'
+  on plan-approval-withdrawn '{discord_message: "9"}'
+  assert_equal "$(fold_read phase)" merged-part
+  assert_equal "$(refusal builder)" "$withdrawn builder until Daniel approves the plan again (plan-approved by=Daniel)"
+  assert_equal "$(refusal reviewer)" "$withdrawn reviewer until Daniel approves the plan again (plan-approved by=Daniel)"
+  assert_equal "$(refusal planner)$(refusal ops)$(refusal '')" ""
+  on plan-approved '{by: "Daniel", plan: {}}'
+  assert_equal "$(refusal builder)$(refusal reviewer)" ""
+  # A feature task building, which the withdrawal moves back to planning, names the withdrawal alone.
+  events=()
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on ticket-done '{ticket: "01"}'
+  on plan-approval-withdrawn '{discord_message: "9"}'
+  assert_equal "$(fold_read phase)" planning
+  withdrawn=${withdrawn/00:05:00Z/00:04:00Z}
+  assert_equal "$(refusal builder)" "$withdrawn builder until Daniel approves the plan again (plan-approved by=Daniel)"
+  # A small task, which needs no plan to start, is stopped by a withdrawn one too.
+  events=()
+  opened small
+  on plan-approved '{by: "coordinator"}'
+  on ticket-done '{ticket: "01"}'
+  on "done" '{role: "builder", session: "b1", report: "05"}'
+  on plan-approval-withdrawn '{discord_message: "9"}'
+  assert_equal "$(refusal builder)" "$withdrawn builder until Daniel approves the plan again (plan-approved by=Daniel)"
+  assert_equal "$(refusal reviewer)" "$withdrawn reviewer until Daniel approves the plan again (plan-approved by=Daniel)"
 }
 
 @test "a research or small task's builder and reviewer go from its open" {

@@ -219,8 +219,221 @@ merged"
   append_as team-log "{$at,\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"a1b2c3d\",\"findings\":[1],\"guarded\":{}}"
   assert_contains "$output" "findings must be an object, got a list; guarded must be a list, got an object"
   append_as team-merge "{$at,\"event\":\"merged\",\"pr\":5,\"merge\":\"b2c3d4e\",\"head\":\"a1b2c3d\",\"by\":\"m\",\"approval\":\"per-head\"}"
-  assert_contains "$output" "approval must be one of head, plan"
+  assert_contains "$output" "approval must be one of head, default, plan, standing"
   assert_equal "$(after_opened | wc -l)" "4"
+}
+
+@test "a plan approval meets the contract: by Daniel, with their ask and message, or the coordinator, with neither; a withdrawal names a message" {
+  opened_task T7
+  local at='"ts":"2026-11-11T02:00:00Z","task":"T7"'
+  local plan='"plan":{"tasks/T7/plan.md":"ab12"},"scope":["src/"]'
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"Daniel\",\"ask\":\"plan\",\"discord_message\":\"1563\",$plan}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"coordinator\",$plan}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"plan-approval-withdrawn\",\"discord_message\":\"1564\"}"
+  assert_equal "$status" "0"
+  assert_equal "$(after_opened | jq -r .event)" "plan-approved
+plan-approved
+plan-approval-withdrawn"
+
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"daniel\"}"
+  assert_contains "$output" "by must be one of Daniel, coordinator"
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"coordinator\",\"ask\":\"plan\",\"discord_message\":\"1563\"}"
+  assert_contains "$output" "ask"
+  assert_contains "$output" "discord_message"
+  append_as team-log "{$at,\"event\":\"plan-approved\",\"by\":\"coordinator\",\"plan\":[\"tasks/T7/plan.md\"],\"scope\":\"src/\"}"
+  assert_contains "$output" "plan must be an object, got a list; scope must be a list, got a string"
+  append_as team-log "{$at,\"event\":\"plan-approval-withdrawn\"}"
+  assert_contains "$output" "plan-approval-withdrawn needs discord_message"
+  append_as team-merge "{$at,\"event\":\"plan-approval-withdrawn\",\"discord_message\":\"1564\"}"
+  assert_contains "$output" "plan-approval-withdrawn events are written by team-log, not team-merge"
+  assert_equal "$(after_opened | wc -l)" "3"
+}
+
+# plan_approval and the phase over the events read from stdin, one JSON object per line, each of
+# T1, from an opened feature task, a minute apart: approval_of
+approval_of() {
+  jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger";
+    [{event: "opened", path: "feature", project: "proj", worktree: "/w/1"}] + . | to_entries
+    | map(.key as $n | {ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1"} + .value)
+    | [plan_approval, phase]'
+}
+
+@test "plan_approval reads the latest approval or withdrawal, an approval with no plan as the coordinator's and legacy, and the phase builds only while it is approved" {
+  local daniel='{"event": "plan-approved", "by": "Daniel", "ask": "plan", "discord_message": "1563", "plan": {"tasks/T1/plan.md": "ab12"}, "scope": ["src/"]}'
+  local coordinator='{"event": "plan-approved", "by": "coordinator", "plan": {"tasks/T1/plan.md": "cd34"}}'
+  local legacy='{"event": "plan-approved", "by": "Daniel", "discord_message": "1565"}'
+  local withdrawn='{"event": "plan-approval-withdrawn", "discord_message": "1564"}'
+  local launch='{"event": "launch", "role": "builder", "session": "b1"}'
+  assert_equal "$(approval_of </dev/null)" '[null,"planning"]'
+  assert_equal "$(approval_of <<<"$daniel")" \
+    '[{"state":"approved","by":"Daniel","ask":"plan","discord_message":"1563","plan":{"tasks/T1/plan.md":"ab12"},"scope":["src/"],"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
+  assert_equal "$(approval_of <<<"$coordinator")" \
+    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":null,"plan":{"tasks/T1/plan.md":"cd34"},"scope":null,"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
+  # A line from before T276 has no plan: never Daniel's read-back word, whatever its by.
+  assert_equal "$(approval_of <<<"$legacy")" \
+    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":"1565","plan":null,"scope":null,"ts":"2026-11-01T00:01:00Z","legacy":true},"building"]'
+  # A withdrawal takes the building task back to planning, where no builder launch or ticket-done
+  # moves it, until the plan is approved again.
+  assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" | approval_of)" \
+    '[{"state":"withdrawn","by":null,"ask":null,"discord_message":"1564","plan":null,"scope":null,"ts":"2026-11-01T00:02:00Z","legacy":false},"planning"]'
+  assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" "$launch" '{"event": "ticket-done", "ticket": "01", "commits": ["a1b2c3d"]}' | approval_of | jq -c '[.[0].state, .[1]]')" \
+    '["withdrawn","planning"]'
+  assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" "$coordinator" | approval_of | jq -c '[.[0].state, .[0].by, .[1]]')" \
+    '["approved","coordinator","building"]'
+  # A withdrawal once the PR is up leaves the review phase as it is.
+  assert_equal "$(printf '%s\n' "$daniel" "$launch" '{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d"}' "$withdrawn" \
+    | approval_of | jq -c '[.[0].state, .[1]]')" '["withdrawn","in-review"]'
+}
+
+# merge_authority over the events read from stdin, as approval_of reads them, for PR 5 of proj at
+# the head a1b2c3d4e5, the project the team's own when <own> is true, with the ledger's
+# merge-default-withdrawn and merge-default-restored events <withdrawals> (a JSON array, default
+# none), a string printed raw: authority_of [<own>] [<filter>] [<withdrawals>]
+authority_of() {
+  jq -L "$REPO_ROOT/bin/lib" -src --argjson own "${1:-false}" --argjson withdrawals "${3:-[]}" 'include "ledger";
+    [{event: "opened", path: "feature", project: "proj", branch: "feat/T1-x", worktree: "/w/1"},
+     {event: "pr", url: "https://github.com/o/p/pull/5", head: "a1b2c3d4"}] + . | to_entries
+    | map(.key as $n | {ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1"} + .value)
+    | merge_authority("https://github.com/o/p/pull/5"; "a1b2c3d4e5"; "proj"; $own; $withdrawals)
+    | '"${2:-.}"
+}
+
+@test "merge_authority gives the per-head word and then the default word, each with its ledger reasons and facts, and the first that holds" {
+  local pass='{"event": "review", "verdict": "pass", "head": "a1b2c3d4", "findings": {"security": 0, "real-data": 0}, "guarded": []}'
+  local coordinator='{"event": "plan-approved", "by": "coordinator", "plan": {"tasks/T1/plan.md": "cd34"}, "scope": ["src/"]}'
+  local asked='{"event": "asked", "id": "plan"}'
+  local daniel='{"event": "plan-approved", "by": "Daniel", "ask": "plan", "discord_message": "1563", "plan": {"tasks/T1/plan.md": "ab12"}}'
+  local approved='{"event": "merge-approved", "url": "https://github.com/o/p/pull/5/", "discord_message": "1566", "head": "a1b2c3d4"}'
+  local words='[.words[] | [.word, .applies, .holds, .reasons]], .word'
+  # Nothing recorded: neither word applies, each saying why.
+  assert_equal "$(authority_of false "$words" </dev/null)" \
+    '[["head",false,false,["no merge-approved event for https://github.com/o/p/pull/5: Daniel'"'"'s word is not recorded"]],["default",false,false,["T1 has no approved plan: no plan-approved is logged"]]]
+null'
+  # The coordinator's approval and a passing review: the default word holds, its facts what team-merge checks.
+  assert_equal "$(printf '%s\n' "$coordinator" "$pass" | authority_of false '.word, .words[1].facts')" \
+    'default
+{"by":"coordinator","ts":"2026-11-01T00:02:00Z","legacy":false,"plan":{"tasks/T1/plan.md":"cd34"},"scope":["src/"],"branch":"feat/T1-x","restored":null,"withdrawn":null}'
+  # Daniel's approval names the ask it answers, as logged before it.
+  assert_equal "$(printf '%s\n' "$asked" "$daniel" "$pass" | authority_of false '.words[1].facts | [.by, .ask, .discord_message, .asked.ts]')" \
+    '["Daniel","plan","1563","2026-11-01T00:02:00Z"]'
+  # A per-head word on the URL, a trailing slash aside, is tried first and holds on the ledger with
+  # the event its message is timed against; the default word still says its own.
+  assert_equal "$(printf '%s\n' "$coordinator" "$approved" | authority_of false '.word, (.words[] | [.word, .holds]), .words[0].facts.logged')" \
+    'head
+["head",true]
+["default",false]
+{"ts":"2026-11-01T00:01:00Z","event":"pr"}'
+  # A per-head word naming a head nothing logged does not hold, and the default word is next.
+  assert_equal "$(printf '%s\n' "$coordinator" "$pass" "${approved/a1b2c3d4/0fedcba9}" | authority_of false '.word, .words[0].reasons[]')" \
+    "default
+merge-approved names the head 0fedcba, which no pr event of https://github.com/o/p/pull/5, nor a review since, logged: ask again on the PR's head"
+  # A withdrawn approval, and the reviews and branch while one stands.
+  assert_equal "$(printf '%s\n' "$coordinator" '{"event": "plan-approval-withdrawn", "discord_message": "1564"}' | authority_of false '.words[1] | [.applies, .reasons, .facts]')" \
+    '[false,["T1'"'"'s plan approval was withdrawn at 2026-11-01T00:03:00Z in Discord message 1564: approve the plan again"],null]'
+  assert_equal "$(printf '%s\n' "$coordinator" | authority_of false '.words[1].reasons[]')" \
+    "no review of the head a1b2c3d is logged, so no reviewer has passed it"
+  # The team's own project: the one reason, whoever approved.
+  assert_equal "$(printf '%s\n' "$asked" "$daniel" "$pass" | authority_of true '.word, .words[1].reasons')" \
+    'null
+["the team'"'"'s own project merges unattended only behind the reviewer App'"'"'s check, which is not set up"]'
+}
+
+@test "merge_authority's default word is withdrawn when the latest withdrawal or giving back covering the PR is a withdrawal" {
+  local pass='{"event": "review", "verdict": "pass", "head": "a1b2c3d4", "findings": {"security": 0, "real-data": 0}, "guarded": []}'
+  local coordinator='{"event": "plan-approved", "by": "coordinator", "plan": {"tasks/T1/plan.md": "cd34"}, "scope": ["src/"]}'
+  # <kind> <task> <scope> <minute>: one of the ledger's merge-default events, logged at that minute.
+  said() {
+    jq -cn --arg e "merge-default-$1" --arg t "$2" --arg s "$3" --argjson n "$4" \
+      '{ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: $t, event: $e, scope: $s,
+        discord_message: "15\($n)", discord_channel: "1562"}'
+  }
+  local filter='.word, .words[1].reasons, .words[1].facts.restored'
+  covered() {
+    local withdrawals
+    withdrawals=$(jq -sc .)
+    printf '%s\n' "$coordinator" "$pass" | authority_of false "$filter" "$withdrawals"
+  }
+  # Each scope that covers T1's PR of proj withdraws it, naming the scope, the time and the message.
+  assert_equal "$(said withdrawn T1 task 9 | covered)" 'null
+["the default word was withdrawn for T1 at 2026-11-01T00:09:00Z in Discord message 159, and not given back since"]
+null'
+  assert_equal "$(said withdrawn T5 proj 9 | covered | sed -n 2p)" \
+    '["the default word was withdrawn for project proj at 2026-11-01T00:09:00Z in Discord message 159, and not given back since"]'
+  assert_equal "$(said withdrawn T5 all 9 | covered | sed -n 2p)" \
+    '["the default word was withdrawn for every project at 2026-11-01T00:09:00Z in Discord message 159, and not given back since"]'
+  # Another task's or another project's withdrawal does not touch it.
+  assert_equal "$({ said withdrawn T5 task 9; said withdrawn T1 conv 10; } | covered)" 'default
+[]
+null'
+  # A giving back of all after the project's withdrawal gives it back (T278 C3), its event in the
+  # facts for team-merge to read back; a later withdrawal withdraws it again.
+  assert_equal "$({ said withdrawn T5 proj 9; said restored T6 all 10; } | covered)" 'default
+[]
+{"ts":"2026-11-01T00:10:00Z","task":"T6","event":"merge-default-restored","scope":"all","discord_message":"1510","discord_channel":"1562"}'
+  assert_equal "$({ said withdrawn T5 all 9; said restored T1 task 10; said withdrawn T5 proj 11; } | covered | sed -n 1p)" null
+  # A giving back of another project after a withdrawal of all leaves the PR withdrawn.
+  assert_equal "$({ said withdrawn T5 all 9; said restored T5 conv 10; } | covered | sed -n 2p)" \
+    '["the default word was withdrawn for every project at 2026-11-01T00:09:00Z in Discord message 159, and not given back since"]'
+  # The team's own project gives its one reason alone, withdrawn or not.
+  assert_equal "$(printf '%s\n' "$coordinator" "$pass" | authority_of true '.words[1].reasons' "$(said withdrawn T1 all 9 | jq -sc .)")" \
+    '["the team'"'"'s own project merges unattended only behind the reviewer App'"'"'s check, which is not set up"]'
+}
+
+@test "default_restore_withdrawn says whether a giving back covers a PR whose latest covering event is a withdrawal" {
+  # <events as JSON lines> | gives <task> <scope> [<projects of each task, a JSON object>]
+  gives() {
+    jq -L "$REPO_ROOT/bin/lib" -sc --arg t "$1" --arg s "$2" --argjson p "${3:-{\}}" 'include "ledger";
+      default_restore_withdrawn({task: $t, scope: $s}; $p)'
+  }
+  local w='{"event": "merge-default-withdrawn"' r='{"event": "merge-default-restored"'
+  assert_equal "$(gives T1 all </dev/null)" false
+  assert_equal "$(echo "$w, \"task\": \"T1\", \"scope\": \"task\"}" | gives T1 task)" true
+  assert_equal "$(echo "$w, \"task\": \"T1\", \"scope\": \"task\"}" | gives T2 task)" false
+  # A task's withdrawal is given back by its project's, known from its opened events, or all.
+  assert_equal "$(echo "$w, \"task\": \"T1\", \"scope\": \"task\"}" | gives T2 p '{"T1": ["p"]}')" true
+  assert_equal "$(echo "$w, \"task\": \"T1\", \"scope\": \"task\"}" | gives T2 q '{"T1": ["p"]}')" false
+  assert_equal "$(printf '%s\n' "$w, \"task\": \"T1\", \"scope\": \"task\"}" "$r, \"task\": \"T2\", \"scope\": \"p\"}" | gives T9 all '{"T1": ["p"]}')" false
+  # A withdrawal of all is given back by any one project's or task's, and ended by all's.
+  assert_equal "$(echo "$w, \"task\": \"T1\", \"scope\": \"all\"}" | gives T2 q)" true
+  assert_equal "$(echo "$w, \"task\": \"T1\", \"scope\": \"all\"}" | gives T2 task)" true
+  assert_equal "$(printf '%s\n' "$w, \"task\": \"T1\", \"scope\": \"all\"}" "$r, \"task\": \"T1\", \"scope\": \"all\"}" | gives T2 q)" false
+}
+
+@test "default_withdrawals gives each withdrawal still the latest covering some PR, in ledger order" {
+  # <events as JSON lines> | standing [<projects of each task, a JSON object>]: the messages of the
+  # withdrawals that stand.
+  standing() {
+    jq -L "$REPO_ROOT/bin/lib" -sc --argjson p "${1:-{\}}" 'include "ledger"; default_withdrawals($p) | map(.discord_message)'
+  }
+  # <kind> <task> <scope> <message>: a merge-default event.
+  said() {
+    jq -cn --arg e "merge-default-$1" --arg t "$2" --arg s "$3" --arg m "$4" '{task: $t, event: $e, scope: $s, discord_message: $m}'
+  }
+  assert_equal "$(standing </dev/null)" '[]'
+  assert_equal "$({ said withdrawn T1 task 1; said withdrawn T2 proj 2; } | standing)" '["1","2"]'
+  # A later withdrawal of all decides for every PR, so it stands alone.
+  assert_equal "$({ said withdrawn T1 task 1; said withdrawn T2 proj 2; said withdrawn T3 all 3; } | standing)" '["3"]'
+  # A giving back of all ends every withdrawal before it, and a later one stands again.
+  assert_equal "$({ said withdrawn T1 task 1; said withdrawn T2 proj 2; said restored T3 all 3; said withdrawn T4 conv 4; } | standing)" '["4"]'
+  # A project's giving back ends that project's withdrawal and its tasks', known from their opened
+  # events, and leaves a withdrawal of all standing for the other projects.
+  assert_equal "$({ said withdrawn T1 task 1; said withdrawn T2 all 2; said restored T3 proj 3; } | standing '{"T1": ["proj"]}')" '["2"]'
+  assert_equal "$({ said withdrawn T1 task 1; said restored T3 proj 3; } | standing '{"T1": ["conv"]}')" '["1"]'
+  # A task's giving back ends its own withdrawal only.
+  assert_equal "$({ said withdrawn T1 task 1; said withdrawn T2 task 2; said restored T1 task 3; } | standing)" '["2"]'
+}
+
+@test "scope_reasons names each changed path outside the approved scope, a rename by both names, and none with no scope" {
+  outside() {
+    jq -L "$REPO_ROOT/bin/lib" -r --argjson scope "$1" 'include "ledger"; scope_reasons($scope)'
+  }
+  local changed='[{"path": "src/a.py"}, {"path": "README.md"}, {"path": "docs/x.md"}, {"path": "old.md", "renamed": "src/new.md"}]'
+  assert_equal "$(outside '["src/", "README.md"]' <<<"$changed")" \
+    "docs/x.md is outside the approved plan's scope: src/, README.md
+old.md, renamed to src/new.md, is outside the approved plan's scope: src/, README.md"
+  assert_equal "$(outside null <<<"$changed")" ""
 }
 
 @test "a standing merge word and its withdrawal meet the contract, each naming a project, a message and its channel" {

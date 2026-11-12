@@ -62,18 +62,24 @@ def park_class:
 # wait was for whether or not its text names the url (a merge ask's "merge PR #<n>"), as the
 # fold's merge-approved does an old wait on Daniel. With no park standing, the class is the phase
 # the last marker set: a planner or ops launch planning, a builder's building, a reviewer's review,
-# merge-approved merging (word head), a passing review while a plan-time approval of the task
-# stands merging too (word plan; preapproved, the projects whose merge-preapproved no later
-# merge-preapproval-withdrawn of theirs ended), until the merged or a withdrawal that leaves none
-# standing while the word is still plan, a review that sends notes back (sent_back) building (the
-# builder's fix round, fix, which a reviewer's done leaves building and a paused whose cause is
-# stow (park_cause) in it does not park (unparked), so the stow up to the fresh builder's launch is
-# building; a builder's done, pr or ticket-done, another review, a merged or another role's launch
-# ends it), and a done (save one while the word plan merges), merged or other review unattributed
-# (the coordinator's turn, or a gate run the ledger did not see); with no park, an ask the fold
-# still holds open while the phase is unattributed is a wait on Daniel (idle_class). A park logged
-# after the fact with since takes effect at since, held to the span from the event before it to its
-# own ts. The task starts unattributed, and the walk stops at the first event after $end.
+# merge-approved merging (word head), a passing review while the default word stands merging too
+# (word default: the task's latest plan-approved carries the plan it approved, so it was logged
+# since the default word began with T276, with no plan-approval-withdrawn after it, and its latest
+# merge-default-withdrawn or merge-default-restored of scope task, if any, a giving back; the
+# withdrawals of a project or of all are other tasks' events, which the walk does not read), until
+# the merged or such a withdrawal while the word is default, and for history a passing review while
+# a plan-time approval of the task stands (word plan; preapproved, the projects whose
+# merge-preapproved no later merge-preapproval-withdrawn of theirs ended), until the merged or a
+# withdrawal that leaves none standing while the word is still plan, a review that sends notes back
+# (sent_back) building (the builder's fix round, fix, which a reviewer's done leaves building and a
+# paused whose cause is stow (park_cause) in it does not park (unparked), so the stow up to the
+# fresh builder's launch is building; a builder's done, pr or ticket-done, another review, a merged
+# or another role's launch ends it), and a done (save one while the word plan or default merges),
+# merged or other review unattributed (the coordinator's turn, or a gate run the ledger did not
+# see); with no park, an ask the fold still holds open while the phase is unattributed is a wait on
+# Daniel (idle_class). A park logged after the fact with since takes effect at since, held to the
+# span from the event before it to its own ts. The task starts unattributed, and the walk stops at
+# the first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 
 # What a park event waits on: a typed one's (a cause bin/lib/lifecycle.json's causes list) the
@@ -101,7 +107,7 @@ def idle_class:
 def task_segments($end):
   ([.[] | select(.event == "opened") | .ts | fromdate] | first) as $t0
   | (([range(length) as $i | select(.[$i].ts | fromdate > $end) | $i] | first) // length) as $n
-  | reduce .[:$n][] as $e ({phase: "unattributed", word: null, preapproved: [], fold: lifecycle_start, unparked: [],
+  | reduce .[:$n][] as $e ({phase: "unattributed", word: null, preapproved: [], planned: false, held_back: false, fold: lifecycle_start, unparked: [],
         askwait: null, fix: false, cur: $t0, segments: []};
       ($e.ts | fromdate) as $ts
       | (if ($e | is_park) and ($e.since | type) == "string" then
@@ -124,7 +130,8 @@ def task_segments($end):
           (.fold.asks | map(.i)) as $open
           | (if .askwait != null then .askwait |= (map(select(IN(.; $open[]))) | if . == [] then null else . end) else . end)
           | if $e.event == "review" and $e.verdict == "pass" and .preapproved != [] then .phase = "merging" | .word = "plan"
-            elif $e.event == "done" and .phase == "merging" and .word == "plan" then .
+            elif $e.event == "review" and $e.verdict == "pass" and .planned and (.held_back | not) then .phase = "merging" | .word = "default"
+            elif $e.event == "done" and .phase == "merging" and IN(.word; "plan", "default") then .
             elif $e.event == "review" and ($e.sent_back // [] | length) > 0 then .phase = "building"
             elif $e.event == "done" and $e.role == "reviewer" and .phase == "building" then .
             elif $e.event == "done" or $e.event == "merged" or $e.event == "review" then .phase = "unattributed"
@@ -133,6 +140,11 @@ def task_segments($end):
             elif $e.event == "merge-preapproval-withdrawn" then
               .preapproved -= [$e.project]
               | if .phase == "merging" and .word == "plan" and .preapproved == [] then .phase = "unattributed" else . end
+            elif $e.event == "plan-approved" then .planned = ($e.plan != null)
+            elif $e.event == "merge-default-restored" and $e.scope == "task" then .held_back = false
+            elif $e.event == "plan-approval-withdrawn" or ($e.event == "merge-default-withdrawn" and $e.scope == "task") then
+              (if $e.event == "plan-approval-withdrawn" then .planned = false else .held_back = true end)
+              | if .phase == "merging" and .word == "default" then .phase = "unattributed" else . end
             else . end
         end)
       | .fix = (if $e.event == "review" then ($e.sent_back // [] | length) > 0

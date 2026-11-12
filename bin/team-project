@@ -12,9 +12,11 @@
 #                                     pool.lease and pool.return as the same file, however
 #                                     spelled (a symlink, or another case on a case-insensitive
 #                                     filesystem); a key no project has is refused
-#        team-project --check         check the whole file and list every problem; the name
-#                                     coordinator is reserved (team-config's folder for the
-#                                     team home's own auto memory)
+#        team-project --check         check the whole file and list every problem; the names
+#                                     coordinator (team-config's folder for the team home's own
+#                                     auto memory), task and all (the scopes of a
+#                                     merge-default-withdrawn or merge-default-restored besides a
+#                                     project's name) and own (bin/lib/guarded's @own) are reserved
 #
 # The registry has one table per project the team works on, keyed by its short name.
 # Per project:
@@ -39,11 +41,6 @@
 #                      expect   the text a good answer's body holds, one line of 1 to 200
 #                               characters
 #                    the projects together list at most 10, which fit the uptime step's time
-#   merge_with_plan  optional: true lets Daniel approve a task's merge in the word that approves
-#                    its plan, which team-merge holds to its own conditions (default false); never
-#                    true on the team's own project, named agent-team or at the code checkout this
-#                    script runs from (or at its main worktree, when that checkout is a linked
-#                    worktree), which --check refuses
 #   task_dir         a task's scratch directory
 #   docs             what a worker reads first
 #   toolkits         the toolkits a worker of this project may be given, an allow list
@@ -83,7 +80,9 @@
 # Paths in the file are relative to $HOME, except pool.lease and pool.return (relative to the
 # primary checkout) and task_dir, docs, stack.compose and stack.seed (relative to a worktree, so
 # they stay relative).
-# A new key goes in this list and in the script's key lists.
+# A new key goes in this list and in the script's key lists. A retired key (merge_with_plan,
+# retired by T276, since the approved plan is every project's merge word) is refused by --check,
+# and so by every command, until it is removed.
 #
 # Every command refuses a registry that fails --check. Exit 0 done, 1 refused or a check
 # failed, 2 usage error. Python standard library only (tomllib, Python 3.11 or later).
@@ -91,7 +90,6 @@
 import json
 import os
 import re
-import subprocess
 import sys
 
 # tomllib is Python 3.11's; macOS's own python3 is older. This file must parse on it to say so.
@@ -116,9 +114,17 @@ PROJECT_LISTS = ("required_checks", "docs", "toolkits")
 PROJECT_KEYS = PROJECT_STRINGS + PROJECT_LISTS + ("pool",)
 # Names no project may take: coordinator is the team home's own auto memory folder,
 # memory/coordinator/ (team-config).
-RESERVED = {"coordinator": "the team home's auto memory, memory/coordinator/"}
+RESERVED = {
+    "coordinator": "the team home's auto memory, memory/coordinator/",
+    "task": "the default merge word's withdrawals, whose scope=task is the task they are logged under",
+    "all": "the default merge word's withdrawals, whose scope=all is every project",
+    "own": "the team's own project in bin/lib/guarded's @own lines",
+}
 # Optional keys, with the value a project without one has.
-PROJECT_OPTIONAL = {"local_checks": [], "merge_with_plan": False, "models": {}, "uptime": [], "visibility": "public"}
+PROJECT_OPTIONAL = {"local_checks": [], "models": {}, "uptime": [], "visibility": "public"}
+# Keys no project may hold any more, each with why and what to do, which --check names in place of
+# an unknown key.
+RETIRED = {"merge_with_plan": "retired by T276, since the approved plan is every project's merge word: remove the key"}
 # A production check's keys, every one required and a string, and the most checks the registry
 # may list in all, so the heartbeat's uptime step fits its time limit.
 UPTIME_KEYS = ("name", "url", "expect")
@@ -127,27 +133,6 @@ UPTIME_LIMIT = 10
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 # The values a project's visibility takes.
 VISIBILITIES = ("public", "private")
-# The code checkout this script runs from, the directory above its bin/: the team's own project's
-# primary checkout.
-CODE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
-
-
-# The main worktree of the code checkout, when that checkout is a linked worktree of it (a
-# worker's, say), so the team's own project is known by path wherever the script runs; else None.
-def code_main():
-    try:
-        common = subprocess.run(
-            ["git", "-C", CODE, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
-    if os.path.basename(common) != ".git":
-        return None
-    main = os.path.dirname(common)
-    return None if same_path(main, CODE) else main
-# Why the team's own project never merges on a plan-time word.
-OWN = "the team's own project, whose PRs merge only on Daniel's word per head"
 # The roles a project's models table may name: the worker roles but ops, whose production work
 # stays on the default model.
 MODEL_ROLES = ("planner", "builder", "reviewer")
@@ -331,25 +316,6 @@ def check_models(name, models, problems):
             problems.append(f"{where}.{role}: '{model}' is not a model alias or name")
 
 
-# Check one project's merge_with_plan: a boolean, never true on the team's own project.
-def check_merge_with_plan(name, project, problems):
-    where = f"{name}.merge_with_plan"
-    value = project.get("merge_with_plan", False)
-    if not isinstance(value, bool):
-        problems.append(f"{where}: must be true or false")
-    elif not value:
-        return
-    elif name == "agent-team":
-        problems.append(f"{where}: agent-team is {OWN}")
-    elif isinstance(project.get("path"), str) and is_relative_path(project["path"]):
-        path = os.path.normpath(os.path.join(os.environ.get("HOME", ""), project["path"]))
-        main = code_main()
-        if same_path(path, CODE):
-            problems.append(f"{where}: its path is the code checkout team-project runs from, {CODE}, {OWN}")
-        elif main and same_path(path, main):
-            problems.append(f"{where}: its path is {main}, the main worktree of the code checkout team-project runs from, {OWN}")
-
-
 # The problem with a check's url, or None: one line with no spaces, https:// to a host or http://
 # to the loopback, and no user name or password.
 def uptime_url_problem(url):
@@ -414,7 +380,8 @@ def check(registry):
         if not isinstance(project, dict):
             problems.append(f"{name}: must be a table")
             continue
-        check_keys(name, project, PROJECT_KEYS + tuple(PROJECT_OPTIONAL) + ("stack",), PROJECT_KEYS, problems)
+        check_keys(name, project, PROJECT_KEYS + tuple(PROJECT_OPTIONAL) + tuple(RETIRED) + ("stack",), PROJECT_KEYS, problems)
+        problems.extend(f"{name}.{key}: {why}" for key, why in RETIRED.items() if key in project)
         for key in PROJECT_STRINGS:
             if key in project:
                 check_string(name, key, project[key], problems)
@@ -427,7 +394,6 @@ def check(registry):
         elif any(not command.strip() or "\n" in command for command in checks):
             problems.append(f"{name}.local_checks: each command must be one line, not empty")
         uptime_checks += check_uptime(name, project.get("uptime", []), problems)
-        check_merge_with_plan(name, project, problems)
         check_models(name, project.get("models", {}), problems)
         if project.get("visibility", "public") not in VISIBILITIES:
             problems.append(f"{name}.visibility: must be one of {', '.join(VISIBILITIES)}")
