@@ -18,8 +18,8 @@ Sent back: the notes numbered {{findings}} in `{{task_dir}}/review.md`, each a p
 {{> rereview}}
    Read nothing else: not the rest of the PR, the spec's or the story's acceptance list, or the knowledge graph; run the UI check only when that diff touches a UI file and your session lists `ui-check`, on the states it touched and their siblings.
    A round with no new commit (`{{reviewed}}` is `{{head}}`) edited only the PR body: read the body against the notes.
-3. Every note sent back ({{findings}}) is fixed at `{{head}}`, and the diff holds nothing but those fixes, their tests and, on a gated project, the gate's own commits.
-   When it changes more than the notes asked, this brief does not fit: send `{{task}} BLOCKED not a notes-only fix: <what else changed>` to `coordinator`, and write nothing to GitHub.
+3. Every note sent back ({{findings}}) is fixed at `{{head}}`, and the builder's commits in that diff hold nothing but those fixes and their tests.
+   When they change more than the notes asked, this brief does not fit: send `{{task}} BLOCKED not a notes-only fix: <what else changed>` to `coordinator`, and write nothing to GitHub.
    Raise a new finding only on a line this diff adds or changes, so each new one's scope is `change`.
 {{> review-rules}}
 

@@ -525,6 +525,32 @@ base_link() {
   assert_equal "$(launches | jq -c 'has("brief")')" "false"
 }
 
+@test "a launch logs the template its brief's record names, so a verify is counted as one; a brief with no record logs none" {
+  open_task T7
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  # team-brief writes each brief's record beside it; a verify's brief is named rereview-<k>.
+  echo "the brief" >"$TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  echo '{"template":"verify","project":"proj","values":{"head":"abc"}}' >"$TEAM_HOME/tasks/T7/brief-rereview-3.json"
+  run_bin -0 team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  assert_equal "$(launches | jq -c '{brief, template}')" '{"brief":"brief-rereview-3","template":"verify"}'
+  # A brief written by hand has no record, and one whose record cannot be read names no
+  # template: each launches as before, logging none, the second with a warning.
+  local record
+  for record in none '{"template":' '{"project":"proj"}'; do
+    : >"$TEAM_HOME/ledger.jsonl"
+    open_task T7
+    rm -f "$TEAM_HOME/tasks/T7/brief-rereview-3.json"
+    [[ $record == none ]] || printf '%s\n' "$record" >"$TEAM_HOME/tasks/T7/brief-rereview-3.json"
+    run_bin -0 --separate-stderr team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
+    assert_equal "$(launches | jq -c '{brief, has: has("template")}')" '{"brief":"brief-rereview-3","has":false}'
+    if [[ $record == '{"template":' ]]; then
+      assert_contains "$stderr" "team-worker: warning: $TEAM_HOME/tasks/T7/brief-rereview-3.json is no brief record team-brief writes, so the launch logs no template"
+    else
+      [[ $stderr != *"brief record"* ]]
+    fi
+  done
+}
+
 @test "a brief named with ~/, \$HOME or trailing punctuation is found; another task's brief launches with no brief logged" {
   open_task T7
   mkdir -p "$TEAM_HOME/tasks/T7" "$TEAM_HOME/tasks/T8"
