@@ -32,7 +32,9 @@
 # a form of its own. While a walk is on, each message of Daniel's in the task's thread is a walk
 # note, which the coordinator takes a capture with; outside one, it captures only when Daniel asks.
 # Each change is a walk event in the ledger, which a restarted or compacted coordinator reads, and
-# team-state shows a walk that is on; a walk left on ends when its task closes. start prints
+# team-state shows a walk that is on; a walk left on ends when its task closes. Each change brings
+# the team home's waiting.md up to date (refresh_inbox in bin/lib/team.sh: team-inbox; a failure
+# is one line on stderr, and the exit stays 0), which lists the walk while it is on. start prints
 # "walk on for T<n>" and stop "walk off for T<n>"; a start while on, or a stop while off, logs
 # nothing and says "walk already on for T<n> since <ts>" or "walk already off for T<n>"; status
 # logs nothing and prints "walk on for T<n> since <ts>" or "walk off for T<n>".
@@ -205,6 +207,10 @@ if [[ -n $walk ]]; then
       echo "walk off for $task"
       ;;
   esac
+  # The walk is listed in waiting.md while it is on; a start while on or a stop while off changed nothing.
+  if ((${#LEDGER_KINDS[@]})); then
+    refresh_inbox
+  fi
   exit 0
 fi
 ((capture || !noted)) || usage_error "--note-file goes with --capture"

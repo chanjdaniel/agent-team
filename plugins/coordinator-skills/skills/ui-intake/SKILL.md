@@ -56,7 +56,7 @@ It leaves you out of each note, and only one runs at a time, since Daniel has on
    Only when Daniel says, in a message naming its port, that the primary stack was just reseeded, and wants to walk there, add `--reseeded <its message id>`: it reads that message back, and it must be theirs, within the hour, and say so; it clears only the port it names, and a walk already on must stop first.
 3. Write the brief with `team-brief T<n> planner-walk --set-file read=<file>`, the file naming the walk's stops, and launch it with `team-worker T<n> planner <worktree> -- "Read your brief at <path>"`.
    `team-worker` still refuses it this toolkit: it reads the window only by `team-ui T<n> --capture`.
-4. Log `team-log T<n> waiting on=Daniel reason="walk in <#id>"`, post `<#id>` in the task's thread and `#coordinator`, and run `team-inbox`, which lists it under Walks under way.
+4. Log `team-log T<n> waiting on=Daniel reason="walk in <#id>"`, post `<#id>` in the task's thread and `#coordinator`; `waiting.md` lists the walk from its start on.
 5. A message of Daniel's in the task's thread during it is no walk note: point them at `<#id>`, unless it is the stop.
 6. Stop it with `team-ui T<n> --walk stop` on Daniel's word in the task's thread or `#coordinator`, or on the planner's `DONE`, whichever comes first, since it holds the window's one walk until then, and with it stopped the planner's captures refuse.
 7. `team-sweep`'s `walk-stale` finding, for either kind of walk, says a walk has had no message from Daniel in 4 hours, so it no longer keeps its stack up or stows last.

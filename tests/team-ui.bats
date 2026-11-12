@@ -36,6 +36,10 @@ EOF
   chmod +x "$capture"
   open_task T7
   ui=$TEAM_HOME/tasks/T7/ui
+  # #coordinator's guild, as team-inbox keeps it after its first read, so the refresh of the
+  # waiting list after a walk starts or stops calls Discord for nothing.
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"channel":"1562486564871995482","guild":"1560000000000000000"}' >"$HOME/.local/state/agent-team/inbox.json"
   inbox=$HOME/.claude/channels/discord/inbox
   mkdir -p "$inbox"
   printf 'shot' >"$inbox/1563-screenshot.png"
@@ -258,7 +262,7 @@ walk_events() {
   jq -r --arg task "$1" 'select(.task == $task and .event == "walk") | .state' "$TEAM_HOME/ledger.jsonl"
 }
 
-@test "--walk start and stop log the walk's state once each, status reads it, and a repeat changes nothing" {
+@test "--walk start and stop log the walk's state once each, status reads it, a repeat changes nothing, and waiting.md lists the walk while it is on" {
   local ts='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
   run_bin -0 --separate-stderr team-ui T7 --walk status
   assert_equal "$output" "walk off for T7"
@@ -267,6 +271,8 @@ walk_events() {
   assert_equal "$output" "walk on for T7"
   assert_equal "$stderr" ""
   assert_equal "$(walk_events T7)" "on"
+  # waiting.md lists the walk by the end of the command.
+  assert_contains "$(cat "$TEAM_HOME/waiting.md")" "- **1** T7 the More... button height: walk under way - unblocks 1 (1 task)"
   local since
   since=$(jq -r 'select(.event == "walk") | .ts' "$TEAM_HOME/ledger.jsonl")
   [[ $since =~ ^$ts$ ]]
@@ -275,10 +281,13 @@ walk_events() {
   assert_equal "$(walk_events T7)" "on"
   run_bin -0 team-ui T7 --walk status
   assert_equal "$output" "walk on for T7 since $since"
-  run_bin -0 team-ui T7 --walk stop
+  run_bin -0 --separate-stderr team-ui T7 --walk stop
   assert_equal "$output" "walk off for T7"
+  assert_equal "$stderr" ""
   assert_equal "$(walk_events T7)" "on
 off"
+  assert_equal "$(cat "$TEAM_HOME/waiting.md")" "**Waiting on you**
+Nothing waits on you."
   run_bin -0 team-ui T7 --walk stop
   assert_equal "$output" "walk already off for T7"
   run_bin -0 team-ui T7 --walk status
@@ -482,6 +491,8 @@ walk_note_count() {
   run_bin -0 team-ui T7 --walk start --in interview
   assert_equal "$output" "walk on for T7 in its interview thread"
   assert_equal "$(jq -c 'select(.event == "walk") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" '{"task":"T7","event":"walk","state":"on","thread":"interview"}'
+  # The interview's item is the walk's while it runs in that thread.
+  assert_contains "$(cat "$TEAM_HOME/waiting.md")" "- **1** T7 the More... button height: walk under way <#1563000000000000009> - unblocks 1 (1 task)"
   run_bin -0 team-log --check
   local since
   since=$(jq -r 'select(.event == "walk") | .ts' "$TEAM_HOME/ledger.jsonl")
