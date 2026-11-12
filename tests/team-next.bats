@@ -41,9 +41,14 @@ TOML
   sha=$(commit one.txt "feat: ticket 01")
   # Each launch prints the next session id, c0000001, c0000002...; the session list is
   # $STUB_FIXTURES/agents, else empty, so team-worker stops nothing. Once $STUB_FIXTURES/fail-once exists, the next launch
-  # fails and removes it.
+  # fails and removes it. While $STUB_FIXTURES/launches-live exists, each launch joins the session
+  # list, idle, and rm takes a session off it.
   stub_script claude <<'EOF'
 if [[ $* == "agents --json" ]]; then cat "$STUB_FIXTURES/agents" 2>/dev/null || echo '[]'; exit 0; fi
+if [[ $1 == rm && -e $STUB_FIXTURES/launches-live && -e $STUB_FIXTURES/agents ]]; then
+  jq -c --arg id "$2" 'map(select(.id != $id))' "$STUB_FIXTURES/agents" >"$STUB_FIXTURES/agents.next"
+  mv "$STUB_FIXTURES/agents.next" "$STUB_FIXTURES/agents"
+fi
 if [[ $1 == stop || $1 == rm ]]; then exit 0; fi
 if [[ -e $STUB_FIXTURES/fail-once ]]; then
   rm "$STUB_FIXTURES/fail-once"
@@ -52,6 +57,12 @@ if [[ -e $STUB_FIXTURES/fail-once ]]; then
 fi
 n=$(($(cat "$STUB_FIXTURES/count" 2>/dev/null || echo 0) + 1))
 echo "$n" >"$STUB_FIXTURES/count"
+if [[ -e $STUB_FIXTURES/launches-live ]]; then
+  [[ -e $STUB_FIXTURES/agents ]] || echo '[]' >"$STUB_FIXTURES/agents"
+  jq -c --arg s "c000000$n" '. + [{id: $s, sessionId: "\($s)-0000", kind: "background", status: "idle", state: "blocked"}]' \
+    "$STUB_FIXTURES/agents" >"$STUB_FIXTURES/agents.next"
+  mv "$STUB_FIXTURES/agents.next" "$STUB_FIXTURES/agents"
+fi
 echo "Started background session c000000$n (${*: -2:1}). Attach with: claude attach c000000$n"
 EOF
 }
@@ -1381,8 +1392,10 @@ launched T7-builder c0000001"
 # fill_ready [<parallel>]: T7 ready for --fill, ticket 01 done: a pool of six slots, the task
 # branch ignoring .scratch/ as team-open --ticket needs, a scope.txt for the tickets' Touches:
 # lines, and a later plan-approved with
-# parallel=<parallel> when one is given.
+# parallel=<parallel> when one is given. Each builder it launches stays live, idle, until it is
+# removed, so a fill finds no ticket's builder gone.
 fill_ready() {
+  touch "$STUB_FIXTURES/launches-live"
   sed -i 's|slots = \["slots/proj/1", "slots/proj/2"\]|slots = ["slots/proj/1", "slots/proj/2", "slots/proj/3", "slots/proj/4", "slots/proj/5", "slots/proj/6"]|' \
     "$TEAM_HOME/projects.toml"
   echo ".scratch/" >"$wt/.gitignore"
@@ -1793,7 +1806,8 @@ feat: ticket 03"
   h2=$(built 02 two.txt) tw=$(ticket_wt 02)
   # A run that ended after its fast-forward.
   git -C "$wt" merge -q --ff-only "$h2"
-  jq -cn '[{id: "c0000001", sessionId: "c0000001-0000", name: "T7-builder-02", kind: "background", status: "busy", state: "working"}]' \
+  jq -cn '[{id: "c0000001", sessionId: "c0000001-0000", name: "T7-builder-02", kind: "background", status: "busy", state: "working"},
+    {id: "c0000002", sessionId: "c0000002-0000", name: "T7-builder-03", kind: "background", status: "idle", state: "blocked"}]' \
     >"$STUB_FIXTURES/agents"
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   TEAM_CLOSE_IDLE_SECONDS=0 run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 02 $h2 two"
@@ -1807,7 +1821,8 @@ nothing to launch: 03 running in session c0000002; 04 blocked on 03"
   [[ -d $tw ]]
 
   # Idle now: the same DONE again logs nothing twice and returns the worktree.
-  jq -cn '[{id: "c0000001", sessionId: "c0000001-0000", name: "T7-builder-02", kind: "background", status: "idle", state: "blocked"}]' \
+  jq -cn '[{id: "c0000001", sessionId: "c0000001-0000", name: "T7-builder-02", kind: "background", status: "idle", state: "blocked"},
+    {id: "c0000002", sessionId: "c0000002-0000", name: "T7-builder-03", kind: "background", status: "idle", state: "blocked"}]' \
     >"$STUB_FIXTURES/agents"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 02 $h2 two"
   assert_equal "$output" "already logged ticket-done ticket=02 commits=[\"$h2\"] note=two
@@ -1947,4 +1962,157 @@ launched T7-builder-04 c0000003"
   # Nothing open is done now, so a run returns nothing.
   run_bin -0 --separate-stderr team-next T7 --fill
   assert_equal "$output" "nothing to launch: 04 running in session c0000003"
+}
+
+# Relaunch: after a stow or a crash, --fill relaunches each running ticket's gone builder in its
+# own ticket worktree before it launches a ready ticket.
+
+# relaunch_ready: T7 at cap 2 with 02, 03 and 04 ready, then --fill having launched 02
+# (c0000001, slots/proj/2) and 03 (c0000002, slots/proj/3), their sessions gone (the session list
+# is empty, and later launches join it only as a test says with live).
+relaunch_ready() {
+  fill_ready 2
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: 01" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: 01" "Touches: four.txt"
+  run_bin -0 team-next T7 --fill
+  rm "$STUB_FIXTURES/launches-live" "$STUB_FIXTURES/agents"
+}
+
+# stowed_here <cause>: T7 stowed on home-pc for <cause>, its task worktree and both ticket
+# worktrees kept, as team-stow logs it.
+stowed_here() {
+  event stowing "$(jq -cn --arg c "$1" '{machine: "home-pc", cause: $c, roles: ["builder"]}')"
+  event stowed "$(jq -cn --arg c "$1" --arg h "$(git -C "$wt" rev-parse HEAD)" '{machine: "home-pc",
+    worktrees: [{project: "proj", branch: "feat/T7-toil", head: $h},
+      {project: "proj", branch: "feat/T7-toil--02", head: $h, ticket: "02"},
+      {project: "proj", branch: "feat/T7-toil--03", head: $h, ticket: "03"}],
+    roles: ["builder"], sessions: ["builder"], cause: $c}')"
+}
+
+# tilde <path>: <path> as a brief writes it, ~/ for $HOME/.
+tilde() {
+  echo "${1/#"$HOME/"/"~/"}"
+}
+
+@test "T287: --fill relaunches each stowed ticket builder in its ticket worktree on resume-build-NN before any ready ticket, counting it against the cap" {
+  relaunch_ready
+  stowed_here level
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "ticket 02's builder c0000001 was stowed at 2026-11-01T10:00:00Z: it resumes in $HOME/slots/proj/2
+brief $TEAM_HOME/tasks/T7/brief-resume-build-02.md
+launched T7-builder-02 c0000003
+ticket 03's builder c0000002 was stowed at 2026-11-01T10:00:00Z: it resumes in $HOME/slots/proj/3
+brief $TEAM_HOME/tasks/T7/brief-resume-build-03.md
+launched T7-builder-03 c0000004
+full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  assert_equal "$(fill_launches | tail -n 2)" \
+    '{"session":"c0000003","ticket":"02","worktree":"slots/proj/2","branch":"feat/T7-toil--02","brief":"brief-resume-build-02","toolkits":["browser"]}
+{"session":"c0000004","ticket":"03","worktree":"slots/proj/3","branch":"feat/T7-toil--03","brief":"brief-resume-build-03","toolkits":["browser"]}'
+  assert_equal "$(record resume-build-02 | jq -cS .)" "$(jq -cnS --arg b "$(tilde "$TEAM_HOME/tasks/T7/brief-build-02.md")" \
+    '{template: "resume", values: {role: "builder", brief: $b, from: "the stow for the level at 2026-11-01T10:00:00Z",
+      snapshot: "none: your worktree stayed in place, as you left it"}}')"
+  grep -qF 'Worktree: `~/slots/proj/2`, branch `feat/T7-toil--02`: the one you left' "$TEAM_HOME/tasks/T7/brief-resume-build-02.md"
+  grep -qF 'You build in a ticket worktree of your own' "$TEAM_HOME/tasks/T7/brief-resume-build-02.md"
+  assert_equal "$(bg_calls | tail -n 1 | jq -r 'last')" "Read your brief at $TEAM_HOME/tasks/T7/brief-resume-build-03.md"
+  assert_equal "$(bg_calls | tail -n 1 | jq -r '.[index("--name") + 1]')" "T7-builder-03"
+
+  # Both live now, a rerun relaunches nothing.
+  live c0000003 1000 c0000004 1000
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  # Stowed again with 02 gone, 02 resumes on the next free name, beside the live 03.
+  stowed_here handoff
+  live c0000004 1000
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "ticket 02's builder c0000003 was stowed at 2026-11-01T10:00:00Z: it resumes in $HOME/slots/proj/2
+brief $TEAM_HOME/tasks/T7/brief-resume-build-02-2.md
+launched T7-builder-02 c0000005
+full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  assert_equal "$(jq -r .values.from "$TEAM_HOME/tasks/T7/brief-resume-build-02-2.json")" "the handoff from home-pc at 2026-11-01T10:00:00Z"
+  run_bin -0 team-log --check
+}
+
+@test "T287: --fill relaunches a crashed ticket builder on resume-crash, with the resume report's checkpoint and snapshot" {
+  relaunch_ready
+  # Both builders ran on laptop, which stopped with no handoff; this machine's resume re-made
+  # their worktrees, its report saying what became of each snapshot.
+  jq -c 'if .event == "launch" and .ticket != null then .machine = "laptop" else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/ledger.next"
+  mv "$TEAM_HOME/ledger.next" "$TEAM_HOME/ledger.jsonl"
+  local n
+  for n in 02 03; do
+    event worktree-moved "$(jq -cn --arg n "$n" --arg wt "$(ticket_wt "$n")" '{project: "proj", branch: "feat/T7-toil--\($n)",
+      from: "/home/x/slots/proj/9", worktree: $wt, machine: "home-pc", ticket: $n}')"
+  done
+  jq -cn --arg at "$(date -u +%FT%TZ)" '{machine: "home-pc", epoch: 3, stolen_from: "laptop", written_at: $at,
+    tasks: [{task: "T7", here: false, stowed: null, crashed: {machine: "laptop", checkpoint: "2026-11-01T09:40:00Z", roles: ["builder"]},
+      worktrees: [{project: "proj", ticket: "02", snapshot: {ref: "wip/proj/T7--02", commit: "abc", parent: "def", at: "2026-11-01T09:35:00Z", applied: true, reason: null}},
+        {project: "proj", ticket: "03", snapshot: {ref: "wip/proj/T7--03", commit: "abc", parent: "def", at: null, applied: false, reason: "feat/T7-toil--03 is past it"}}],
+      failures: []}]}' >"$TEAM_HOME/tasks/resume-2026-11-01-100000.json"
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "ticket 02's builder c0000001 crashed on laptop: it resumes in $HOME/slots/proj/2
+brief $TEAM_HOME/tasks/T7/brief-resume-build-02.md
+launched T7-builder-02 c0000003
+ticket 03's builder c0000002 crashed on laptop: it resumes in $HOME/slots/proj/3
+brief $TEAM_HOME/tasks/T7/brief-resume-build-03.md
+launched T7-builder-03 c0000004
+full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  assert_equal "$(record resume-build-02 | jq -cS .)" "$(jq -cnS --arg b "$(tilde "$TEAM_HOME/tasks/T7/brief-build-02.md")" \
+    '{template: "resume-crash", values: {role: "builder", brief: $b, machine: "laptop", checkpoint: "2026-11-01T09:35:00Z",
+      snapshot: "applied as uncommitted changes in your worktree"}}')"
+  assert_equal "$(jq -c '.values | [.checkpoint, .snapshot]' "$TEAM_HOME/tasks/T7/brief-resume-build-03.json")" \
+    '["2026-11-01T09:40:00Z","not applied: feat/T7-toil--03 is past it; they are on `team-home/wip/proj/T7--03`"]'
+  grep -qF 'You build in a ticket worktree of your own' "$TEAM_HOME/tasks/T7/brief-resume-build-03.md"
+  assert_equal "$(fill_launches | tail -n 2 | jq -r '[.ticket, .brief] | join(" ")')" "02 brief-resume-build-02
+03 brief-resume-build-03"
+
+  # A report older than the launch says nothing of it: the checkpoint and snapshot are unknown.
+  jq -c 'if .event == "launch" and .session == "c0000003" then .machine = "laptop" | .ts = "2099-01-01T00:00:00Z" else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/ledger.next"
+  mv "$TEAM_HOME/ledger.next" "$TEAM_HOME/ledger.jsonl"
+  live c0000004 1000
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(sed -n 2p <<<"$output")" "brief $TEAM_HOME/tasks/T7/brief-resume-build-02-2.md"
+  assert_equal "$(jq -c '.values | [.machine, .checkpoint, .snapshot]' "$TEAM_HOME/tasks/T7/brief-resume-build-02-2.json")" \
+    '["laptop","an unknown time: no resume report since its last launch names it","none: your worktree stayed in place, as you left it"]'
+  run_bin -0 team-log --check
+}
+
+@test "T287: --fill names a gone ticket builder that was neither stowed nor crashed, or whose worktree is not here, and relaunches none" {
+  relaunch_ready
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "ticket 02's builder c0000001 is gone: recover it (the recover-worker skill)
+ticket 03's builder c0000002 is gone: recover it (the recover-worker skill)
+full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  assert_equal "$(bg_calls | wc -l)" 2
+  # A live one is not named.
+  live c0000002 1000
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "ticket 02's builder c0000001 is gone: recover it (the recover-worker skill)
+full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  # Stowed, with its worktree no longer on this machine, it waits for team-open to make it.
+  stowed_here handoff
+  git -C "$primary" worktree remove --force "$HOME/slots/proj/2"
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "ticket 02's builder c0000001 is gone, and its worktree $HOME/slots/proj/2 is not on this machine: make it with team-open --task T7 --resume proj --ticket 02, then run team-next T7 --fill again
+full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  assert_equal "$(bg_calls | wc -l)" 2
+}
+
+@test "T287: a relaunch refused for room stops --fill with exit 75 and its line, and a rerun relaunches the rest" {
+  relaunch_ready
+  stowed_here level
+  # The two first launches' reservations still stand: room for one more builder of 0.5 GiB, not two.
+  capacity_room $((1792 * 1048576))
+  run_bin -75 --separate-stderr team-next T7 --fill
+  assert_equal "$(tail -n 1 <<<"$output")" "brief $TEAM_HOME/tasks/T7/brief-resume-build-03.md"
+  assert_equal "$(sed -n 3p <<<"$output")" "launched T7-builder-02 c0000003"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-next: no room for resume-build-03: the launch said $(grep '^team-worker: no room' <<<"$stderr"); ready and waiting for room: 03, 04; run team-next T7 --fill once there is room"
+  capacity_room $((16 * 1073741824))
+  live c0000003 1000
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "ticket 03's builder c0000002 was stowed at 2026-11-01T10:00:00Z: it resumes in $HOME/slots/proj/3
+brief $TEAM_HOME/tasks/T7/brief-resume-build-03.md
+launched T7-builder-03 c0000004
+full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
 }

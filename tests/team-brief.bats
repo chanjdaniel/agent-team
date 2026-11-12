@@ -2473,3 +2473,35 @@ You build in a ticket worktree of your own'
   assert_equal "$output" "team-brief: T14 has no open worktree of ticket 03"
   assert_equal "$(task_files)" ""
 }
+
+@test "resume and resume-crash --ticket NN render the parallel text after their worktree line, and none without --ticket" {
+  open_ticket_worktree 03
+  local parallel='You build in a ticket worktree of your own, beside other tickets'"'"' builders: your branch `feat/T14-team-tooling--03` is local and never pushed, and the task branch `feat/T14-team-tooling` is in `~/agent-team/.claude/worktrees/2`.
+Before your DONE: commit, merge the task branch'"'"'s tip into your branch (`git merge feat/T14-team-tooling`), resolving any conflict within your ticket, run your checks again on the merged head, and list that head last in your DONE.
+If the coordinator answers that the task branch moved, merge it again, run the checks again and send DONE again.'
+  run_bin -0 team-brief T14 resume --ticket 03 --name resume-build-03 --set role=builder \
+    --set "brief=~/agent-team-records/tasks/T14/brief-build-03.md" --set "from=the stow for the level at 2026-11-02T09:00:00Z" \
+    --set "snapshot=none: your worktree stayed in place, as you left it"
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-resume-build-03.md")" 'Worktree: `~/agent-team/.claude/worktrees/1`, branch `feat/T14-team-tooling--03`: the one you left, when it stayed on this machine, else made here from what was pushed and archived.
+'"$parallel"'
+Task directory: '
+  assert_equal "$(jq -c '[.template, .values.role, .values.brief]' "$TEAM_HOME/tasks/T14/brief-resume-build-03.json")" \
+    '["resume","builder","~/agent-team-records/tasks/T14/brief-build-03.md"]'
+  run_bin -0 team-brief T14 resume-crash --ticket 03 --name resume-build-03 --force --set role=builder \
+    --set "brief=~/agent-team-records/tasks/T14/brief-build-03.md" --set machine=home-pc --set checkpoint=2026-10-23T13:45:00Z \
+    --set "snapshot=there were none"
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-resume-build-03.md")" 'Worktree: `~/agent-team/.claude/worktrees/1`, branch `feat/T14-team-tooling--03`, made on this machine from what was pushed and that checkpoint.
+'"$parallel"'
+Task directory: '
+  # The task worktree's resume briefs have no parallel text.
+  local template sets
+  for template in resume resume-crash; do
+    sets=(--set "from=the handoff from home-pc at 2026-10-23T14:05:00Z")
+    [[ $template == resume ]] || sets=(--set machine=home-pc --set checkpoint=2026-10-23T13:45:00Z)
+    run_bin -0 team-brief T14 "$template" --name resume-builder --force --set role=builder \
+      --set "brief=~/agent-team-records/tasks/T14/brief.md" "${sets[@]}" --set "snapshot=there were none"
+    refute_grep -F 'ticket worktree' "$TEAM_HOME/tasks/T14/brief-resume-builder.md"
+    grep -q '^Worktree: .*\.$' "$TEAM_HOME/tasks/T14/brief-resume-builder.md"
+    assert_equal "$(grep -A1 '^Worktree: ' "$TEAM_HOME/tasks/T14/brief-resume-builder.md" | sed -n 2p | cut -c1-15)" "Task directory:"
+  done
+}

@@ -8,7 +8,8 @@
 # each machine's sessions under its own HOME), and team-resume's doctor is a stub that passes
 # (TEAM_DOCTOR): the doctor's own lines are tests/team-doctor*.bats', and the crash test runs the
 # real one on home-pc for its salvage lines.
-# Scenarios: a clean handoff and resume, the shutdown (team-handoff --here, then team-resume on
+# Scenarios: a clean handoff and resume, one of a task with a ticket worktree whose builder
+# --fill relaunches on the other machine, the shutdown (team-handoff --here, then team-resume on
 # the same machine after the restart), the records rewrite's cutover (sops/records-rewrite.md)
 # with home-pc resuming after its own handoff, a handoff of a worker that never answered STOW, a
 # stale lease stolen, a crash between checkpoints, and a GitHub outage held in offline mode.
@@ -197,6 +198,55 @@ posts() {
     "You are the coordinator, resuming the team on laptop. Follow the \`resume\` skill with the report $report."
   assert_equal "$(jq -c '.tasks | map({task, here, roles: .stowed.roles, crashed, failures})' "$report")" \
     '[{"task":"T1","here":false,"roles":["builder"],"crashed":null,"failures":[]}]'
+}
+
+@test "handoff with a ticket worktree: home-pc stows T1 with ticket 02's builder in its own worktree; laptop re-makes it from its wip ref and --fill relaunches that builder" {
+  # T1's plan builds two tickets at once; --fill gives ticket 02 its worktree and builder, which
+  # commits there and is stowed with the task.
+  mkdir -p "$wt/.scratch/task/tickets"
+  printf '%s\n' two.txt three.txt >"$wt/.scratch/task/scope.txt"
+  printf '# 02: two\n\nBlocked by: None\nTouches: two.txt\n\n- [ ] it works\n' >"$wt/.scratch/task/tickets/02-two.md"
+  printf '# 03: three\n\nBlocked by: 02\nTouches: three.txt\n\n- [ ] it works\n' >"$wt/.scratch/task/tickets/03-three.md"
+  run_bin -0 team-log T1 plan-approved by=coordinator parallel=2
+  run_bin -0 --separate-stderr team-next T1 --fill
+  local twt=$HOME/slots/home/2 lt2=$laptop/home/slots/home/2 thead old
+  assert_equal "$(head -n 1 <<<"$output")" "worktree $twt for ticket 02"
+  assert_equal "$(tail -n 1 <<<"$output")" "launched T1-builder-02 $(session_id T1-builder-02)"
+  old=$(session_id T1-builder-02)
+  echo "two" >"$twt/two.txt"
+  git -C "$twt" add two.txt
+  git -C "$twt" commit -q -m "feat: two"
+  thead=$(git -C "$twt" rev-parse HEAD)
+
+  run_bin -0 --separate-stderr team-handoff
+  assert_contains "$output" "T1 home--02: feat/T1-work--02 is kept as wip/home/T1--02 at ${thead:0:7}, never pushed"
+  assert_equal "$(home_pc_sessions)" "coordinator busy"
+  assert_equal "$(git -C "$home_origin" for-each-ref refs/heads/feat/T1-work--02)" ""
+
+  on_machine laptop run_bin -0 --separate-stderr team-resume
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home--02: $lt2 on feat/T1-work--02 at ${thead:0:7}, moved from $twt, scratch restored from tasks/T1/scratch--02"
+  assert_equal "$(git -C "$lt2" rev-parse HEAD)" "$thead"
+
+  # On laptop, --fill relaunches ticket 02's stowed builder in its re-made worktree, which still
+  # fills phase 1's cap of 2 with 03 blocked on it, and launches nothing else.
+  on_machine laptop run_bin -0 --separate-stderr team-next T1 --fill
+  local stowed_at
+  stowed_at=$(jq -r 'select(.event == "stowed") | .ts' "$laptop/team/ledger.jsonl" | tail -n 1)
+  assert_equal "$output" "ticket 02's builder $old was stowed at $stowed_at: it resumes in $lt2
+brief $laptop/team/tasks/T1/brief-resume-build-02.md
+launched T1-builder-02 $(jq -r '.[] | select(.name == "T1-builder-02") | .id' "$laptop/home/sessions.json")
+nothing to launch: 02 running in session $old; 03 blocked on 02"
+  assert_equal "$(laptop_launches | jq -r '.[index("--name") + 1]' | tail -n 1)" "T1-builder-02"
+  assert_equal "$(laptop_launches | jq -r last | tail -n 1)" "Read your brief at $laptop/team/tasks/T1/brief-resume-build-02.md"
+  local brief=$laptop/team/tasks/T1/brief-resume-build-02.md
+  grep -qF "resuming the task after the handoff from home-pc at $stowed_at." "$brief"
+  grep -qF 'The uncommitted changes the stow found in the worktree: there were none.' "$brief"
+  grep -qF 'Worktree: `~/slots/home/2`, branch `feat/T1-work--02`' "$brief"
+  grep -qF 'You build in a ticket worktree of your own' "$brief"
+  assert_equal "$(jq -c 'select(.event == "launch") | [.ticket, .machine, .brief]' "$laptop/team/ledger.jsonl" | tail -n 1)" \
+    '["02","laptop","brief-resume-build-02"]'
+  on_machine laptop run_bin -0 team-log --check
 }
 
 @test "shutdown: home-pc hands off to itself with --here, its stack stopped and every session gone; after the restart team-resume there takes the lease back at the same level" {

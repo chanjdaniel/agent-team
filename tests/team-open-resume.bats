@@ -179,8 +179,9 @@ checkpoint_of() {
 # checkpoint (checkpoint_of) pushed, archived; then home-pc died, without a handoff, and nothing
 # of it is on this machine. Sets wt, branch, head and wip.
 crash_elsewhere() {
-  run_bin -0 --separate-stderr team-open home feature feat work "Work in home"
-  wt=$(jq -r .worktree <<<"$output") branch=$(jq -r .branch <<<"$output")
+  local opened
+  opened=$(TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-open" home feature feat work "Work in home" 2>/dev/null)
+  wt=$(jq -r .worktree <<<"$opened") branch=$(jq -r .branch <<<"$opened")
   head=$(work "$wt" feature.txt)
   push "$wt"
   launch builder "$wt"
@@ -195,8 +196,9 @@ crash_elsewhere() {
 # its builder having worked on since, so the live worktree holds more than the snapshot does
 # (feature.txt is "live"). Sets wt, branch, head and wip.
 restart_here() {
-  run_bin -0 --separate-stderr team-open home feature feat work "Work in home"
-  wt=$(jq -r .worktree <<<"$output") branch=$(jq -r .branch <<<"$output")
+  local opened
+  opened=$(TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-open" home feature feat work "Work in home" 2>/dev/null)
+  wt=$(jq -r .worktree <<<"$opened") branch=$(jq -r .branch <<<"$opened")
   head=$(work "$wt" feature.txt)
   push "$wt"
   launch builder "$wt" laptop
@@ -756,14 +758,15 @@ restored_from() {
 # then nothing of T1 is on this machine. Sets wt, branch and head (the task worktree's), twt,
 # tbranch and thead (the ticket worktree's) and, for a snapshot, wip.
 ticket_elsewhere() {
-  run_bin -0 --separate-stderr team-open home feature feat work "Work in home"
-  wt=$(jq -r .worktree <<<"$output") branch=$(jq -r .branch <<<"$output")
+  local opened
+  opened=$(TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-open" home feature feat work "Work in home" 2>/dev/null)
+  wt=$(jq -r .worktree <<<"$opened") branch=$(jq -r .branch <<<"$opened")
   head=$(work "$wt" feature.txt)
   push "$wt"
   mkdir -p "$wt/.scratch/task/tickets"
   printf '# 02: t\n\nBlocked by: None\n' >"$wt/.scratch/task/tickets/02-t.md"
-  run_bin -0 --separate-stderr team-open --task T1 --ticket 02
-  twt=$(jq -r .worktree <<<"$output") tbranch=$(jq -r .branch <<<"$output")
+  opened=$(TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-open" --task T1 --ticket 02 2>/dev/null)
+  twt=$(jq -r .worktree <<<"$opened") tbranch=$(jq -r .branch <<<"$opened")
   thead=$(work "$twt" ticket.txt)
   case ${1:-head} in
     head) git -C "$twt" push -q "$team_origin" "+$thead:refs/heads/wip/home/T1--02" ;;

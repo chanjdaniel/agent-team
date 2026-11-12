@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Take a worker's message to the task's next step: log its events, then hand the work on; or start
-# a phase's ready tickets' builders, up to its cap (--fill).
+# a phase's ready tickets' builders, up to its cap, after relaunching its stowed or crashed ticket
+# builders (--fill).
 #
 # Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>]
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
@@ -13,7 +14,8 @@
 #                before the merge, required while it counts any
 #   --next       with a builder's DONE <NN> or --fill, the ticket to launch next (first) instead of
 #                the lowest-numbered ready one; a ticket with a Waits for: line is launched only so
-#   --fill       launch the ready tickets of the phase being built up to its cap, with no message
+#   --fill       relaunch each running ticket's stowed or crashed builder, then launch the ready
+#                tickets of the phase being built up to its cap, with no message
 #   --checks     with a review launch, the first review's checks file (the reviewer's checks);
 #                required when the task has no review yet, refused once it has one
 #   --since      with a rereview launch, a file of the coordinator's words, added after the derived
@@ -83,6 +85,26 @@
 # it>; run team-next T<n> --fill once there is room", exit 75, and so does a pool with no free
 # slot, "no worktree for ticket NN: <team-open's reason>; ..."; the ticket worktree is kept for the
 # next fill, and any other failure exits with its code.
+# Before it launches a ready ticket, --fill relaunches each running ticket of that phase whose
+# builder, its latest launch in its ticket worktree, has no live session (claude agents --json) and
+# was stowed (the task's latest stowed follows that launch) or crashed (it ran on another machine
+# than this one, or on none named, and no stowed or stow-failed follows it): "ticket NN's builder
+# <session> was stowed at <ts>: it resumes in <worktree>" (or "... crashed on <machine>: ..."),
+# then team-brief T<n> resume (or resume-crash) --ticket NN --name resume-build-NN (resume-build-NN-2,
+# -3 and so on once a launch read it), with role=builder, brief= the path of ticket NN's
+# brief-build-NN, from= ("the stow for the level at <ts>", else "the handoff from <machine> at
+# <ts>") or machine= and checkpoint=, and snapshot=, as the resume skill gives them, from the
+# newest resume report (tasks/resume-*.json) written since that launch, its entry of the ticket's
+# worktree (with no such report, "none: your worktree stayed in place, as you left it", or not
+# known for a worktree moved here since, and the checkpoint an unknown time), then team-worker as a
+# builder there with that launch's toolkits, "brief <path>", "launched T<n>-builder-NN <id>". Its
+# ticket counted as running before and still does, so the cap holds. A gone builder that is neither is named and not
+# relaunched, "ticket NN's builder <session> is gone: recover it (the recover-worker skill)", nor
+# is one whose ticket worktree is not on this machine, "ticket NN's builder <session> is gone, and
+# its worktree <path> is not on this machine: make it with team-open --task T<n> --resume
+# <project> --ticket NN, then run team-next T<n> --fill again". A room refusal of a relaunch stops
+# the fill as a launch's does, "no room for resume-build-NN: ...; ready and waiting for room: <NN,
+# the relaunches after it and the ready tickets>; ...".
 # A DONE <NN> whose sender's launch has a ticket (ticket NN's builder in its ticket worktree,
 # T<n>-builder-NN; one of another ticket is refused) is integrated, under the lock
 # ~/.local/state/agent-team/integrate/T<n>.lock, an exclusive flock waiting TEAM_NEXT_LOCK_SECONDS
@@ -568,6 +590,117 @@ launch_ticket() {
   echo "launched $session $id"
 }
 
+# The relaunch of a running ticket's gone builder, over the task's events, as one JSON object a
+# line: each running ticket of the phase being built ($running, team-tickets' running) whose
+# latest launch in its ticket worktree (running_ticket_launches) has no live session, with kind
+# resume (the task's latest stowed follows that launch), crash (it ran on another machine than
+# this one, or on none named, and no stowed or stow-failed follows it) or gone (neither), its
+# open ticket worktree here, and the resume brief's sets: from (resume) or machine and
+# checkpoint (crash), and snapshot, read from the newest resume report ($report, team-resume's,
+# or null) written since that launch, its entry of the ticket's worktree; with none, a worktree
+# not moved here since the launch stayed in place, and one moved has its snapshot unknown.
+relaunch_prog='. as $events
+  | latest_stowed as $stowed
+  | ($report | if . != null and any(.tasks[]?; .task == $task) then . else null end) as $report
+  | running_ticket_launches[] | select(.ticket | IN($running[]))
+  | select(live_session(.session; $sessions) == null) | . as $l
+  | ([open_worktrees($events[]; $home) | select(.ticket == $l.ticket)] | last) as $w
+  | ($events[$l.i + 1:]) as $since
+  | "wip/\($l.project)/\($task)--\($l.ticket)" as $wip
+  | (if $report != null and $report.written_at >= $l.ts then $report.tasks[] | select(.task == $task) else null end) as $rt
+  | ($rt | if . == null then null else [.worktrees[]? | select(.project == $l.project and .ticket == $l.ticket)] | last end) as $entry
+  | (if $stowed > $l.i then "resume"
+     elif $l.machine != $machine and (any($since[]; .event | IN("stowed", "stow-failed")) | not) then "crash"
+     else "gone" end) as $kind
+  | {kind: $kind, ticket: $l.ticket, session: $l.session, project: $l.project, worktree: $w.worktree,
+     toolkits: [$l.toolkits[]?],
+     machine: ($l.machine // $rt.crashed.machine // "the machine it last ran on"),
+     stowed_at: (if $stowed >= 0 then $events[$stowed].ts else null end),
+     from: (if $stowed < 0 then null
+       else $events[$stowed] | if .cause == "level" then "the stow for the level at \(.ts)" else "the handoff from \(.machine) at \(.ts)" end end),
+     checkpoint: ($entry.snapshot.at // $rt.crashed.checkpoint
+       // if $rt != null then "an unknown time: no checkpoint of the task was found"
+          else "an unknown time: no resume report since its last launch names it" end),
+     snapshot: (if $entry != null then
+         ($entry.snapshot) as $s
+         | if $s == null or $s.parent == null then "there were none"
+           elif $s.applied == true then "applied as uncommitted changes in your worktree"
+           else "not applied: \($s.reason); they are on `team-home/\($wip)`" end
+       elif any($since[]; (.event | IN("worktree-moved", "rehomed")) and .ticket == $l.ticket) then
+         "not known: no resume report since your last launch names this worktree; the last checkpoint'"'"'s are on `team-home/\($wip)`"
+       else "none: your worktree stayed in place, as you left it" end)}'
+
+# relaunch <the phase's running tickets, one a line> <the ready tickets after them, ", NN" each>:
+# relaunches each running ticket's gone builder (relaunch_prog) that was stowed or crashed in its
+# ticket worktree on team-brief T<n> resume or resume-crash --ticket NN --name resume-build-NN
+# (the lowest -k from 2 after it whose brief no launch read), as T<n>-builder-NN with its launch's
+# toolkits, and names each other gone builder; a room refusal (exit 75) stops the fill.
+relaunch() {
+  local running_json plan report=null file entry kind n session project worktree name k toolkits=() kit brief force
+  local -a entries=() sets=()
+  local rc out said rest i j
+  running_json=$(jq -Rn '[inputs | select(. != "")]' <<<"$1")
+  [[ $running_json != '[]' ]] || return 0
+  ledger_jq 'any(.[]; .event == "launch" and (.ticket | type) == "string")' -e <<<"$events" >/dev/null || return 0
+  live_sessions
+  file=$(find "$TEAM_HOME/tasks" -maxdepth 1 -name 'resume-*.json' -printf '%f\n' 2>/dev/null | LC_ALL=C sort | tail -n 1)
+  [[ -z $file ]] || report=$(jq -c . "$TEAM_HOME/tasks/$file" 2>/dev/null) || report=null
+  machine=$(machine_name) || exit 1
+  plan=$(ledger_jq "$relaunch_prog" -c --arg task "$task" --arg machine "$machine" \
+    --argjson running "$running_json" --argjson sessions "$LIVE_SESSIONS" --argjson report "$report" <<<"$(task_event_array "$task")") || exit
+  [[ -z $plan ]] || mapfile -t entries <<<"$plan"
+  for ((i = 0; i < ${#entries[@]}; i++)); do
+    entry=${entries[i]}
+    json_vars kind=.kind n=.ticket session=.session project=.project worktree='.worktree // ""' <<<"$entry"
+    if [[ $kind == gone ]]; then
+      echo "ticket $n's builder $session is gone: recover it (the recover-worker skill)"
+      continue
+    fi
+    if [[ -z $worktree || ! -d $worktree ]]; then
+      echo "ticket $n's builder $session is gone, and its worktree ${worktree:+$worktree }is not on this machine: make it with team-open --task $task --resume $project --ticket $n, then run team-next $task --fill again"
+      continue
+    fi
+    # resume-build-NN, else the lowest -k from 2 whose brief no launch read.
+    name=resume-build-$n k=2
+    while [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]] && brief_launched "$name"; do
+      name=resume-build-$n-$k k=$((k + 1))
+    done
+    brief_force "$name"
+    sets=(--set role=builder --set "brief=$(tilde "$TEAM_HOME/tasks/$task/brief-build-$n.md")" --set "snapshot=$(jq -r .snapshot <<<"$entry")")
+    if [[ $kind == resume ]]; then
+      echo "ticket $n's builder $session was stowed at $(jq -r .stowed_at <<<"$entry"): it resumes in $worktree"
+      sets+=(--set "from=$(jq -r .from <<<"$entry")")
+    else
+      echo "ticket $n's builder $session crashed on $(jq -r .machine <<<"$entry"): it resumes in $worktree"
+      sets+=(--set "machine=$(jq -r .machine <<<"$entry")" --set "checkpoint=$(jq -r .checkpoint <<<"$entry")")
+      kind=resume-crash
+    fi
+    brief=$(sibling team-brief "$task" "$kind" --ticket "$n" --project "$project" --name "$name" "${sets[@]}" "${force[@]}") || exit
+    echo "brief $brief"
+    toolkits=()
+    while IFS= read -r kit; do [[ -z $kit ]] || toolkits+=(--toolkit "$kit"); done < <(jq -r '.toolkits[]' <<<"$entry")
+    sibling_said '' team-worker "$task" builder "$worktree" "${toolkits[@]}" -- "Read your brief at $brief"
+    said=${said:-it printed nothing}
+    if ((rc == 75)); then
+      rest=$n
+      for ((j = i + 1; j < ${#entries[@]}; j++)); do
+        [[ $(jq -r .kind <<<"${entries[j]}") == gone ]] || rest+=", $(jq -r .ticket <<<"${entries[j]}")"
+      done
+      echo "${0##*/}: no room for $name: the launch said $said; ready and waiting for room: $rest$2; run team-next $task --fill once there is room" >&2
+      exit 75
+    elif ((rc != 0)); then
+      echo "${0##*/}: the launch failed; run the same command again to finish it, which logs nothing twice" >&2
+      exit "$rc"
+    fi
+    echo "launched $task-builder-$n $out"
+  done
+}
+
+# tilde <path>: <path> as a brief writes it, ~/ for $HOME/.
+tilde() {
+  echo "${1/#"$HOME/"/"~/"}"
+}
+
 # fill: launches, in number order (--next's first), each ready ticket of the phase being built (the
 # earliest with a ticket not done) while fewer than its cap run, as the header says, printing one
 # line a step and, when it launched nothing or tickets wait, the line that says why.
@@ -608,6 +741,11 @@ fill() {
   done <<<"$candidates_tsv"
 
   local i j rest note
+  # A running ticket's gone builder first, stowed or crashed, relaunched in its own ticket worktree;
+  # it counts as running already.
+  rest=''
+  for ((j = 0; j < ${#todo[@]}; j++)); do rest+=", ${todo[j]}"; done
+  relaunch "$(printf '%s\n' "${running[@]}")" "$rest"
   for ((i = 0; i < ${#todo[@]}; i++)); do
     n=${todo[i]} note=''
     ((cap == 1)) || [[ ${bare[i]} != true ]] || note=" (no Touches: line, so it builds alone)"

@@ -825,7 +825,9 @@ open_ticket() {
   git -C "$side" commit -q -m "chore: ignore scratch"
   git -C "$side" push -q origin main
   git clone -q "$BATS_TEST_TMPDIR/origin/side.git" "$laptop/home/projects/side" 2>/dev/null
-  sed -n '/^\[home\]/,$p' "$TEAM_HOME/projects.toml" | sed 's/home/side/g' >>"$TEAM_HOME/projects.toml"
+  local entry
+  entry=$(sed -n '/^\[home\]/,$p' "$TEAM_HOME/projects.toml" | sed 's/home/side/g')
+  printf '%s\n' "$entry" >>"$TEAM_HOME/projects.toml"
   twt=$(open_ticket 02)
   thead=$(git -C "$twt" rev-parse HEAD)
   echo "ticket 02's note" >"$twt/.scratch/task/note.md"
