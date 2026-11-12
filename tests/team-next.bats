@@ -1968,7 +1968,7 @@ launched T7-builder c0000001"
   if grep -En 'sibling team-(post|merge|ask|answer|inbox|thread)|/team-(post|merge|ask|answer|inbox|thread)\b|discord_api|\bcurl\b' \
     "$REPO_ROOT/bin/team-next"; then return 1; fi
   local manual=$REPO_ROOT/roles/coordinator.md
-  grep -qF '`team-next` logs a `DONE pass` and prints the merge ask' "$manual"
+  grep -qF '`team-next` logs a `DONE pass`, refusing a pass whose PR head moved, and says to arm the checks wait, `team-next T<n> --ci`' "$manual"
   grep -qF 'a `DONE findings` with `--sent-back <list>`' "$manual"
   grep -E '^\| `PAUSED stowed` \|.*`team-next`' "$manual"
   (($(wc -l <"$manual") <= 120))
