@@ -176,7 +176,7 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","default_withdrawn","production","sessions","strays","prs","pending_asks","items"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","default_withdrawn","production","sessions","strays","prs","pending_asks","waiting","items","queued"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
@@ -588,17 +588,66 @@ Not an item: a note under the list.
 - queued - the lease fix, Daniel approved | tasks/queued/conventioner-lease-fix.md
 EOF
   run_bin -0 team-snapshot
-  assert_equal "$(section "Current items")" "Current items (3):
+  # A queued line is the queued index's, never a current item the text shows.
+  assert_equal "$(section "Current items")" "Current items (2):
   - owe - the T45 summary, my move | https://discord.com/channels/1/2/3
-  - next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md
-  - queued - the lease fix, Daniel approved | tasks/queued/conventioner-lease-fix.md"
-  assert_equal "${lines[-5]}" "Pending asks: none"
+  - next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md"
+  assert_equal "${lines[-4]}" "Pending asks: none"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c .items <<<"$output")" "$(jq -cn '[
     "owe - the T45 summary, my move | https://discord.com/channels/1/2/3",
     "next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md",
     "queued - the lease fix, Daniel approved | tasks/queued/conventioner-lease-fix.md"]')"
   assert_equal "$(jq -r .schema <<<"$output")" "team-snapshot/1"
+}
+
+@test "with a waiting list the text shows its first five items, ranked, how many more and the replies owed, in place of the pending asks and current.md's asks" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  event T3 asked '{id: "q1", text: "Which name?"}'
+  mkdir -p "$TEAM_HOME/tasks/queued"
+  cat >"$TEAM_HOME/tasks/current.md" <<'EOF'
+# Current items
+- ask - open a research task? | https://discord.com/channels/1/2/3
+- owe T4 the weekly report | 1563000000000000045
+- next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md
+- watch - the CI wait on PR 7 | ledger 2026-11-01T07:08:11Z
+- queued - the lease fix | tasks/queued/node-pin.md
+EOF
+  printf '# Node pin\n' >"$TEAM_HOME/tasks/queued/node-pin.md"
+  printf '# Lease fix\n' >"$TEAM_HOME/tasks/queued/lease-fix.md"
+  printf '# Queued work\n' >"$TEAM_HOME/tasks/queued/index.md"
+  jq -n '{schema: "team-waiting/1",
+    items: [range(1; 8) | {n: ., key: "k\(.)", kind: "ask", task: "T3", line: "- **\(.)** T3 q\(.): Q\(.)? - unblocks 1 (1 task)"}],
+    withdrawn: [], owed: [{task: "T4", text: "the weekly report", where: "1563000000000000045"}], posted: null}' \
+    >"$TEAM_HOME/waiting.json"
+  run_bin -0 team-snapshot
+  assert_equal "$(section "Waiting on Daniel")" "Waiting on Daniel (7), ranked by what each answer unblocks:
+  - **1** T3 q1: Q1? - unblocks 1 (1 task)
+  - **2** T3 q2: Q2? - unblocks 1 (1 task)
+  - **3** T3 q3: Q3? - unblocks 1 (1 task)
+  - **4** T3 q4: Q4? - unblocks 1 (1 task)
+  - **5** T3 q5: Q5? - unblocks 1 (1 task)
+  and 2 more in waiting.md
+  Owed you: T4 the weekly report"
+  assert_equal "$(section "Pending asks")" ""
+  # The asks and owed replies are the waiting list's, and queued work is the index's.
+  assert_equal "$(section "Current items")" "Current items (2):
+  - next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md
+  - watch - the CI wait on PR 7 | ledger 2026-11-01T07:08:11Z"
+  assert_equal "${lines[-1]}" "Queued work: 2 files, listed in tasks/queued/index.md"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c '.waiting | [(.lines | length), .total, .owed]' <<<"$output")" '[5,7,["T4 the weekly report"]]'
+  assert_equal "$(jq -c '[(.items | length), .queued]' <<<"$output")" '[5,2]'
+
+  # A waiting list of another schema is unreadable: the pending asks and current.md's asks show.
+  echo '{"schema": "team-waiting/0"}' >"$TEAM_HOME/waiting.json"
+  run_bin -0 team-snapshot
+  assert_equal "$(section "Waiting on Daniel")" "Waiting on Daniel unreadable: waiting.json is not team-waiting/1"
+  assert_equal "$(section "Pending asks")" "Pending asks (1):
+  T3 q1: Which name?"
+  assert_equal "$(head -n 1 <<<"$(section "Current items")")" "Current items (4):"
 }
 
 @test "a current items file with no item lines is no current items" {

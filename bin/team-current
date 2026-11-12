@@ -23,7 +23,10 @@
 # add and done change the file under the ledger's lock and commit it alone (commit_records), as
 # "chore: current <kind> <task>" and "chore: current done <id>", then push the team home's
 # branch. A commit the team home's hooks refuse undoes the change and exits 1; a push that fails
-# keeps the commit for the next checkpoint to push, saying so on stderr, and exits 0.
+# keeps the commit for the next checkpoint to push, saying so on stderr, and exits 0. An ask or owe
+# item added or done then brings the team home's waiting.md up to date, which lists them
+# (refresh_inbox in bin/lib/team.sh: team-inbox; a failure is one line on stderr, and the exit
+# stays 0).
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -229,6 +232,7 @@ case $command in
     # shellcheck disable=SC2034 # read by commit_records
     records_edit=edit_add
     commit_change "chore: current $kind $task"
+    [[ ! $kind =~ ^(ask|owe)$ ]] || refresh_inbox
     ;;
   done)
     (($# == 1)) || usage_error "$usage"
@@ -243,6 +247,7 @@ case $command in
     # shellcheck disable=SC2034 # read by commit_records
     records_edit=edit_done
     commit_change "chore: current done $id"
+    [[ ! $removed =~ ^-\ (ask|owe)\  ]] || refresh_inbox
     ;;
   list)
     (($# == 0)) || usage_error "$usage"

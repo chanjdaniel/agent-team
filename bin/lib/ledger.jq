@@ -1898,7 +1898,7 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # results ($production, team-uptime status --json's object or {error}). It carries $level as level,
 # the open tasks stowed, waiting to resume, as awaiting_resume, the resources_line as resources
 # (null when $level is {error}), and $production as production.
-def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production):
+def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production; $waiting; $queued):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed
   | {schema: "team-snapshot/1",
@@ -1912,7 +1912,9 @@ def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $prod
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
      prs: $prs,
      pending_asks: [$states[] | .task as $task | (.pending_asks // [])[] | {task: $task} + .],
-     items: $items};
+     waiting: $waiting,
+     items: $items,
+     queued: $queued};
 
 # The current items of tasks/current.md, over its lines (-R): each line starting "- ", without it.
 def current_items: [inputs | rtrimstr("\r") | select(startswith("- ")) | .[2:]];
@@ -1966,12 +1968,24 @@ def snapshot_text:
            (.prs[] | "    #\(.number) \(.branch)" + (if .draft then " (draft)" else "" end) + ": \(.title)" | clip(120))
          end)
    end),
-  section("Pending asks"; [.pending_asks[] | "\(.task) \(.id): \(.text)"]),
-  ((.items // []) as $items
+  (.waiting as $w
+   | if $w != null and $w.error == null then
+       (if $w.total == 0 then "Waiting on Daniel: nothing"
+        else "Waiting on Daniel (\($w.total)), ranked by what each answer unblocks:", ($w.lines[] | "  " + . | clip(200)),
+          (if $w.total > ($w.lines | length) then "  and \($w.total - ($w.lines | length)) more in waiting.md" else empty end)
+        end),
+       ($w.owed[] | "  Owed you: " + . | clip(200))
+     else
+       (if $w.error != null then "Waiting on Daniel unreadable: \($w.error)" | clip(120) else empty end),
+       section("Pending asks"; [.pending_asks[] | "\(.task) \(.id): \(.text)"])
+     end),
+  ((if .waiting != null and .waiting.error == null then ["queued", "ask", "owe"] else ["queued"] end) as $left_out
+   | [(.items // [])[] | select(split(" ")[0] | IN($left_out[]) | not)] as $items
    | if $items == [] then "Current items: none"
      else "Current items (\($items | length)):", ($items[:40][] | "  - " + . | clip(200)),
        if $items | length > 40 then "  and \($items | length - 40) more in tasks/current.md" else empty end
-     end);
+     end),
+  (.queued // 0 | if . > 0 then "Queued work: \(.) file\(if . == 1 then "" else "s" end), listed in tasks/queued/index.md" else empty end);
 
 # Whether the default word may hold for some PR, over every ledger event as an array: an open task
 # awaits merge with its plan approved. team-sweep and team-inbox read the registry for own_in only

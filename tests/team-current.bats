@@ -245,8 +245,10 @@ TOML
   run_bin -0 team-current add owe - the T4 summary --where 1563000000000000045
   run_bin -0 team-current add next T4 open the Node pin task --where tasks/queued/node-pin.md
   run_bin -0 team-snapshot
-  assert_contains "$output" "Current items (2):
-  - owe - the T4 summary | 1563000000000000045
+  # The owed reply is the waiting list's, which team-current brought up to date.
+  assert_contains "$output" "Waiting on Daniel: nothing
+  Owed you: the T4 summary
+Current items (1):
   - next T4 open the Node pin task | tasks/queued/node-pin.md"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c .items <<<"$output")" '["owe - the T4 summary | 1563000000000000045","next T4 open the Node pin task | tasks/queued/node-pin.md"]'
@@ -263,4 +265,16 @@ TOML
   run_bin -2 team-current "done" 123456 7890
   run_bin -2 team-current list extra
   run_bin -2 team-current check extra
+}
+
+@test "an ask or owe item added or done brings waiting.md up to date, and a next or watch item leaves it" {
+  run_bin -0 team-current add next T4 open the Node pin task --where tasks/queued/node-pin.md
+  [[ ! -e $TEAM_HOME/waiting.md ]]
+  run_bin -0 --separate-stderr team-current add ask - which domain for the docs site --where https://discord.com/channels/1/2/3
+  local id=${lines[0]}
+  assert_equal "$stderr" ""
+  assert_contains "$(cat "$TEAM_HOME/waiting.md")" "- **1** which domain for the docs site <https://discord.com/channels/1/2/3> - unblocks 0"
+  run_bin -0 team-current "done" "$id"
+  assert_equal "$(cat "$TEAM_HOME/waiting.md")" "**Waiting on you**
+Nothing waits on you."
 }
