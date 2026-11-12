@@ -1172,13 +1172,16 @@ def review_app_pin_problems($app):
 # latest review is a pass on one of its PRs not merged, the PR whose head the pass names (by the
 # shorter prefix), else the latest PR whose first pr event came before the pass (a fix's head, which
 # no pr event logs). Else {url, reviewed, head, since, state, reruns}: url the PR's; reviewed the
-# passed head; head the latest caught-up made from it since the pass, followed on through each
-# caught-up made from that one (reviewed_head's rule, forward), else reviewed; state the outcome of
-# the latest ci of head on the PR logged after the pass and that catch-up (passed, failed,
-# infrastructure or pending), waiting when none; since the ts of the latest of the pass, that
-# catch-up, and each ci and ci-rerun of head on the PR logged after them (a rerun starts the wait
-# again); reruns the names of the checks with a ci-rerun of head on the PR, whenever logged, each
-# once, in the order first rerun. URLs compare with a trailing slash aside.
+# passed head; head the latest caught-up since the pass made from the passed head or from the
+# head followed so far (team-catch-up logs from as the reviewed head, so a second catch-up names
+# the passed head again; reviewed_head's rule, forward), else reviewed; state the outcome of the
+# latest ci of head on the PR logged after the pass and that catch-up (passed, failed,
+# infrastructure or pending), waiting when none, and waiting again after a failed one once a
+# builder's done follows it (the round's answer on the same head: a rerun that passed); since the
+# ts of the latest of the pass, that catch-up, each ci and ci-rerun of head on the PR logged after
+# them (a rerun starts the wait again) and that done; reruns the names of the checks with a
+# ci-rerun of head on the PR, whenever logged, each once, in the order first rerun. URLs compare
+# with a trailing slash aside.
 def checks_wait:
   . as $events
   | def url_of: .url // "" | tostring | rtrimstr("/");
@@ -1192,13 +1195,18 @@ def checks_wait:
       else ($pr | url_of) as $url
       | (reduce range($r + 1; length) as $i ({head: $pass.head, at: $r};
           $events[$i] as $e
-          | if $e.event == "caught-up" and ($e | url_of) == $url and same_head($e.from; .head) then {head: $e.head, at: $i}
+          | if $e.event == "caught-up" and ($e | url_of) == $url and (same_head($e.from; .head) or same_head($e.from; $pass.head))
+            then {head: $e.head, at: $i}
             else . end)) as $up
-      | [range($up.at + 1; length) | $events[.]
-          | select((.event == "ci" or .event == "ci-rerun") and url_of == $url and same_head(.head; $up.head))] as $ends
-      | ([$ends[] | select(.event == "ci")] | last) as $ci
-      | {url: $pr.url, reviewed: $pass.head, head: $up.head, since: ($ends | last | .ts // $events[$up.at].ts),
-         state: ($ci.outcome // "waiting"),
+      | [range($up.at + 1; length)
+          | select($events[.] | (.event == "ci" or .event == "ci-rerun") and url_of == $url and same_head(.head; $up.head))] as $ends
+      | ([$ends[] | select($events[.].event == "ci")] | last) as $c
+      | (if $c == null then null else $events[$c] end) as $ci
+      | (if $ci.outcome == "failed" then [range($c + 1; length) | select($events[.] | .event == "done" and .role == "builder")] | last
+         else null end) as $answer
+      | {url: $pr.url, reviewed: $pass.head, head: $up.head,
+         since: ([$ends[], $answer | values] | max | if . == null then $events[$up.at].ts else $events[.].ts end),
+         state: (if $answer != null then "waiting" else $ci.outcome // "waiting" end),
          reruns: (reduce ($events[] | select(.event == "ci-rerun" and url_of == $url and same_head(.head; $up.head)) | .check) as $c
            ([]; if any(.[]; . == $c) then . else . + [$c] end))}
       end

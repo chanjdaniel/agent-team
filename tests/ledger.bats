@@ -380,6 +380,32 @@ rerun_of() {
   assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'macos-shards (1)' b2c3d4e5)" "$up")" "$(waiting_on b2c3d4e5 4 waiting '["macos-shards (1)"]')"
 }
 
+@test "checks_wait follows a second catch-up made from the reviewed head, and a builder's done after a failed wait waits again" {
+  local url=https://github.com/o/p/pull/5
+  local pr='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d4"}'
+  local pass='{"event": "review", "verdict": "pass", "head": "a1b2c3d4"}'
+  local up='{"event": "caught-up", "url": "https://github.com/o/p/pull/5", "from": "a1b2c3d4", "head": "b2c3d4e5", "base": "0f0f0f0f"}'
+  # team-catch-up logs from as the reviewed head, however many catch-ups came before it (T276's PR 115).
+  local again='{"event": "caught-up", "url": "https://github.com/o/p/pull/5", "from": "a1b2c3d4e5f6", "head": "d4e5f6a7", "base": "0d0d0d0d"}'
+  local round='{"event": "done", "role": "builder", "session": "b0000001", "report": "ci passed: test-shards (2) was a flake, rerun green"}'
+  waiting_on() {
+    jq -cn --arg url "$url" --arg head "$1" --arg since "2026-11-01T00:0$2:00Z" --arg state "$3" \
+      '{url: $url, reviewed: "a1b2c3d4", head: $head, since: $since, state: $state, reruns: []}'
+  }
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$again")" "$(waiting_on d4e5f6a7 4 waiting)"
+  # A failed wait on the first merge is an old one once the second is made.
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$again")" "$(waiting_on d4e5f6a7 5 waiting)"
+  # A failed wait stands until the round's builder reports, on the same head, then waits again,
+  # since its report; a later end of the wait counts as before.
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$round")" "$(waiting_on b2c3d4e5 5 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$round" "$(ci_of passed b2c3d4e5)")" \
+    "$(waiting_on b2c3d4e5 6 passed)"
+  # A reviewer's done, or a builder's before the failure, leaves it failed.
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" '{"event": "done", "role": "reviewer", "session": "r0000001"}')" \
+    "$(waiting_on b2c3d4e5 4 failed)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$round" "$(ci_of failed b2c3d4e5)")" "$(waiting_on b2c3d4e5 5 failed)"
+}
+
 @test "checks_wait of a task with two PRs is on the PR the pass names by its head, else its latest PR delivered before the pass" {
   local p='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d4"}'
   local q='{"event": "pr", "url": "https://github.com/o/q/pull/7", "head": "d4e5f6a7"}'
