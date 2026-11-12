@@ -113,8 +113,11 @@ readers() {
   stub_reply claude '[]'
   run_bin -1 --separate-stderr team-next T14 -- "T14 DONE pass $head $counts before=none guarded=none"
   assert_contains "$stderr" "withdrawn"
-  run_bin -0 team-sweep
-  assert_equal "$output" ""
+  # The sweep sends the coordinator to no merge, only to arm the pass's checks wait, which a
+  # withdrawal does not refuse and whose end asks Daniel for the per-head word.
+  run_bin -1 team-sweep
+  assert_contains "$output" "T14 ci-due: the checks of https://github.com/owner/proj/pull/5 at ${head:0:8} have had no wait end for "
+  [[ $output != *merge-due* ]]
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.pr.merge_authority.words[1] | [.holds, .reasons]' <<<"$output")" "$(jq -c '[false, .]' <<<"$reasons")"
   refused "$(jq -r '.[0]' <<<"$reasons")" "$(ask_per_head)"
