@@ -22,7 +22,8 @@
 #   --fill       relaunch each running ticket's stowed or crashed builder, then launch the ready
 #                tickets of the phase being built up to its cap, with no message
 #   --checks     with a review launch, the first review's checks file (the reviewer's checks);
-#                required when the task has no review yet, refused once it has one
+#                required when the task has no review yet, or none since its latest merged part
+#                (a later phase's first review), refused once it has one
 #   --since      with a rereview launch, a file of the coordinator's words, added after the derived
 #                since; refused for the first review and for verify
 #   --template   with a review launch after the first, rereview or verify instead of the rule's
@@ -148,8 +149,11 @@
 # pr (url and head) or done (session and report) is logged already and a reviewer's launch follows
 # it with no review since ("already handed off"); and for a DONE, when its sha is not the HEAD of
 # the sending builder's worktree. The worktree is the sending builder's, or for a PR the task's
-# worktree in the project whose repo holds the PR. With no review logged yet, the brief is
-# team-brief T<n> reviewer --name review with --checks as its checks (refused without one), the
+# worktree in the project whose repo holds the PR. With no review logged yet, or none since the
+# task's latest merged part (a merged with phases_left, so a later phase's first PR), the brief is
+# team-brief T<n> reviewer --name review (review-<k>, the lowest k from 2, once a launch read the
+# name) with --checks as its checks (refused without one: "T<n> has no review yet", or "no review
+# since its phase merged at <ts>", "so its first reviewer needs --checks <file>, ..."), the
 # PR's url and head (a PR) or the reported head (review-ready; no pr); after one, it is
 # rereview, or verify when the latest review sent findings back and either counted
 # none but plain notes or reviewed the head this message reports (a round that only edited the PR
@@ -808,7 +812,12 @@ held_prog="$same_def"' . as $events
      events: [$parsed[] | . as $p
        | {event: $p, at: ([range($anchor + 1; $events | length) | select($events[.] | same($p))] | first)}]}'
 kind='' back='' held='' briefs='' builder_kits='' reviewer_kits='' sender_wt='' launch_project=''
-sender_ticket='' sender_session='' review='' latest=''
+# The index just past the task's latest merged part (a merged with phases left: a phase's PR
+# merged and the next phase still to build), 0 with none: the reviews from there on are this
+# phase's, so a later phase's first PR is a first review.
+phase_def='def phase_start: ([to_entries[] | select(.value.event == "merged" and (.value.phases_left | type) == "array"
+    and .value.phases_left != []) | .key + 1] | last) // 0;'
+sender_ticket='' sender_session='' review='' latest='' phase_merged=''
 json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3]
   | (.[1] // "") as $sub
   | if .[0] == "DONE" and any($parsed[]; .event == "done" and .role == "ops") then "DONE"
@@ -831,7 +840,8 @@ json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3
   sender_wt="$launch_def sender_launch | .worktree | tostring" \
   launch_project="$launch_def sender_launch | .project // empty" \
   sender_ticket="$launch_def sender_launch | .ticket // empty" sender_session="$launch_def sender_launch | .session // empty" \
-  review='$parsed | map(select(.event == "review")) | first | tojson' latest='map(select(.event == "review")) | last | tojson' \
+  review='$parsed | map(select(.event == "review")) | first | tojson' latest="$phase_def"' .[phase_start:] | map(select(.event == "review")) | last | tojson' \
+  phase_merged="$phase_def"' phase_start as $k | if $k == 0 then empty else .[$k - 1].ts end' \
   -- --arg message "$message" --argjson parsed "$parsed" <<<"$events"
 
 # Whether a launch of the task read brief-<name>: brief_launched <name>
@@ -1500,10 +1510,18 @@ if [[ $handoff == review ]]; then
   fi
 
   if [[ $latest == null ]]; then
-    [[ -n $checks ]] || die "$task has no review yet, so its first reviewer needs --checks <file>, the review's checks"
-    [[ -z $template_opt ]] || die "$task has no review yet, so its first reviewer takes the reviewer brief, not --template $template_opt"
-    [[ -z $since ]] || die "$task has no review yet, so there is no since for --since"
-    template=reviewer name=review
+    none="no review yet"
+    [[ -z $phase_merged ]] || none="no review since its phase merged at $phase_merged"
+    [[ -n $checks ]] || die "$task has $none, so its first reviewer needs --checks <file>, the review's checks"
+    [[ -z $template_opt ]] || die "$task has $none, so its first reviewer takes the reviewer brief, not --template $template_opt"
+    [[ -z $since ]] || die "$task has $none, so there is no since for --since"
+    # review, or review-<k> for a later phase's, from 2, once a launch read the name.
+    template=reviewer name=review k=1
+    while [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]] &&
+      brief_launched "$name"; do
+      k=$((k + 1))
+      name=review-$k
+    done
     sets+=(--set-file "checks=$checks")
   else
     [[ -z $checks ]] || die "$task has a review already, so --checks is for its first reviewer only; a rereview takes --since"

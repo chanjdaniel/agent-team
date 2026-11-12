@@ -710,6 +710,39 @@ launched T7-reviewer c0000002"
   assert_equal "$(record rereview-3 | jq -r .values.reviewed)" "$fix"
 }
 
+@test "a later phase's first PR is a first review, with --checks and the reviewer brief as review-2, and its next PR a rereview" {
+  # Phase 1's PR passed and merged with phase 2 left.
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "phase 1's review" >"$TEAM_HOME/tasks/T7/brief-review.md"
+  event pr "$(jq -cn --arg url "$url" --arg h "$sha" '{url: $url, head: $h}')"
+  launched r0000001 brief-review '[]' reviewer
+  review_logged pass "$sha" '[]'
+  event 'done' '{role: "reviewer", session: "r0000001"}'
+  event merged "$(jq -cn --arg url "$url" --arg h "$sha" '{pr: 9, merge: "m0", head: $h, by: "team-merge", url: $url, phases_left: [2]}')"
+  local url2=https://github.com/owner/proj/pull/10 head2 fix
+  head2=$(commit phase2.txt "feat: phase 2")
+  on_github 10 "$head2"
+  refused "T7 has no review since its phase merged at 2026-11-01T10:00:00Z, so its first reviewer needs --checks <file>, the review's checks" \
+    T7 -- "T7 PR $url2"
+  run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 PR $url2"
+  assert_equal "$output" "logged pr url=$url2 head=$head2
+brief $TEAM_HOME/tasks/T7/brief-review-2.md
+launched T7-reviewer c0000001"
+  assert_equal "$(record review-2 | jq -c '{template, pr: .values.pr, head: .values.head, checks: .values.checks}')" \
+    "$(jq -cn --arg url "$url2" --arg h "$head2" '{template: "reviewer", pr: $url, head: $h, checks: "1. team-next launches the reviewer."}')"
+
+  # Phase 2's review is the latest since the merge: its next PR is a rereview, and takes no --checks.
+  review_logged findings "$head2" '[1]' '{"blocking": 1}'
+  fix=$(commit phase2-fix.txt "fix: finding 1")
+  on_github 10 "$fix"
+  refused "T7 has a review already, so --checks is for its first reviewer only; a rereview takes --since" \
+    T7 --checks "$(checks)" -- "T7 PR $url2"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PR $url2"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-rereview-2.md"
+  assert_equal "$(record rereview-2 | jq -c '{template, reviewed: .values.reviewed}')" \
+    "$(jq -cn --arg r "$head2" '{template: "rereview", reviewed: $r}')"
+}
+
 @test "each review brief names the instruction and settings files the PR changes, and one whose list git cannot give launches nothing" {
   local head fix fix2 before list
   mkdir -p "$wt/.claude"
