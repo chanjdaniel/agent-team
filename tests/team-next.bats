@@ -576,6 +576,9 @@ $list"
   run_bin -0 --separate-stderr team-next T7 -- "T7 PR $url"
   assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-rereview-2.md"
   assert_equal "$(record rereview-2 | jq -c '{template, findings: .values.findings}')" '{"template":"verify","findings":"3 and 4"}'
+  # The launch says it is a verify, though its brief is named rereview-2.
+  assert_equal "$(jq -c 'select(.event == "launch") | {brief, template}' "$TEAM_HOME/ledger.jsonl" | tail -n 1)" \
+    '{"brief":"brief-rereview-2","template":"verify"}'
 
   # A blocking finding whose round only edited the PR body: the same head again.
   review_logged findings "$fix" '[5]' '{"blocking": 1}'
@@ -589,6 +592,7 @@ launched T7-reviewer c0000002"
   review_logged findings "$fix" '[6]' '{"blocking": 1}'
   run_bin -0 --separate-stderr team-next T7 --template rereview -- "T7 PR $url"
   assert_equal "$(record rereview-4 | jq -r .template)" rereview
+  assert_equal "$(jq -r 'select(.event == "launch") | .template' "$TEAM_HOME/ledger.jsonl" | tail -n 1)" rereview
 }
 
 @test "a DONE merged renders the next rereview, its since naming the merge's conflicts, and refuses a sha that is not the worktree's HEAD" {
