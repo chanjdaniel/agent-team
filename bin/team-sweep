@@ -17,20 +17,27 @@
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
 # id, no merge-approved whose url its text names), or when a park (held, blocked, waiting, paused)
 # stands in the ledger's lifecycle fold; an ask a launch went past (team-worker --past-ask) and its
-# wait park nothing, so that launch's worker is watched; an awaiting-merge task that nothing else parks is merge-due instead
-# while the default merge word, the approved plan, holds for one of its PRs and the checks of its
-# pass have passed, and ci-due while no wait of those checks has ended, and none of them was
-# rerun, for 100 minutes. Findings, one line each with the task,
-# the session and the next step:
+# wait park nothing, so that launch's worker is watched; a park of one ticket's builder in a
+# parallel phase (one naming the session of a builder in a ticket worktree, T<n>-builder-NN, or
+# team-worker's room refusal of its brief-build-NN, or of a relaunch's brief-resume-build-NN,
+# while its ticket worktree is open) parks the task only while every running ticket's builder has
+# one or a stowed after its launch, so the tickets building beside it are still watched; an
+# awaiting-merge task that nothing else parks is merge-due instead while the default merge word,
+# the approved plan, holds for one of its PRs and the checks of its pass have passed, and ci-due
+# while no wait of those checks has ended, and none of them was rerun, for 100 minutes. Findings,
+# one line each with the task, the session and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
-#                  ledger event since its launch, a denied aside, has handed the next step back);
+#                  ledger event since its launch, a denied aside, has handed the next step back;
+#                  a ticket's builder is at work until a done of its session or its ticket's
+#                  ticket-done), and no ticket-gone;
 #                  merged is told to close, and merged-part (a merged naming phases_left, phases
 #                  with a ticket not done) to launch the next phase's first ticket's builder
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
 #                  task after that session's latest launch but denied ones (one waiting for input
-#                  is not also silent)
+#                  is not also silent); a ticket's builder by its own events: none since its
+#                  launch naming its session or its ticket, and no park of its ticket standing
 #   stalled        a live, busy session of an open task, not parked, not waiting for input, whose
 #                  transcripts (its own and its subagents', under ~/.claude/projects) have not been
 #                  written for longer than its limit (stall_limits in bin/lib/ledger.jq), the
@@ -72,6 +79,17 @@
 #                  is guarded or outside the plan's scope, the plan changed since its approval, or
 #                  a message does not read back. When the registry cannot be read, no task is
 #                  merge-due and a line on stderr says why
+#   ticket-gone    a running ticket of an open task, not parked (its latest launch in its ticket
+#                  worktree with no done of its session and no ticket-done of its ticket since),
+#                  whose builder's session is not live, with no stowed after that launch and no
+#                  park of its ticket standing: "ticket <NN>: its builder T<n>-builder-<NN>
+#                  <session> is gone with the ticket not done; next: recover it (the
+#                  recover-worker skill)"
+#   ticket-worktree-left  an open ticket worktree of an open task, not parked, whose ticket has a
+#                  ticket-done since the worktree was added (or moved or rehomed), with no stowed
+#                  after that ticket-done and no park of its ticket standing, with session null:
+#                  "ticket <NN> is done, but its worktree <path> is still open; next: team-close
+#                  T<n> --ticket <NN>"
 #   ci-due         after the task's other findings, an open task in awaiting-merge, with no ask
 #                  nothing settled and no park standing, whose latest pass's checks_wait is waiting
 #                  (no ci logged for the head it waits on) or pending (its latest ci ended at
@@ -84,8 +102,9 @@
 #                  GitHub and no process, so a wait still running past it is the coordinator's to
 #                  see in its background commands, and a second one armed beside it says so and
 #                  ends (team-next's lock)
-#   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
-#                  not in the ledger; never one of T0, the load check's task
+#   stray          a live session named like a team worker (T<n>-<role>, or T<n>-<role>-<NN> for
+#                  a ticket's builder) whose task is closed or not in the ledger; never one of T0,
+#                  the load check's task
 #   coordinator-twin  after every task finding, with task null: one for each session named
 #                  coordinator in the session list but the one the sweep runs in
 #                  (CLAUDE_CODE_SESSION_ID's), when more than one is listed, with session its short
@@ -115,8 +134,9 @@
 #   level-launch   after it, with task and session null: the first task whose launches were
 #                  refused for room (a standing paused of cause room, which team-worker logs
 #                  with its role on its exit 75, an old line's role read from its "no room for
-#                  session:<role>" words, and which a launch of its role or a resumed naming it
-#                  or all=true ends), oldest refusal first, whose roles fit again and that nothing
+#                  session:<role>" words, and which a launch of its role, a ticket's refusal
+#                  only a launch of that ticket, or a resumed naming it or all=true ends), oldest
+#                  refusal first, whose roles fit again and that nothing
 #                  holds (as for level-resume, after its latest refusal): "level: T5
 #                  has room again: launch its reviewer, refused for room at <time>"
 #   level          in their place, with task and session null: team-capacity plan failed:
