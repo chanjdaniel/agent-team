@@ -79,12 +79,12 @@ slots = ["wt/T7"]
 TOML
 }
 
-@test "--capture runs ui-capture into a new capture-<k>/ each time and says which kind it took" {
+@test "--capture runs ui-capture into a new capture-<k>/ each time, says which kind it took and lists only that capture's files" {
   run_bin -0 --separate-stderr team-ui T7 --capture
   assert_equal "$(cat "$STUB_CALLS/ui-capture.log")" "$ui/capture-1"
   assert_equal "$output" "ui-capture: button \"More...\" at button src/components/PhaseRail.vue:529:13 on http://localhost:5173/events/7 -> $ui/capture-1/ui-pick.md, $ui/capture-1/ui-page.md
 captured: element and page
-tasks/T7/ui/ holds:
+added to tasks/T7/ui/:
 $ui/capture-1/element.png
 $ui/capture-1/page-snapshot.txt
 $ui/capture-1/page.png
@@ -97,27 +97,20 @@ $ui/capture-1/ui-pick.md"
   assert_equal "$(tail -n 1 "$STUB_CALLS/ui-capture.log")" "$ui/capture-2"
   assert_equal "$output" "ui-capture: page http://localhost:5173/events/7/import (the visible localhost tab), no element selected -> $ui/capture-2/ui-page.md
 captured: page
-tasks/T7/ui/ holds:
-$ui/capture-1/element.png
-$ui/capture-1/page-snapshot.txt
-$ui/capture-1/page.png
-$ui/capture-1/ui-page.md
-$ui/capture-1/ui-pick.md
+added to tasks/T7/ui/:
 $ui/capture-2/page-snapshot.txt
 $ui/capture-2/page.png
 $ui/capture-2/ui-page.md"
 }
 
-@test "the next capture's number is one more than the highest there, and the listing orders them by number" {
+@test "the next capture's number is one more than the highest there, whose files alone are listed" {
   mkdir -p "$ui/capture-9" "$ui/capture-10" "$ui/capture-x"
   printf 'png' >"$ui/capture-9/page.png"
   printf 'png' >"$ui/capture-10/page.png"
   echo page >"$STUB_FIXTURES/capture-kind"
   run_bin -0 team-ui T7 --capture
   assert_equal "$(cat "$STUB_CALLS/ui-capture.log")" "$ui/capture-11"
-  assert_equal "$(sed -n '/holds:$/,$p' <<<"$output")" "tasks/T7/ui/ holds:
-$ui/capture-9/page.png
-$ui/capture-10/page.png
+  assert_equal "$(sed -n '/^added to/,$p' <<<"$output")" "added to tasks/T7/ui/:
 $ui/capture-11/page-snapshot.txt
 $ui/capture-11/page.png
 $ui/capture-11/ui-page.md"
@@ -144,28 +137,28 @@ the `Import` button ```stays``` grey, and Daniel'"'"'s "Save" too
 ````'
 }
 
-@test "--attach copies each file under its own name, numbering a name already taken" {
+@test "--attach copies each file under its own name, numbering a name already taken, and lists the copies it made" {
   run_bin -0 team-ui T7 --attach "$inbox/1563-screenshot.png" --attach "$inbox/notes.txt"
+  assert_equal "$output" "added to tasks/T7/ui/:
+$ui/1563-screenshot.png
+$ui/notes.txt"
   run_bin -0 team-ui T7 --attach "$inbox/1563-screenshot.png"
   assert_equal "$(cd "$ui" && find . -type f -printf '%P %s\n' | sort)" "1563-screenshot-2.png 4
 1563-screenshot.png 4
 notes.txt 5"
-  assert_equal "$(tail -n 4 <<<"$output")" "tasks/T7/ui/ holds:
-$ui/1563-screenshot-2.png
-$ui/1563-screenshot.png
-$ui/notes.txt"
+  assert_equal "$output" "added to tasks/T7/ui/:
+$ui/1563-screenshot-2.png"
   [[ ! -e $STUB_CALLS/ui-capture.log ]]
 }
 
-@test "attachments stay at the top of ui/, beside the captures and a flat capture an older team-ui left" {
+@test "attachments stay at the top of ui/, beside the captures and a flat capture an older team-ui left, which is not listed again" {
   mkdir -p "$ui"
   printf '# The selected element\n' >"$ui/ui-pick.md"
   printf 'png' >"$ui/element.png"
   run_bin -0 team-ui T7 --attach "$inbox/1563-screenshot.png" --capture
-  assert_equal "$(sed -n '/holds:$/,$p' <<<"$output")" "tasks/T7/ui/ holds:
+  [[ -f $ui/element.png && -f $ui/ui-pick.md ]]
+  assert_equal "$(sed -n '/^added to/,$p' <<<"$output")" "added to tasks/T7/ui/:
 $ui/1563-screenshot.png
-$ui/element.png
-$ui/ui-pick.md
 $ui/capture-1/element.png
 $ui/capture-1/page-snapshot.txt
 $ui/capture-1/page.png
@@ -173,7 +166,7 @@ $ui/capture-1/ui-page.md
 $ui/capture-1/ui-pick.md"
 }
 
-@test "a capture that fails removes its directory, keeps the attachments and earlier captures, and says why in one line" {
+@test "a capture that fails removes its directory, keeps the attachments and earlier captures, lists the attachments it copied, and says why in one line" {
   run_bin -0 team-ui T7 --capture
   echo "the Agent Chrome has no localhost page open" >"$STUB_FIXTURES/capture-fails"
   printf 'check the page\n' >"$BATS_TEST_TMPDIR/note"
@@ -181,13 +174,13 @@ $ui/capture-1/ui-pick.md"
   assert_equal "$(tail -n 1 "$STUB_CALLS/ui-capture.log")" "$ui/capture-2"
   assert_equal "$stderr" "team-ui: the capture failed: ui-capture: the Agent Chrome has no localhost page open"
   [[ ! -e $ui/capture-2 ]]
-  assert_equal "$output" "tasks/T7/ui/ holds:
-$ui/1563-screenshot.png
-$ui/capture-1/element.png
-$ui/capture-1/page-snapshot.txt
-$ui/capture-1/page.png
-$ui/capture-1/ui-page.md
-$ui/capture-1/ui-pick.md"
+  [[ -f $ui/capture-1/ui-pick.md ]]
+  assert_equal "$output" "added to tasks/T7/ui/:
+$ui/1563-screenshot.png"
+  # With nothing copied, a failed capture lists nothing.
+  run_bin -1 --separate-stderr team-ui T7 --capture
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-ui: the capture failed: ui-capture: the Agent Chrome has no localhost page open"
   # The next capture takes the number the failed one gave back.
   rm "$STUB_FIXTURES/capture-fails"
   run_bin -0 team-ui T7 --capture

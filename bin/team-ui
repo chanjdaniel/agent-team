@@ -26,8 +26,9 @@
 # At least one of --capture and --attach. Attachments are copied first, so a capture that fails
 # keeps them; it removes the directory it made.
 # Prints ui-capture's line, then "captured: element and page" when the capture holds ui-pick.md,
-# else "captured: page", then every file tasks/T<n>/ui/ holds: those at its top (the attachments,
-# and a flat capture an older team-ui left there), then each capture directory's, by number.
+# else "captured: page", then "added to tasks/T<n>/ui/:" and the files this run wrote there, the
+# attachments' copies in the order given, then the capture's files (none when it failed), so a
+# long walk's output never lists the earlier captures; with none, nothing more.
 # --walk turns the task's manual QC walk on (start) or off (stop), or says which it is (status),
 # a form of its own. While a walk is on, each message of Daniel's in the task's thread is a walk
 # note, which the coordinator takes a capture with; outside one, it captures only when Daniel asks.
@@ -252,8 +253,10 @@ free_name() {
   while [[ -e $ui/$stem-$n$ext ]]; do n=$((n + 1)); done
   printf '%s\n' "$stem-$n$ext"
 }
+added=()
 for file in "${attachments[@]}"; do
-  cp -- "$file" "$ui/$(free_name "$(basename -- "$file")")"
+  added+=("$ui/$(free_name "$(basename -- "$file")")")
+  cp -- "$file" "${added[-1]}"
 done
 
 # The next capture's directory, claimed by mkdir so two intakes at once never share one:
@@ -291,10 +294,12 @@ if ((capture)); then
     printf '%s\n' "$out"
     if [[ -f $dir/ui-pick.md ]]; then echo "captured: element and page"; else echo "captured: page"; fi
     ((!noted)) || write_note "$dir"
+    mapfile -t -O "${#added[@]}" added < <(find "$dir" -maxdepth 1 -type f ! -name '.*' | LC_ALL=C sort)
   fi
 fi
-echo "tasks/$task/ui/ holds:"
-find "$ui" -maxdepth 1 -type f ! -name '.*' | LC_ALL=C sort
-find "$ui" -mindepth 1 -maxdepth 1 -type d -regex '.*/capture-[1-9][0-9]*' -printf '%f\n' | sort -V |
-  while IFS= read -r dir; do find "$ui/$dir" -maxdepth 1 -type f ! -name '.*' | LC_ALL=C sort; done
+# Only what this run wrote, so a long walk's output stays one capture's files long.
+if ((${#added[@]})); then
+  echo "added to tasks/$task/ui/:"
+  printf '%s\n' "${added[@]}"
+fi
 [[ -z $failed ]] || die "the capture failed: $(grep -m1 . <<<"$failed")"
