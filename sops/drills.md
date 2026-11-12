@@ -1,6 +1,6 @@
 # SOP: the drills
 
-A drill runs, for real, a path the team rests on and seldom takes: a move between machines, a stolen lease, a production prompt, a fresh machine, a compaction.
+A drill runs, for real, a path the team rests on and seldom takes: a move between machines, a stolen lease, a production prompt, a fresh machine, a compaction, a phase's tickets built at once.
 `tests/drill.bats` and the rest of the suite run the same scripts in a sandbox on stubs; a drill is the run on the real machines, the real Claude Code and the real GitHub.
 `bin/lib/drills.json` registers each drill: its name, what it is, who runs it and the code it proves.
 
@@ -84,6 +84,21 @@ A drill runs, for real, a path the team rests on and seldom takes: a move betwee
 - Passes, per job, when the job succeeded and `tests/bootstrap-drill` ended at a step of Daniel's in the bootstrap's `projects` stage or a later one, or at its summary with no failure besides Daniel's steps.
 - Until the runner has a stand-in team home, each job stops at the `machine` stage, whose team home clone needs a GitHub login to a private repository, and fails.
 - Record: `team-drill import`'s; import each run once it completes, in the order the runs ran, since a drill's last run is its last line.
+
+## `parallel-tickets`: a phase's tickets built at once
+
+- Who: the coordinator.
+  Duration: the drill task's phase, whose builds are the task's own work, and about 20 minutes of the coordinator's turns across it.
+- When: after a change to `team-next`'s fill or integration or to `team-open`'s or `team-close`'s ticket worktrees, and when the doctor's line names it.
+- Steps:
+  1. Pick a task, on a project whose tickets touch disjoint areas, whose phase has two or more tickets that may build at once: `team-tickets T<n> --check` passes with a `Touches:` line on each, and the spec's `Parallel:` line proposes 2 for that phase.
+  2. Approve its plan with `parallel=2`, as the manual's step 3 says, the ask naming the cap.
+  3. Start the phase with `team-next T<n> --fill`, run with the Bash timeout at 600000.
+  4. Take each `DONE <NN>` through `team-next T<n> -- '<the message>'`, as for any ticket: it integrates the ticket and fills again, or prints the line to send to `T<n>-builder-NN`, which goes word for word; run `team-next T<n> --fill` again once a room refusal clears.
+  5. The last ticket's `DONE` launches the deliverer, which ends the drill's build.
+  6. Read the numbers from the team home's `ledger.jsonl`: a ticket's minutes run from its first `launch` of `brief-build-NN` to its `ticket-done`; the phase's wall time from the first such launch to the last `ticket-done`; its serial sum adds its tickets' minutes; its critical path is the longest chain of `blocked_by` (`team-tickets T<n> --json`) by those minutes.
+- Passes when every ticket of the phase landed by fast-forward, its `ticket-done` carrying the `head` it landed as, which the task branch holds, and the phase's wall time is below its serial sum.
+- Record: `team-drill record parallel-tickets --verdict pass --detail "T<n> phase <p> at parallel=2: built in <w> min, serial sum <s> min, critical path <c> min"`, or `--verdict fail --detail "<the step that failed and why>"`; each thing that broke becomes a task.
 
 ## The second machine
 

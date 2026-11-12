@@ -144,6 +144,16 @@
         "settings/reviewer.json",
         "bin/lib/tools.lock"
       ]
+    },
+    {
+      "name": "parallel-tickets",
+      "what": "A real task's phase builds its ready tickets at once at parallel=2, each in a ticket worktree, and lands each by fast-forward in less time than its tickets' builds sum to.",
+      "by": "coordinator",
+      "proves": [
+        "bin/team-next",
+        "bin/team-open",
+        "bin/team-close"
+      ]
     }
   ]
 }
