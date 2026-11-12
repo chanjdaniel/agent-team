@@ -1702,6 +1702,9 @@ def retro_ran($events):
   .task as $task
   | [$events[] | select(.task == $task) | .event] | IN(.[]; "launch") or (IN(.[]; "closed") | not);
 
+# The retros (retros') that ran (retro_ran), in ledger order.
+def retros_ran: . as $events | [retros[] | select(retro_ran($events))];
+
 # team-retro status's JSON. The schedule is the latest retro-schedule, on while every_hours is
 # above 0; the next retro is due every_hours after the later of its time and the opening of the
 # latest retro task that ran (retro_ran), unless a retro task is still open.
@@ -1711,7 +1714,7 @@ def retro_status:
   | ($events | map(select(.event == "retro-schedule")) | last
      | if . != null and (.every_hours | type) == "number" and .every_hours > 0 then {every_hours, since: .ts, discord_message, task}
        else null end) as $schedule
-  | ([$retros[] | select(retro_ran($events))] | last) as $last
+  | (retros_ran | last) as $last
   | ([$retros[] | .task as $task | select($events | map(select(.task == $task)) | task_status == "open")] | last | .task) as $running
   | (if $schedule == null then null
      else ([$schedule.since, ($last.ts // empty)] | max | fromdate) + $schedule.every_hours * 3600 | floor | todate end) as $next
@@ -2143,9 +2146,10 @@ def retro_status_text:
 def retro_window($task):
   . as $events
   | retros as $retros
-  | (if $task == null then {this: null, previous: ([$retros[] | select(retro_ran($events))] | last)}
+  | (if $task == null then {this: null, previous: (retros_ran | last)}
      else ($retros | map(.task == $task) | index(true)) as $k
-       | {this: $retros[$k], previous: ([$retros[:$k][] | select(retro_ran($events))] | last)} end) as $w
+       | $retros[$k] as $this
+       | {this: $this, previous: ([retros_ran[] | select(.i < $this.i)] | last)} end) as $w
   | {task: $task, previous: $w.previous.task,
      since: ($w.previous.ts // $events[0].ts), until: ($w.this.ts // (now | todate)),
      start: (if $w.previous == null then 0 else $w.previous.i + 1 end),
