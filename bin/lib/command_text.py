@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """The text of a Bash command that runs as code, for a guard that reads where a command starts.
 
-Usage: python3 -I command_text.py   (the command on stdin; prints the text on stdout)
+Usage: python3 -I command_text.py              (the command on stdin; prints the text on stdout)
+       python3 -I command_text.py --commands   (the command on stdin; prints its walk, below)
 
 bin/hooks/command-guard runs this file on a Bash call's command, team-tokens imports
-without_heredocs from it, and outbound.py simple_commands, each simple command's words. It reads
+without_heredocs from it, and outbound.py commands, the walk of each simple command. It reads
 the command far enough to know its quotes ('...', "..." and $'...'), backslashes, comments,
 arithmetic ($[, and $(( or (( whose two closing parentheses are adjacent, matched as Bash's
 parse_matched_pair does, past quotes, backticks and a $(...) read by this scan: ((cmd) ) is two
@@ -40,10 +41,43 @@ escape such as \\x62 is not decoded); or a command a group or substitution in wh
 (bash) or tee >(bash) does; so a shell or . named as an argument feeds it nothing.
 It reads no quoting beyond that: a guard matching the text sees a separator inside quotes as one,
 which refuses more, never less.
+
+commands(text), which --commands prints as one JSON line each, yields a Command for each simple
+command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
+too): the assignments before its name, env's among them; its words from the name of what runs on,
+past the wrappers env, command, exec, nohup, time, nice, ionice, stdbuf, timeout, setsid, sudo,
+doas, xargs, parallel, watch and flock with their options, numbers and flock's file, parallel's
+inputs after its ::: or :::: left out but for those with a scheme (https://host/u), read as URLs;
+the wrappers it ran behind, each its own words, the outermost first, with the command that ran
+its string, its find, or the shell or source that ran its file; and how it was reached: directly,
+in a string a tool runs, by find -exec, in a string watch or parallel join, as a shell's script
+file or by source.
+A command string is walked in turn, its commands yielded after the command that runs it, where
+the tool itself takes one: what watch and parallel join of their command's words (from the first
+word that is no option, and the next too when an option may take that one), env's -S or
+--split-string value with the words after it, and flock's -c or --command value, each after the
+assignments before it, quoted; a shell's -c string (bash, sh, zsh, dash or ksh), su's -c, -C,
+--command or --session-command, script's -c or --command and eval's words; and each command
+find's -exec, -execdir, -ok or -okdir runs is walked as a simple command of its own.
+env's, flock's, su's and script's long options are taken by any prefix getopt_long takes as one
+alone (su --comm), and their short ones in a cluster as getopt reads it (env -uSPATH is -u SPATH).
+A shell with no -c or -s whose first operand, past its options (-o and -O, --rcfile and
+--init-file with their value) and a -- or -, is a file, and source or . with one, run that file
+with the words after it: the Command is that file and its words, never read.
+A command string is never walked again when it is the text being walked, and one nested deeper
+than 20 strings raises, so a guard that walks it refuses.
+Not walked: a command word built by a substitution ($(command -v curl)), a command given as one
+string where its tool takes words (sudo -s escapes each word it passes its shell), a watch or
+parallel command string after an option's value followed by another option (watch -n 5 -d '...'),
+ssh's remote command (it runs on the other host), and a command another tool runs from its
+arguments (nsenter, chroot, unshare, systemd-run, tmux send-keys).
 """
 
 import functools
+import json
+import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 
@@ -642,5 +676,343 @@ def simple_commands(command):
             yield from _segment_commands(command, start, end, bodies)
 
 
-if __name__ == "__main__":
+# An assignment, as a command's word.
+ASSIGNMENT = re.compile(r"[A-Za-z_]\w*\+?=")
+# A wrapper's number, its value with no option before it (timeout 10s).
+NUMBER = re.compile(r"[0-9][0-9.]*[smhd]?")
+# The commands that run the command after them, past their options.
+WRAPPERS = frozenset(
+    "env command exec nohup time nice ionice stdbuf timeout setsid sudo doas xargs parallel watch"
+    " flock".split()
+)
+SHELLS = frozenset("bash sh zsh dash ksh".split())
+# The commands a wrapper's option never takes as its value: those whose strings the walk reads,
+# and the ones outbound.py reads.
+TOOLS = frozenset(("curl", "wget", "eval", "su", "script", "find")) | SHELLS
+
+# The tools with an option whose value is the command they run as one string: its short names, its
+# long names, all the tool's long options (getopt_long takes one by any prefix that names it
+# alone), and its short options that take a value, so a cluster is read as getopt reads it
+# (env -uSPATH is -u SPATH). env and flock are wrappers, su and script commands of their own.
+STRING_OPTIONS = {
+    "env": (
+        "S",
+        {"split-string"},
+        frozenset(
+            "ignore-environment null unset chdir split-string block-signal default-signal"
+            " ignore-signal list-signal-handling debug help version argv0".split()
+        ),
+        "aCSu",
+    ),
+    "flock": (
+        "c",
+        {"command"},
+        frozenset(
+            "shared exclusive write unlock nonblock nb timeout wait conflict-exit-code close"
+            " command no-fork fcntl verbose help version".split()
+        ),
+        "Ecw",
+    ),
+    "su": (
+        "cC",
+        {"command", "session-command"},
+        frozenset(
+            "command session-command fast login group supp-group preserve-environment pty shell"
+            " whitelist-environment help version".split()
+        ),
+        "cCgGsw",
+    ),
+    "script": (
+        "c",
+        {"command"},
+        frozenset(
+            "append command echo log-in log-out log-io log-timing logging-format return flush force"
+            " quiet timing output-limit help version".split()
+        ),
+        "BEIOTcmo",
+    ),
+}
+# The wrappers that join their command's words into one string a shell runs.
+JOINING = frozenset(("watch", "parallel"))
+# find's actions that run a command, its words up to a ; or a +.
+FIND_EXEC = frozenset(("-exec", "-execdir", "-ok", "-okdir"))
+# parallel's separators, after which its words are inputs, not the command's.
+PARALLEL_INPUTS = frozenset((":::", "::::", ":::+", "::::+"))
+
+# A URL's scheme, which keeps a parallel input among its command's words.
+SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+def _long_options(name, options):
+    """The long options name stands for, as getopt_long takes it: itself, or those it is a prefix
+    of."""
+    if name in options:
+        return {name}
+    return {option for option in options if option.startswith(name)} if name else set()
+
+
+def _string_option(word, shorts, longs, options, values):
+    """The value word gives an option that names a command as one string (env's -S, flock's -c):
+    the text joined to it, "" when it is the next word, or None when word is not it."""
+    if word.startswith("--"):
+        name, eq, value = word[2:].partition("=")
+        named = _long_options(name, options)
+        return (value if eq else "") if len(named) == 1 and named <= longs else None
+    if word.startswith("-") and word != "-":
+        _, flag, joined = _short(word, values)
+        return joined if flag and flag in shorts else None
+    return None
+
+
+def _assigned(assignments):
+    """The assignments as a command's text puts them, each value quoted."""
+    pairs = (assignment.partition("=") for assignment in assignments)
+    return "".join(f"{name}={shlex.quote(value)} " for name, _, value in pairs)
+
+
+def _joined(args, parallel):
+    """The command strings watch or parallel may run of its words after its name: its command's
+    words joined with blanks, unquoted, as the tool joins them, from its first word that is no
+    option, and from the next one too when an option before it may take that word as its value;
+    under parallel, only the words before its first ::: and the inputs with a scheme after it."""
+    cut = len(args)
+    if parallel:
+        cut = next((k for k, word in enumerate(args) if word in PARALLEL_INPUTS), cut)
+    inputs = [word for word in args[cut:] if SCHEME.match(word)]
+    first = next((k for k in range(cut) if not args[k].startswith("-")), None)
+    if first is None:
+        return []
+    starts = [first]
+    if first and args[first - 1].startswith("-") and first + 1 < cut:
+        starts.append(first + 1)
+    return [" ".join(args[start:cut] + inputs) for start in starts]
+
+
+def _command(words):
+    """The assignments before the command's own name, env's among them, the words from that name
+    on, past its wrappers, as the header says, the command strings those wrappers run, each with
+    how it is reached, and each wrapper's own words: a word after a wrapper's option is its value
+    unless it names a command read here; env -S's and flock -c's value is a command string, and so
+    is what watch and parallel join; under parallel, the words from its first ::: on are its
+    inputs, left out but for those with a scheme, which its command takes as URLs."""
+    i, n, inputs, strings, wrappers = 0, len(words), False, [], []
+    while i < n and ASSIGNMENT.match(words[i]):
+        i += 1
+    assignments = words[:i]
+    while i < n and os.path.basename(words[i]) in WRAPPERS:
+        start, wrapper = i, os.path.basename(words[i])
+        file_left, option = wrapper == "flock", False
+        inputs = inputs or wrapper == "parallel"
+        if wrapper in JOINING:
+            joined = _joined(words[i + 1 :], wrapper == "parallel")
+            strings += [(JOINED, _assigned(assignments) + text) for text in joined]
+        i += 1
+        while i < n:
+            word = words[i]
+            string = None
+            if wrapper in STRING_OPTIONS:
+                string = _string_option(word, *STRING_OPTIONS[wrapper])
+            if string is not None:
+                # The option's value, the rest of the word or the next word, is the command, the
+                # words after it its arguments.
+                after = i + 1 if string else i + 2
+                rest = words[after:]
+                string = string or (words[i + 1] if i + 1 < n else "")
+                tail = " " + shlex.join(rest) if wrapper == "env" and rest else ""
+                wrappers.append(tuple(words[start:after]))
+                strings.append((STRING, _assigned(assignments) + string + tail))
+                return assignments, [], strings, wrappers
+            if ASSIGNMENT.match(word):
+                assignments.append(word)
+                option = False
+            elif os.path.basename(word) in TOOLS | WRAPPERS:
+                break
+            elif word.startswith("-") and word != "-":
+                option = True
+            elif NUMBER.fullmatch(word):
+                option = False
+            elif option:
+                option = False
+            elif file_left:
+                file_left = False
+            else:
+                break
+            i += 1
+        wrappers.append(tuple(words[start:i]))
+    words = words[i:]
+    if inputs:
+        cut = next((k for k, word in enumerate(words) if word in PARALLEL_INPUTS), len(words))
+        words = words[:cut] + [word for word in words[cut:] if SCHEME.match(word)]
+    return assignments, words, strings, wrappers
+
+
+def _option_string(args, shorts, longs, options, values):
+    """The value of the option of su or script that names the command they run as one string (-c
+    alone or in a cluster, or a long one by its name or a prefix, with its value joined by = or
+    next), or None."""
+    for k, word in enumerate(args):
+        if word == "--":
+            break
+        string = _string_option(word, shorts, longs, options, values)
+        if string is not None:
+            return string or (args[k + 1] if k + 1 < len(args) else "")
+    return None
+
+
+def _exec_commands(args):
+    """The commands find's -exec, -execdir, -ok and -okdir run, each its words up to its ; or +."""
+    commands, k = [], 0
+    while k < len(args):
+        if args[k] in FIND_EXEC:
+            end = next((j for j in range(k + 1, len(args)) if args[j] in (";", "+")), len(args))
+            commands.append(args[k + 1 : end])
+            k = end
+        k += 1
+    return commands
+
+
+def _shell_string(args):
+    """The string a shell's -c runs, its first word after the options, or None when it has none."""
+    runs, k = False, 0
+    while k < len(args):
+        word = args[k]
+        k += 1
+        if word == "--":
+            break
+        if word.startswith("--"):
+            continue
+        if len(word) > 1 and word[0] in "-+":
+            runs = runs or (word[0] == "-" and "c" in word)
+            # -o and -O take an option's name.
+            k += word[-1] in "oO"
+            continue
+        return word if runs else None
+    return args[k] if runs and k < len(args) else None
+
+
+
+def _short(word, value_flags):
+    """A cluster of short options read as getopt reads it: its flags up to the first that takes a
+    value, that flag or None, and the value joined to it ("" when it is the next word)."""
+    for k, flag in enumerate(word[1:], 1):
+        if flag in value_flags:
+            return word[1:k], flag, word[k + 1 :]
+    return word[1:], None, ""
+
+# How a Command was reached: directly, as a simple command of the text; in a string a tool runs (a
+# shell's -c, eval, su's and script's -c, env -S, flock -c); by find's -exec; in what watch or
+# parallel join; as a shell's script file; or by source or `.`.
+DIRECT, STRING, FIND, JOINED = "direct", "string", "find -exec", "joined"
+SCRIPT, SOURCE = "script", "source"
+# The depth of strings within strings past which commands raises.
+DEPTH = 20
+# A shell's long options that take a value.
+SHELL_VALUE_LONG = frozenset(("--rcfile", "--init-file"))
+
+
+@dataclass(frozen=True)
+class Command:
+    """A simple command a Bash call runs: the assignments before its name, env's among them; its
+    words from the name of what runs on; the wrappers it ran behind, each its own words, the
+    outermost first, the command that ran its string, its find, or the shell or source that ran its
+    file among them; and how it was reached (DIRECT and the rest)."""
+
+    assignments: tuple
+    words: tuple
+    wrappers: tuple
+    reached: str
+
+
+def _shell_script(args):
+    """Where the script file is among a shell's words after its name, when it runs one: its first
+    operand, past its options (-o and -O, --rcfile and --init-file with their value) and a -- or -
+    that ends them; None when it has none, or a -c or -s, so it reads a string or stdin."""
+    k = 0
+    while k < len(args):
+        word = args[k]
+        if word in ("--", "-"):
+            k += 1
+            break
+        if word.startswith("--"):
+            k += 1 + (word in SHELL_VALUE_LONG)
+            continue
+        if len(word) > 1 and word[0] in "-+":
+            if word[0] == "-" and ("c" in word or "s" in word):
+                return None
+            k += 1 + (word[-1] in "oO")
+            continue
+        break
+    return k if k < len(args) else None
+
+
+def _walk(words, text, depth, outer, reached):
+    """The Commands of one simple command's words, of the text being walked at depth, behind the
+    outer wrappers: the command itself, then what it runs, as commands says."""
+    assignments, words, strings, wrappers = _command(list(words))
+    behind = outer + tuple(wrappers)
+    yield Command(tuple(assignments), tuple(words), behind, reached)
+
+    def run(string, how, ran):
+        if string is not None and string != text:
+            yield from _commands(string, depth + 1, ran, how)
+
+    for how, string in strings:
+        yield from run(string, how, behind)
+    if not words:
+        return
+    name, args = os.path.basename(words[0]), words[1:]
+    here = behind + (tuple(words),)
+    if name == "find":
+        for found in _exec_commands(args):
+            yield from _walk(found, text, depth, here, FIND)
+    elif name in SHELLS:
+        string = _shell_string(args)
+        script = None if string is not None else _shell_script(args)
+        if script is not None:
+            shell = behind + (tuple(words[: script + 1]),)
+            yield Command((), tuple(args[script:]), shell, SCRIPT)
+        yield from run(string, STRING, here)
+    elif name in ("source", "."):
+        files = args[1:] if args[:1] == ["--"] else args
+        if files:
+            source = behind + (tuple(words[: len(words) - len(files)]),)
+            yield Command((), tuple(files), source, SOURCE)
+    elif name in STRING_OPTIONS:
+        yield from run(_option_string(args, *STRING_OPTIONS[name]), STRING, here)
+    elif name == "eval":
+        yield from run(" ".join(args), STRING, here)
+
+
+def _commands(text, depth, outer, reached):
+    if depth > DEPTH:
+        raise ValueError(f"a command string nested deeper than {DEPTH}")
+    for words in simple_commands(text):
+        yield from _walk(words, text, depth, outer, reached)
+
+
+def commands(text):
+    """Each Command the text runs, as the header says: each simple command (simple_commands), then
+    the commands of each string, find -exec, script file or sourced file it runs, in turn."""
+    return _commands(text, 0, (), DIRECT)
+
+
+def main():
+    if sys.argv[1:] == ["--commands"]:
+        try:
+            for command in commands(sys.stdin.read()):
+                fields = {"reached": command.reached, "assignments": command.assignments}
+                fields.update(wrappers=command.wrappers, words=command.words)
+                line = json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+                sys.stdout.write(line + "\n")
+        except Exception as error:  # noqa: BLE001 - a guard that cannot decide refuses
+            sys.stderr.write(f"command_text.py: {type(error).__name__}: {error}\n")
+            return 1
+        return 0
+    if sys.argv[1:]:
+        sys.stderr.write("usage: python3 -I command_text.py [--commands]   (the command on stdin)\n")
+        return 2
     sys.stdout.write(code_text(sys.stdin.read()))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
