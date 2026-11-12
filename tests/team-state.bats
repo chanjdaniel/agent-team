@@ -83,6 +83,61 @@ phase_of() {
   jq -r .phase <<<"$output"
 }
 
+# proj made the team's own (its repo the code checkout's origin), with the reviewer App on (App
+# 123456 in the code checkout's bin/lib/review-app); gh answers PR #5 open on main at the head,
+# agent-review SUCCESS among its checks, its agent-review check runs from $GH_DIR/runs.json and its
+# combined status from $GH_DIR/status.json: app_on
+app_on() {
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/proj.git
+  rm -f "$CODE_CHECKOUT/bin/lib/review-app"
+  printf 'id=123456\nslug=team-reviewer\n' >"$CODE_CHECKOUT/bin/lib/review-app"
+  export GH_DIR=$BATS_TEST_TMPDIR/gh GH_HEAD=$head
+  mkdir -p "$GH_DIR"
+  echo '{"statuses": []}' >"$GH_DIR/status.json"
+  stub_script gh <<'STUB'
+case "$1 $2 $*" in
+  "pr view"*) echo "{\"number\": 5, \"state\": \"OPEN\", \"baseRefName\": \"main\", \"headRefOid\": \"$GH_HEAD\"}" ;;
+  "pr checks"*--required*) echo '[]' ;;
+  "pr checks"*) echo '[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]' ;;
+  "api repos/owner/proj/compare/"*) echo 0 ;;
+  "api repos/owner/proj/commits/$GH_HEAD/check-runs?check_name=agent-review&filter=latest&per_page=100 "*) cat "$GH_DIR/runs.json" ;;
+  "api repos/owner/proj/commits/$GH_HEAD/status "*) cat "$GH_DIR/status.json" ;;
+  *) echo "unplanned gh call: $*" >&2; exit 1 ;;
+esac
+STUB
+}
+
+# The head's agent-review check runs, each "<id> <conclusion> <app id> [<sha>]": runs <run>...
+runs() {
+  local run id conclusion app sha out='[]'
+  for run in "$@"; do
+    read -r id conclusion app sha <<<"$run"
+    out=$(jq -c --argjson id "$id" --arg c "$conclusion" --argjson app "${app:-123456}" --arg sha "${sha:-$head}" \
+      '. + [{id: $id, name: "agent-review", head_sha: $sha, status: "completed", conclusion: $c,
+        app: {id: $app, slug: (if $app == 123456 then "team-reviewer" else "github-actions" end)}}]' <<<"$out")
+  done
+  jq -c '{total_count: length, check_runs: .}' <<<"$out" >"$GH_DIR/runs.json"
+}
+
+# The head's combined status: an agent-review success by chanjdaniel, or none.
+review_status() {
+  if [[ ${1:-} == none ]]; then
+    echo '{"statuses": []}' >"$GH_DIR/status.json"
+  else
+    echo '{"statuses": [{"context": "agent-review", "state": "success", "creator": {"login": "chanjdaniel"}}]}' >"$GH_DIR/status.json"
+  fi
+}
+
+# The App's facts of the PR part now are <expected>, [review_app, review_check, review_check_run,
+# review_check_by] as JSON: review_facts <expected>
+review_facts() {
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.pr | [.review_app, .review_check, .review_check_run, .review_check_by]' <<<"$output")" "$1"
+  # agent_review stays gh pr checks' state.
+  assert_equal "$(jq -r .pr.agent_review <<<"$output")" success
+}
+
 @test "an unknown task is exit 1 and a malformed task id is a usage error" {
   open_task
   run_bin -1 team-state T99
@@ -105,8 +160,8 @@ phase_of() {
     schema: "team-state/1", task: "T14", title: "The tooling", project: "proj", path: "feature",
     phase: "building",
     worktrees: [
-      {project: "proj", branch: "feat/T14-tooling", worktree: "/w/1", returned: false},
-      {project: "conv", branch: "feat/T14-x", worktree: "/t/2", returned: true}],
+      {project: "proj", branch: "feat/T14-tooling", worktree: "/w/1", ticket: null, returned: false},
+      {project: "conv", branch: "feat/T14-x", worktree: "/t/2", ticket: null, returned: true}],
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
@@ -468,7 +523,8 @@ reply_line() {
     state: "open", base: "main", branch: null, head: $head, ledger_head: $head[:8], head_moved: false,
     caught_up: false, checks: {passed: ["agent-review", "docs", "shellcheck"], failing: ["deploy", "lint"], pending: ["build"]},
     required: ["build", "shellcheck", "test"], required_missing: ["test"],
-    agent_review: "success", merge_approved: true, behind_by: 0}')"
+    agent_review: "success", merge_approved: true, behind_by: 0,
+    review_app: null, review_check: null, review_check_run: null, review_check_by: null}')"
   # The words, as merge_authority derives them: a legacy merge-approved, naming no head, holds on
   # the ledger for the PR's latest pr event; no plan is approved.
   assert_equal "$(jq -c '.pr.merge_authority | [.word, [.words[] | .word, .applies, .holds]]' <<<"$output")" \
@@ -493,6 +549,54 @@ reply_line() {
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.pr | [.state, .ledger_head, .head_moved, .agent_review, .merge_approved]' <<<"$output")" \
     '["merged","1111111",true,"failure",false]'
+}
+
+@test "the team's own project's PR part, with the reviewer App on, reads the App's check run on the head, and the line names it" {
+  open_task
+  event T14 pr "{url: \"https://github.com/owner/proj/pull/5\", head: \"$head\", project: \"proj\"}"
+  app_on
+  runs "4242 success"
+  review_facts '[123456,"success",4242,null]'
+  # The App's latest run counts, and a status beside it is not read.
+  runs "4242 success" "4243 failure"
+  review_status
+  review_facts '[123456,"failure",4243,null]'
+  runs "5150 success 15368"
+  review_status none
+  review_facts '[123456,"foreign",null,"a check run of App 15368 (github-actions)"]'
+  runs "4242 success 123456 1111111111111111111111111111111111111111"
+  review_facts '[123456,"missing",null,null]'
+  runs
+  review_status
+  review_facts '[123456,"foreign",null,"a commit status by chanjdaniel"]'
+  review_status none
+  review_facts '[123456,"missing",null,null]'
+
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature in-review | no live worker | PR #5 a1b2c3d checks 1/1 agent-review missing (the reviewer App's check)"
+  runs "4242 success"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature in-review | no live worker | PR #5 a1b2c3d checks 1/1 agent-review success (the reviewer App's check)"
+  runs
+  review_status
+  run_bin -0 team-state T14
+  assert_equal "$output" \
+    "T14 proj feature in-review | no live worker | PR #5 a1b2c3d checks 1/1 agent-review foreign (a commit status by chanjdaniel, not the reviewer App's check)"
+}
+
+@test "with the reviewer App on, another project's PR part reads no check run, and a check run read that fails is GitHub unavailable" {
+  open_task
+  event T14 pr "{url: \"https://github.com/owner/proj/pull/5\", head: \"$head\", project: \"proj\"}"
+  app_on
+  # proj is not the team's own once the code checkout's origin is another repo.
+  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/other.git
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.pr | [.review_app, .review_check, .agent_review, .error]' <<<"$output")" '[null,null,"success",null]'
+  [[ -z $(stub_calls gh | jq -c 'select(.[1] // "" | test("/commits/"))') ]]
+  # The team's own again, with GitHub refusing the check runs.
+  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/proj.git
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature in-review | no live worker | PR #5 GitHub unavailable"
 }
 
 @test "a PR with no checks, or no server-required ones, has empty lists and agent-review missing" {

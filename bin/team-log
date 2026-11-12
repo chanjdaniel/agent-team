@@ -44,7 +44,7 @@
 # directory on this machine, since its spec.md and scope.txt could not be hashed; a scope.txt that
 # lists no path or holds a line that is no clean repository path (a string with no leading /, no .
 # or .. segment, no empty segment, no glob character *?[ and no whitespace; a directory ends in /);
-# and a second approval whose by and plan equal the one standing (plan_approval in
+# and a second approval whose by, plan and parallel equal the one standing (plan_approval in
 # bin/lib/ledger.jq). A plan-approval-withdrawn (discord_message=<id>, Daniel's message, which
 # team-log takes as named, since a withdrawal only stops work) is refused for a closed task, a
 # message that is no Discord id, and when no approval stands. A kind the contract marks retired is
@@ -92,6 +92,9 @@
 # discord_message) and a held while Daniel's hold stands, warned or refused as above.
 # A retro-change is refused when its retro names a
 # task with no opened event of path retro, or a retro with no answered of id retro.
+# A plan-approved's parallel, the approved cap on each phase's tickets that build at once
+# (team-next --fill reads the latest plan-approved's), is refused unless it is one cap from 1 to
+# 3 per phase in phase order joined by commas with no spaces (parallel=2, parallel=2,1).
 # A gate-run whose cause is base-merge and whose outcome is not aborted, in either form, is logged
 # with one line on stderr saying the gated delivery brief asks no gate run for a base merge; --print,
 # which logs nothing, prints no such line.
@@ -130,10 +133,19 @@
 # the coordinator's message that relayed an ops answer, is logged as that done's relay, and refused
 # with any other message; an id that is not one is a malformed command line. A review's head is the head of the brief record
 # (tasks/T<n>/<brief>.json) that the reviewer's latest launch read, else a pass's own head, else
-# it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's
-# launch (its session name T<n>-<role>, or its session id), else that of the only latest launch of a
-# role with no report since (a done, review, ticket-done or pr that ends it); two are refused,
-# naming both. The session is that role's latest launch.
+# it is refused naming head=. The sender is --from's launch, the latest one its session name names
+# (T<n>-<role>, or T<n>-builder-<NN> for a builder in ticket NN's worktree) or its session id,
+# refused when its role is not the kind's (builder, reviewer); else the latest launch of the kind's
+# role, for a DONE <NN> the latest builder launch of ticket NN when there is one, else the latest
+# builder launch; else the only latest launch of a role and ticket with no report since (an event
+# that ends it: a done of its role, a review, a ticket-done or a pr, and for a ticket builder only
+# a done of its session or its ticket's ticket-done); two or more are refused, naming each by its
+# session name and id.
+# A DONE pass or DONE findings on a project whose agent-review the reviewer App posts (the project
+# of any of the task's pr events, by its project or its URL's repo, or of the task's latest
+# reviewer launch, when own_bar in bin/lib/team.sh gives it the App) is refused, logging nothing,
+# unless --from is the session id of the task's latest reviewer launch, the refusal naming it; the
+# name T<n>-reviewer is refused there too.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
@@ -437,9 +449,11 @@ if [[ $event == plan-approved ]]; then
       -r --arg file "${found#*$'\t'}/scope.txt" <<<"$scope")
     [[ -z $problem ]] || die "$problem"
   fi
-  standing=$(ledger_jq 'plan_approval | select(.state == "approved" and .by == $by and .plan == $plan) | .ts' \
-    -r --arg by "$by" --argjson plan "$plan" <<<"$TASK_EVENTS")
-  [[ -z $standing ]] || die "$task's plan is approved already by $by, at $standing, with the same files, so a second approval means nothing"
+  parallel=null
+  [[ ! -v seen[parallel] ]] || parallel=$(jq -cn --arg p "${seen[parallel]}" '$p')
+  standing=$(ledger_jq 'plan_approval | select(.state == "approved" and .by == $by and .plan == $plan and .parallel == $parallel) | .ts' \
+    -r --arg by "$by" --argjson plan "$plan" --argjson parallel "$parallel" <<<"$TASK_EVENTS")
+  [[ -z $standing ]] || die "$task's plan is approved already by $by, at $standing, with the same files and caps, so a second approval means nothing"
   typed=$(jq -c --argjson plan "$plan" --argjson scope "$scope" '.plan = $plan | if $scope == null then . else .scope = $scope end' <<<"$typed")
 fi
 
@@ -561,6 +575,11 @@ if [[ $event == retro-change && -n ${seen[retro]:-} ]]; then
     die "$retro has no answered with id retro: Daniel has not answered its proposals, so none is approved to build"
 fi
 
+# A plan's approved caps, one per phase, which team-next --fill reads.
+if [[ $event == plan-approved && -v seen[parallel] && ! ${seen[parallel]} =~ ^[1-3](,[1-3])*$ ]]; then
+  die "parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '${seen[parallel]}'"
+fi
+
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.
 if [[ -n ${seen[since]:-} ]]; then
   case $event in waiting | blocked | paused | held) ;; *) die "since is taken only by a park (waiting, blocked, paused, held), not $event" ;; esac
@@ -642,10 +661,32 @@ if ((${#files[@]})); then
 fi
 
 task_events_once
+# A reviewer's verdict on a project whose agent-review the reviewer App posts is taken only from the
+# session of the task's latest reviewer launch (message_app_sender in bin/lib/messages.jq): the
+# first, when own_bar gives it the App, of the project of each of the task's pr events (by its
+# project, else the registered project of its URL's repo), whose PR team-next posts the check
+# for, and the project of that latest launch, which may name another project or none.
+app=''
+if [[ $message =~ ^[[:space:]]*T[0-9]+[[:space:]]+DONE[[:space:]]+(pass|findings)([[:space:]]|$) ]]; then
+  while IFS= read -r reviewed_in; do
+    if [[ $reviewed_in == repo:* ]]; then
+      reviewed_in=$(team_project --find repo "${reviewed_in#repo:}") || exit 1
+      reviewed_in=${reviewed_in%%$'\n'*}
+    fi
+    [[ -n $reviewed_in ]] || continue
+    bar=$(own_bar "$reviewed_in") || exit 1
+    if [[ $(jq -r '.app? // empty' <<<"$bar") ]]; then
+      app=$reviewed_in
+      break
+    fi
+  done < <(jq -r '(.[] | select(.event == "pr") | .project // (.url | strings
+      | capture("^https://github\\.com/(?<repo>[^/]+/[^/]+)/pull/").repo | "repo:\(.)") // empty),
+    (map(select(.event == "launch" and .role == "reviewer")) | last | .project // empty)' <<<"$TASK_EVENTS")
+fi
 parsed=$(jq -L "$TEAM_LIB" -c --arg task "$task" --arg message "$message" --arg from "$from" \
-  --arg sent_back "$sent_back" --arg relay "$relay" --argjson records "$brief_records" \
+  --arg sent_back "$sent_back" --arg relay "$relay" --arg app "$app" --argjson records "$brief_records" \
   'include "messages"; include "ledger"; . as $events
-    | $message | parse_message($task; $events; $records; $from; $sent_back) | message_relay($task; $message; $relay)' <<<"$TASK_EVENTS")
+    | $message | parse_message($task; $events; $records; $from; $sent_back; $app) | message_relay($task; $message; $relay)' <<<"$TASK_EVENTS")
 problem=$(jq -r '.problems // empty | join("; ")' <<<"$parsed")
 [[ -z $problem ]] || die "$problem"
 

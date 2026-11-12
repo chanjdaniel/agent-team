@@ -625,7 +625,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 27070 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 27240 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -661,12 +661,14 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # rules and in DONE gate's approved=, 26540 once the plan step named how Daniel's and the
   # coordinator's plan approvals are logged, which is a merge word, and the withdrawal, and 26770
   # once the merge rule and step 6 named the default word in place of the plan-time and standing
-  # words, with what it never holds on and the command that withdraws it for a task, a project or all,
-  # and 27070 once step 6 named the checks wait, team-next T<n> --ci, what it prints at its end and
-  # its re-arm after a catch-up and on exit 75, and the sanctioned actions team-catch-up and its
-  # reruns).
+  # words, with what it never holds on and the command that withdraws it for a task, a project or
+  # all, 26830 once the review step named team-review-check, the reviewer App's check the
+  # coordinator posts, 26940 once it said team-next posts it on a verdict taken only with --from
+  # the reviewer's session id, and 27240 once step 6 named the checks wait, team-next T<n> --ci,
+  # what it prints at its end and its re-arm after a catch-up and on exit 75, and the sanctioned
+  # actions team-catch-up and its reruns).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 27070))
+  (($(wc -c <"$manual") <= 27240))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

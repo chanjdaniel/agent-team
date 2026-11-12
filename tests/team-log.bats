@@ -86,11 +86,12 @@ open_t7() {
   opened T7 proj
 }
 
-# A launch of the task, as team-worker logs it: launched <task> <role> <session> [<brief>]
+# A launch of the task, as team-worker logs it, in project <project> (default proj):
+# launched <task> <role> <session> [<brief>] [<project>]
 launched() {
-  jq -cn --arg task "$1" --arg role "$2" --arg session "$3" --arg brief "${4:-}" \
-    '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session, worktree: "/w/proj",
-      toolkits: [], project: "proj", branch: "feat/\($task)-x", machine: "m"}
+  jq -cn --arg task "$1" --arg role "$2" --arg session "$3" --arg brief "${4:-}" --arg project "${5:-proj}" \
+    '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session, worktree: "/w/\($project)",
+      toolkits: [], project: $project, branch: "feat/\($task)-x", machine: "m"}
      + if $brief == "" then {} else {brief: $brief} end' >>"$TEAM_HOME/ledger.jsonl"
 }
 
@@ -197,7 +198,7 @@ TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, ([.value.writer] | flatten | join(",")), (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
   assert_equal "$actual" "$expected"
-  assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","discord_message":"id","brief":"string","template":"string","admission":"string","past_ask":"array"}'
+  assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","discord_message":"id","brief":"string","template":"string","admission":"string","past_ask":"array","ticket":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
   assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id","item":"number"}'
   assert_equal "$(jq -c '.kinds.asked.optional' "$CONTRACT")" '{"discord_message":"id","script":"string","sha256":"string"}'
@@ -221,6 +222,8 @@ TABLE
   assert_equal "$(jq -c '.kinds.walk.required.state' "$CONTRACT")" '["on","off"]'
   assert_equal "$(jq -c '[.kinds.ci | .required.outcome, .optional]' "$CONTRACT")" '[["passed","failed","infrastructure","pending"],{"failed":"array","look":"boolean"}]'
   assert_equal "$(jq -c '.kinds["ci-rerun"].required' "$CONTRACT")" '{"url":"string","head":"string","check":"string","run":"digits","job":"digits"}'
+  assert_equal "$(jq -c '.kinds["plan-approved"] | [.required, .optional]' "$CONTRACT")" \
+    '[{"by":["Daniel","coordinator"]},{"ask":"string","discord_message":"id","plan":"object","scope":"array","parallel":"string"}]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
 
@@ -259,12 +262,12 @@ TABLE
   done
   grep -Eq '^  merge-default-withdrawn +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew the default merge word.*task, the task the line is logged under.*the latest of the two whose scope covers it .*decides.*\)$' <<<"$output"
   grep -Eq '^  merge-default-restored +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel gave the default merge word back.*team-merge holds it only when Discord shows the message .*from an allowFrom author.*\)$' <<<"$output"
-  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|default\|plan\|standing\), phases_left \(list of whole numbers\); pushed at once  \(approval: .*\)$' <<<"$output"
+  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|default\|plan\|standing\), phases_left \(list of whole numbers\), check_run \(number\); pushed at once  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\), approved \(list\)  \(.*approved the ids of the parks the builder approved itself.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\); pushed at once  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  walk +team-ui +state \(on\|off\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head; pushed at once  \(.*team-log requires head of every new line.*\)$' <<<"$output"
-  grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, discord_message \(id\), brief, template, admission, past_ask \(list\)  \(request is the link to Daniel.s Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on \(team-worker refuses one that did\), which only an ops launch carries; model is the --model the session launched on, .*; admission is the id of the capacity admission the launch was made on \(team-capacity admit.s first line\), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past \(team-worker --past-ask\), which then park nothing, absent when it names none\)$' <<<"$output"
+  grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, discord_message \(id\), brief, template, admission, past_ask \(list\), ticket  \(request is the link to Daniel.s Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on \(team-worker refuses one that did\), which only an ops launch carries; model is the --model the session launched on, .*; admission is the id of the capacity admission the launch was made on \(team-capacity admit.s first line\), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past \(team-worker --past-ask\), which then park nothing, absent when it names none; ticket is the two-digit number of the ticket whose ticket worktree a builder launched in .*\)$' <<<"$output"
   grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\), item \(number\); pushed at once  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask; item: .*team-answer --item alone\)$' <<<"$output"
   grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
   grep -Eq '^  ran +team-run-approved +id, exit \(number\); pushed at once  \(.*\)$' <<<"$output"
@@ -280,7 +283,7 @@ TABLE
   grep -Eq '^  stowed +team-stow +machine, worktrees \(list\), roles \(list\); optional sessions \(list\), cause \(level\|handoff\)  \(one per task team-stow stows, every open task at a handoff .*unfinished_roles.*\)$' <<<"$output"
   grep -Eq '^  stowing +team-stow +machine, cause \(level\|handoff\), roles \(list\)  \(a stow of the task under way on machine, logged by team-stow --begin .*stands until the task.s stowed or stow-failed, or a launch.*\)$' <<<"$output"
   grep -Eq '^  stow-failed +team-stow +machine, reason  \(a stow of the task under way .*the run stopped: <its last error line>.*read as stowed with the stowing.s roles.*\)$' <<<"$output"
-  grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
+  grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason; optional ticket  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }
 
@@ -670,6 +673,49 @@ LINES
   run_bin -0 team-log --check
 }
 
+@test "plan-approved takes the phases' caps as parallel, a cap from 1 to 3 per phase joined by commas, and refuses any other" {
+  plan_task
+  local task_dir=$BATS_TEST_TMPDIR/wt/.scratch/task message
+  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan?'
+  message=$(soon)
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$message" parallel=2
+  echo "# the spec" >"$task_dir/spec.md"
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2,1,3
+  assert_equal "$(tail -n 2 "$TEAM_HOME/ledger.jsonl" | jq -c '{by, parallel}')" "$(
+    cat <<'LINES'
+{"by":"Daniel","parallel":"2"}
+{"by":"coordinator","parallel":"2,1,3"}
+LINES
+  )"
+  local before value
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  for value in 4 0 2,4 "2, 1" "2," ,2 two 12 "[2]"; do
+    run_bin -1 team-log T14 plan-approved by=Daniel ask=plan discord_message="$message" "parallel=$value"
+    assert_equal "$output" "team-log: parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '$value'"
+  done
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  run_bin -0 team-log --check
+}
+
+@test "a second plan-approved by the same approver of the same files is taken when it adds, changes or drops the caps, and refused with the same caps" {
+  plan_task
+  local approved
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  # A cap added to the same files.
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2
+  approved=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
+  # The same cap again is refused.
+  run_bin -1 team-log T14 plan-approved by=coordinator parallel=2
+  assert_equal "$output" "team-log: T14's plan is approved already by coordinator, at $approved, with the same files and caps, so a second approval means nothing"
+  # A cap changed, then dropped, which returns the task to one ticket at a time.
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2,1
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  run_bin -1 team-log T14 plan-approved by=coordinator
+  assert_contains "$output" "with the same files and caps, so a second approval means nothing"
+  assert_equal "$(jq -c 'select(.event == "plan-approved") | .parallel' "$TEAM_HOME/ledger.jsonl" | paste -sd ,)" 'null,"2","2,1",null'
+  run_bin -0 team-log --check
+}
+
 # A retro task T<m> as team-open opens it, Daniel's answer to its proposals when given: a_retro <task> [answered]
 a_retro() {
   jq -cn --arg task "$1" '{ts: (now | todate), task: $task, event: "opened", project: "agent-team", path: "retro",
@@ -956,7 +1002,7 @@ sha() {
   local approved
   approved=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
   run_bin -1 team-log T14 plan-approved by=coordinator
-  assert_equal "$output" "team-log: T14's plan is approved already by coordinator, at $approved, with the same files, so a second approval means nothing"
+  assert_equal "$output" "team-log: T14's plan is approved already by coordinator, at $approved, with the same files and caps, so a second approval means nothing"
   # Daniel's approval of the same files stands on its own, and a changed file is a new plan.
   run_bin -0 team-log T14 asked id=plan 'text=Approve the plan?'
   run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$(soon)"
@@ -2130,6 +2176,80 @@ assert_no_answer_logged() {
   # The kind's role wins, and a --from of another role is refused.
   refuses_message "team-log: the message is a builder's, but --from names T7-reviewer" \
     --from-message 'T7 DONE review-ready a1b2c3d' --from T7-reviewer
+}
+
+@test "--from-message takes a verdict on a project with the reviewer App on only with --from naming the task's latest reviewer session" {
+  plan_registry "$(plan_project agent-team)"
+  opened T7 agent-team
+  review_app_on
+  launched T7 builder b0000001 '' agent-team
+  launched T7 reviewer c0000001 '' agent-team
+  launched T7 reviewer c0000002 '' agent-team
+  local pass="T7 DONE pass $HEAD_A findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none"
+  local findings="T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none"
+  local needs="the reviewer App posts agent-review on agent-team, so its verdict is taken only from T7's latest reviewer session, T7-reviewer (c0000002)"
+  # No --from, or one naming the builder, an earlier reviewer or the role alone: refused, naming it.
+  refuses_message "team-log: $needs: run it again with --from c0000002 once the message came from that session" \
+    --from-message "$pass"
+  refuses_message "team-log: $needs: run it again with --from c0000002 once the message came from that session" \
+    --from-message "$findings" --sent-back 1
+  local from
+  for from in b0000001 c0000001 T7-reviewer x0000009; do
+    refuses_message "team-log: --from $from is not T7's latest reviewer session, T7-reviewer (c0000002): the reviewer App posts agent-review on agent-team, so its verdict is taken only from that session" \
+      --from-message "$pass" --from "$from"
+  done
+  # The latest reviewer's session: logged.
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"$HEAD_A\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0},\"before\":[],\"guarded\":[]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000002\"}" \
+    --from-message "$pass" --from c0000002
+  # A builder's message there takes no --from, as before.
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000001","report":"review-ready a1b2c3d"}' \
+    --from-message 'T7 DONE review-ready a1b2c3d'
+  # With the App off, a verdict takes no --from there either.
+  rm "$CODE_CHECKOUT/bin/lib/review-app"
+  launched T7 reviewer c0000003 '' agent-team
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"$HEAD_A\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0},\"before\":[],\"guarded\":[]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000003\"}" \
+    --from-message "$pass"
+}
+
+# A ticket builder's launch, as team-worker logs it in ticket NN's worktree: ticket_launched <task> <NN> <session>
+ticket_launched() {
+  jq -cn --arg task "$1" --arg ticket "$2" --arg session "$3" \
+    '{ts: (now | todate), task: $task, event: "launch", role: "builder", session: $session, worktree: "/w/proj--\($ticket)",
+      toolkits: [], project: "proj", branch: "feat/\($task)-x--\($ticket)", machine: "m", brief: "brief-build-\($ticket)",
+      ticket: $ticket}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "--from-message reads a DONE <NN> as ticket NN's builder's, and names each ticket builder by its session" {
+  open_t7
+  launched T7 builder b0000001 brief-build-01
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"01","commits":["a1b2c3d"],"note":"one"}
+{"task":"T7","event":"done","role":"builder","session":"b0000001"}' --from-message 'T7 DONE 01 a1b2c3d one'
+  ticket_launched T7 03 b0000003
+  ticket_launched T7 04 b0000004
+  # Neither ticket builder has reported: each is named by its session name.
+  refuses_message "team-log: the message's sender is not known: T7-builder-03 (b0000003) and T7-builder-04 (b0000004) have no report since their launch; name it with --from <session>" \
+    --from-message 'T7 QUESTION which store?'
+  refuses_message "team-log: --from T7-builder-05 names no launch of T7: its sessions are T7-builder (b0000001), T7-builder-03 (b0000003), T7-builder-04 (b0000004)" \
+    --from-message 'T7 QUESTION which store?' --from T7-builder-05
+  # A DONE of a ticket with no ticket launch is the latest builder's, as before.
+  run_bin -0 team-log T7 --from-message 'T7 DONE 02 a1b2c3e two' --print
+  assert_equal "$(jq -c 'select(.event == "done") | .session' <<<"$output")" '"b0000004"'
+  # Each DONE <NN> is its own ticket's builder's, though 04's launched last.
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"03","commits":["a1b2c3f"],"note":"three"}
+{"task":"T7","event":"done","role":"builder","session":"b0000003"}' --from-message 'T7 DONE 03 a1b2c3f three'
+  # 03's report leaves 04's builder the only one without one.
+  logs_events '{"task":"T7","event":"question","role":"builder","text":"which store?"}' --from-message 'T7 QUESTION which store?'
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"04","commits":["a1b2c40"],"note":"four"}
+{"task":"T7","event":"done","role":"builder","session":"b0000004"}' --from-message 'T7 DONE 04 a1b2c40 four'
+  # --from names a ticket builder by its session name or its id, for a DONE of the kind's role too.
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000003","report":"review-ready a1b2c41"}' \
+    --from-message 'T7 DONE review-ready a1b2c41' --from T7-builder-03
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000003","report":"review-ready a1b2c42"}' \
+    --from b0000003 --from-message 'T7 DONE review-ready a1b2c42'
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000001","report":"review-ready a1b2c43"}' \
+    --from-message 'T7 DONE review-ready a1b2c43' --from T7-builder
 }
 
 @test "--from-message refuses a kind whose role has no launch, and a sender none is without a report" {

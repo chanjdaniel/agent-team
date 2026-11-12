@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# Take a worker's message to the task's next step: log its events, then hand the work on.
+# Take a worker's message to the task's next step: log its events, then hand the work on; or start
+# a phase's ready tickets' builders, up to its cap (--fill).
 #
 # Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>]
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
+#        team-next T<n> --fill [--next <NN>]
 #        team-next T<n> --ci
 #   --ci         the checks wait of a pass, with no message and no other option (below)
-#   --from      the sender, as team-log --from-message takes it, when the message cannot tell it
+#   --from       the sender, as team-log --from-message takes it, when the message cannot tell it;
+#                required with a reviewer's verdict when the reviewer App posts agent-review on the
+#                project of a PR of the task, or of its latest reviewer launch: the session id of
+#                that launch
 #   --relay      with an ops session's DONE, the Discord id of the message that relayed its answer,
 #                logged as its done's relay, as team-log --from-message takes it
 #   --sent-back  with a DONE findings message, required, the numbers sent back (none for none), logged
 #                as the review's sent_back; with a DONE pass, the findings it counts that go back
 #                before the merge, required while it counts any
-#   --next       with a builder's DONE <NN>, the ticket to launch next instead of the lowest-numbered
-#                ready one; a ticket with a Waits for: line is launched only so
+#   --next       with a builder's DONE <NN> or --fill, the ticket to launch next (first) instead of
+#                the lowest-numbered ready one; a ticket with a Waits for: line is launched only so
+#   --fill       launch the ready tickets of the phase being built up to its cap, with no message
 #   --checks     with a review launch, the first review's checks file (the reviewer's checks);
 #                required when the task has no review yet, refused once it has one
 #   --since      with a rereview launch, a file of the coordinator's words, added after the derived
@@ -21,11 +27,11 @@
 # First every check, each refusal changing nothing (no ledger line, no brief, no launch): the
 # message reads as team-log --from-message --print reads it (its refusal is team-log's, with its
 # exit code), and launch_refusal in bin/lib/ledger.jq, the one guard team-worker checks too, takes
-# a launch of the role the hand-off launches (a builder for a ticket, a findings round or a stow's
-# round, a reviewer for a review, none for a message that launches nothing): the task is open
-# ("T<n> is closed", "T<n> is not open: the ledger has no opened event for it"), not on Daniel's
-# hold ("T<n> is on Daniel's hold since <since> (<id>): <reason>; only Daniel's word lifts it:
-# ..."), and has no ask to Daniel that nothing settled and no launch went past ("T<n> has an
+# a launch of the role the hand-off launches (a builder for a ticket, a findings round, a stow's
+# round or --fill, a reviewer for a review, none for a message that launches nothing): the task is
+# open ("T<n> is closed", "T<n> is not open: the ledger has no opened event for it"), not on
+# Daniel's hold ("T<n> is on Daniel's hold since <since> (<id>): <reason>; only Daniel's word lifts
+# it: ..."), and has no ask to Daniel that nothing settled and no launch went past ("T<n> has an
 # unanswered ask, <id>, since <ts>"); it takes no --past-ask, so a message refused for an ask is
 # logged with team-log --from-message, as the manual says. Before that guard, and for every
 # hand-off below, a task whose plan approval stands withdrawn (plan_approval in bin/lib/ledger.jq)
@@ -53,7 +59,67 @@
 # with tickets set to "every ticket of phase <n> (<its tickets>)", a name a launch already read
 # taking -2, -3 and so on, in the sending builder's project; the next phase's first ticket is
 # launched by hand, as the first one is. Each is launched as a builder with the toolkits of the
-# task's latest builder launch.
+# task's latest builder launch. In a phase whose cap is above 1 (below), a DONE <NN> with tickets of
+# its phase left is logged and checked the same way, but its hand-off is --fill's, and none ready
+# is no refusal, since others may run; with cap 1 every step above is as it was.
+# --fill, with no message, takes the same task checks and needs a plan-approved; it launches the
+# ready tickets of the phase being built (the earliest with a ticket not done), as team-tickets
+# T<n> --json reads them (its refusal is its own). A phase's cap is the latest plan-approved's
+# parallel (team-log), its entry for that phase, the last entry for a later phase, and 1 when the
+# latest plan-approved has none, so a later approval without it builds one ticket at a time again.
+# Running are the phase's tickets team-tickets calls running, whatever their sessions' state. With
+# cap 1, the lowest-numbered ready ticket is launched in the task's worktree, as a DONE <NN>'s
+# hand-off launches it (T<n>-builder), when none runs. With a cap above 1, each ready ticket is
+# launched in number order while fewer than the cap run, one with no Touches: line only when none
+# runs and nothing beside it once it does: team-open --task T<n> --ticket NN (a ticket worktree,
+# which a rerun reuses), team-brief T<n> builder-ticket --ticket NN --name build-NN (with --force
+# when the brief exists and no launch read it, refused when one did), then team-worker as a builder
+# in that worktree (T<n>-builder-NN). --next adds a ready or waiting ticket of that phase first,
+# within the cap, refused as with a DONE <NN> ("--next NN is none of T<n>'s tickets: they are ...",
+# "is not ready: ...", "is in phase <q>, but phase <p> has tickets not done: ..."). Each line it
+# prints is a step: "worktree <path> for ticket NN", "brief <path>", "launched T<n>-builder-NN
+# <id>"; then, with ready tickets left unlaunched, "full: <k> of phase <p>'s cap <c> build
+# (<tickets>)" (", and NN builds alone (no Touches: line)" when such a ticket runs) "; ready and
+# waiting for a slot: <tickets>", each with no Touches: line marked so; having launched nothing
+# with none ready, "nothing to launch: <each ticket of the phase not done with what it waits on>",
+# or with every ticket done "phase <p>'s tickets are all done: its deliverer comes from the last
+# ticket's DONE". A room refusal (exit 75) of team-worker stops the fill, "no room for build-NN:
+# the launch said <its last stderr line>; ready and waiting for room: <NN and the tickets after
+# it>; run team-next T<n> --fill once there is room", exit 75, and so does a pool with no free
+# slot, "no worktree for ticket NN: <team-open's reason>; ..."; the ticket worktree is kept for the
+# next fill, and any other failure exits with its code.
+# A DONE <NN> whose sender's launch has a ticket (ticket NN's builder in its ticket worktree,
+# T<n>-builder-NN; one of another ticket is refused) is integrated, under the lock
+# ~/.local/state/agent-team/integrate/T<n>.lock, an exclusive flock waiting TEAM_NEXT_LOCK_SECONDS
+# (default 60, a whole number, else exit 2) and, still held then, exit 75 "another team-next is
+# integrating a ticket of T<n> (<lock>); run this again". Its checks, in order, change nothing: the
+# ticket worktree is on this machine and on its ticket branch (else exit 1); it has no change to a
+# tracked file and no untracked file git does not ignore; the message's last sha is its HEAD, and
+# every sha is a commit that HEAD holds (else exit 1); that HEAD holds the task branch's tip; the
+# task worktree is on the task branch with no change to a tracked file (else exit 1). The second,
+# third and fourth print instead the line to send, exit 0: "send to T<n>-builder-NN (<id>): T<n>
+# your worktree has uncommitted changes (<files>): ...", "... your DONE NN must list the head you
+# tested last, the HEAD of your worktree, <head8>; ...", "... the task branch moved: merge <task
+# branch> at <tip8> into your branch, ...". Then the task branch fast-forwards to that head in the
+# task worktree, "integrated ticket NN: <task branch> <old8>..<new8> in <task worktree>" ("already
+# integrated ..." when it is there, or when the tip holds it, as after a run that ended past its
+# fast-forward with another ticket landed on top since, the fourth check then passing); the
+# ticket's file and its build notes NN.md and NN-* are copied back from the ticket worktree's task
+# directory into the task worktree's, "copied back <path>" each; the message's events are logged,
+# the ticket-done with head, the head the ticket landed as (the task branch's new tip but on such a
+# rerun); and the ticket worktree is returned (below). Then the lock is released, and the hand-off
+# is read again: once the phase's tickets are all done, its deliverer as above, unless a builder
+# launch of a deliver brief follows the phase's last ticket-done, "already handed off: <that
+# launch>", exit 0; else --fill's, none ready being no refusal. A rerun once the ticket-done is
+# logged skips the checks and the logging ("already logged ..."), and goes on from the return; the
+# "already handed off" refusal above holds for a DONE from the task worktree only. Nothing is
+# pushed: the task branch reaches origin with the deliverer's push.
+# Every run but --ci's, before its hand-off (once its events are logged, or in --fill before it
+# launches), returns each open ticket worktree on this machine whose ticket is done (a ticket-done
+# since the worktree was given to it and its latest launch there) through team-close T<n> --ticket NN,
+# "returned <path> for ticket NN", or, when its builder is still busy (exit 75), "kept <path>:
+# <team-close's reason>; the next team-next run of T<n> returns it"; any other failure exits with
+# its code.
 # The hand-off of a builder's PR <url> (with or without its merged <base> conflicts: line), DONE
 # review-ready <sha> or DONE merged <base> <sha> conflicts: <files or none> is a fresh reviewer's
 # launch: refused, before anything is logged, when the task has no plan-approved; when the same
@@ -79,10 +145,20 @@
 # blocking, correctness, security, real-data or note-change finding with no --sent-back list of
 # them (they go back before the merge, so it prints no merge line), and a pass whose PR head on
 # GitHub (team-state T<n> --json) is not the reviewed head, naming both (exit 75 when GitHub
-# cannot be read). Once the review and its done are logged, the last line is what is
-# left for the coordinator, the holder being the task's latest builder launch, under 250k while
-# team-state reads its context under 250,000 tokens or none, and gone when its session is not
-# live. For a pass on a PR, whatever its checks show, the last line arms the checks wait and no
+# cannot be read); on a project whose agent-review the reviewer App posts, a verdict whose --from
+# is not the session id of the task's latest reviewer launch (team-log's refusal, naming it). For
+# a PR of a project the App posts for (own_bar in bin/lib/team.sh), once the review and its done
+# are logged it runs team-review-check on the reviewed head, success for a pass and failure for
+# findings, its summary "T<n>'s review of <head> passed" or "... found findings", and prints
+# "posted agent-review <conclusion> on <head> as the reviewer App's check run <id>", which the
+# merge line then names; findings on a head the PR moved past, and a review naming its head by a
+# prefix, not in full, post nothing and say so; a post that fails exits 1 after naming the
+# team-review-check command, the review staying logged, and a rerun posts it again, but one whose
+# check run was posted and whose token alone was not revoked is said as posted, with why. Once
+# the review and its done are logged, the last line is what is left for the coordinator, the
+# holder being the task's latest builder launch, under 250k while team-state reads its context
+# under 250,000 tokens or none, and gone when its session is not live. For a pass on a PR,
+# whatever its checks show, the last line arms the checks wait and no
 # merge line is printed: "checks: arm team-next T<n> --ci with Bash run_in_background unless it
 # is already running: it waits on the checks of <url> at <short>, then prints the merge ask or
 # hands a red check back as a round".
@@ -155,18 +231,20 @@
 # A team-ci-wait that prints no such object (a refused command line) has its output printed and
 # its exit code, else 1.
 # The merge line: "merge ask: <full PR URL> at <head>, agent-review <state>, checks green" (or
-# the failing, pending and missing checks), <head> the PR's, or after a team-catch-up
-# the reviewed head it was made from, as team-catch-up's next line names it, or "merge on the
-# default word: run team-merge T<n> for ..." instead while the default word, the approved plan,
-# holds on the ledger for the PR at the reviewed head, read once the ci is logged
+# the failing, pending and missing checks; the state the reviewer App's check's, review_check in
+# bin/lib/team.sh's pr_part, on the team's own project with the App on), <head> the PR's, or after
+# a team-catch-up the reviewed head it was made from, as team-catch-up's next line names it, or
+# "merge on the default word: run team-merge T<n> for ..." instead while the default word, the
+# approved plan, holds on the ledger for the PR at the reviewed head, read once the ci is logged
 # (merge_authority in bin/lib/ledger.jq, the derivation team-merge, team-state and team-sweep
 # read: the plan approved and not withdrawn, the PR's project not the team's own by own_project
-# in bin/lib/team.sh, the
+# in bin/lib/team.sh, or the team's own on a plan Daniel approved with the reviewer App on, the
 # default not withdrawn for the task, its project or every project, the task's branch logged, the
 # review found no guarded area and no review of the task counted a security or real-data finding
 # or logged no counts); on a merge ask, each guarded area of the six bin/lib/guarded names and
 # each such review named, with ", so the default word does not hold" while the plan stands
-# approved on a project not the team's own, and the before notes to queue as follow-ups; for a PR
+# approved on a project not the team's own, or the team's own with the reviewer App on, and the
+# before notes to queue as follow-ups; for a PR
 # behind its base, "merge base: ..." instead, read with base_merge in the project's primary checkout
 # once the PR's branch and the base are fetched there: "run team-catch-up T<n>, which needs no
 # rereview" when the reviewed head merges the base cleanly, then "then, once the checks pass on its
@@ -210,8 +288,8 @@
 # Any other message is logged, and the last line says it has no hand-off: an ops session's DONE
 # among them, whatever its first word, which team-log logs as its length and never its text, as
 # it does the ops session's QUESTION.
-# It never posts to Discord, sends a message, merges, approves a plan or answers a question; --ci's
-# reruns are its only writes to GitHub.
+# It never posts to Discord, sends a message, merges, approves a plan or answers a question; its
+# writes to GitHub are the reviewer App's check at a verdict and --ci's reruns.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 # Exit codes: 0 done, 1 refused, 2 a malformed command line; when a script it runs fails, that
@@ -221,15 +299,20 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "runs no team-next") && die "$why"
 
 bin=$(dirname "$TEAM_LIB")
-usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>', or team-next T<n> --ci"
+usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>' | team-next T<n> --fill [--next <NN>] | team-next T<n> --ci"
 
 [[ $# -ge 1 && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"
 task=$1
 shift
-log_opts=() next='' checks='' since='' template_opt='' ci=''
+log_opts=() next='' checks='' since='' template_opt='' fill='' ci=''
 declare -A given=()
 while (($#)) && [[ $1 != -- ]]; do
   case $1 in
+    --fill)
+      [[ -z $fill ]] || usage_error "--fill is given twice"
+      fill=1
+      shift
+      ;;
     --ci)
       [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
       given[$1]=1 ci=1
@@ -263,7 +346,15 @@ while (($#)) && [[ $1 != -- ]]; do
   esac
 done
 if [[ -n $ci ]]; then
-  (($# == 0 && ${#given[@]} == 1)) || usage_error "--ci takes no message and no other option: team-next T<n> --ci"
+  (($# == 0 && ${#given[@]} == 1)) && [[ -z $fill ]] ||
+    usage_error "--ci takes no message and no other option: team-next T<n> --ci"
+  message=''
+elif [[ -n $fill ]]; then
+  [[ $# -eq 0 ]] || usage_error "--fill takes no message; $usage"
+  for opt in "${!given[@]}"; do
+    [[ $opt == --next ]] || usage_error "--fill takes only --next, not $opt; $usage"
+  done
+  message=''
 else
   [[ ${1:-} == -- ]] || usage_error "missing '--' before the worker's message; $usage"
   shift
@@ -405,8 +496,7 @@ merge_line() {
   # registered project.
   default=null
   if [[ -n $pr_project ]]; then
-    own=false
-    if (own_project "$pr_project"); then own=true; fi
+    own=$(own_bar "$pr_project") || exit 1
     withdrawals=$(default_events_json) || exit 1
     default=$(task_event_array "$task" | ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)
       | .words[] | select(.word == "default") | .own = $own' -c --arg url "${url%/}" --arg head "$reviewed" \
@@ -417,12 +507,12 @@ merge_line() {
   # made from.
   ledger_jq '
     (.pr | if $caught != "" then "\(.url) at \($at)"
-      else "\(.url) at \($at), agent-review \(.agent_review), "
+      else "\(.url) at \($at), agent-review \(.review_check // .agent_review), "
         + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
             (.checks.pending | select(. != []) | "pending: \(join(", "))"),
             (.required_missing | select(. != []) | "missing: \(join(", "))")]
           | if . == [] then "checks green" else "checks \(join("; "))" end) end) as $facts
-    | ($default != null and $default.applies and ($default.own | not)) as $applies
+    | ($default != null and $default.applies and ($default.own == false or $default.own.app != null)) as $applies
     | (if $applies then ", so the default word does not hold" else "" end) as $held
     | [($review.guarded // [])[] | select(IN(guarded_areas[]))] as $guarded
     | (if $caught != "" then "then, once the checks pass on its merge: " else "" end)
@@ -619,12 +709,15 @@ if [[ -n $ci ]]; then
 fi
 
 # The message's events, as team-log reads them, nothing logged yet: one compact object a line,
-# joined into one array.
-printed=$(sibling team-log "$task" --from-message "$message" "${log_opts[@]}" --print) || exit
-parsed_lines=()
-while IFS= read -r line; do [[ -z $line ]] || parsed_lines+=("$line"); done <<<"$printed"
-printf -v parsed '%s,' "${parsed_lines[@]}"
-parsed="[${parsed%,}]"
+# joined into one array; --fill has none.
+parsed='[]'
+if [[ -z $fill ]]; then
+  printed=$(sibling team-log "$task" --from-message "$message" "${log_opts[@]}" --print) || exit
+  parsed_lines=()
+  while IFS= read -r line; do [[ -z $line ]] || parsed_lines+=("$line"); done <<<"$printed"
+  printf -v parsed '%s,' "${parsed_lines[@]}"
+  parsed="[${parsed%,}]"
+fi
 
 # same($p): whether the event is the parsed event $p, as a rerun finds it logged.
 same_def='def same($p): .event == $p.event and
@@ -646,15 +739,22 @@ same_def='def same($p): .event == $p.event and
 # - briefs: the briefs the task's launches read, one name a line (brief_launched).
 # - builder_kits, reviewer_kits: the toolkits of the task's latest launch of that role, else of its
 #   latest builder launch, one a line (hand_off).
-# - sender_wt, launch_project: the worktree, as a local path, and the project of the launch of the
-#   session the parsed done names (a launch of null's when it names none).
+# - sender_wt, launch_project, sender_ticket, sender_session: the worktree, as a local path, the
+#   project, the ticket (a ticket worktree's builder's) and the session of the launch of the session
+#   the parsed done names (a launch of null's when it names none).
 # - review: the message's review, or null.
 # - latest: the task's latest review, or null.
 launch_def='def sender_launch: ($parsed | map(select(.event == "done")) | first | .session | tostring) as $session
   | map(select(.event == "launch" and .session == $session)) | last
   | . + {worktree: (.worktree | local_path($home))};'
+held_prog="$same_def"' . as $events
+  | ([$parsed[] | .session | strings] | first) as $session
+  | ([to_entries[] | select(.value.event == "launch" and ($session == null or .value.session == $session)) | .key] | last // -1) as $anchor
+  | {anchor: $anchor,
+     events: [$parsed[] | . as $p
+       | {event: $p, at: ([range($anchor + 1; $events | length) | select($events[.] | same($p))] | first)}]}'
 kind='' back='' held='' briefs='' builder_kits='' reviewer_kits='' sender_wt='' launch_project=''
-review='' latest=''
+sender_ticket='' sender_session='' review='' latest=''
 json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3]
   | (.[1] // "") as $sub
   | if .[0] == "DONE" and any($parsed[]; .event == "done" and .role == "ops") then "DONE"
@@ -669,18 +769,14 @@ json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3
     | select(. != []) | (map(.n) | add) as $total
     | map("\(.n) \(.kind)") | (if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end)
     | "\(.) finding\(if $total == 1 then ", which goes" else "s, which go" end) back"' \
-  held="$same_def"' . as $events
-  | ([$parsed[] | .session | strings] | first) as $session
-  | ([to_entries[] | select(.value.event == "launch" and ($session == null or .value.session == $session)) | .key] | last // -1) as $anchor
-  | {anchor: $anchor,
-     events: [$parsed[] | . as $p
-       | {event: $p, at: ([range($anchor + 1; $events | length) | select($events[.] | same($p))] | first)}]}' \
+  held="$held_prog" \
   briefs='[.[] | select(.event == "launch") | .brief | strings] | join("\n")' \
   builder_kits='map(select(.event == "launch" and .role == "builder")) | last | [.toolkits[]?] | join("\n")' \
   reviewer_kits='(map(select(.event == "launch" and .role == "reviewer")) | last)
     // (map(select(.event == "launch" and .role == "builder")) | last) | [.toolkits[]?] | join("\n")' \
   sender_wt="$launch_def sender_launch | .worktree | tostring" \
   launch_project="$launch_def sender_launch | .project // empty" \
+  sender_ticket="$launch_def sender_launch | .ticket // empty" sender_session="$launch_def sender_launch | .session // empty" \
   review='$parsed | map(select(.event == "review")) | first | tojson' latest='map(select(.event == "review")) | last | tojson' \
   -- --arg message "$message" --argjson parsed "$parsed" <<<"$events"
 
@@ -695,7 +791,8 @@ case $kind in
   "PAUSED stowed") handoff=round ;;
   *) handoff=none ;;
 esac
-[[ -z $next || $handoff == ticket ]] || usage_error "--next is taken only with a builder's DONE <NN> message, not $kind"
+[[ -z $fill ]] || handoff=fill
+[[ -z $next || $handoff == ticket || $handoff == fill ]] || usage_error "--next is taken only with a builder's DONE <NN> message, not $kind"
 for opt in --checks --since --template; do
   [[ -z ${given[$opt]:-} || $handoff == review ]] ||
     usage_error "$opt is taken only with a builder's PR, DONE review-ready or DONE merged message, not $kind"
@@ -706,7 +803,7 @@ done
 # The task takes a launch of the role the hand-off launches, or with none a message, by the one
 # guard team-worker checks (launch_refusal): open, not on Daniel's hold, no ask open.
 case $handoff in
-  ticket | round) launch_role=builder ;;
+  ticket | round | fill) launch_role=builder ;;
   review) launch_role=reviewer ;;
   verdict) if [[ $kind == "DONE findings" ]]; then launch_role=builder; else launch_role=''; fi ;;
   *) launch_role='' ;;
@@ -731,11 +828,15 @@ if [[ $kind == "DONE pass" ]]; then
     die "the pass counts $back to the builder before the merge (step 5), so there is no merge yet: run it again with --sent-back <their numbers>, and the round goes as a DONE findings' does, through the holder or builder-round"
 fi
 
-# log_events: logs each event the ledger does not hold yet through team-log, printing one line each.
+# log_events: logs each event the ledger does not hold yet through team-log, printing one line each,
+# then returns the done tickets' worktrees (return_done_tickets); a second call does nothing.
 # Each event is read as its kind, whether it is held, its count of fields and its key=value
 # fields, NUL-separated, in one jq run.
+events_logged=''
 log_events() {
   local records i n name fields
+  [[ -z $events_logged ]] || return 0
+  events_logged=1
   mapfile -d '' -t records < <(jq -j '.events[] | [.event.event, (if .at != null then "held" else "" end),
     (.event | del(.ts, .task, .event) | to_entries | length | tostring),
     (.event | del(.ts, .task, .event) | to_entries[] | "\(.key)=\(.value | if type == "string" then . else tojson end)")][]
@@ -750,6 +851,72 @@ log_events() {
       echo "logged $name ${fields[*]}"
     fi
   done
+  return_done_tickets
+}
+
+# sibling_said <prefix> <script> <arg>...: run the sibling <script> with its stderr passed
+# through, setting out to its stdout, rc to its exit code and said to the last line of its stderr
+# that starts with <prefix> (with an empty prefix, its last line that is not blank), or nothing.
+sibling_said() {
+  local prefix=$1 err
+  err=$(mktemp)
+  rc=0
+  out=$(sibling "${@:2}" 2>"$err") || rc=$?
+  cat -- "$err" >&2
+  said=$(awk -v p="$prefix" 'NF && (p == "" || index($0, p) == 1) { l = $0 } END { print l }' "$err")
+  rm -f -- "$err"
+}
+
+# return_ticket <NN> <worktree>: ticket NN's worktree returned through team-close --ticket, its
+# stderr passed through; a 75 (its builder still busy) keeps it for the next run, any other failure
+# exits with its code.
+return_ticket() {
+  local rc out said
+  sibling_said 'team-close: ' team-close "$task" --ticket "$1"
+  said=${said:-team-close: it gave no reason}
+  if ((rc == 0)); then
+    echo "returned $2 for ticket $1"
+  elif ((rc == 75)); then
+    echo "kept $2: ${said#team-close: }; the next team-next run of $task returns it"
+  else
+    exit "$rc"
+  fi
+}
+
+# return_done_tickets: returns each open ticket worktree on this machine whose ticket is done (a
+# ticket-done of it after the worktree was given to it and after its latest launch there), once a
+# run, over the ledger as it is now.
+tickets_returned=''
+return_done_tickets() {
+  local now n path
+  [[ -z $tickets_returned ]] || return 0
+  tickets_returned=1
+  ledger_jq 'any(open_worktrees(.[]; $home); .ticket != null)' -e <<<"$events" >/dev/null || return 0
+  now=$(task_event_array "$task")
+  while IFS=$'\t' read -r n path; do
+    [[ -z $n || ! -d $path ]] || return_ticket "$n" "$path"
+  done < <(ledger_jq '. as $events | to_entries as $all
+    | open_worktrees(.[]; $home) | select(.ticket != null) | . as $w
+    | ([$all[] | select((.value.event | IN("worktree-added", "worktree-moved", "rehomed"))
+        and .value.project == $w.project and .value.ticket == $w.ticket) | .key] | last // -1) as $given
+    | ([$all[] | select(.value.event == "launch" and .value.ticket == $w.ticket) | .key] | last // -1) as $ran
+    | select(any($all[]; .value.event == "ticket-done" and .value.ticket == $w.ticket
+        and .key > $given and .key > $ran))
+    | [.ticket, .worktree] | @tsv' -r <<<"$now")
+}
+
+# brief_force <name>: refuses brief-<name> when a launch read it, and sets force to --force when it
+# exists and none did (a rerun after a failed launch), else to nothing.
+brief_force() {
+  local used
+  force=()
+  [[ -e $TEAM_HOME/tasks/$task/brief-$1.md ]] || return 0
+  if brief_launched "$1"; then
+    used=$(jq -r --arg b "brief-$1" --arg task "$task" 'map(select(.event == "launch" and .brief == $b)) | last
+      | "\($task)-\(.role) \(.session) at \(.ts)"' <<<"$events")
+    die "brief-$1 was launched already ($used), so it is not launched again"
+  fi
+  force=(--force)
 }
 
 # hand_off <role> <template> <name> <project> <worktree> [<team-brief option>...]: renders the
@@ -757,15 +924,8 @@ log_events() {
 # events, and launches <role> in <worktree> with the toolkits of the task's latest launch of
 # <role>, else of its latest builder launch.
 hand_off() {
-  local role=$1 template=$2 name=$3 project=$4 worktree=$5 used force=() toolkits=() kit kits brief id status
-  if [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]]; then
-    if brief_launched "$name"; then
-      used=$(jq -r --arg b "brief-$name" --arg task "$task" 'map(select(.event == "launch" and .brief == $b)) | last
-        | "\($task)-\(.role) \(.session) at \(.ts)"' <<<"$events")
-      die "brief-$name was launched already ($used), so it is not launched again"
-    fi
-    force=(--force)
-  fi
+  local role=$1 template=$2 name=$3 project=$4 worktree=$5 force=() toolkits=() kit kits brief id status
+  brief_force "$name"
   case $role in builder) kits=$builder_kits ;; *) kits=$reviewer_kits ;; esac
   while IFS= read -r kit; do [[ -z $kit ]] || toolkits+=(--toolkit "$kit"); done <<<"$kits"
 
@@ -780,13 +940,136 @@ hand_off() {
   echo "launched $task-$role $id"
 }
 
-# project_worktree <project>: the task's open worktree in <project>, or a refusal.
+# project_worktree <project>: the task's own open worktree in <project> (never a ticket worktree),
+# or a refusal.
 project_worktree() {
   local worktree
-  worktree=$(ledger_jq '[open_worktrees(.[]; $home) | select(.project == $p)] | last
+  worktree=$(ledger_jq '[open_worktrees(.[]; $home) | select(.project == $p and .ticket == null)] | last
       | select(. != null) | .worktree | tostring' -r --arg p "$1" <<<"$events")
   [[ -n $worktree ]] || die "$task has no open worktree in $1"
   echo "$worktree"
+}
+
+# A ticket's state with what it waits on, as the hand-offs name it: "02 blocked on 01".
+waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
+
+# The plan's caps, the standing approval's parallel (plan_approval in bin/lib/ledger.jq), 1 when it
+# has none; cap_of <phase>: that phase's, the last one for a later phase, refused when the caps are
+# malformed (a hand-edited line).
+caps=$(ledger_jq 'plan_approval.parallel // "1" | tostring' -r <<<"$events")
+cap_of() {
+  local -a list
+  [[ $caps =~ ^[1-3](,[1-3])*$ ]] ||
+    die "$task's latest plan-approved has parallel '$caps', which is not a cap from 1 to 3 per phase joined by commas; log the approval again as step 3 of the manual logs it, with parallel=<caps>"
+  IFS=, read -ra list <<<"$caps"
+  if (($1 <= ${#list[@]})); then echo "${list[$1 - 1]}"; else echo "${list[-1]}"; fi
+}
+
+# launch_ticket <NN> <project> <cap> <the tickets waiting after it>: ticket NN's builder, at cap 1 in
+# the task's worktree as today's hand-off launches it, else in a ticket worktree of its own
+# (team-open --task T<n> --ticket NN, which a rerun reuses) on team-brief --ticket; a room refusal
+# (exit 75) of team-open or team-worker stops the fill, naming NN and the tickets after it.
+launch_ticket() {
+  local n=$1 project=$2 cap=$3 rest=$4 name=build-$1 force=() toolkits=() kit worktree opened brief id rc out said
+  local session=$task-builder
+  brief_force "$name"
+  while IFS= read -r kit; do [[ -z $kit ]] || toolkits+=(--toolkit "$kit"); done <<<"$builder_kits"
+  if ((cap == 1)); then
+    worktree=$(project_worktree "$project") || exit
+    brief=$(sibling team-brief "$task" builder-ticket --project "$project" --name "$name" --set "ticket=$n" "${force[@]}") || exit
+  else
+    # Its reason, the last line it starts with its name (a full pool's list of slots follows it).
+    sibling_said 'team-open: ' team-open --task "$task" --ticket "$n"
+    opened=$out said=${said:-team-open: it gave no reason}
+    if ((rc == 75)); then
+      echo "${0##*/}: no worktree for ticket $n: ${said%:}; ready and waiting for room: $n$rest; run team-next $task --fill once there is room" >&2
+      exit 75
+    fi
+    ((rc == 0)) || exit "$rc"
+    worktree=$(jq -r .worktree <<<"$opened")
+    echo "worktree $worktree for ticket $n"
+    brief=$(sibling team-brief "$task" builder-ticket --ticket "$n" --project "$project" --name "$name" "${force[@]}") || exit
+    session+=-$n
+  fi
+  echo "brief $brief"
+  sibling_said '' team-worker "$task" builder "$worktree" "${toolkits[@]}" -- "Read your brief at $brief"
+  id=$out said=${said:-it printed nothing}
+  if ((rc == 75)); then
+    echo "${0##*/}: no room for $name: the launch said $said; ready and waiting for room: $n$rest; run team-next $task --fill once there is room" >&2
+    exit 75
+  elif ((rc != 0)); then
+    echo "${0##*/}: the launch failed; run the same command again to finish it, which logs nothing twice" >&2
+    exit "$rc"
+  fi
+  echo "launched $session $id"
+}
+
+# fill: launches, in number order (--next's first), each ready ticket of the phase being built (the
+# earliest with a ticket not done) while fewer than its cap run, as the header says, printing one
+# line a step and, when it launched nothing or tickets wait, the line that says why.
+fill() {
+  local tickets phase building cap problem open running_tsv candidates_tsv n alone project k=0 c
+  local -a running=() waiting=() todo=() todo_projects=() bare=() launched=()
+  tickets=$(sibling team-tickets "$task" --json) || exit
+  json_vars phase='.phase' building='.building' problem='.problem' open='.open' \
+    running_tsv='[.running[] | [.ticket, .alone] | @tsv] | join("\n")' \
+    candidates_tsv='[.candidates[] | [.ticket, .alone, .project] | @tsv] | join("\n")' \
+    <<<"$(jq -c --arg n "$next" --arg task "$task" "$waits"'
+    def ph: .phase // 1;
+    ([.[] | select(.state != "done") | ph] | min) as $b
+    | ($b // ([.[] | ph] | max) // 1) as $p
+    | (map(select(.ticket == $n)) | first) as $nx
+    | ([sort_by(.ticket)[] | select(.state != "done" and ph == $p) | waits] | join("; ")) as $open
+    | {phase: $p, building: $b, open: $open,
+       problem: (if $n == "" then null
+         elif $nx == null then "--next \($n) is none of \($task)'"'"'s tickets: they are \(map(.ticket) | sort | join(", "))"
+         elif ($nx.state | IN("ready", "waiting") | not) then "--next \($n) is not ready: \($nx | waits)"
+         elif ($nx | ph) != $b then "--next \($n) is in phase \($nx | ph), but phase \($b) has tickets not done: \($open)"
+         else null end),
+       running: [sort_by(.ticket)[] | select(.state == "running" and ph == $p) | {ticket, alone: (.touches == null)}],
+       candidates: ([$nx | select(. != null)] + [sort_by(.ticket)[] | select(.state == "ready" and ph == $p)]
+         | reduce .[] as $t ([]; if any(.[]; .ticket == $t.ticket) then . else . + [$t] end)
+         | map({ticket, alone: (.touches == null), project}))}' <<<"$tickets")"
+  [[ -z $problem ]] || die "$problem"
+  cap=$(cap_of "$phase") || exit
+  return_done_tickets
+  alone=''
+  while IFS=$'\t' read -r n c; do
+    [[ -n $n ]] || continue
+    running+=("$n") k=$((k + 1))
+    if ((cap > 1)) && [[ $c == true && -z $alone ]]; then alone=$n; fi
+  done <<<"$running_tsv"
+  while IFS=$'\t' read -r n c project; do
+    [[ -z $n ]] || { todo+=("$n") bare+=("$c") todo_projects+=("$project"); }
+  done <<<"$candidates_tsv"
+
+  local i j rest note
+  for ((i = 0; i < ${#todo[@]}; i++)); do
+    n=${todo[i]} note=''
+    ((cap == 1)) || [[ ${bare[i]} != true ]] || note=" (no Touches: line, so it builds alone)"
+    if [[ -n $alone ]] || ((k >= cap)) || [[ -n $note && $k -gt 0 ]]; then
+      waiting+=("$n$note")
+      continue
+    fi
+    rest=''
+    for ((j = i + 1; j < ${#todo[@]}; j++)); do rest+=", ${todo[j]}"; done
+    launch_ticket "$n" "${todo_projects[i]}" "$cap" "$rest"
+    launched+=("$n") running+=("$n") k=$((k + 1))
+    [[ -z $note ]] || alone=$n
+  done
+
+  if ((${#waiting[@]})); then
+    local built
+    built=$(printf '%s\n' "${running[@]}" | sort | paste -sd, - | sed 's/,/, /g')
+    printf -v rest '%s, ' "${waiting[@]}"
+    echo "full: $k of phase $phase's cap $cap build ($built)${alone:+, and $alone builds alone (no Touches: line)}; ready and waiting for a slot: ${rest%, }"
+  elif ((${#launched[@]} == 0)); then
+    if [[ -z $building ]]; then
+      echo "phase $phase's tickets are all done: its deliverer comes from the last ticket's DONE"
+    else
+      echo "nothing to launch: $open"
+    fi
+  fi
 }
 
 # A stow hands a round on only while the latest review (findings, or a pass logged before team-log
@@ -807,6 +1090,13 @@ fi
 if [[ $handoff == none ]]; then
   log_events
   echo "no hand-off for $kind"
+  exit 0
+fi
+
+if [[ $handoff == fill ]]; then
+  ledger_jq 'plan_approval != null' -e <<<"$events" >/dev/null ||
+    die "$task has no plan-approved, so no ticket is launched; approve the plan first (step 3 of the manual)"
+  fill
   exit 0
 fi
 
@@ -882,6 +1172,46 @@ if [[ $handoff == verdict ]]; then
       die "the PR's head $live_head moved past the reviewed head $reviewed, so the pass is not taken; re-review the new head"
   fi
   log_events
+
+  # The reviewer App's check, posted once the review is logged, for a PR of a project whose
+  # agent-review the App posts (own_bar): success for a pass, failure for findings (a pass that
+  # sent findings back is logged as findings), on the reviewed head while it is the PR's head, and
+  # only when the review names that head in full, since a prefix stands for no one commit.
+  posted=''
+  if [[ $pr != null && -n $pr_project ]]; then
+    own=$(own_bar "$pr_project") || exit 1
+    if [[ $(jq -r '.app? // empty' <<<"$own") ]]; then
+      verdict=$(jq -r .verdict <<<"$review")
+      if [[ $pr_error != true && $same != true ]]; then
+        echo "posted no agent-review: the PR's head ${live_head:0:8} moved past the reviewed head $short, whose check would not count"
+      elif [[ ! $reviewed =~ ^[0-9a-fA-F]{40}$ ]]; then
+        echo "posted no agent-review: $task's review names its head $reviewed by a prefix, not in full, so the reviewer App's check is not posted on the PR's head ${live_head:0:8}; a review whose brief records the full head posts it"
+      else
+        posted=failure check_sha=$reviewed summary="$task's review of $short found findings"
+        if [[ $verdict == pass ]]; then posted=success summary="$task's review of $short passed"; fi
+        if [[ $same == true ]]; then check_sha=$live_head; fi
+        errors=$(mktemp)
+        if ! run=$(sibling team-review-check "$pr_url" "$check_sha" "$posted" "$summary" 2>"$errors"); then
+          why=$(grep . "$errors" | tail -n 1) || why=''
+          rm -f -- "$errors"
+          # A check run's id on stdout: the check was posted, and only its token's revoke failed.
+          if [[ $run =~ ^[1-9][0-9]*$ ]]; then
+            echo "posted agent-review $posted on $short as the reviewer App's check run $run, but ${why#team-review-check: }"
+          else
+            {
+              echo "${0##*/}: $task's review of $short is logged, but posting the reviewer App's check on it failed: ${why:-team-review-check failed}"
+              echo "  run: team-review-check $pr_url $check_sha $posted '${summary//\'/\'\\\'\'}'"
+              echo "  then team-next $task again for the next step, which logs nothing twice and posts the check again"
+            } >&2
+            exit 1
+          fi
+        else
+          rm -f -- "$errors"
+          echo "posted agent-review $posted on $short as the reviewer App's check run $run"
+        fi
+      fi
+    fi
+  fi
 
   if [[ $kind == "DONE findings" || $sent != '[]' ]]; then
     if [[ $sent == '[]' ]]; then
@@ -1046,7 +1376,9 @@ json_vars ticket='$reported.ticket | tostring' commits='[$reported.commits[]? | 
   | select(. != null) | "\($task)-\(.role) \(.session) was launched at \(.ts)"' \
   -- --argjson reported "$(jq -c 'map(select(.event == "ticket-done")) | first' <<<"$parsed")" \
   --arg task "$task" <<<"$events"
-[[ -z $after ]] || die "ticket $ticket is already handed off: $after after its ticket-done"
+[[ -z $after || -n $sender_ticket ]] || die "ticket $ticket is already handed off: $after after its ticket-done"
+[[ -z $sender_ticket || $sender_ticket == "$ticket" ]] ||
+  die "$task-builder-$sender_ticket ($sender_session) is ticket $sender_ticket's builder, so its DONE $ticket is not integrated"
 
 tickets=$(sibling team-tickets "$task" --json) || exit
 
@@ -1055,7 +1387,6 @@ tickets=$(sibling team-tickets "$task" --json) || exit
 # NN's, with a ticket not done; empty when none), the ticket chosen (--next's, else that phase's
 # lowest-numbered ready one), whether it is ready or waiting, what it waits on, its phase, its
 # project, and NN's phase's tickets as a list.
-waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
 updated='def updated: map(if .ticket == $t then .state = "done" | .session = null else . end)
   | [.[] | select(.state == "done") | .ticket] as $done
   | map(if .state == "blocked" then (.on - $done) as $on
@@ -1082,20 +1413,30 @@ json_vars known='any(.[]; .ticket == $t)' listed='map(.ticket) | sort | if . == 
   -- --arg t "$ticket" --arg n "$next" <<<"$tickets"
 [[ $known == true ]] || die "$task has no ticket $ticket: its tickets are $listed"
 
-# Every sha is a commit the sending builder's worktree's HEAD holds.
-[[ -d $sender_wt ]] || die "the sending builder's worktree $sender_wt is not on this machine"
-while IFS= read -r sha; do
-  [[ -n $sha ]] || continue
-  if ! commit=$(git -C "$sender_wt" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) ||
-    ! git -C "$sender_wt" merge-base --is-ancestor "$commit" HEAD 2>/dev/null; then
-    die "$sha is not a commit the HEAD of $sender_wt holds, so ticket $ticket is not handed off"
-  fi
-done <<<"$commits"
+# shas_held <worktree>: refused unless every sha is a commit the HEAD of <worktree> holds.
+shas_held() {
+  local sha commit
+  while IFS= read -r sha; do
+    [[ -n $sha ]] || continue
+    if ! commit=$(git -C "$1" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) ||
+      ! git -C "$1" merge-base --is-ancestor "$commit" HEAD 2>/dev/null; then
+      die "$sha is not a commit the HEAD of $1 holds, so ticket $ticket is not handed off"
+    fi
+  done <<<"$commits"
+}
+
+# Every sha is a commit the sending builder's worktree's HEAD holds; a ticket worktree's builder's
+# are checked in the integration's order, under its lock.
+if [[ -z $sender_ticket ]]; then
+  [[ -d $sender_wt ]] || die "the sending builder's worktree $sender_wt is not on this machine"
+  shas_held "$sender_wt"
+fi
 
 # The not-done tickets of the phase being built, each with what it waits on.
 open_list() {
   jq -r --arg t "$ticket" --argjson b "$building" "$updated $waits"' updated | map(select(.state != "done" and (.phase // 1) == $b) | waits) | join("; ")' <<<"$tickets"
 }
+phase_cap=$(cap_of "$phase") || exit
 if [[ -n $next ]]; then
   [[ $chosen != null ]] || die "--next $next is none of $task's tickets: they are $(jq -r --arg t "$ticket" "$updated"' updated | map(.ticket) | join(", ")' <<<"$tickets")"
   [[ $chosen_ok == true ]] || die "--next $next is not ready once $ticket is done: $chosen_waits"
@@ -1105,9 +1446,144 @@ if [[ -n $next ]]; then
     die "--next $next is in phase $chosen_phase, but phase $building has tickets not done: $(open_list)"
 elif [[ -z $building ]]; then
   chosen=deliver
+elif ((phase_cap > 1)) || [[ -n $sender_ticket ]]; then
+  # In a phase whose cap is above 1, or after an integration, the fill hands off, which says why
+  # when it launches nothing.
+  :
 else
   [[ $chosen != null ]] ||
     die "tickets $([[ $phased == false ]] || echo "of phase $building ")remain once $ticket is done, but none is ready: $(open_list); --next <NN> launches a waiting one"
+fi
+# changed_files <worktree> [untracked]: its changes to tracked files, then with untracked its
+# untracked files git does not ignore, joined by ", ", or nothing.
+changed_files() {
+  {
+    git -C "$1" diff --name-only HEAD
+    [[ -z ${2:-} ]] || git -C "$1" ls-files --others --exclude-standard
+  } | paste -sd, | sed 's/,/, /g'
+}
+
+# integrate: ticket NN's tested head fast-forwards the task branch, under the task's lock, as the
+# header says: the five checks, the fast-forward, the copy back of the ticket's file and build
+# notes, the events with the ticket-done's head, and the return of its worktree; a rerun after
+# the ticket-done is logged skips to the return.
+integrate() {
+  local wait=${TEAM_NEXT_LOCK_SECONDS:-60} lock lock_fd ticket_line tw branch task_wt task_branch name
+  local head last tip old dirty on rel src dst file landed
+  local -a copies
+  [[ $wait =~ ^[0-9]+$ ]] || usage_error "TEAM_NEXT_LOCK_SECONDS takes a whole number of seconds, got '$wait'"
+  lock=$HOME/.local/state/agent-team/integrate/$task.lock
+  mkdir -p "${lock%/*}"
+  exec {lock_fd}>>"$lock"
+  # Homebrew's flock refuses -w 0, so no wait is -n.
+  if ! if ((wait == 0)); then flock -n "$lock_fd"; else flock -w "$wait" "$lock_fd"; fi; then
+    echo "${0##*/}: another team-next is integrating a ticket of $task ($lock); run this again" >&2
+    exit 75
+  fi
+  # The ledger as it is under the lock, so a DONE integrated meanwhile is a rerun here.
+  events=$(task_event_array "$task")
+  held=$(ledger_jq "$held_prog" -c --argjson parsed "$parsed" <<<"$events")
+  if ! jq -e 'any(.events[]; .event.event == "ticket-done" and .at != null)' <<<"$held" >/dev/null; then
+    ticket_line=$(ledger_jq '[open_worktrees(.[]; $home) | select(.project == $p and (.ticket == $t or .ticket == null))]
+      | [(map(select(.ticket == $t)) | last), (map(select(.ticket == null)) | last)]
+      | map(if . == null then "", "" else .worktree, .branch end) | .[]' \
+      -r --arg p "$launch_project" --arg t "$ticket" <<<"$events")
+    # One per line, since a tab is IFS whitespace and an empty field between two would collapse.
+    { IFS= read -r tw; IFS= read -r branch; IFS= read -r task_wt; IFS= read -r task_branch; } <<<"$ticket_line"
+    name="$task-builder-$ticket ($sender_session)"
+    [[ -n $tw ]] || die "$task has no open worktree of ticket $ticket, so nothing is integrated"
+    [[ -n $task_wt ]] || die "$task has no open worktree in $launch_project, so nothing is integrated"
+    # 1. The ticket worktree is here, on its ticket branch.
+    [[ -d $tw ]] || die "ticket $ticket's worktree $tw is not on this machine, so nothing is integrated"
+    on=$(git -C "$tw" symbolic-ref -q --short HEAD) || on="a detached HEAD"
+    [[ $on == "$branch" ]] ||
+      die "ticket $ticket's worktree $tw is on $on, not its ticket branch $branch, so nothing is integrated"
+    # 2. Nothing in it is uncommitted.
+    dirty=$(changed_files "$tw" untracked)
+    if [[ -n $dirty ]]; then
+      echo "send to $name: $task your worktree has uncommitted changes ($dirty): commit or remove them, run your checks again and send DONE $ticket again with your head last"
+      exit 0
+    fi
+    # 3. The last sha is its HEAD, and it holds every sha.
+    head=$(git -C "$tw" rev-parse HEAD)
+    last=$(grep . <<<"$commits" | tail -n 1)
+    if [[ $(git -C "$tw" rev-parse -q --verify "$last^{commit}" 2>/dev/null) != "$head" ]]; then
+      echo "send to $name: $task your DONE $ticket must list the head you tested last, the HEAD of your worktree, ${head:0:8}; run your checks on it and send DONE $ticket again"
+      exit 0
+    fi
+    shas_held "$tw"
+    # 4. Its HEAD holds the task branch's tip, unless the tip holds its HEAD: a run that ended
+    # after its fast-forward, with another ticket landed on top since, left it integrated.
+    tip=$(git -C "$task_wt" rev-parse -q --verify "refs/heads/$task_branch") ||
+      die "the task branch $task_branch is not in $task_wt, so nothing is integrated"
+    landed=''
+    [[ $tip == "$head" ]] || ! git -C "$tw" merge-base --is-ancestor HEAD "$tip" || landed=1
+    if [[ -z $landed ]] && ! git -C "$tw" merge-base --is-ancestor "$tip" HEAD; then
+      echo "send to $name: $task the task branch moved: merge $task_branch at ${tip:0:8} into your branch, run your checks again on the merged head and send DONE $ticket again with that head last"
+      exit 0
+    fi
+    # 5. The task worktree is on the task branch, with no changes to tracked files.
+    on=$(git -C "$task_wt" symbolic-ref -q --short HEAD) || on="a detached HEAD"
+    [[ $on == "$task_branch" ]] || die "the task worktree $task_wt is on $on, so nothing fast-forwards it"
+    dirty=$(changed_files "$task_wt")
+    [[ -z $dirty ]] || die "the task worktree $task_wt has changes to $dirty, so nothing fast-forwards it"
+
+    old=$(git -C "$task_wt" rev-parse HEAD)
+    if [[ $old == "$head" ]]; then
+      echo "already integrated ticket $ticket: $task_branch is at ${head:0:8} in $task_wt"
+    elif [[ -n $landed ]]; then
+      echo "already integrated ticket $ticket: $task_branch at ${tip:0:8} holds ${head:0:8} in $task_wt"
+    else
+      git -C "$task_wt" merge -q --ff-only "$head" >&2 ||
+        die "the task branch $task_branch in $task_wt cannot fast-forward to ${head:0:8}; its reason is above"
+      echo "integrated ticket $ticket: $task_branch ${old:0:8}..${head:0:8} in $task_wt"
+    fi
+    # The ticket's file and its build notes, NN.md and NN-*, from the ticket worktree's task directory.
+    rel=$(team_project "$launch_project" task_dir) || exit 1
+    src=$tw/$rel dst=$task_wt/$rel
+    copies=("tickets/$(jq -r --arg t "$ticket" 'map(select(.ticket == $t)) | first | .file | split("/") | last' <<<"$tickets")"
+      "build-notes/$ticket.md")
+    for file in "$src/build-notes/$ticket"-*; do copies+=("build-notes/${file##*/}"); done
+    for file in "${copies[@]}"; do
+      [[ -f $src/$file ]] || continue
+      mkdir -p "$(dirname "$dst/$file")"
+      cp -p -- "$src/$file" "$dst/$file"
+      echo "copied back $dst/$file"
+    done
+    held=$(jq -c --arg head "$head" '.events |= map(if .event.event == "ticket-done" then .event.head = $head else . end)' <<<"$held")
+  fi
+  log_events
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
+}
+
+if [[ -n $sender_ticket ]]; then
+  integrate
+  # The hand-off, read again now that the ticket is done: the deliverer once the phase's tickets
+  # are all done, launched once, else the fill.
+  tickets=$(sibling team-tickets "$task" --json) || exit
+  events=$(task_event_array "$task")
+  building=$(jq -r --arg t "$ticket" --arg n "$next" "$updated"' updated | building // empty' <<<"$tickets")
+  if [[ -n $building ]]; then
+    fill
+    exit 0
+  fi
+  handed=$(jq -r --arg task "$task" --argjson phase "$phase" \
+    --argjson mine "$(jq -c --argjson p "$phase" '[.[] | select((.phase // 1) == $p) | .ticket]' <<<"$tickets")" '
+    ([to_entries[] | select(.value.event == "ticket-done" and (.value.ticket | IN($mine[]))) | .key] | last) as $at
+    | first(.[($at // -1) + 1:][] | select(.event == "launch" and .role == "builder"
+        and ((.brief // "") | startswith("brief-deliver"))))
+    | "\($task)-\(.role) \(.session) was launched at \(.ts) on \(.brief)"' <<<"$events")
+  if [[ -n $handed ]]; then
+    echo "already handed off: $handed"
+    exit 0
+  fi
+  briefs=$(jq -r '[.[] | select(.event == "launch") | .brief | strings] | join("\n")' <<<"$events")
+  chosen=deliver
+elif [[ $chosen != deliver ]] && ((phase_cap > 1)); then
+  log_events
+  fill
+  exit 0
 fi
 
 if [[ $chosen == deliver ]]; then

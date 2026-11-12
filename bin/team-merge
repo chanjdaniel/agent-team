@@ -28,9 +28,13 @@
 #   own (never one of the checks every merge gets), the default word, the task's approved plan: its
 #   latest plan-approved or plan-approval-withdrawn is an approval (plan_approval; none is refused
 #   as no approved plan, a withdrawal naming when and in which message); on the team's own project
-#   (own_project: agent-team by name, by path or by repo) its one reason is that it merges
-#   unattended only behind the reviewer App's check, which is not set up, nothing more read; else
-#   the default is not withdrawn for the PR: the latest merge-default-withdrawn or
+#   (own_project: agent-team by name, by path or by repo) with the reviewer App off (no
+#   bin/lib/review-app) its one reason is that it merges unattended only behind the reviewer App's
+#   check, which is not set up, nothing more read; with the App on, the approval is Daniel's (the
+#   coordinator's or a legacy one is refused, naming that it needs Daniel's) and the base's
+#   protection, read with the base branch, requires agent-review from the App's id with its
+#   enforcement_level everyone, each refused naming what is missing, and the rest holds as for any
+#   project; then the default is not withdrawn for the PR: the latest merge-default-withdrawn or
 #   merge-default-restored of the whole ledger whose scope covers it (task, logged under the PR's
 #   task; the PR's project; or all) is not a withdrawal, which is refused naming its scope, time and
 #   message, never read, and one that is a giving back holds only when Discord shows its message
@@ -63,10 +67,14 @@
 #   task logged no plan approval either), each reason once, and ends with a line saying to ask
 #   Daniel for the per-head word on the head; and every check every merge gets: the PR is open, not
 #   a draft, does not conflict, and targets the project's base; every required check (the base
-#   branch's protection, gh pr checks --required and the project's required_checks) is present on
-#   the head and passed (a skipped one passes); no check on the head is failing or pending;
-#   agent-review is success on the head; no commit of the PR carries an agent attribution line, and
-#   the list read ends at the head.
+#   branch's protection, its contexts and the checks it pins to an App, gh pr checks --required and
+#   the project's required_checks) is present on the head and passed (a skipped one passes); no
+#   check on the head is failing or pending; agent-review is success on the head: on the team's own
+#   project with the reviewer App on, the App's latest agent-review check run whose head_sha is the
+#   head (review_check in pr_part, bin/lib/team.sh), a commit status or another App's check run of
+#   that name refused as not the App's check, on every word, else the check or status gh pr checks
+#   shows; no commit of the PR carries an agent attribution line, and the list read ends at the
+#   head.
 # Then, for a project with local_checks, team-checks runs them on the PR's head (fetched from
 # origin) from the primary checkout, labelled "team-merge T<n>" under the heavy-run lock, and each
 # must pass (exit 75: the lock stayed held, try again later); the head read again after must not
@@ -78,7 +86,8 @@
 # by (naming the Discord message and its author, or "the plan the coordinator approved at <ts>"),
 # project, branch, discord_message and discord_channel (Daniel's message, left out on a plan the
 # coordinator approved), url (the PR's), approval (head for the per-head word, default for the
-# default one), local_checks (the commands that passed on head) when there were any, and
+# default one), local_checks (the commands that passed on head) when there were any, check_run
+# (the reviewer App's agent-review check run's id, on the team's own project with the App on), and
 # phases_left, the phases of the task with a ticket not done, as team-tickets T<n> --json read
 # them just before gh pr merge ([] when every ticket is done, so the task reads merged, else
 # merged-part); a task with no tickets logs none, and a team-tickets that fails logs
@@ -199,14 +208,21 @@ else
   esac
   [[ $(jq -r .base <<<"$facts") == "$base" ]] || merge_reasons+=("PR #$number targets $(jq -r .base <<<"$facts"), not $project's base $base")
   [[ $(jq -r .headRefOid "$scratch/pr") == "$head" ]] || merge_reasons+=("the head moved while it was read (${head:0:7}, then $(jq -r '.headRefOid[:7]' "$scratch/pr")); run team-merge again")
+  # agent-review is the reviewer App's check run on the team's own project with the App on
+  # (review_check, from pr_part), else the check or status of that name gh pr checks shows.
   while IFS= read -r line; do merge_reasons+=("$line"); done < <(jq -r --slurpfile branch "$scratch/branch" '
-    ((.required + ($branch[0].protection.required_status_checks.contexts // [])) | unique) as $required
+    ($branch[0].protection.required_status_checks // {}) as $protected
+    | ((.required + ($protected.contexts // []) + [($protected.checks // [])[] | .context]) | unique) as $required
     | (.checks.passed + .checks.failing + .checks.pending) as $present
     | ($required[] | select(IN($present[]) | not) | "required check \(.) is missing on the head"),
       ([$required[] | select(IN($present[]))] - .checks.passed | .[] | "required check \(.) has not passed on the head"),
       (.checks.failing | select(length > 0) | "checks failing on the head: \(join(", "))"),
       (.checks.pending | select(length > 0) | "checks pending on the head: \(join(", "))"),
-      (.agent_review | select(. != "success") | "agent-review is \(.) on the head, not success")' <<<"$facts")
+      (if .review_check == null then .agent_review | select(. != "success") | "agent-review is \(.) on the head, not success"
+       elif .review_check == "success" then empty
+       elif .review_check == "foreign" then "agent-review on the head is \(.review_check_by), not the reviewer App'"'"'s check"
+       elif .review_check == "missing" then "the reviewer App'"'"'s agent-review check is missing on the head \(.head[:7])"
+       else "the reviewer App'"'"'s agent-review check is \(.review_check) on the head \(.head[:7]), not success" end)' <<<"$facts")
   commits=$(jq -cs 'add // []' "$scratch/commits")
   last=$(jq -r 'last.sha // ""' <<<"$commits")
   [[ $last == "$head" ]] || merge_reasons+=("the PR's commit list ends at ${last:0:7}, not at the head ${head:0:7}, so not every commit could be checked")
@@ -226,10 +242,17 @@ fi
 # The default word's withdrawals and givings back, every task's, each giving back with thread, the
 # latest thread of the task it was logged under, where its message may be read back.
 withdrawals=$(default_events_json) || jq_failed $?
-team_own=false
-if own_project "$project"; then team_own=true; fi
+# The bar the PR's project is held to (own_bar): false, or the team's own with the reviewer App's
+# id, null while it is off; own_off is set for the team's own project with the App off, own_app to
+# the App's id for the team's own project with it on.
+own=$(own_bar "$project") || exit 1
+own_off='' own_app=''
+if [[ $own != false ]]; then
+  own_app=$(jq -r '.app // empty' <<<"$own")
+  if [[ -z $own_app ]]; then own_off=1; fi
+fi
 authority=$(ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)' -c --arg url "${url%/}" \
-  --arg head "${head:-$(jq -r '.head // ""' <<<"$pr")}" --arg project "$project" --argjson own "$team_own" \
+  --arg head "${head:-$(jq -r '.head // ""' <<<"$pr")}" --arg project "$project" --argjson own "$own" \
   --argjson withdrawals "$withdrawals" <<<"$events") || jq_failed $?
 head_word=$(jq -c '.words[] | select(.word == "head")' <<<"$authority")
 default_word=$(jq -c '.words[] | select(.word == "default")' <<<"$authority")
@@ -340,18 +363,19 @@ fi
 
 # The default word, the approved plan, tried when no merge-approved names the PR or the per-head
 # word does not hold for a reason of its own (never one of the checks every merge gets): the
-# ledger's reasons, then, while the approval stands on a project that is not the team's own, the
-# plan's files now against the approval's, a giving back of the default read back, Daniel's
-# message read back for an approval of theirs, and on a head GitHub showed, the PR's branch, a
-# caught-up head against git, and the PR's files read in full, each within the approval's scope when
-# it has one and none on the short list.
+# ledger's reasons, then, while the approval stands, unless on the team's own project with the
+# reviewer App off, the plan's files now against the approval's, a giving back of the default read
+# back, Daniel's message read back for an approval of theirs, and on a head GitHub showed, the PR's
+# branch, a caught-up head against git, and the PR's files read in full, each within the approval's
+# scope when it has one and none on the short list, and on the team's own project the base's
+# protection pinning agent-review to the reviewer App, enforced for everyone.
 # files_read is set once GitHub's list of the PR's files is read in full, PR_CHANGED then holding
 # its paths.
 files_read=''
 if ! jq -e .applies <<<"$head_word" >/dev/null || ((${#head_reasons[@]})); then
   word=default message='' by='' channel=''
   add_reasons default_reasons '.reasons[]' <<<"$default_word"
-  if jq -e .applies <<<"$default_word" >/dev/null && [[ $team_own != true ]]; then
+  if jq -e .applies <<<"$default_word" >/dev/null && [[ -z $own_off ]]; then
     # The plan's files now, hashed as team-log hashed them at the approval (plan_files).
     if plan_now=$(plan_files "$task" 2>"$scratch/plan"); then
       add_reasons default_reasons --argjson now "$plan_now" '.facts | . as $f | select(.plan != null) | .plan as $then
@@ -395,6 +419,16 @@ if ! jq -e .applies <<<"$head_word" >/dev/null || ((${#head_reasons[@]})); then
       by="the plan the coordinator approved at $(jq -r .facts.ts <<<"$default_word")"
     fi
     if [[ -n $head ]]; then
+      # GitHub holds the App's check only once the base's protection requires agent-review from the
+      # App's id, for administrators too; the protection was read with the base branch above.
+      if [[ -n $own_app ]]; then
+        pin=$(ledger_jq 'review_app_pin_problems($app)
+          | if .kind == "pin" then
+              "\($base)'"'"'s protection does not require agent-review from the reviewer App \($app), so GitHub does not hold its check: the team'"'"'s own project merges unattended only once it does"
+            else "\($base)'"'"'s protection enforces its required checks for \(.level), not everyone, so an administrator could merge past them" end' \
+          -r --argjson app "$own_app" --arg base "$base" "$scratch/branch") || jq_failed $?
+        while IFS= read -r line; do if [[ -n $line ]]; then default_reasons+=("$line"); fi; done <<<"$pin"
+      fi
       task_branch=$(jq -r '.facts.branch // empty' <<<"$default_word")
       if [[ -n $task_branch && $branch != "$task_branch" ]]; then
         default_reasons+=("PR #$number comes from $branch, not $task_branch, $task's branch for $project")
@@ -517,11 +551,12 @@ trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-merge: PR #$nu
 ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$merge" --arg head "$head" \
   --arg by "$by" --arg project "$project" --arg branch "$branch" --arg message "$message" --arg channel "$channel" \
   --arg url "$url" --arg approval "$word" --argjson checks "$(printf '%s\n' "${local_checks[@]}" | jq -R . | jq -cs 'map(select(. != ""))')" \
-  --argjson left "${phases_left:-null}" \
+  --argjson left "${phases_left:-null}" --argjson check_run "$(jq '.review_check_run // null' <<<"$facts")" \
   '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
     project: $project, branch: $branch}
     + if $message == "" then {} else {discord_message: $message, discord_channel: $channel} end
     + {url: $url, approval: $approval}
+    + if $check_run == null then {} else {check_run: $check_run} end
     + if $checks == [] then {} else {local_checks: $checks} end
     + if $left == null then {} else {phases_left: $left} end')"
 trap 'rm -rf "$scratch"' EXIT

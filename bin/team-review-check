@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Post agent-review as the reviewer App's check run on the head of a PR whose review the ledger
+# holds, so the check comes from the App's key and from no session's token.
+#
+# Usage: team-review-check <pr url> <sha> <success|failure> <summary>
+#   pr url   https://github.com/<owner>/<name>/pull/<n>, in a registered project's repo
+#   sha      the full 40-hex sha of the PR's head
+#   summary  one line of at most 140 characters, the check run's title and summary
+# Refused, exit 1, posting nothing, each before any later check is read:
+#   a planner, builder, reviewer or ops session (worker_refusal in bin/lib/team.sh), before
+#   anything is read;
+#   the App off: no bin/lib/review-app in this checkout (review_app in bin/lib/team.sh), or one
+#   of any other form than its id=<n> and slug=<s> lines, named;
+#   its key, ~/.config/agent-team/review-app.pem, missing, not a file or not mode 600
+#   (team-secrets restores it, at Daniel's terminal);
+#   a repo no registered project has (registered_pr in bin/lib/team.sh);
+#   a PR no task's pr event names (a trailing slash and the case aside; the latest such event's
+#   task is the PR's);
+#   a ledger whose latest review of the sha, or, for a head team-catch-up made, of the head
+#   exact_reviewed_head in bin/lib/ledger.jq leads back to, is not the verdict asked for, pass for
+#   success and findings for failure, or no such review; each head matched in full, never by a
+#   prefix, so a review logged on a short head stands for no sha, and is named as such;
+#   a sha that is not the PR's head, read with gh pr view.
+# Then it signs a JWT with the key (review_app_jwt: RS256 by openssl, issued 60 seconds back,
+# expiring 9 minutes on), reads the App's installation on the repo (GET
+# /repos/{repo}/installation), mints an installation token for that one repository with checks:
+# write alone (POST /app/installations/{id}/access_tokens), posts the check run (POST
+# /repos/{repo}/check-runs: name agent-review, head_sha the sha, status completed, the conclusion,
+# completed_at now, and the summary as its output's title and summary) and revokes the token
+# (DELETE /installation/token). The JWT and the token go to curl only through --config - on stdin
+# (review_app_api, which reads no ~/.curlrc), never in an argument or a child's environment, and
+# GitHub's answers are held in this script's memory alone, never in a file. Prints the check run's
+# id.
+# A call GitHub refuses, or curl cannot make, ends it, exit 1, naming the call and why, and that
+# nothing was posted, but for a post curl could not finish, which may have reached GitHub and is
+# said to be unknown; once the token is minted it is revoked on every exit, a failed post included,
+# and a revoke that fails is said on stderr (the token expires on its own within the hour), exit
+# 1, after the check run's id when the post was made, so a caller that reads an id on stdout knows
+# the check was posted. A token GitHub answers that is not of a token's characters is never sent.
+# Exit 2, posting nothing: any other command line.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "posts no agent-review check") && die "$why"
+
+[[ $# -eq 4 ]] || usage_error "usage: team-review-check <pr url> <sha> <success|failure> <summary>"
+url=$1 sha=$2 conclusion=$3 summary=$4
+[[ $sha =~ ^[0-9a-f]{40}$ ]] || usage_error "the sha is a full 40-hex commit sha, got '$sha'"
+[[ $conclusion == success || $conclusion == failure ]] ||
+  usage_error "the conclusion is success or failure, got '$conclusion'"
+[[ -n $summary && ! $summary =~ [[:cntrl:]] ]] || usage_error "the summary is one non-empty line"
+((${#summary} <= 140)) || usage_error "the summary is at most 140 characters, got ${#summary}"
+[[ $url =~ ^https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/pull/[1-9][0-9]*$ ]] ||
+  usage_error "not a GitHub pull request URL: $url"
+
+app=$(review_app) || exit 1
+[[ -n $app ]] || die "the reviewer App is off: no bin/lib/review-app names it, so there is no App to post agent-review as"
+read -r app_id _ <<<"$app"
+key=$HOME/.config/agent-team/review-app.pem
+restore="Daniel restores it with team-secrets restore"
+if [[ ! -e $key ]]; then
+  die "the reviewer App's key ~/.config/agent-team/review-app.pem is missing: $restore"
+elif [[ ! -f $key ]]; then
+  die "the reviewer App's key ~/.config/agent-team/review-app.pem is not a file: $restore"
+fi
+mode=$(stat -L -c %a -- "$key")
+[[ $mode == 600 ]] || die "the reviewer App's key ~/.config/agent-team/review-app.pem is mode $mode, not 600: $restore"
+
+pr=$(registered_pr "$url")
+{ read -r _ && read -r repo && read -r number; } <<<"$pr"
+
+# The PR's task: the latest pr event naming the URL.
+task=''
+if [[ -s $TEAM_HOME/ledger.jsonl ]]; then
+  task=$(jq -rnR --arg url "${url,,}" '[inputs | fromjson? | select(type == "object" and .event == "pr"
+    and (.url | strings | rtrimstr("/") | ascii_downcase) == $url) | .task] | last // empty' "$TEAM_HOME/ledger.jsonl")
+fi
+[[ -n $task ]] || die "no task's pr event names $url, so no review of it is logged; nothing posted"
+events=$(task_event_array "$task")
+verdict=$([[ $conclusion == success ]] && echo pass || echo findings)
+refusal=$(ledger_jq 'exact_reviewed_head($sha) as $reviewed
+  | "\($reviewed[:7])\(if exact_head($reviewed; $sha) then "" else " (caught up to \($sha[:7]))" end)" as $named
+  | ([.[] | select(.event == "review" and exact_head(.head; $reviewed))] | last) as $review
+  | ([.[] | select(.event == "review" and same_head(.head; $reviewed))] | last) as $prefix
+  | if $review == null and $prefix != null then
+      "\($task)'"'"'s review of \($prefix.head), at \($prefix.ts // "no time"), names its head by a prefix, not in full, so it stands for no full sha"
+    elif $review == null then "\($task) logged no review of \($named), so no reviewer'"'"'s verdict is there to post"
+    elif $review.verdict != $verdict then
+      "\($task)'"'"'s latest review of \($named), at \($review.ts // "no time"), is \($review.verdict), so agent-review on it is \(
+        if $review.verdict == "pass" then "success" else "failure" end), not \($conclusion)"
+    else empty end' -r --arg sha "$sha" --arg task "$task" --arg verdict "$verdict" --arg conclusion "$conclusion" <<<"$events") ||
+  die "the ledger's reviews of $task cannot be read"
+[[ -z $refusal ]] || die "$refusal; nothing posted"
+
+head=$(gh pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid) || die "gh cannot read the head of $url"
+[[ $head == "$sha" ]] || die "$url moved past $sha: its head is now $head; nothing posted"
+
+scratch=$(mktemp -d)
+token='' posted='' answer=''
+# On every exit once a token is minted, it is revoked; a revoke that fails is said and fails the run,
+# after the check run's id when the post was made.
+finish() {
+  local status=$? code
+  if [[ $token =~ ^[A-Za-z0-9._-]+$ ]]; then
+    if ! code=$(review_app_api DELETE installation/token "$token" 2>"$scratch/curl.err"); then
+      echo "${0##*/}: revoking the App's token failed: $(grep -m1 . "$scratch/curl.err" || echo "curl failed"); it expires on its own within the hour" >&2
+      status=1
+    elif [[ ${code##*$'\n'} != 204 ]]; then
+      answer=${code%$'\n'*}
+      echo "${0##*/}: revoking the App's token failed: $(answered "${code##*$'\n'}"); it expires on its own within the hour" >&2
+      status=1
+    fi
+  fi
+  rm -rf "$scratch"
+  exit "$status"
+}
+trap finish EXIT
+
+# GitHub's answer of HTTP <code>, the body held in $answer, as a reason: answered <code>
+answered() {
+  local message
+  message=$(printf '%s' "$answer" | jq -r '.message // empty' 2>/dev/null) || message=''
+  echo "GitHub answered HTTP $1${message:+: $message}"
+}
+
+# One call as the App, its answer's body in $answer, held in memory alone (a minted token is in
+# it), or the end of the run naming <what> and why, then <after> (by default "nothing posted"):
+# call <what> <expected code> <method> <path> <bearer> [<body file> [<after>]]
+call() {
+  local what=$1 expected=$2 after=${7:-nothing posted} code
+  if ! answer=$(review_app_api "$3" "$4" "$5" "${6:-}" 2>"$scratch/curl.err"); then
+    die "$what failed: $(grep -m1 . "$scratch/curl.err" || echo "curl failed"); $after"
+  fi
+  code=${answer##*$'\n'} answer=${answer%$'\n'*}
+  [[ $code == "$expected" ]] || die "$what failed: $(answered "$code"); nothing posted"
+}
+
+jwt=$(review_app_jwt "$app_id" "$key") || die "the reviewer App's key cannot sign a JWT; nothing posted"
+call "reading the App's installation on $repo" 200 GET "repos/$repo/installation" "$jwt"
+installation=$(printf '%s' "$answer" | jq -r '.id // empty')
+[[ $installation =~ ^[1-9][0-9]*$ ]] ||
+  die "reading the App's installation on $repo failed: GitHub's answer names no installation id; nothing posted"
+jq -n --arg name "${repo#*/}" '{repositories: [$name], permissions: {checks: "write"}}' >"$scratch/mint.json"
+call "minting the App's token for $repo" 201 POST "app/installations/$installation/access_tokens" "$jwt" "$scratch/mint.json"
+# The token is held the moment the answer is read, by a match in this shell with no command run
+# between, so an exit from here on revokes it; one of any other form is never sent, finish's
+# included.
+token_field='"token"[[:space:]]*:[[:space:]]*"([^"]*)"'
+if [[ $answer =~ $token_field ]]; then token=${BASH_REMATCH[1]}; fi
+answer=''
+[[ $token =~ ^[A-Za-z0-9._-]+$ ]] ||
+  die "minting the App's token for $repo failed: GitHub's answer holds no token of the expected form; nothing posted"
+jq -n --arg sha "$sha" --arg conclusion "$conclusion" --arg summary "$summary" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{name: "agent-review", head_sha: $sha, status: "completed", conclusion: $conclusion, completed_at: $at,
+    output: {title: $summary, summary: $summary}}' >"$scratch/check.json"
+# A post curl cannot finish (a timeout, say) may have reached GitHub, so it is not said to be unposted.
+call "posting the agent-review check run on $repo@$sha" 201 POST "repos/$repo/check-runs" "$token" "$scratch/check.json" \
+  "whether GitHub took it is unknown: read the head's agent-review check runs before posting again"
+posted=$(printf '%s' "$answer" | jq -r '.id // empty')
+[[ $posted =~ ^[1-9][0-9]*$ ]] ||
+  die "posting the agent-review check run on $repo@$sha: GitHub's answer names no check run id"
+echo "$posted"

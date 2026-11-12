@@ -4,8 +4,8 @@
 #
 # Usage: team-tickets T<n> [--check | --json | --html <file> | --graph]
 # The tickets are the files tickets/NN-<slug>.md in the task directory (the project's task_dir) of
-# each open worktree of the task, one set whose numbers are the task's: NN is the ticket's
-# two-digit number, which no two files share.
+# each of the task's own open worktrees (never a ticket worktree's copy, team-open --ticket), one
+# set whose numbers are the task's: NN is the ticket's two-digit number, which no two files share.
 # Each ticket has exactly one Blocked by: line, the ticket numbers it waits on, and at most one
 # Waits for: line, an outside condition (a PR, another task), each label optionally bold:
 #   Blocked by: None
@@ -138,7 +138,7 @@ while IFS=$'\t' read -r project worktree; do
   [[ ! -f $task_dir/scope.txt ]] || { scope=$task_dir/scope.txt; scopes+=("$scope"); }
   [[ ! -f $task_dir/spec.md ]] || { spec=$task_dir/spec.md; specs+=("$spec"); }
   dirs_tsv+="$project"$'\t'"$task_dir"$'\t'"$scope"$'\t'"$spec"$'\n'
-done < <(ledger_jq 'open_worktrees(.[]; $home) | [.project, .worktree] | @tsv' -r <<<"$events")
+done < <(ledger_jq 'open_worktrees(.[]; $home) | select(.ticket == null) | [.project, .worktree] | @tsv' -r <<<"$events")
 
 # Each line of the files that counts as a Blocked by:, Waits for:, Phase:, Touches: or Parallel:
 # line, as "<file>\t<line>\t<blocked, waits, phase, touches or parallel>\t<1 when well-formed, else

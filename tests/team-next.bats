@@ -45,7 +45,7 @@ TOML
   # fails and removes it.
   stub_script claude <<'EOF'
 if [[ $* == "agents --json" ]]; then cat "$STUB_FIXTURES/agents" 2>/dev/null || echo '[]'; exit 0; fi
-if [[ $1 == stop ]]; then exit 0; fi
+if [[ $1 == stop || $1 == rm ]]; then exit 0; fi
 if [[ -e $STUB_FIXTURES/fail-once ]]; then
   rm "$STUB_FIXTURES/fail-once"
   echo "claude: could not start the session" >&2
@@ -444,6 +444,7 @@ launched T7-builder c0000001"
   local named="T7's plan approval was withdrawn at 2026-11-01T10:00:00Z in Discord message 1563000000000000047"
   refused "team-next: $named, so no ticket hand-off; approve the plan again first (step 3 of the manual)" T7 -- "T7 DONE 01 $sha done"
   refused "team-next: $named, so no review hand-off; approve the plan again first (step 3 of the manual)" T7 -- "T7 DONE review-ready $sha"
+  refused "team-next: $named, so no fill hand-off; approve the plan again first (step 3 of the manual)" T7 --fill
   # A message that launches no one meets the same refusal once it would hand off.
   launched r0000001 brief-review '[]' reviewer
   refused "team-next: $named, so no verdict hand-off; approve the plan again first (step 3 of the manual)" T7 --from r0000001 -- \
@@ -961,9 +962,10 @@ counts="findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,n
 
 # pr_on_github <head> [<behind_by>] [<checks as JSON>]: the gh stub answers team-state's reads
 # of PR 9 (open, against main, at <head>), its checks (agent-review passed by default), its
-# required checks (none) and the compare of main with <head> (0 behind by default), and the real
+# required checks (none), the compare of main with <head> (0 behind by default), the real
 # team-ci-wait's look at it (the PR's state and head, and no workflow run of the head), so a
-# findings round's look ends on its first look.
+# findings round's look ends on its first look, and, read only with the reviewer App on, the
+# head's agent-review check runs and commit statuses (none).
 pr_on_github() {
   export GH_HEAD=$1 GH_BEHIND=${2:-0}
   export GH_CHECKS=${3:-'[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'}
@@ -978,6 +980,9 @@ case "$*" in
   "pr checks 9 --repo owner/proj"*) echo "$GH_CHECKS" ;;
   "api repos/owner/proj/compare/main...$GH_HEAD --jq .behind_by") echo "$GH_BEHIND" ;;
   "api repos/owner/proj/pulls/9/files --paginate") echo '[{"filename": "one.txt"}]' ;;
+  "api repos/owner/proj/commits/$GH_HEAD/check-runs?check_name=agent-review&filter=latest&per_page=100")
+    echo '{"total_count": 0, "check_runs": []}' ;;
+  "api repos/owner/proj/commits/$GH_HEAD/status") echo '{"state": "pending", "statuses": []}' ;;
   *) echo "unplanned gh call: $*" >&2; exit 1 ;;
 esac
 SH
@@ -1015,7 +1020,7 @@ live() {
 outside_calls() {
   stub_calls curl
   stub_calls gh | jq -c 'select((.[0] == "pr" and (.[1] == "view" or .[1] == "checks"))
-    or (.[0] == "api" and (.[1] | test("/compare/|/pulls/[0-9]+/files$|/actions/runs[?]head_sha="))) | not)'
+    or (.[0] == "api" and (.[1] | test("/compare/|/pulls/[0-9]+/files$|/actions/runs[?]head_sha=|/commits/[0-9a-f]+/(check-runs[?]|status$)"))) | not)'
 }
 
 @test "a pass whose PR head moved past the reviewed head is refused naming both, nothing logged" {
@@ -1584,6 +1589,118 @@ launched T7-builder c0000001"
   [[ $output != *"default word"* ]]
 }
 
+# own_app: proj is the team's own project (its repo the code checkout's origin), with the reviewer
+# App on and team-review-check the stub, which keeps how many reviews the ledger held when called.
+own_app() {
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  review_app_on
+  stub_script team-review-check <<'SH'
+grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl" >>"$STUB_FIXTURES/reviews-at-post"
+echo 4242
+SH
+}
+
+@test "a verdict on a PR of the team's own project with the reviewer App on is taken only from the latest reviewer's session, and its check is posted after the log" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  local pass="T7 DONE pass $url $counts before=none guarded=none" reviews
+  # No --from, or one naming the builder: refused before anything is logged or posted.
+  refused "team-log: the reviewer App posts agent-review on proj, so its verdict is taken only from T7's latest reviewer session, T7-reviewer (r0000002): run it again with --from r0000002 once the message came from that session" \
+    T7 -- "$pass"
+  refused "team-log: --from b0000001 is not T7's latest reviewer session, T7-reviewer (r0000002)" T7 --from b0000001 -- "$pass"
+  assert_equal "$(stub_calls team-review-check)" ""
+  # The latest reviewer's: the review is logged, then the App's check posted on the reviewed head.
+  reviews=$(grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl" || true)
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "$pass"
+  assert_equal "$output" "logged review verdict=pass head=$sha findings={\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0} before=[] guarded=[]
+logged done role=reviewer session=r0000002
+posted agent-review success on ${sha:0:8} as the reviewer App's check run 4242
+merge ask: $url at $sha, agent-review success, checks green"
+  assert_equal "$(stub_calls team-review-check)" "$(jq -cn --arg url "$url" --arg sha "$sha" '[$url, $sha, "success", "T7'"'"'s review of \($sha[:8]) passed"]')"
+  assert_equal "$(cat "$STUB_FIXTURES/reviews-at-post")" "$((reviews + 1))"
+  assert_equal "$(outside_calls)" ""
+  # The manual's review step says so.
+  grep -E '^5\. \*\*Review\.\*\*' "$REPO_ROOT/roles/coordinator.md" |
+    grep -qF 'which `team-next` runs on a verdict where the App is on, taken only with `--from <the reviewer'"'"'s session id>`'
+}
+
+@test "a findings verdict with the reviewer App on posts its check as failure, and a post that fails exits 1 naming the command, the review logged" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 120000
+  local findings="T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:2} before=none guarded=none"
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 --sent-back 3,5 -- "$findings"
+  assert_equal "$(stub_calls team-review-check)" "$(jq -cn --arg url "$url" --arg sha "$sha" '[$url, $sha, "failure", "T7'"'"'s review of \($sha[:8]) found findings"]')"
+  assert_contains "$output" "posted agent-review failure on ${sha:0:8} as the reviewer App's check run 4242"
+  assert_contains "$(tail -n 1 <<<"$output")" "send to T7-builder (b0000001, 120k): T7 fix findings 3 and 5"
+
+  # A post that fails: exit 1 after the command to run again, the review staying logged.
+  launched r0000003 brief-review '["browser"]' reviewer
+  stub_script team-review-check <<'SH'
+echo "team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)" >&2
+exit 1
+SH
+  local before
+  before=$(grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-next T7 --from r0000003 --sent-back 3,5 -- "$findings"
+  assert_equal "$(grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl")" "$((before + 1))"
+  assert_contains "$stderr" "team-next: T7's review of ${sha:0:8} is logged, but posting the reviewer App's check on it failed: team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)"
+  assert_contains "$stderr" "  run: team-review-check $url $sha failure 'T7'\''s review of ${sha:0:8} found findings'"
+  assert_contains "$stderr" "  then team-next T7 again for the next step, which logs nothing twice"
+  [[ $output != *"send to"* ]]
+}
+
+@test "with the reviewer App on, a verdict on the team's own PR needs the latest reviewer's session though that launch names no project" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  event launch "$(jq -cn --arg wt "$wt" '{role: "reviewer", session: "r0000003", worktree: $wt, toolkits: [],
+    branch: "feat/T7-toil", machine: "home-pc", brief: "brief-review"}')"
+  refused "team-log: the reviewer App posts agent-review on proj, so its verdict is taken only from T7's latest reviewer session, T7-reviewer (r0000003): run it again with --from r0000003 once the message came from that session" \
+    T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(stub_calls team-review-check)" ""
+}
+
+@test "with the reviewer App on, a review logged on a short head posts no check on the PR's full head" {
+  own_app
+  reviewing "${sha:0:7}"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(stub_calls team-review-check)" ""
+  assert_contains "$output" "posted no agent-review: T7's review names its head ${sha:0:7} by a prefix, not in full, so the reviewer App's check is not posted on the PR's head ${sha:0:8}; a review whose brief records the full head posts it"
+}
+
+@test "with the reviewer App on, a check posted whose token was not revoked is said as posted, and the step goes on" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  stub_script team-review-check <<'SH'
+echo 4242
+echo "team-review-check: revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour" >&2
+exit 1
+SH
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "posted agent-review success on ${sha:0:8} as the reviewer App's check run 4242, but revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour"
+  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
+}
+
+@test "a findings verdict on a head the PR moved past posts no check with the reviewer App on, and says so" {
+  own_app
+  reviewing "$sha"
+  local moved
+  moved=$(commit two.txt "feat: after the review")
+  pr_on_github "$moved"
+  live b0000001 120000
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 --sent-back 1 -- \
+    "T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:1} before=none guarded=none"
+  assert_equal "$(stub_calls team-review-check)" ""
+  assert_contains "$output" "posted no agent-review: the PR's head ${moved:0:8} moved past the reviewed head ${sha:0:8}, whose check would not count"
+  assert_contains "$(tail -n 1 <<<"$output")" "send to T7-builder (b0000001, 120k): T7 fix findings 1"
+}
+
 @test "a pass with no PR yet, a gated project's, tells the holding builder to go on" {
   sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"
   jq -cn --arg h "$sha" '{template: "reviewer", project: "proj", values: {head: $h}}' >"$TEAM_HOME/tasks/T7/brief-review.json"
@@ -1980,4 +2097,578 @@ launched T7-builder c0000001"
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-next")"
   AGENT_TEAM_ROLE=coordinator run_bin -2 team-next 7
   assert_contains "$output" "usage: team-next T<n>"
+}
+
+# --fill: a phase's ready tickets launched up to its cap, each in a ticket worktree of its own
+# (team-open --task T7 --ticket NN) at a cap above 1, in the task worktree at cap 1.
+
+# fill_ready [<parallel>]: T7 ready for --fill, ticket 01 done: a pool of six slots, the task
+# branch ignoring .scratch/ as team-open --ticket needs, a scope.txt for the tickets' Touches:
+# lines, and a later plan-approved with
+# parallel=<parallel> when one is given.
+fill_ready() {
+  sed -i 's|slots = \["slots/proj/1", "slots/proj/2"\]|slots = ["slots/proj/1", "slots/proj/2", "slots/proj/3", "slots/proj/4", "slots/proj/5", "slots/proj/6"]|' \
+    "$TEAM_HOME/projects.toml"
+  echo ".scratch/" >"$wt/.gitignore"
+  git -C "$wt" add .gitignore
+  git -C "$wt" commit -q -m "chore: ignore scratch"
+  printf '%s\n' two.txt three.txt four.txt five.txt six.txt seven.txt nine.txt >"$wt/.scratch/task/scope.txt"
+  event ticket-done '{ticket: "01", commits: ["0123456"]}'
+  [[ -z ${1:-} ]] || event plan-approved "$(jq -cn --arg p "$1" '{by: "Daniel", parallel: $p}')"
+}
+
+# The launches' facts a fill reads, one a line.
+fill_launches() {
+  jq -c --arg home "$HOME/" 'select(.event == "launch" and .session != "b0000001")
+    | {session, ticket, worktree: (.worktree | ltrimstr($home)), branch, brief, toolkits}' "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "--fill at cap 2 launches the two lowest ready tickets, each in a ticket worktree of its own, and a rerun launches none" {
+  fill_ready 2
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: None" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: None" "Touches: four.txt"
+  ticket 05-fifth "Blocked by: 02" "Touches: five.txt"
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "worktree $HOME/slots/proj/2 for ticket 02
+brief $TEAM_HOME/tasks/T7/brief-build-02.md
+launched T7-builder-02 c0000001
+worktree $HOME/slots/proj/3 for ticket 03
+brief $TEAM_HOME/tasks/T7/brief-build-03.md
+launched T7-builder-03 c0000002
+full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  assert_equal "$(fill_launches)" \
+    '{"session":"c0000001","ticket":"02","worktree":"slots/proj/2","branch":"feat/T7-toil--02","brief":"brief-build-02","toolkits":["browser"]}
+{"session":"c0000002","ticket":"03","worktree":"slots/proj/3","branch":"feat/T7-toil--03","brief":"brief-build-03","toolkits":["browser"]}'
+  assert_equal "$(record build-02)" '{"template":"builder-ticket","values":{"ticket":"02"}}'
+  grep -qF 'You build in a ticket worktree of your own' "$TEAM_HOME/tasks/T7/brief-build-02.md"
+  assert_equal "$(bg_calls | tail -n 1 | jq -r 'last')" "Read your brief at $TEAM_HOME/tasks/T7/brief-build-03.md"
+  # The ticket worktrees hold the task branch's tip and the task directory's copy.
+  assert_equal "$(git -C "$HOME/slots/proj/2" rev-parse HEAD)" "$(git -C "$wt" rev-parse HEAD)"
+  [[ -f $HOME/slots/proj/3/.scratch/task/tickets/03-third.md ]]
+
+  # Both run, so a rerun launches nothing, and says so.
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  assert_equal "$(bg_calls | wc -l)" 2
+  # One done frees its slot for the next ready ticket.
+  event ticket-done '{ticket: "03", commits: ["0123456"]}'
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(tail -n 1 <<<"$output")" "launched T7-builder-04 c0000003"
+  run_bin -0 team-log --check
+}
+
+@test "--fill launches nothing beside a running ticket with no Touches: line, and such a ticket only when none runs" {
+  fill_ready 3
+  ticket 02-second "Blocked by: 01"
+  ticket 03-third "Blocked by: None" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: None" "Touches: four.txt"
+  # 02 has no Touches: line and none runs, so it is launched, alone.
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "worktree $HOME/slots/proj/2 for ticket 02
+brief $TEAM_HOME/tasks/T7/brief-build-02.md
+launched T7-builder-02 c0000001
+full: 1 of phase 1's cap 3 build (02), and 02 builds alone (no Touches: line); ready and waiting for a slot: 03, 04"
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "full: 1 of phase 1's cap 3 build (02), and 02 builds alone (no Touches: line); ready and waiting for a slot: 03, 04"
+  assert_equal "$(bg_calls | wc -l)" 1
+
+  # Once 02 is done, a ready ticket with no Touches: line waits while another runs.
+  event ticket-done '{ticket: "02", commits: ["0123456"]}'
+  ticket 03-third "Blocked by: None"
+  ticket 05-fifth "Blocked by: None" "Touches: five.txt"
+  launched b0000004 brief-build-04
+  # 02's worktree is returned first, so 05 takes its slot.
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "returned $HOME/slots/proj/2 for ticket 02
+worktree $HOME/slots/proj/2 for ticket 05
+brief $TEAM_HOME/tasks/T7/brief-build-05.md
+launched T7-builder-05 c0000002
+full: 2 of phase 1's cap 3 build (04, 05); ready and waiting for a slot: 03 (no Touches: line, so it builds alone)"
+}
+
+@test "--fill --next adds a waiting ticket first, within the cap, and refuses one not ready or of another phase with today's texts" {
+  fill_ready 2
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: 01" "Waits for: T171 merged" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: None" "Touches: four.txt"
+  ticket 05-fifth "Blocked by: 02" "Touches: five.txt"
+  ticket 06-sixth "Blocked by: None" "Phase: 2" "Touches: six.txt"
+  refused "--next 09 is none of T7's tickets: they are 01, 02, 03, 04, 05, 06" T7 --fill --next 09
+  refused "--next 05 is not ready: 05 blocked on 02" T7 --fill --next 05
+  refused "--next 06 is in phase 2, but phase 1 has tickets not done: 02 ready; 03 waiting: T171 merged; 04 ready; 05 blocked on 02" \
+    T7 --fill --next 06
+  # Without --next a waiting ticket is never launched.
+  run_bin -0 --separate-stderr team-next T7 --fill --next 03
+  assert_equal "$(grep '^launched' <<<"$output")" "launched T7-builder-03 c0000001
+launched T7-builder-02 c0000002"
+  assert_equal "$(tail -n 1 <<<"$output")" "full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
+  # A running ticket is not ready either.
+  refused "--next 02 is not ready: 02 running in session c0000002" T7 --fill --next 02
+}
+
+@test "a launch refused for room stops --fill with exit 75 and its line, keeping the worktree, and a rerun launches the rest" {
+  fill_ready 2
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: None" "Touches: three.txt"
+  # Room for one builder of 0.5 GiB and not two.
+  capacity_room $((768 * 1048576))
+  run_bin -75 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "worktree $HOME/slots/proj/2 for ticket 02
+brief $TEAM_HOME/tasks/T7/brief-build-02.md
+launched T7-builder-02 c0000001
+worktree $HOME/slots/proj/3 for ticket 03
+brief $TEAM_HOME/tasks/T7/brief-build-03.md"
+  assert_contains "$stderr" "team-worker: no room for session:builder"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-next: no room for build-03: the launch said $(grep '^team-worker: no room' <<<"$stderr"); ready and waiting for room: 03; run team-next T7 --fill once there is room"
+  assert_equal "$(fill_launches | jq -r .ticket)" "02"
+  [[ -d $HOME/slots/proj/3/.scratch/task ]]
+
+  # With room, a rerun reuses the kept worktree and its unlaunched brief, and launches 03.
+  capacity_room $((16 * 1073741824))
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "worktree $HOME/slots/proj/3 for ticket 03
+brief $TEAM_HOME/tasks/T7/brief-build-03.md
+launched T7-builder-03 c0000002"
+  assert_contains "$stderr" "team-open: T7's ticket 03 already has its worktree $HOME/slots/proj/3"
+  assert_equal "$(jq -c 'select(.event == "worktree-added") | .ticket' "$TEAM_HOME/ledger.jsonl")" '"02"
+"03"'
+}
+
+@test "a ticket worktree the pool has no slot for stops --fill with exit 75 and team-open's reason" {
+  fill_ready 3
+  sed -i 's|slots = \[[^]]*\]|slots = ["slots/proj/1", "slots/proj/2"]|' "$TEAM_HOME/projects.toml"
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: None" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: None" "Touches: four.txt"
+  run_bin -75 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "worktree $HOME/slots/proj/2 for ticket 02
+brief $TEAM_HOME/tasks/T7/brief-build-02.md
+launched T7-builder-02 c0000001"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-next: no worktree for ticket 03: team-open: every slot of proj is taken; ready and waiting for room: 03, 04; run team-next T7 --fill once there is room"
+  assert_equal "$(bg_calls | wc -l)" 1
+}
+
+@test "cap 1's --fill launches the lowest ready ticket in the task worktree only when none runs, and each idle case says why" {
+  # 01 runs, so nothing is launched.
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "nothing to launch: 01 running in session b0000001; 02 blocked on 01; 03 blocked on 01; 04 blocked on 02"
+  fill_ready
+  ticket 05-fifth "Blocked by: None"
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "brief $TEAM_HOME/tasks/T7/brief-build-02.md
+launched T7-builder c0000001
+full: 1 of phase 1's cap 1 build (02); ready and waiting for a slot: 05"
+  assert_equal "$(fill_launches)" \
+    "{\"session\":\"c0000001\",\"ticket\":null,\"worktree\":\"slots/proj/1\",\"branch\":\"feat/T7-toil\",\"brief\":\"brief-build-02\",\"toolkits\":[\"browser\"]}"
+  assert_equal "$(record build-02)" '{"template":"builder-ticket","values":{"ticket":"02"}}'
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "full: 1 of phase 1's cap 1 build (02); ready and waiting for a slot: 05"
+  # A later plan-approved with no parallel returns a parallel task to cap 1.
+  event plan-approved '{by: "Daniel", parallel: "3"}'
+  event plan-approved '{by: "Daniel"}'
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "full: 1 of phase 1's cap 1 build (02); ready and waiting for a slot: 05"
+
+  # Every ticket done: the phase's deliverer comes from the last DONE, never from the fill.
+  for n in 02 03 04 05; do event ticket-done "$(jq -cn --arg n "$n" '{ticket: $n, commits: ["0123456"]}')"; done
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "phase 1's tickets are all done: its deliverer comes from the last ticket's DONE"
+  assert_equal "$(bg_calls | wc -l)" 1
+}
+
+@test "--fill reads each phase's cap from parallel, the last for a later phase, and builds the earliest phase with a ticket not done" {
+  fill_ready 1,2
+  ticket 02-second "Blocked by: 01" "Phase: 2" "Touches: two.txt"
+  ticket 03-third "Blocked by: None" "Phase: 2" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: None" "Phase: 3" "Touches: four.txt"
+  ticket 05-fifth "Blocked by: None" "Phase: 3" "Touches: five.txt"
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(grep '^launched' <<<"$output")" "launched T7-builder-02 c0000001
+launched T7-builder-03 c0000002"
+  for n in 02 03; do event ticket-done "$(jq -cn --arg n "$n" '{ticket: $n, commits: ["0123456"]}')"; done
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(grep '^launched' <<<"$output")" "launched T7-builder-04 c0000003
+launched T7-builder-05 c0000004"
+  # Phase 3's tickets blocked or waiting: nothing ready, each named.
+  event ticket-done '{ticket: "04", commits: ["0123456"]}'
+  event ticket-done '{ticket: "05", commits: ["0123456"]}'
+  ticket 06-sixth "Blocked by: None" "Phase: 3" "Waits for: PR 9" "Touches: six.txt"
+  ticket 07-seventh "Blocked by: 06" "Phase: 3" "Touches: seven.txt"
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "returned $HOME/slots/proj/2 for ticket 04
+returned $HOME/slots/proj/3 for ticket 05
+nothing to launch: 06 waiting: PR 9; 07 blocked on 06"
+}
+
+@test "--fill takes the message forms' task checks, needs plan-approved and takes only --next" {
+  run_bin -2 team-next T7 --fill -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "--fill takes no message"
+  run_bin -2 team-next T7 --fill --from b0000001
+  assert_contains "$output" "--fill takes only --next"
+  run_bin -2 team-next T7 --next 02
+  assert_contains "$output" "missing '--' before the worker's message"
+  run_bin -2 team-next T7 --fill --fill
+  assert_contains "$output" "--fill is given twice"
+  grep -v '"plan-approved"' "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger"
+  cp "$BATS_TEST_TMPDIR/ledger" "$TEAM_HOME/ledger.jsonl"
+  # A builder launched once moves the task past planning, so --fill's own check refuses it.
+  refused "T7 has no plan-approved, so no ticket is launched; approve the plan first (step 3 of the manual)" T7 --fill
+  # Still planning, with no builder launched, the shared guard refuses --fill as a builder's launch.
+  local planning=$BATS_TEST_TMPDIR/planning
+  cp "$TEAM_HOME/ledger.jsonl" "$planning"
+  grep -v '"event":"launch"' "$planning" >"$TEAM_HOME/ledger.jsonl"
+  refused "T7 is a feature task with no approved plan (no plan-approved), so it takes no builder yet" T7 --fill
+  cp "$planning" "$TEAM_HOME/ledger.jsonl"
+  # Caps team-log would refuse, written by hand, refuse the fill and leave other messages as they are.
+  event plan-approved '{by: "coordinator", parallel: "5"}'
+  refused "T7's latest plan-approved has parallel '5', which is not a cap from 1 to 3 per phase joined by commas; log the approval again as step 3 of the manual logs it, with parallel=<caps>" \
+    T7 --fill
+  run_bin -0 team-next T7 -- "T7 QUESTION which file?"
+  assert_equal "$(tail -n 1 <<<"$output")" "no hand-off for QUESTION"
+  event plan-approved '{by: "coordinator"}'
+  event held '{reason: "offline"}'
+  refused "T7 is on Daniel's hold since 2026-11-01T10:00:00Z (held-1): offline; only Daniel's word lifts it" T7 --fill
+  event closed '{archive: [], returned: [], kept: []}'
+  refused "T7 is closed" T7 --fill
+}
+
+@test "a task worktree builder's DONE <NN> in a phase whose cap is above 1 is logged, then hands off to the fill" {
+  fill_ready 2
+  # fill_ready logged 01 done; this DONE is 01's own, so take that line back out.
+  grep -v '"ticket-done"' "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger"
+  cp "$BATS_TEST_TMPDIR/ledger" "$TEAM_HOME/ledger.jsonl"
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: 01" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: 02, 03" "Touches: four.txt"
+  sha=$(git -C "$wt" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 01 ${sha:0:8} the first"
+  assert_equal "$output" "logged ticket-done ticket=01 commits=[\"${sha:0:8}\"] note=the first
+logged done role=builder session=b0000001
+worktree $HOME/slots/proj/2 for ticket 02
+brief $TEAM_HOME/tasks/T7/brief-build-02.md
+launched T7-builder-02 c0000001
+worktree $HOME/slots/proj/3 for ticket 03
+brief $TEAM_HOME/tasks/T7/brief-build-03.md
+launched T7-builder-03 c0000002"
+  # A DONE with others running and none ready is logged, not refused, and launches nothing.
+  launched b0000009 brief-build-09
+  ticket 09-ninth "Blocked by: None" "Touches: nine.txt"
+  ticket 04-fourth "Blocked by: 02, 03, 09" "Touches: four.txt"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 09 ${sha:0:8} the ninth"
+  assert_equal "$output" "logged ticket-done ticket=09 commits=[\"${sha:0:8}\"] note=the ninth
+logged done role=builder session=b0000009
+nothing to launch: 02 running in session c0000001; 03 running in session c0000002; 04 blocked on 02, 03"
+  assert_equal "$(bg_calls | wc -l)" 2
+}
+
+# Integration: a ticket builder's DONE <NN> from its ticket worktree lands as a fast-forward of the
+# task branch in the task worktree, under T7's lock.
+
+# integrate_ready [<NN-slug> <lines>...]: T7 at cap 2 with 02 and 03 ready and 04 blocked on both,
+# then --fill having launched 02 (c0000001, slots/proj/2) and 03 (c0000002, slots/proj/3).
+integrate_ready() {
+  fill_ready 2
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: 01" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: 02, 03" "Touches: four.txt"
+  run_bin -0 team-next T7 --fill
+}
+
+# ticket_wt <NN>: the worktree last given to ticket NN.
+ticket_wt() {
+  jq -r --arg n "$1" 'select(.event == "worktree-added" and .ticket == $n) | .worktree' "$TEAM_HOME/ledger.jsonl" |
+    tail -n 1
+}
+
+# built <NN> <file>: ticket NN's work in its worktree, <file> committed, its ticket's box ticked
+# and its build note written; prints its head.
+built() {
+  local tw
+  tw=$(ticket_wt "$1")
+  echo "$1" >"$tw/$2"
+  git -C "$tw" add "$2"
+  git -C "$tw" commit -q -m "feat: ticket $1"
+  sed -i 's/- \[ \] it works/- [x] it works/' "$tw/.scratch/task/tickets/$1"-*.md
+  mkdir -p "$tw/.scratch/task/build-notes"
+  echo "note $1" >"$tw/.scratch/task/build-notes/$1.md"
+  git -C "$tw" rev-parse HEAD
+}
+
+# tip_merged <NN>: ticket NN's builder merges the task branch's tip; prints the merged head.
+tip_merged() {
+  local tw
+  tw=$(ticket_wt "$1")
+  git -C "$tw" merge -q --no-edit feat/T7-toil
+  git -C "$tw" rev-parse HEAD
+}
+
+# The refs of proj's repository, which a refusal leaves as they were.
+refs() {
+  git -C "$primary" for-each-ref --format='%(refname) %(objectname)'
+}
+
+@test "a ticket builder's DONE fast-forwards the task branch, copies back its ticket and notes, logs head, returns the worktree and fills" {
+  local old head tw count
+  integrate_ready
+  old=$(git -C "$wt" rev-parse HEAD) tw=$(ticket_wt 02)
+  head=$(built 02 two.txt)
+  echo "more" >"$tw/.scratch/task/build-notes/02-more.md"
+  echo "not 02's" >"$tw/.scratch/task/build-notes/03.md"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 02 ${head:0:8} the second"
+  assert_equal "$output" "integrated ticket 02: feat/T7-toil ${old:0:8}..${head:0:8} in $wt
+copied back $wt/.scratch/task/tickets/02-second.md
+copied back $wt/.scratch/task/build-notes/02.md
+copied back $wt/.scratch/task/build-notes/02-more.md
+logged ticket-done ticket=02 commits=[\"${head:0:8}\"] note=the second head=$head
+logged done role=builder session=c0000001
+returned $tw for ticket 02
+nothing to launch: 03 running in session c0000002; 04 blocked on 03"
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
+  grep -qF -- '- [x] it works' "$wt/.scratch/task/tickets/02-second.md"
+  assert_equal "$(cat "$wt/.scratch/task/build-notes/02.md")" "note 02"
+  [[ ! -e $wt/.scratch/task/build-notes/03.md ]]
+  assert_equal "$(logged_from $((count + 1)) | jq -c 'select(.event == "ticket-done" or .event == "worktree-returned")
+    | del(.worktree)')" \
+    "{\"task\":\"T7\",\"event\":\"ticket-done\",\"ticket\":\"02\",\"commits\":[\"${head:0:8}\"],\"note\":\"the second\",\"head\":\"$head\"}
+{\"task\":\"T7\",\"event\":\"worktree-returned\",\"project\":\"proj\",\"branch\":\"feat/T7-toil--02\",\"ticket\":\"02\"}"
+  # The worktree is gone with its branch, which the task branch holds, and the archive kept.
+  [[ ! -d $tw ]]
+  [[ -z $(git -C "$primary" branch --list 'feat/T7-toil--02') ]]
+  assert_contains "$stderr" "deleted feat/T7-toil--02"
+  [[ -f $TEAM_HOME/tasks/T7/scratch--02/build-notes/02.md ]]
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "rm")')" '["rm","c0000001"]'
+  assert_equal "$(bg_calls | wc -l)" 2
+  run_bin -0 team-log --check
+}
+
+@test "a DONE whose base moved, whose last sha is not its HEAD, or from a dirty worktree prints the line to send, changing nothing" {
+  local h2 h3 tip merged tw before
+  integrate_ready
+  h2=$(built 02 two.txt)
+  run_bin -0 team-next T7 -- "T7 DONE 02 $h2 two"
+  h3=$(built 03 three.txt) tw=$(ticket_wt 03) tip=$(git -C "$wt" rev-parse HEAD)
+  before=$(state)$'\n'$(refs)
+
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 03 $h3 three"
+  assert_equal "$output" "send to T7-builder-03 (c0000002): T7 the task branch moved: merge feat/T7-toil at ${tip:0:8} into your branch, run your checks again on the merged head and send DONE 03 again with that head last"
+  assert_equal "$(state)"$'\n'"$(refs)" "$before"
+
+  merged=$(tip_merged 03)
+  before=$(state)$'\n'$(refs)
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 03 ${h3:0:8} three"
+  assert_equal "$output" "send to T7-builder-03 (c0000002): T7 your DONE 03 must list the head you tested last, the HEAD of your worktree, ${merged:0:8}; run your checks on it and send DONE 03 again"
+  assert_equal "$(state)"$'\n'"$(refs)" "$before"
+  refused "abcdef1 is not a commit the HEAD of $tw holds, so ticket 03 is not handed off" \
+    T7 -- "T7 DONE 03 abcdef1 $merged three"
+
+  echo "edited" >"$tw/three.txt"
+  echo "stray" >"$tw/stray.txt"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 03 $merged three"
+  assert_equal "$output" "send to T7-builder-03 (c0000002): T7 your worktree has uncommitted changes (three.txt, stray.txt): commit or remove them, run your checks again and send DONE 03 again with your head last"
+  assert_equal "$(state)"$'\n'"$(refs)" "$before"
+
+  # Clean, merged and listed last, it lands, and the fill launches 04 in the slot 02 gave back.
+  git -C "$tw" checkout -q -- three.txt
+  rm "$tw/stray.txt"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 03 $h3 $merged three"
+  assert_equal "$(head -n 1 <<<"$output")" "integrated ticket 03: feat/T7-toil ${h2:0:8}..${merged:0:8} in $wt"
+  assert_equal "$(tail -n 3 <<<"$output")" "worktree $HOME/slots/proj/2 for ticket 04
+brief $TEAM_HOME/tasks/T7/brief-build-04.md
+launched T7-builder-04 c0000003"
+  # The task branch's history holds each ticket's commit and the builder's merge of the tip.
+  assert_equal "$(git -C "$wt" log --format=%s "${tip}..HEAD")" "Merge branch 'feat/T7-toil' into feat/T7-toil--03
+feat: ticket 03"
+  run_bin -0 team-log --check
+}
+
+@test "a DONE refused before the lock's work: the ticket worktree off its branch, the task worktree moved or edited, another ticket's sender" {
+  local h2 tw2 before
+  integrate_ready
+  h2=$(built 02 two.txt) tw2=$(ticket_wt 02)
+  before=$(refs)
+
+  git -C "$tw2" checkout -q -b side
+  refused "ticket 02's worktree $tw2 is on side, not its ticket branch feat/T7-toil--02, so nothing is integrated" \
+    T7 -- "T7 DONE 02 $h2 two"
+  git -C "$tw2" checkout -q feat/T7-toil--02
+  git -C "$tw2" branch -q -D side
+
+  echo "edited" >>"$wt/one.txt"
+  refused "the task worktree $wt has changes to one.txt, so nothing fast-forwards it" T7 -- "T7 DONE 02 $h2 two"
+  git -C "$wt" checkout -q -- one.txt
+  git -C "$wt" checkout -q -b elsewhere
+  refused "the task worktree $wt is on elsewhere, so nothing fast-forwards it" T7 -- "T7 DONE 02 $h2 two"
+  git -C "$wt" checkout -q feat/T7-toil
+  git -C "$wt" branch -q -D elsewhere
+
+  refused "T7-builder-03 (c0000002) is ticket 03's builder, so its DONE 02 is not integrated" \
+    T7 --from T7-builder-03 -- "T7 DONE 02 $h2 two"
+  mv "$tw2" "$BATS_TEST_TMPDIR/away"
+  refused "ticket 02's worktree $tw2 is not on this machine, so nothing is integrated" T7 -- "T7 DONE 02 $h2 two"
+  mv "$BATS_TEST_TMPDIR/away" "$tw2"
+  assert_equal "$(refs)" "$before"
+}
+
+@test "a rerun after the fast-forward finishes the integration; a builder still busy keeps its worktree until a later run returns it" {
+  local h2 tw count
+  integrate_ready
+  h2=$(built 02 two.txt) tw=$(ticket_wt 02)
+  # A run that ended after its fast-forward.
+  git -C "$wt" merge -q --ff-only "$h2"
+  jq -cn '[{id: "c0000001", sessionId: "c0000001-0000", name: "T7-builder-02", kind: "background", status: "busy", state: "working"}]' \
+    >"$STUB_FIXTURES/agents"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  TEAM_CLOSE_IDLE_SECONDS=0 run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 02 $h2 two"
+  assert_equal "$output" "already integrated ticket 02: feat/T7-toil is at ${h2:0:8} in $wt
+copied back $wt/.scratch/task/tickets/02-second.md
+copied back $wt/.scratch/task/build-notes/02.md
+logged ticket-done ticket=02 commits=[\"$h2\"] note=two head=$h2
+logged done role=builder session=c0000001
+kept $tw: T7-builder-02 c0000001 is still busy; run this again once it is idle; the next team-next run of T7 returns it
+nothing to launch: 03 running in session c0000002; 04 blocked on 03"
+  [[ -d $tw ]]
+
+  # Idle now: the same DONE again logs nothing twice and returns the worktree.
+  jq -cn '[{id: "c0000001", sessionId: "c0000001-0000", name: "T7-builder-02", kind: "background", status: "idle", state: "blocked"}]' \
+    >"$STUB_FIXTURES/agents"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 02 $h2 two"
+  assert_equal "$output" "already logged ticket-done ticket=02 commits=[\"$h2\"] note=two
+already logged done role=builder session=c0000001
+returned $tw for ticket 02
+nothing to launch: 03 running in session c0000002; 04 blocked on 03"
+  assert_equal "$(logged_from $((count + 1)) | jq -r .event)" "ticket-done
+done
+worktree-returned"
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "stop")')" '["stop","c0000001"]'
+}
+
+@test "the deliverer is launched after the phase's last integration, once, and a rerun says it is already handed off" {
+  local h2 h3
+  fill_ready 2
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: 01" "Touches: three.txt"
+  rm "$wt/.scratch/task/tickets/04-fourth.md"
+  run_bin -0 team-next T7 --fill
+  h2=$(built 02 two.txt)
+  run_bin -0 team-next T7 -- "T7 DONE 02 $h2 two"
+  assert_equal "$(tail -n 1 <<<"$output")" "nothing to launch: 03 running in session c0000002"
+  built 03 three.txt >/dev/null
+  h3=$(tip_merged 03)
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 03 $h3 three"
+  assert_equal "$(tail -n 3 <<<"$output")" "returned $HOME/slots/proj/3 for ticket 03
+brief $TEAM_HOME/tasks/T7/brief-deliver.md
+launched T7-builder c0000003"
+  assert_equal "$(jq -c 'select(.event == "launch" and .session == "c0000003") | {brief, ticket, worktree}' "$TEAM_HOME/ledger.jsonl")" \
+    "$(jq -cn --arg wt "$wt" '{brief: "brief-deliver", ticket: null, worktree: $wt}')"
+
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 03 $h3 three"
+  assert_equal "$(head -n 2 <<<"$output")" "already logged ticket-done ticket=03 commits=[\"$h3\"] note=three
+already logged done role=builder session=c0000002"
+  [[ $(tail -n 1 <<<"$output") =~ ^"already handed off: T7-builder c0000003 was launched at "[0-9T:-]+Z" on brief-deliver"$ ]]
+  assert_equal "$(bg_calls | wc -l)" 3
+  run_bin -0 team-log --check
+}
+
+@test "a rerun after the fast-forward finishes the integration though another ticket landed on top since" {
+  local h2 h3 tw2 count
+  integrate_ready
+  h2=$(built 02 two.txt) tw2=$(ticket_wt 02)
+  # A run that ended after its fast-forward, then ticket 03 landing on top of it.
+  git -C "$wt" merge -q --ff-only "$h2"
+  built 03 three.txt >/dev/null
+  h3=$(tip_merged 03)
+  run_bin -0 team-next T7 -- "T7 DONE 03 $h3 three"
+  assert_contains "$output" "integrated ticket 03: feat/T7-toil ${h2:0:8}..${h3:0:8} in $wt"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 02 $h2 two"
+  assert_equal "$(sed -n 1,5p <<<"$output")" "already integrated ticket 02: feat/T7-toil at ${h3:0:8} holds ${h2:0:8} in $wt
+copied back $wt/.scratch/task/tickets/02-second.md
+copied back $wt/.scratch/task/build-notes/02.md
+logged ticket-done ticket=02 commits=[\"$h2\"] note=two head=$h2
+logged done role=builder session=c0000001"
+  assert_contains "$output" "returned $tw2 for ticket 02"
+  assert_contains "$output" "launched T7-builder-04 "
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$h3"
+  assert_equal "$(tail -n +$((count + 1)) "$TEAM_HOME/ledger.jsonl" | jq -r 'select(.event == "ticket-done") | .head')" "$h2"
+}
+
+@test "a DONE whose ticket worktree was returned is refused naming the ticket's worktree, not the task's" {
+  local h2 tw2
+  integrate_ready
+  h2=$(built 02 two.txt) tw2=$(ticket_wt 02)
+  event worktree-returned "$(jq -cn --arg wt "$tw2" '{project: "proj", worktree: $wt, ticket: "02"}')"
+  refused "T7 has no open worktree of ticket 02, so nothing is integrated" T7 -- "T7 DONE 02 $h2 two"
+}
+
+@test "an integration finding the task's lock held past its wait is exit 75 with nothing changed, and a malformed wait exit 2" {
+  local h2 lock before pid
+  integrate_ready
+  h2=$(built 02 two.txt)
+  lock=$HOME/.local/state/agent-team/integrate/T7.lock
+  mkdir -p "${lock%/*}"
+  flock "$lock" -c "touch '$BATS_TEST_TMPDIR/held'; sleep 2" 3>&- &
+  pid=$!
+  until [[ -e $BATS_TEST_TMPDIR/held ]]; do sleep 0.1; done
+  before=$(state)$'\n'$(refs)
+  TEAM_NEXT_LOCK_SECONDS=0 run_bin -75 --separate-stderr team-next T7 -- "T7 DONE 02 $h2 two"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-next: another team-next is integrating a ticket of T7 ($lock); run this again"
+  assert_equal "$(state)"$'\n'"$(refs)" "$before"
+  TEAM_NEXT_LOCK_SECONDS=soon run_bin -2 team-next T7 -- "T7 DONE 02 $h2 two"
+  assert_contains "$output" "TEAM_NEXT_LOCK_SECONDS takes a whole number of seconds, got 'soon'"
+  wait "$pid"
+}
+
+@test "two integrations of one DONE wait on the lock while it is held, then take it in turn, the second reading the first's ticket-done" {
+  local h2 lock before holder first second
+  integrate_ready
+  h2=$(built 02 two.txt)
+  lock=$HOME/.local/state/agent-team/integrate/T7.lock
+  mkdir -p "${lock%/*}"
+  # Held until the marker goes.
+  touch "$BATS_TEST_TMPDIR/hold"
+  flock "$lock" -c "touch '$BATS_TEST_TMPDIR/held'; while [[ -e '$BATS_TEST_TMPDIR/hold' ]]; do sleep 0.1; done" 3>&- &
+  holder=$!
+  until [[ -e $BATS_TEST_TMPDIR/held ]]; do sleep 0.1; done
+  before=$(state)$'\n'$(refs)
+  "$REPO_ROOT/bin/team-next" T7 -- "T7 DONE 02 $h2 two" >"$BATS_TEST_TMPDIR/first" 2>&1 3>&- &
+  first=$!
+  "$REPO_ROOT/bin/team-next" T7 -- "T7 DONE 02 $h2 two" >"$BATS_TEST_TMPDIR/second" 2>&1 3>&- &
+  second=$!
+  # Both wait while it is held: nothing integrated, nothing logged, both still running.
+  sleep 2
+  assert_equal "$(state)"$'\n'"$(refs)" "$before"
+  kill -0 "$first"
+  kill -0 "$second"
+  rm "$BATS_TEST_TMPDIR/hold"
+  wait "$holder"
+  wait "$first"
+  wait "$second"
+  # One integrated it; the other, taking the lock after, read its ticket-done and logged nothing twice.
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/first" "$BATS_TEST_TMPDIR/second" | grep -c '^integrated ticket 02: ')" 1
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/first" "$BATS_TEST_TMPDIR/second" | grep -c '^already logged ticket-done ')" 1
+  assert_equal "$(jq -c 'select(.event == "ticket-done" and .ticket == "02") | .head' "$TEAM_HOME/ledger.jsonl")" "\"$h2\""
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$h2"
+}
+
+@test "every run of team-next returns each open ticket worktree whose ticket is done before its hand-off" {
+  local tw2 tw3
+  integrate_ready
+  tw2=$(ticket_wt 02) tw3=$(ticket_wt 03)
+  event ticket-done '{ticket: "03", commits: ["0123456"]}'
+  run_bin -0 --separate-stderr team-next T7 --from T7-builder-02 -- "T7 QUESTION which file?"
+  assert_equal "$(tail -n 2 <<<"$output")" "returned $tw3 for ticket 03
+no hand-off for QUESTION"
+  [[ ! -d $tw3 ]]
+  # A fill returns a done ticket's worktree before it launches into the slot it frees.
+  event ticket-done '{ticket: "02", commits: ["0123456"]}'
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "returned $tw2 for ticket 02
+worktree $tw2 for ticket 04
+brief $TEAM_HOME/tasks/T7/brief-build-04.md
+launched T7-builder-04 c0000003"
+  # Nothing open is done now, so a run returns nothing.
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$output" "nothing to launch: 04 running in session c0000003"
 }
