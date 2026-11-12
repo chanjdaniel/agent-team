@@ -1823,12 +1823,13 @@ zizmor_problems() {
 ci_jq_problems() {
   local ci=$1 floor id jobs sha='' block checked=()
   floor=$(jq -r '.tools[] | select(.name == "jq") | .min' "$2")
-  # Each Linux job that runs tests/run bats or tests/run toolkits.
-  jobs=$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$ci")
+  # Each Linux job that names tests/run bats or tests/run toolkits anywhere but in a comment, a
+  # run: | block's lines included, by any job id GitHub takes.
+  jobs=$(sed -n '/^jobs:$/,$s/^  \([A-Za-z0-9_-]*\):$/\1/p' "$ci")
   for id in $jobs; do
-    block=$(sed -n '/^jobs:$/,$p' "$ci" | sed -n "/^  $id:\$/,/^  [a-z_-]*:\$/p" | sed '1!{/^  [a-z_-]*:$/d}')
+    block=$(sed -n '/^jobs:$/,$p' "$ci" | sed -n "/^  $id:\$/,/^  [A-Za-z0-9_-]*:\$/p" | sed '1!{/^  [A-Za-z0-9_-]*:$/d}' | grep -v '^ *#')
     grep -qx '    runs-on: ubuntu-.*' <<<"$block" || continue
-    grep -qE '^      - run: tests/run (bats|toolkits)' <<<"$block" || continue
+    grep -qE 'tests/run (bats|toolkits)' <<<"$block" || continue
     checked+=("$id")
     [[ $(sed -n 's/^      JQ_VERSION: //p' <<<"$block") == "$floor" ]] || echo "$id: JQ_VERSION is not tools.lock's jq floor $floor"
     if [[ -z $sha ]]; then
@@ -1838,14 +1839,14 @@ ci_jq_problems() {
       echo "$id: JQ_SHA256 differs from the first job's"
     fi
     # The install step, its version check, then the tests, in that order.
-    grep -xE '      - name: Install jq \$\{\{ env.JQ_VERSION \}\}|      - run: jq --version|      - run: tests/run (bats|toolkits).*' <<<"$block" \
-      | sed -E 's/.*Install jq.*/install/; s/.*jq --version/version/; s/.*tests\/run.*/tests/' | tr '\n' ' ' \
+    grep -xE '      - name: Install jq \$\{\{ env.JQ_VERSION \}\}|      - run: jq --version|.*tests/run (bats|toolkits).*' <<<"$block" \
+      | sed -E 's/.*Install jq.*/install/; s/.*jq --version/version/; s/.*tests\/run.*/tests/' | uniq | tr '\n' ' ' \
       | grep -qx 'install version tests ' || echo "$id: does not install jq and print its version before its tests"
   done
   echo "checked ${checked[*]}"
 }
 
-@test "a Linux test job with no jq, a jq off the floor or another sha256 is named" {
+@test "a Linux test job with no jq, a jq off the floor or another sha256 is named, whatever its id and however it runs the tests" {
   local ci=$BATS_TEST_TMPDIR/ci.yml lock=$BATS_TEST_TMPDIR/tools.lock
   echo '{"tools": [{"name": "jq", "min": "1.8.1"}]}' >"$lock"
   cat >"$ci" <<'YAML'
@@ -1876,9 +1877,27 @@ jobs:
     runs-on: macos-26
     steps:
       - run: tests/run bats --shard "$SHARD/3"
+  Five5:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          servers/install
+          tests/run toolkits
+  six:
+    runs-on: ubuntu-24.04
+    env:
+      JQ_VERSION: 1.8.1
+      JQ_SHA256: 020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
+    steps:
+      - name: Install jq ${{ env.JQ_VERSION }}
+      - run: jq --version
+      # tests/run toolkits runs in Five5.
+      - run: |
+          tests/run bats --shard 1/2
+          tests/run bats --shard 2/2
 YAML
   run -0 ci_jq_problems "$ci" "$lock"
-  assert_equal "$output" $'two: JQ_VERSION is not tools.lock\'s jq floor 1.8.1\ntwo: JQ_SHA256 differs from the first job\'s\ntwo: does not install jq and print its version before its tests\nchecked one two'
+  assert_equal "$output" $'two: JQ_VERSION is not tools.lock\'s jq floor 1.8.1\ntwo: JQ_SHA256 differs from the first job\'s\ntwo: does not install jq and print its version before its tests\nFive5: JQ_VERSION is not tools.lock\'s jq floor 1.8.1\nFive5: JQ_SHA256 differs from the first job\'s\nFive5: does not install jq and print its version before its tests\nchecked one two Five5 six'
 }
 
 @test "a zizmor ignore without an audit or a reason, or a zizmor config, is named" {
