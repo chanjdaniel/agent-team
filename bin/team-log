@@ -95,6 +95,10 @@
 # A gate-run whose cause is base-merge and whose outcome is not aborted, in either form, is logged
 # with one line on stderr saying the gated delivery brief asks no gate run for a base merge; --print,
 # which logs nothing, prints no such line.
+# A wait on a PR's checks after a pass logs each of its ends and each rerun it makes as
+#   team-log T<n> ci url=<url> head=<sha> outcome=<passed|failed|infrastructure|pending> [failed=<JSON array>] [look=true]
+#   team-log T<n> ci-rerun url=<url> head=<sha> check=<name> run=<id> job=<id>
+# as the contract's table below says of each field; run and job are kept as strings of digits.
 # An event of a kind the contract marks pushed at once (Daniel's word: answered, plan-approved,
 # plan-approval-withdrawn, merge-approved, merge-default-withdrawn, merge-default-restored,
 # retro-schedule) is committed and pushed to the team home's origin

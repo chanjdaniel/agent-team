@@ -27,7 +27,8 @@ def line_problems:
   end;
 
 # How the value breaks field <name>'s contract type (a type name, or a list of allowed strings).
-# An id is a Discord id, a string of digits; with $legacy (--check), a whole number too, as
+# An id is a Discord id, a string of digits, and digits any other whole number kept as one (a
+# GitHub run or job id). With $legacy (--check), an id may be a whole number too, as
 # team-log wrote one before the contract typed every Discord id (its digits are the id, since jq
 # keeps a number's literal through tostring). A list of whole numbers whose other items are whole
 # numbers written as strings, as team-log stored sent_back before the contract typed it, passes
@@ -46,6 +47,9 @@ def type_problems($name; $want; $legacy):
     if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a Discord id, a string of digits, got a string that is not one"
     elif type == "number" and $legacy then select(. < 0 or . != floor) | "\($name) must be a Discord id, a string of digits, got a number that is not one"
     else "\($name) must be a Discord id, a string of digits, got \(type | noun)" end
+  elif $want == "digits" then
+    if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a whole number written in digits, got a string that is not one"
+    else "\($name) must be a whole number written in digits, got \(type | noun)" end
   elif type != $want then
     "\($name) must be \($want | noun), got \(type | noun)"
   else empty end;
@@ -82,7 +86,7 @@ def kind_problems($contract; $legacy):
 # starts with [ or { is JSON; any other list is a comma list, each item trimmed, none the empty
 # list, and any other object key:value pairs separated by commas, each trimmed, a value a number
 # when it reads as one. A list of whole numbers holds each item that is a whole number written as
-# a string as the number. A choice, a string or an id, any discord_* field, and a whole number of
+# a string as the number. A choice, a string, an id or digits, any discord_* field, and a whole number of
 # 16 digits or more (which a JSON number cannot hold exactly) are kept as written; anything else is
 # JSON when it parses as JSON, else a string.
 def typed_value($name; $want):
@@ -106,7 +110,7 @@ def typed_value($name; $want):
             else {value: ($parsed | map({key, value: (.value | if test("^-?[0-9]+(\\.[0-9]+)?$") then tonumber else . end)}) | from_entries)}
             end
         end
-    elif ($want | type) == "array" or ($want | IN("string", "id")) or ($name | startswith("discord_"))
+    elif ($want | type) == "array" or ($want | IN("string", "id", "digits")) or ($name | startswith("discord_"))
       or test("^-?[0-9]{16,}$") then {value: .}
     else {value: ((try fromjson catch null) | if . == null or (type == "number" and isnan) then $raw else . end)}
     end
@@ -241,7 +245,7 @@ def pad($width): . + ([range($width - length)] | map(" ") | add // "");
 def field_text($want):
   if ($want | type) == "array" then "\(.) (\($want | join("|")))"
   elif $want == "string" then .
-  elif $want == "id" then "\(.) (id)"
+  elif $want == "id" or $want == "digits" then "\(.) (\($want))"
   else "\(.) (\($want | noun | sub("^an? "; "")))" end;
 
 # The contract as a table, one row per kind: event, writer, fields, "pushed at once" for a push
@@ -1073,6 +1077,39 @@ def reviewed_head($head):
       | if $up == null or $n <= 0 or any($reviewed[]; same_head(.; $h)) then $h
         else back($up.from; $n - 1) end;
     back($head; $ups | length);
+
+# What waits on the checks of a pass, over the task's events, or null: null unless the task's
+# latest review is a pass on one of its PRs not merged, the PR whose head the pass names (by the
+# shorter prefix), else the latest PR whose first pr event came before the pass (a fix's head, which
+# no pr event logs). Else {url, reviewed, head, since, state, reruns}: url the PR's; reviewed the
+# passed head; head the latest caught-up made from it since the pass, followed on through each
+# caught-up made from that one (reviewed_head's rule, forward), else reviewed; state the outcome of
+# the latest ci of head on the PR logged after the pass and that catch-up (passed, failed,
+# infrastructure or pending), waiting when none; since the ts of the latest of the pass, that
+# catch-up and that ci; reruns the names of the checks with a ci-rerun of head on the PR, each once,
+# in the order first rerun. URLs compare with a trailing slash aside.
+def checks_wait:
+  . as $events
+  | def url_of: .url // "" | tostring | rtrimstr("/");
+    ([range(length) | select($events[.].event == "review")] | last) as $r
+  | if $r == null or $events[$r].verdict != "pass" then null
+    else $events[$r] as $pass
+    | [$events[:$r][] | select(.event == "pr") | url_of] as $before
+    | [lifecycle.prs[] | select(url_of as $u | any($before[]; . == $u))] as $prs
+    | (first($prs[] | select(same_head(.head; $pass.head))) // ($prs | last)) as $pr
+    | if $pr == null or $pr.merged then null
+      else ($pr | url_of) as $url
+      | (reduce range($r + 1; length) as $i ({head: $pass.head, at: $r};
+          $events[$i] as $e
+          | if $e.event == "caught-up" and ($e | url_of) == $url and same_head($e.from; .head) then {head: $e.head, at: $i}
+            else . end)) as $up
+      | ([range($up.at + 1; length) | $events[.]
+          | select(.event == "ci" and url_of == $url and same_head(.head; $up.head))] | last) as $ci
+      | {url: $pr.url, reviewed: $pass.head, head: $up.head, since: ($ci.ts // $events[$up.at].ts), state: ($ci.outcome // "waiting"),
+         reruns: (reduce ($events[] | select(.event == "ci-rerun" and url_of == $url and same_head(.head; $up.head)) | .check) as $c
+           ([]; if any(.[]; . == $c) then . else . + [$c] end))}
+      end
+    end;
 
 # Why the task's reviews do not let the default word, given on no head, merge the PR's
 # head $head unasked, one string per reason, none when they do, judged on the latest review of

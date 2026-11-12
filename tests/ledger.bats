@@ -290,6 +290,90 @@ authority_of() {
     | '"${2:-.}"
 }
 
+# checks_wait over the events given, one JSON object each, of T1, after an opened feature task, a
+# minute apart from 2026-11-01T00:01:00Z: waits_of <event>...
+waits_of() {
+  printf '%s\n' "$@" | jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger";
+    [{event: "opened", path: "feature", project: "proj", branch: "feat/T1-x", worktree: "/w/1"}] + . | to_entries
+    | map(.key as $n | {ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1"} + .value)
+    | checks_wait'
+}
+
+# A ci event of PR 5 at <head> with <outcome>, or a ci-rerun of PR 5's check <name> at <head>:
+# ci_of <outcome> <head>; rerun_of <name> <head>
+ci_of() {
+  jq -cn --arg outcome "$1" --arg head "$2" '{event: "ci", url: "https://github.com/o/p/pull/5", head: $head, outcome: $outcome}'
+}
+rerun_of() {
+  jq -cn --arg check "$1" --arg head "$2" '{event: "ci-rerun", url: "https://github.com/o/p/pull/5", head: $head, check: $check, run: "42", job: "43"}'
+}
+
+@test "checks_wait names the head a pass waits on the checks of, its latest wait's end, since when, and the checks rerun on it" {
+  local url=https://github.com/o/p/pull/5
+  local pr='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d4"}'
+  local pass='{"event": "review", "verdict": "pass", "head": "a1b2c3d4"}'
+  local findings='{"event": "review", "verdict": "findings", "head": "a1b2c3d4"}'
+  local up='{"event": "caught-up", "url": "https://github.com/o/p/pull/5", "from": "a1b2c3d4", "head": "b2c3d4e5", "base": "0f0f0f0f"}'
+  local up2='{"event": "caught-up", "url": "https://github.com/o/p/pull/5/", "from": "b2c3d4e5", "head": "c3d4e5f6", "base": "0e0e0e0e"}'
+  local merged='{"event": "merged", "pr": 5, "url": "https://github.com/o/p/pull/5", "merge": "m1", "head": "a1b2c3d4", "by": "Daniel"}'
+  # waiting_on <head> <since> <state> [<reruns>]: the value expected of a wait on PR 5, reviewed at a1b2c3d4.
+  waiting_on() {
+    jq -cn --arg url "$url" --arg head "$1" --arg since "2026-11-01T00:0$2:00Z" --arg state "$3" --argjson reruns "${4:-[]}" \
+      '{url: $url, reviewed: "a1b2c3d4", head: $head, since: $since, state: $state, reruns: $reruns}'
+  }
+  # No review, a findings review last, a pass with no PR, and a pass whose PR merged: no wait.
+  assert_equal "$(waits_of)" "null"
+  assert_equal "$(waits_of "$pr")" "null"
+  assert_equal "$(waits_of "$pr" "$findings")" "null"
+  assert_equal "$(waits_of "$pr" "$pass" "$findings")" "null"
+  assert_equal "$(waits_of "$pass")" "null"
+  assert_equal "$(waits_of "$pr" "$pass" "$merged")" "null"
+  # A pass waits on its own head, since the pass, until a wait ends.
+  assert_equal "$(waits_of "$pr" "$pass")" "$(waiting_on a1b2c3d4 2 waiting)"
+  # A catch-up made from the passed head, and one made from that, moves the wait to the merge.
+  assert_equal "$(waits_of "$pr" "$pass" "$up")" "$(waiting_on b2c3d4e5 3 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$up2")" "$(waiting_on c3d4e5f6 4 waiting)"
+  # A catch-up from another head, or one logged before the pass, does not.
+  assert_equal "$(waits_of "$pr" "$pass" "$up2")" "$(waiting_on a1b2c3d4 2 waiting)"
+  assert_equal "$(waits_of "$pr" "$up" "$pass")" "$(waiting_on a1b2c3d4 3 waiting)"
+  # Each outcome of a wait on the head, a full sha matching it by prefix, sets the state and since.
+  local outcome
+  for outcome in passed failed infrastructure pending; do
+    assert_equal "$(waits_of "$pr" "$pass" "$(ci_of "$outcome" a1b2c3d4e5f60718)")" "$(waiting_on a1b2c3d4 3 "$outcome")"
+  done
+  # The latest wait's end counts; one of another head, of another PR, or logged before the pass
+  # does not.
+  assert_equal "$(waits_of "$pr" "$pass" "$(ci_of pending a1b2c3d4)" "$(ci_of passed a1b2c3d4)")" "$(waiting_on a1b2c3d4 4 passed)"
+  assert_equal "$(waits_of "$pr" "$pass" "$(ci_of passed ffff0000)")" "$(waiting_on a1b2c3d4 2 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$(ci_of passed a1b2c3d4 | jq -c '.url = "https://github.com/o/p/pull/6"')")" "$(waiting_on a1b2c3d4 2 waiting)"
+  assert_equal "$(waits_of "$pr" "$(ci_of failed a1b2c3d4)" "$pass")" "$(waiting_on a1b2c3d4 3 waiting)"
+  # After a catch-up, a wait on the passed head is an old one, and a wait on the merge counts.
+  assert_equal "$(waits_of "$pr" "$pass" "$(ci_of passed a1b2c3d4)" "$up")" "$(waiting_on b2c3d4e5 4 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of passed a1b2c3d4)")" "$(waiting_on b2c3d4e5 3 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)")" "$(waiting_on b2c3d4e5 4 failed)"
+  # The checks rerun on the head, each named once in the order first rerun; a rerun of another
+  # head is not.
+  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'macos-shards (1)' a1b2c3d4)" "$(rerun_of 'test-shards (2)' a1b2c3d4)" \
+    "$(rerun_of 'macos-shards (1)' a1b2c3d4)" "$(rerun_of 'test-shards (3)' ffff0000)")" \
+    "$(waiting_on a1b2c3d4 2 waiting '["macos-shards (1)","test-shards (2)"]')"
+  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'macos-shards (1)' a1b2c3d4)" "$up")" "$(waiting_on b2c3d4e5 4 waiting)"
+}
+
+@test "checks_wait of a task with two PRs is on the PR the pass names by its head, else its latest PR delivered before the pass" {
+  local p='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d4"}'
+  local q='{"event": "pr", "url": "https://github.com/o/q/pull/7", "head": "d4e5f6a7"}'
+  local later='{"event": "pr", "url": "https://github.com/o/r/pull/9", "head": "e5f6a7b8"}'
+  local on='{url, reviewed, head}'
+  assert_equal "$(waits_of "$p" "$q" '{"event": "review", "verdict": "pass", "head": "a1b2c3d4"}' | jq -c "$on")" \
+    '{"url":"https://github.com/o/p/pull/5","reviewed":"a1b2c3d4","head":"a1b2c3d4"}'
+  # A fix's head, which no pr event logs, is on the latest PR delivered before the pass.
+  assert_equal "$(waits_of "$p" "$q" '{"event": "review", "verdict": "pass", "head": "9f9f9f9f"}' "$later" | jq -c "$on")" \
+    '{"url":"https://github.com/o/q/pull/7","reviewed":"9f9f9f9f","head":"9f9f9f9f"}'
+  # A pass on a PR that merged waits on nothing, though another PR is open.
+  assert_equal "$(waits_of "$p" "$q" '{"event": "review", "verdict": "pass", "head": "d4e5f6a7"}' \
+    '{"event": "merged", "pr": 7, "url": "https://github.com/o/q/pull/7", "merge": "m1", "head": "d4e5f6a7", "by": "Daniel"}')" "null"
+}
+
 @test "merge_authority gives the per-head word and then the default word, each with its ledger reasons and facts, and the first that holds" {
   local pass='{"event": "review", "verdict": "pass", "head": "a1b2c3d4", "findings": {"security": 0, "real-data": 0}, "guarded": []}'
   local coordinator='{"event": "plan-approved", "by": "coordinator", "plan": {"tasks/T1/plan.md": "cd34"}, "scope": ["src/"]}'
