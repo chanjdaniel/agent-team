@@ -628,6 +628,7 @@ EOF
 }
 
 @test "a legacy PR's repo comes from its URL, and its project's required checks from the registry" {
+  review_app_off
   # A registry shaped like the team home's, with required checks for agent-team.
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   fixture_ledger T5 22
