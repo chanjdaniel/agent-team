@@ -90,7 +90,10 @@ index_text() {
 # Write the index, under the lock commit_records holds: edit_index
 edit_index() {
   mkdir -p "$queued"
-  index_text >"$index.$$" && mv -f "$index.$$" "$index" || { rm -f "$index.$$"; die "cannot write $index"; }
+  if ! { index_text >"$index.$$" && mv -f "$index.$$" "$index"; }; then
+    rm -f "$index.$$"
+    die "cannot write $index"
+  fi
 }
 
 # How many files the index lists, as "<n> files": counted
@@ -115,7 +118,8 @@ give() {
   {
     printf -- '---\nsummary: %s\ntask: %s\n---\n' "$2" "$3"
     awk 'NR == 1 && $0 == "---" { skip = 1; next } skip && $0 == "---" { skip = 0; next } !skip' "$file"
-  } >"$file.$$" && mv -f "$file.$$" "$file" || { rm -f "$file.$$"; die "cannot write $file"; }
+  } >"$file.$$" || { rm -f "$file.$$"; die "cannot write $file"; }
+  mv -f "$file.$$" "$file" || { rm -f "$file.$$"; die "cannot write $file"; }
 }
 
 # Move the queued lines into front matter, under the lock commit_records holds; sets moved,
@@ -123,10 +127,9 @@ give() {
 edit_migrate() {
   local -a lines kept=()
   local -A texts=() tasks=() order=()
-  local i line body head where text task name resolved home real_queued
+  local i line body head where text task name resolved real_queued
   moved=0 touched=0 left=''
   [[ ! -e $current ]] || mapfile -t lines <"$current"
-  home=$(realpath -m -- "$TEAM_HOME")
   real_queued=$(realpath -m -- "$queued")
   for i in "${!lines[@]}"; do
     line=${lines[i]}
@@ -156,7 +159,10 @@ edit_migrate() {
     touched=$((touched + 1))
   done
   if ((moved)); then
-    printf '%s\n' "${kept[@]}" >"$current.$$" && mv -f "$current.$$" "$current" || { rm -f "$current.$$"; die "cannot write $current"; }
+    if ! { printf '%s\n' "${kept[@]}" >"$current.$$" && mv -f "$current.$$" "$current"; }; then
+      rm -f "$current.$$"
+      die "cannot write $current"
+    fi
   fi
   edit_index
 }

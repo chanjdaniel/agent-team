@@ -286,6 +286,7 @@ ledger_append() {
   [[ " ${LEDGER_TASKS[*]} " == *" $task "* ]] || LEDGER_TASKS+=("$task")
   [[ " ${LEDGER_KINDS[*]} " == *" $event "* ]] || LEDGER_KINDS+=("$event")
   [[ $push != true ]] || LEDGER_PUSH_DUE=1
+  # shellcheck disable=SC2034 # read by team-log
   [[ $inbox != true ]] || LEDGER_INBOX_DUE=1
 }
 
