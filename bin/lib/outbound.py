@@ -3,11 +3,12 @@
 
 Usage: python3 -I outbound.py   (the command on stdin; prints the reason when it uploads)
 
-bin/hooks/command-guard runs this file on a Bash call's code text, as bin/lib/command_text.py
-prints it, and refuses the call when it prints a reason; so every role whose settings layer on
-settings/worker.json gets the refusal, ops among them. It exits 0 either way; input that is not
-UTF-8, or an error of its own, exits 1 naming it on stderr, so the hook refuses: a guard that
-cannot decide refuses.
+bin/lib/command_rules.py's upload row decides each command of a Bash call with _uploads, and
+bin/hooks/command-guard refuses the call with REASON; so every role whose settings layer on
+settings/worker.json gets the refusal, ops among them. Run as a file, it reads a command's text
+on stdin and prints the reason when it uploads; it exits 0 either way, and input that is not
+UTF-8, or an error of its own, exits 1 naming it on stderr. An error in the upload row refuses
+the call too: a guard that cannot decide refuses.
 It decides each simple command the command runs, as command_text.commands walks it (its header
 says which wrappers and command strings that walk passes into: a shell's -c, eval, su's and
 script's -c, env -S, flock -c, what watch and parallel join, find -exec), by the command's name,

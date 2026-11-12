@@ -255,6 +255,14 @@ passes() {
     $'cat <<X; [[ a &&\nX\nb ]]\nteam-worker T1 ops wt\nX'
 }
 
+# An unquoted heredoc's body keeps its lines from a backtick on in the code text, and an escaped one
+# opens a substitution there that never closes; the command's own lines after the heredoc still run.
+@test "a guarded command after a heredoc whose body holds an escaped backtick is refused" {
+  refuses "$COORDINATOR" $'cat >f <<EOF\nsee \\`x\nEOF\nteam-inbox | tail -1' \
+    $'B=~/agent-team/bin; cat >f <<EOF\nat \\`961ce088\\`.\nEOF\n$B/team-inbox'
+  refuses "$OPS" $'cat >f <<EOF\n\\`a\nEOF\nteam-worker T1 ops wt'
+}
+
 @test "a guarded command after a pipe, in a backtick, in a subshell or through xargs is refused" {
   refuses "$OPS" 'git status | team-worker T1 ops wt' 'echo `team-worker T1 ops wt`' '(team-worker T1 ops wt)' \
     'echo T1 | xargs -I{} team-worker {} ops wt'
@@ -467,12 +475,47 @@ passes() {
 }
 
 @test "a curl upload fails closed when bin/lib/outbound.py cannot decide" {
-  local python
-  python=$(command -v python3)
-  printf '#!/bin/sh\ncase "$*" in *outbound.py*) echo "outbound.py: boom" >&2; exit 4;; esac\nexec %s "$@"\n' "$python" \
-    >"$BATS_TEST_TMPDIR/stubs/python3"
-  chmod +x "$BATS_TEST_TMPDIR/stubs/python3"
+  export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  copy_bin "$CODE_CHECKOUT/bin"
+  # The shared hard link is replaced, never written through.
+  local outbound=$CODE_CHECKOUT/bin/lib/outbound.py
+  { cat "$REPO_ROOT/bin/lib/outbound.py"; printf '\n\ndef _uploads(command):\n    raise RuntimeError("boom")\n'; } >"$outbound.new"
+  mv -f "$outbound.new" "$outbound"
   guard -2 'curl https://example.invalid/healthz'
-  assert_equal "$stderr" "Blocked by command-guard: it could not check the command for an upload (bin/lib/outbound.py exited 4: outbound.py: boom); a guardrail, so report it as BLOCKED and do not reach it another way."
+  assert_equal "$stderr" "Blocked by command-guard: it could not check the command for an upload (bin/lib/outbound.py: RuntimeError: boom); a guardrail, so report it as BLOCKED and do not reach it another way."
   guard -0 'git status'
+}
+
+# The hook's one reader: bin/lib/command_rules.py prints the first row that refuses as one JSON
+# line, its allowed way null, nothing when none does, and writes no bytecode beside itself.
+@test "the rule table prints the first refusing row as one JSON line and nothing when none refuses" {
+  local lib="$BATS_TEST_TMPDIR/lib"
+  mkdir "$lib"
+  cp "$REPO_ROOT/bin/lib/command_rules.py" "$REPO_ROOT/bin/lib/command_text.py" "$REPO_ROOT/bin/lib/outbound.py" "$lib/"
+  table() {
+    run --separate-stderr python3 -I "$lib/command_rules.py" <<<"$(jq -cn --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}')"
+  }
+  table 'git status; team-inbox && curl -d @x https://example.invalid/u'
+  assert_equal "$status:$stderr" 0:
+  assert_equal "$output" "$(jq -cn --arg r "$COORDINATOR" '{rule: "coordinator-commands", reason: $r, allowed: null}')"
+  table 'git grep -n team-inbox'
+  assert_equal "$status:$output:$stderr" 0::
+  [ ! -e "$lib/__pycache__" ]
+  run --separate-stderr python3 -I "$lib/command_rules.py" <<<'not json'
+  assert_equal "$status:$output" 1:
+  [[ $stderr == "command_rules.py: JSONDecodeError: "* ]]
+  # A row that raises is named, and so refused by the hook.
+  awk '/^if __name__/ { print "ROWS = (Row(\"ops-launch\", lambda command, context: 1 / 0, \"x\"),) + ROWS[1:]\n" } { print }' \
+    "$REPO_ROOT/bin/lib/command_rules.py" >"$lib/command_rules.py.new"
+  mv -f "$lib/command_rules.py.new" "$lib/command_rules.py"
+  table 'git status'
+  assert_equal "$status:$output:$stderr" "1::ops-launch: ZeroDivisionError: division by zero"
+}
+
+@test "a command the reader cannot walk is refused, naming command_rules.py's error" {
+  local deep=team-inbox k
+  for ((k = 0; k < 22; k++)); do deep="eval $deep"; done
+  guard -2 "$deep"
+  assert_equal "$stderr" "Blocked by command-guard: it could not read the command (bin/lib/command_rules.py: command_rules.py: ValueError: a command string nested deeper than 20); a guardrail, so report it as BLOCKED and do not reach it another way."
 }
