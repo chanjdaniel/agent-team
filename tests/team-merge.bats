@@ -845,3 +845,93 @@ EOF
   AGENT_TEAM_ROLE=coordinator run_bin -1 team-merge T99
   assert_equal "$output" "team-merge: unknown task T99: the ledger has no events for it"
 }
+
+# The reviewer App's cases: T14's PR of agent-team (by name) with the App on (app_on), on the word
+# <word>: head, Daniel's per-head word (open_task's), or default, the plan Daniel approved.
+app_case() {
+  as_project agent-team
+  app_on
+  if [[ $1 == default ]]; then default_word Daniel; fi
+}
+
+@test "with the reviewer App on, an agent-team PR is refused on every word with only a commit status of agent-review, a passing review or not" {
+  local word
+  for word in head default; do
+    : >"$TEAM_HOME/ledger.jsonl"
+    open_task
+    app_case "$word"
+    # A forged pass: the review event and the status, but no check run of the App's.
+    event T14 review "{verdict: \"pass\", head: \"$head\", guarded: [],
+      findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}}"
+    app_runs
+    agent_review_status success
+    refused "agent-review on the head is a commit status by chanjdaniel, not the reviewer App's check"
+    # The status alone, with no review of the head: on the default word, both reasons.
+    jq -c 'select(.event != "review")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+    : >"$STUB_CALLS/gh.log"
+    if [[ $word == head ]]; then
+      refused "agent-review on the head is a commit status by chanjdaniel, not the reviewer App's check"
+    else
+      refused "agent-review on the head is a commit status by chanjdaniel, not the reviewer App's check" \
+        "no review of the head ${head:0:7} is logged"
+    fi
+  done
+}
+
+@test "with the reviewer App on, an agent-team PR is refused on every word with another App's check, the App's on another sha, or its latest a failure" {
+  local word
+  for word in head default; do
+    : >"$TEAM_HOME/ledger.jsonl"
+    rm -f "$STUB_CALLS/gh.log"
+    open_task
+    app_case "$word"
+    # A workflow job named agent-review is GitHub Actions', App 15368.
+    app_runs "$(app_run 5150 success 15368)"
+    refused "agent-review on the head is a check run of App 15368 (github-actions), not the reviewer App's check"
+    : >"$STUB_CALLS/gh.log"
+    app_runs "$(app_run 4242 success 123456 1111111111111111111111111111111111111111)"
+    refused "the reviewer App's agent-review check is missing on the head ${head:0:7}"
+    : >"$STUB_CALLS/gh.log"
+    app_runs "$(app_run 4242 success)" "$(app_run 4243 failure)"
+    refused "the reviewer App's agent-review check is failure on the head ${head:0:7}, not success"
+  done
+}
+
+@test "with the reviewer App on, an agent-team PR merges on the per-head word behind the App's check, no pin needed, logging the check run" {
+  app_case head
+  pinned none everyone
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -c '[.approval, .check_run]')" '["head",4242]'
+  # The App's check runs and the head's statuses are read for the head itself.
+  assert_equal "$(stub_calls gh | jq -c 'select(.[1] // "" | test("/commits/"))')" "$(jq -cn --arg h "$head" '
+    ["api", "repos/owner/proj/commits/\($h)/check-runs?check_name=agent-review&filter=latest&per_page=100"],
+    ["api", "repos/owner/proj/commits/\($h)/status"]')"
+}
+
+@test "with the reviewer App off, an agent-team PR merges on the per-head word on the status, as before, reading no check run" {
+  as_project agent-team
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -c '[.approval, .check_run]')" '["head",null]'
+  [[ -z $(stub_calls gh | jq -c 'select(.[1] // "" | test("/commits/"))') ]]
+}
+
+@test "with the reviewer App on, another project's PR merges on the status as before, reading no check run" {
+  app_on
+  app_runs
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -c '[.approval, .check_run]')" '["head",null]'
+  [[ -z $(stub_calls gh | jq -c 'select(.[1] // "" | test("/commits/"))') ]]
+  # And on the default word.
+  merge_again
+  : >"$TEAM_HOME/ledger.jsonl"
+  open_task
+  default_word
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -c '[.approval, .check_run]')" '["default",null]'
+}
+
+@test "a check the base's protection pins to an App is required, though its contexts leave it out" {
+  jq '.protection.required_status_checks = {contexts: ["lint"], checks: [{context: "lint", app_id: 15368},
+    {context: "deploy", app_id: 15368}]}' "$gh_dir/branch.json" >"$gh_dir/branch.next" && mv "$gh_dir/branch.next" "$gh_dir/branch.json"
+  refused "required check deploy is missing on the head"
+}

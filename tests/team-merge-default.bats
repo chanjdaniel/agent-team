@@ -583,7 +583,8 @@ file_reasons() {
     bin/lib/records bin/lib/code bin/lib/command_text.py bin/lib/outbound.py bin/hooks/git/pre-push \
     bin/hooks/records-git/pre-commit bin/hooks/lease-fence settings/worker.json settings/reviewer.json coordinator.settings.json \
     bin/lib/team.sh bin/lib/platform.sh bin/lib/ledger.jq bin/lib/messages.jq bin/lib/review-app bin/team-next \
-    bin/team-catch-up bin/team-review-check roles/reviewer.md roles/coordinator.md; do
+    bin/team-catch-up bin/team-review-check bin/team-log bin/team-project bin/lib/lifecycle.json roles/reviewer.md \
+    roles/coordinator.md; do
     paths+=("$path")
     expected+=("$path is a guarded path (guardrails): a change there comes back to Daniel")
   done
@@ -819,4 +820,84 @@ caught_up_default() {
     "the latest review of the head ${head:0:7}, at 2026-10-22T05:00:00Z, found the change touching guarded areas: secrets" \
     "$(ask_per_head)"
   [[ $stderr != *"caught up to"* ]]
+}
+
+# T14's PR of agent-team (by name) with the reviewer App on (app_on), its plan approved by
+# <by> (Daniel by default): app_default [<by>]
+app_default() {
+  as_project agent-team
+  app_on
+  default_word "${1:-Daniel}"
+}
+
+# The reasons the default word gives the team's own project with the App on, for a plan not
+# Daniel's: the coordinator's, or a legacy approval.
+OWN_COORDINATOR="the team's own project merges unattended only on a plan Daniel approved, and the coordinator approved T14's at 2026-10-22T02:00:00Z: ask Daniel to approve it"
+OWN_LEGACY="the team's own project merges unattended only on a plan Daniel approved, and T14's approval at 2026-10-22T02:00:00Z is a legacy one, logged with no plan: ask Daniel to approve it"
+
+@test "with the reviewer App on, its check on the head and dev's pin, an agent-team PR on Daniel's plan merges on the default word, logging the check run" {
+  app_default
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events)" "$(jq -cn --arg m "$MERGE_SHA" --arg h "$head" '{task: "T14", event: "merged",
+    pr: 5, merge: $m, head: $h,
+    by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)",
+    project: "agent-team", branch: "feat/T14-tooling", discord_message: "1562661774950400000", discord_channel: "1563",
+    url: "https://github.com/owner/proj/pull/5", approval: "default", check_run: 4242}')"
+  assert_equal "$(reads | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1563/messages/1562661774950400000"
+  assert_equal "$(posts | wc -l)" 2
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+}
+
+@test "with the reviewer App on, an agent-team PR is refused on the default word unless dev's protection pins agent-review to the App, enforced for everyone" {
+  app_default
+  pinned none everyone
+  refused "dev's protection does not require agent-review from the reviewer App 123456, so GitHub does not hold its check: the team's own project merges unattended only once it does" \
+    "$(ask_per_head)"
+  : >"$STUB_CALLS/gh.log"
+  green_pr
+  pinned 15368 everyone
+  refused "dev's protection does not require agent-review from the reviewer App 123456"
+  : >"$STUB_CALLS/gh.log"
+  green_pr
+  pinned 123456 non_admins
+  refused "dev's protection enforces its required checks for non_admins, not everyone, so an administrator could merge past them"
+  # The App's check is still required, on the default word as on every word.
+  : >"$STUB_CALLS/gh.log"
+  green_pr
+  pinned 123456 everyone
+  app_runs
+  refused "the reviewer App's agent-review check is missing on the head ${head:0:7}"
+}
+
+@test "with the reviewer App on, an agent-team PR on a plan the coordinator approved, or a legacy approval, is refused on the default word, naming Daniel's approval" {
+  app_default coordinator
+  refused "$OWN_COORDINATOR" "$(ask_per_head)"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+  jq -c 'select(.event != "plan-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 plan-approved '{by: "Daniel"}'
+  : >"$STUB_CALLS/gh.log"
+  refused "$OWN_LEGACY" "$(ask_per_head)"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+}
+
+@test "with the reviewer App on, an agent-team PR's default word reads its files: its critical list comes back to Daniel, and a changed plan is refused" {
+  app_default
+  files src/tooling.py bin/team-merge bin/lib/review-app
+  scope src/ bin/
+  refused "bin/team-merge is a guarded path (guardrails): a change there comes back to Daniel" \
+    "bin/lib/review-app is a guarded path (guardrails): a change there comes back to Daniel" "$(ask_per_head)"
+  [[ $stderr != *"src/tooling.py is a guarded path"* ]]
+  files src/tooling.py
+  echo "# changed" >"$(SPEC)"
+  : >"$STUB_CALLS/gh.log"
+  refused "the plan changed since its approval at 2026-10-22T02:00:00Z (.scratch/task/spec.md): approve it again"
+}
+
+@test "with the reviewer App off, an agent-team PR on Daniel's plan has the one not-set-up reason, whatever the check runs show" {
+  as_project agent-team
+  default_word Daniel
+  refused "$OWN_REASON" "$(ask_per_head)"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+  [[ -z $(stub_calls gh | jq -c 'select(.[1] // "" | test("/commits/|/files"))') ]]
 }

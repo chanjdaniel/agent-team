@@ -6,7 +6,10 @@
 # Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>]
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
 #        team-next T<n> --fill [--next <NN>]
-#   --from       the sender, as team-log --from-message takes it, when the message cannot tell it
+#   --from       the sender, as team-log --from-message takes it, when the message cannot tell it;
+#                required with a reviewer's verdict when the reviewer App posts agent-review on the
+#                project of a PR of the task, or of its latest reviewer launch: the session id of
+#                that launch
 #   --relay      with an ops session's DONE, the Discord id of the message that relayed its answer,
 #                logged as its done's relay, as team-log --from-message takes it
 #   --sent-back  with a DONE findings message, required, the numbers sent back (none for none), logged
@@ -162,20 +165,32 @@
 # blocking, correctness, security, real-data or note-change finding with no --sent-back list of
 # them (they go back before the merge, so it prints no merge line), and a pass whose PR head on
 # GitHub (team-state T<n> --json) is not the reviewed head, naming both (exit 75 when GitHub
-# cannot be read). Once the review and its done are logged, the last line is what is
-# left for the coordinator, the holder being the task's latest builder launch, under 250k while
-# team-state reads its context under 250,000 tokens or none, and gone when its session is not
-# live. For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks
-# green" (or the failing, pending and missing checks), or "merge on the default word: run
-# team-merge T<n> for ..." instead while the default word, the approved plan, holds on the ledger
-# for the PR at the reviewed head, read once the review is logged (merge_authority in
+# cannot be read); on a project whose agent-review the reviewer App posts, a verdict whose --from
+# is not the session id of the task's latest reviewer launch (team-log's refusal, naming it). For
+# a PR of a project the App posts for (own_bar in bin/lib/team.sh), once the review and its done
+# are logged it runs team-review-check on the reviewed head, success for a pass and failure for
+# findings, its summary "T<n>'s review of <head> passed" or "... found findings", and prints
+# "posted agent-review <conclusion> on <head> as the reviewer App's check run <id>", the merge
+# line then naming that conclusion; findings on a head the PR moved past, and a review naming its
+# head by a prefix, not in full, post nothing and say so; a post that fails exits 1 after naming
+# the team-review-check command, the review staying logged, and a rerun posts it again, but one
+# whose check run was posted and whose token alone was not revoked is said as posted, with why. Once the review and its done are logged, the last line is
+# what is left for the coordinator, the holder being the task's latest builder launch, under
+# 250k while team-state reads its context under 250,000 tokens or none, and gone when its session
+# is not live.
+# For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks green"
+# (or the failing, pending and missing checks; the state the reviewer App's check's, review_check in
+# bin/lib/team.sh's pr_part, on the team's own project with the App on), or "merge on the default
+# word: run team-merge T<n> for ..." instead while the default word, the approved plan, holds on the
+# ledger for the PR at the reviewed head, read once the review is logged (merge_authority in
 # bin/lib/ledger.jq, the derivation team-merge, team-state and team-sweep read: the plan approved
-# and not withdrawn, the PR's project not the team's own by own_project in bin/lib/team.sh, the
-# default not withdrawn for the task, its project or every project, the task's branch logged, the
-# review found no guarded area and no review of the task counted a security or real-data finding
-# or logged no counts); on a merge ask, each guarded area of the six bin/lib/guarded names and
-# each such review named, with ", so the default word does not hold" while the plan stands
-# approved on a project not the team's own, and the before notes to queue as follow-ups; for a PR
+# and not withdrawn, the PR's project not the team's own by own_project in bin/lib/team.sh, or the
+# team's own on a plan Daniel approved with the reviewer App on, the default not withdrawn for the
+# task, its project or every project, the task's branch logged, the review found no guarded area and
+# no review of the task counted a security or real-data finding or logged no counts); on a merge
+# ask, each guarded area of the six bin/lib/guarded names and each such review named, with ", so the
+# default word does not hold" while the plan stands approved on a project not the team's own, or the
+# team's own with the reviewer App on, and the before notes to queue as follow-ups; for a PR
 # behind its base, "merge base: ..." instead, read with base_merge in the project's primary checkout
 # once the PR's branch and the base are fetched there: "run team-catch-up T<n>, which needs no
 # rereview" when the reviewed head merges the base cleanly, then "then, once the checks pass on its
@@ -857,6 +872,46 @@ if [[ $handoff == verdict ]]; then
   fi
   log_events
 
+  # The reviewer App's check, posted once the review is logged, for a PR of a project whose
+  # agent-review the App posts (own_bar): success for a pass, failure for findings (a pass that
+  # sent findings back is logged as findings), on the reviewed head while it is the PR's head, and
+  # only when the review names that head in full, since a prefix stands for no one commit.
+  posted=''
+  if [[ $pr != null && -n $pr_project ]]; then
+    own=$(own_bar "$pr_project") || exit 1
+    if [[ $(jq -r '.app? // empty' <<<"$own") ]]; then
+      verdict=$(jq -r .verdict <<<"$review")
+      if [[ $pr_error != true && $same != true ]]; then
+        echo "posted no agent-review: the PR's head ${live_head:0:8} moved past the reviewed head $short, whose check would not count"
+      elif [[ ! $reviewed =~ ^[0-9a-fA-F]{40}$ ]]; then
+        echo "posted no agent-review: $task's review names its head $reviewed by a prefix, not in full, so the reviewer App's check is not posted on the PR's head ${live_head:0:8}; a review whose brief records the full head posts it"
+      else
+        posted=failure check_sha=$reviewed summary="$task's review of $short found findings"
+        if [[ $verdict == pass ]]; then posted=success summary="$task's review of $short passed"; fi
+        if [[ $same == true ]]; then check_sha=$live_head; fi
+        errors=$(mktemp)
+        if ! run=$(sibling team-review-check "$pr_url" "$check_sha" "$posted" "$summary" 2>"$errors"); then
+          why=$(grep . "$errors" | tail -n 1) || why=''
+          rm -f -- "$errors"
+          # A check run's id on stdout: the check was posted, and only its token's revoke failed.
+          if [[ $run =~ ^[1-9][0-9]*$ ]]; then
+            echo "posted agent-review $posted on $short as the reviewer App's check run $run, but ${why#team-review-check: }"
+          else
+            {
+              echo "${0##*/}: $task's review of $short is logged, but posting the reviewer App's check on it failed: ${why:-team-review-check failed}"
+              echo "  run: team-review-check $pr_url $check_sha $posted '${summary//\'/\'\\\'\'}'"
+              echo "  then team-next $task again for the next step, which logs nothing twice and posts the check again"
+            } >&2
+            exit 1
+          fi
+        else
+          rm -f -- "$errors"
+          echo "posted agent-review $posted on $short as the reviewer App's check run $run"
+        fi
+      fi
+    fi
+  fi
+
   if [[ $kind == "DONE findings" || $sent != '[]' ]]; then
     if [[ $sent == '[]' ]]; then
       echo "no hand-off: the review sent nothing back, so there is no fix round"
@@ -960,8 +1015,7 @@ if [[ $handoff == verdict ]]; then
   # registered project.
   default=null
   if [[ -n $pr_project ]]; then
-    own=false
-    if (own_project "$pr_project"); then own=true; fi
+    own=$(own_bar "$pr_project") || exit 1
     withdrawals=$(default_events_json) || exit 1
     default=$(task_event_array "$task" | ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)
       | .words[] | select(.word == "default") | .own = $own' -c --arg url "${url%/}" --arg head "$reviewed" \
@@ -971,12 +1025,12 @@ if [[ $handoff == verdict ]]; then
   # once the merge's checks pass, with no checks of the head it was made from.
   ledger_jq '
     (.pr | if $caught != "" then "\(.url) at \(.head)"
-      else "\(.url) at \(.head), agent-review \(.agent_review), "
+      else "\(.url) at \(.head), agent-review \(if $posted != "" then $posted else .review_check // .agent_review end), "
         + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
             (.checks.pending | select(. != []) | "pending: \(join(", "))"),
             (.required_missing | select(. != []) | "missing: \(join(", "))")]
           | if . == [] then "checks green" else "checks \(join("; "))" end) end) as $facts
-    | ($default != null and $default.applies and ($default.own | not)) as $applies
+    | ($default != null and $default.applies and ($default.own == false or $default.own.app != null)) as $applies
     | (if $applies then ", so the default word does not hold" else "" end) as $held
     | [($review.guarded // [])[] | select(IN(guarded_areas[]))] as $guarded
     | (if $caught != "" then "then, once the checks pass on its merge: " else "" end)
@@ -987,7 +1041,7 @@ if [[ $handoff == verdict ]]; then
     + (if $held != "" and $risky != [] then "; \($risky | and_text)\($held)" else "" end)
     + (if $before == "" then "" else "; queue before notes \($before) as follow-ups and say where each went" end)' \
     -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg caught "$caught" \
-    --arg before "$before" --argjson default "$default" <<<"$state"
+    --arg before "$before" --argjson default "$default" --arg posted "$posted" <<<"$state"
   exit 0
 fi
 

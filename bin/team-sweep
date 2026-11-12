@@ -6,8 +6,9 @@
 # Reads only ledger.jsonl, claude agents --json, team-capacity plan --json (from the stored
 # readings), team-timers health --json (the health view, from the heartbeat's health record, the
 # lease record and the fence file, asked for at most 10 s, and only on a machine with a team
-# name), the registry while an open task awaits merge with its plan approved (which projects are
-# the team's own, for merge-due, below) and, through
+# name), the registry and bin/lib/review-app while an open task awaits merge with its plan approved
+# (which projects are the team's own and whether the reviewer App is on, for merge-due, below)
+# and, through
 # bin/lib/session-activity, the live sessions' transcripts: their modification times, and from a
 # session's quiet past the default limit only its times, tool names, tool call ids, commands and
 # background task marks (never GitHub, never a tool's output or a message's text, and never a new
@@ -61,7 +62,8 @@
 #                  holds on the ledger (merge_authority in bin/lib/ledger.jq, the derivation
 #                  team-merge and team-state read too: the plan approved and not withdrawn, the
 #                  PR's project, its latest pr event's or else the task's opened one's, not the
-#                  team's own, by own_project in bin/lib/team.sh, the default not withdrawn for the
+#                  team's own, by own_project in bin/lib/team.sh, or the team's own on a plan
+#                  Daniel approved with the reviewer App on, the default not withdrawn for the
 #                  task, its project or every project by the latest merge-default-withdrawn or
 #                  merge-default-restored of any task covering it, the task's branch logged, and
 #                  the latest review of the latest head the task logged for the PR a pass that
@@ -251,12 +253,13 @@ health_view() {
   rm -f "$out" "$err"
 }
 
-# The registered projects that are the team's own (own_projects in bin/lib/team.sh) as one JSON
-# array, read only while an open task awaits merge with its plan approved (default_may_hold), else
-# []; null with a registry it cannot read, saying why on stderr.
+# The registered projects that are the team's own and the reviewer App's id, own_projects' JSON in
+# bin/lib/team.sh, read only while an open task awaits merge with its plan approved
+# (default_may_hold), else no project and no App; null with a registry it cannot read, saying why
+# on stderr.
 own_covered() {
   local found err
-  if ! ledger_jq 'ledger_events | default_may_hold' -nRe "$ledger" >/dev/null; then echo '[]'; return; fi
+  if ! ledger_jq 'ledger_events | default_may_hold' -nRe "$ledger" >/dev/null; then echo '{"projects": [], "app": null}'; return; fi
   err=$(mktemp)
   if found=$(own_projects 2>"$err"); then
     printf '%s\n' "$found"

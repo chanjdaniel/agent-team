@@ -37,6 +37,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `reading.sh`: one reading of the machine's load (its memory, its processes by directory and descent, the team's stacks), which `team-capacity sample` takes.
     - `records`: the team home's paths, which no tracked path matches.
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.
+    - `review-app`: the reviewer App's id and slug, one `id=<n>` and one `slug=<s>` line, a committed constant; with no such file the App is off and agent-team merges on the per-head word alone.
     - `session-activity`: how long each live session's transcripts have gone unwritten, and the tool calls still running in a quiet one, for `team-sweep`'s stalled finding.
     - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings, with the keys no longer read since the level's budget admits a stack.
     - `stow.sh`: `team-stow`'s steps, which `team-handoff` takes through `team-stow`: each task's branches checked and pushed, its `stowing` logged, its sessions stopped, its ops session ended, its `stowed` logged, or its `stow-failed` when a later step refuses it or the run stops.
@@ -128,6 +129,7 @@ It holds:
 
 - The code repository changes only through pull requests to `dev`, and nothing is committed on `main`, which a release fast-forwards from `dev`.
 - GitHub holds the rule: `dev`'s protection requires a pull request, refuses force pushes and deletion, and applies to administrators.
+- Once `dev`'s protection pins it, `dev` also requires `agent-review` as the reviewer App's check run, which `team-review-check` posts, signed with the App's key `~/.config/agent-team/review-app.pem` (mode 600, restored by `team-secrets`, denied to the workers' and the coordinator's `Read` and Bash), and which `team-merge` requires on the head of every agent-team PR while `bin/lib/review-app` names the App; `team-doctor`'s `review app` line holds the key, the id and the pin together, and `sops/merging.md` says what the App proves and Daniel's steps to set it up.
 - Records never come here: every tracked path is code, listed in `bin/lib/code`, and none matches `bin/lib/records`; `tests/repo.bats` checks both, so a new path is listed as code in its PR.
 - Git runs `bin/hooks/git/` as the code checkout's hooks once it has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks; they are the local guard, and need no team home.
   Its `pre-commit` (and `pre-merge-commit`) refuses every commit on `dev` and on `main`, and on any other branch a commit that adds or changes a records path, naming each.
@@ -184,7 +186,7 @@ It holds:
 - The ledger changes only through the library's `ledger_append`, which checks each event against `bin/lib/ledger-contract.json` and that the script is its kind's writer, or one of them, and, under the ledger's lock, a `refusing_writers` script's event against the task's state by `bin/lib/lifecycle.json`; a new kind or field goes in the contract first.
   A kind the contract marks `"push": true` (Daniel's word or an outside fact) is committed and pushed the moment it is logged by the library's `ledger_push`, which each of its writers calls once after its last event, as `tests/repo.bats` holds.
 - The registry is read only through `team-project`; a new key goes in its key lists and in its header, which documents every key.
-- A script reaches Discord's API only through `discord_api` and GitHub through `gh`, and never prints a secret.
+- A script reaches Discord's API only through `discord_api` and GitHub through `gh`, but for the reviewer App's calls, which go through `review_app_api` and `curl`, since `gh` takes a token only from its environment or its login; and it never prints a secret.
 
 ## Markdown
 

@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, memory_setting, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, own_projects, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
+# own_project, own_projects, own_bar, review_app, base64url, review_app_jwt, review_app_api, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
 # discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_merge_authority, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, OPS_REQUEST_MAX_AGE, and
 # LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push.
@@ -1661,18 +1661,89 @@ own_project() {
   [[ ${BASH_REMATCH[1],,} == "$(jq -r '.repo | ascii_downcase' <<<"$project")" ]]
 }
 
-# The registered projects that are the team's own (own_project), as one JSON array in the
-# registry's order, which merge_authority's readers take as own_in's $own. Fails, with
-# team-project's reasons on stderr, on a registry it cannot read: own_projects
+# The registered projects that are the team's own (own_project), in the registry's order, and the
+# reviewer App's id (review_app; null while it is off), as one JSON object {projects, app}, which
+# merge_authority's readers take as own_in's $own. Fails, with team-project's reasons on stderr,
+# on a registry it cannot read, or naming bin/lib/review-app when it is malformed: own_projects
 own_projects() (
-  local list project owned=()
+  local list project owned=() app
   list=$(team_project --list) || exit 1
   while IFS= read -r project; do
     [[ -n $project ]] || continue
     if own_project "$project"; then owned+=("$project"); fi
   done <<<"$list"
-  jq -cn '$ARGS.positional' --args "${owned[@]}"
+  app=$(review_app) || exit 1
+  jq -cn --arg app "${app%% *}" '{projects: $ARGS.positional, app: (if $app == "" then null else $app | tonumber end)}' \
+    --args "${owned[@]}"
 )
+
+# The bar merge_authority holds the registered project <name> to, its $own as JSON: false for a
+# project not the team's own (own_project), else {"app": <the reviewer App's id, review_app, or
+# null while it is off>}. Fails on an unknown project, or naming bin/lib/review-app when it is
+# malformed: own_bar <name>
+own_bar() (
+  local app
+  if ! (own_project "$1"); then
+    team_project "$1" >/dev/null || exit 1
+    echo false
+    return
+  fi
+  app=$(review_app) || exit 1
+  jq -cn --arg app "${app%% *}" '{app: (if $app == "" then null else $app | tonumber end)}'
+)
+
+# The reviewer App, the one GitHub App whose agent-review check run the team's own project merges
+# behind: its id and slug, "<id> <slug>" on one line, from this checkout's bin/lib/review-app, a
+# committed constant of exactly two lines, id=<a positive whole number> and then slug=<lowercase
+# letters, digits and dashes>, never a registry key, since the registry is a record any session
+# can edit. Nothing, success, when the file is missing (the App is off); fails, printing nothing
+# and naming the file on stderr, when it holds anything else: review_app
+review_app() {
+  local file=$TEAM_LIB/review-app lines=()
+  [[ -e $file ]] || return 0
+  if [[ -f $file ]]; then mapfile -t lines <"$file"; fi
+  if ((${#lines[@]} != 2)) || [[ ! ${lines[0]} =~ ^id=[1-9][0-9]*$ || ! ${lines[1]} =~ ^slug=[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+    echo "${0##*/}: $file is not one id=<n> line and one slug=<s> line" >&2
+    return 1
+  fi
+  printf '%s %s\n' "${lines[0]#id=}" "${lines[1]#slug=}"
+}
+
+# stdin as base64url with no padding, the encoding of a JWT's parts: base64url
+base64url() {
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+# A JWT the reviewer App <id> authenticates to GitHub with, signed RS256 by the key file <key>,
+# issued 60 seconds back (for a clock running ahead of GitHub's) and expiring 9 minutes on, within
+# GitHub's 10; the key is read by openssl alone, and the JWT is printed, for the caller to hold in a
+# variable and hand only to review_app_api: review_app_jwt <id> <key>
+review_app_jwt() {
+  local now header payload signature
+  now=$(date +%s)
+  header=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | base64url)
+  payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$1" | base64url)
+  signature=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$2" -binary | base64url) || return 1
+  [[ -n $signature ]] || return 1
+  printf '%s.%s.%s\n' "$header" "$payload" "$signature"
+}
+
+# Call GitHub's REST API as the reviewer App with <bearer>, its JWT or an installation token, which
+# goes to curl only on stdin through --config -, from printf, a builtin, so it is in no process's
+# arguments and no child's environment; not through gh, which takes a token only from its
+# environment or its login. curl reads no config of the user's (-q, its first argument), so no
+# ~/.curlrc can trace, proxy or add to the call. The answer's body is printed, then its HTTP status
+# on a line of its own, for the caller to hold in memory, since a token GitHub mints is in the body
+# and no file is to hold it; a call curl cannot make fails with curl's exit, its error on stderr.
+# <bearer> is refused unless it is the characters a JWT or a token is made of, so no answer GitHub
+# gives can add to curl's config: review_app_api <method> <path> <bearer> [<JSON body file>]
+review_app_api() {
+  local args=(-q --silent --show-error --config - --request "$1" --write-out '\n%{http_code}' --max-time 30
+    --header 'Accept: application/vnd.github+json' --header 'X-GitHub-Api-Version: 2022-11-28')
+  [[ $3 =~ ^[A-Za-z0-9._-]+$ ]] || { echo "the bearer is not a JWT or a token" >&2; return 1; }
+  [[ -z ${4:-} ]] || args+=(--header 'Content-Type: application/json' --data-binary "@$4")
+  printf 'header = "Authorization: Bearer %s"\n' "$3" | curl "${args[@]}" "https://api.github.com/$2"
+}
 
 # The ledger's merge-default-withdrawn and merge-default-restored events, every task's, as one JSON
 # array (default_events in bin/lib/ledger.jq: each giving back with the thread of the task it was
@@ -1786,9 +1857,18 @@ clean_base_merges() {
 # with behind_by, the commits of its base its head lacks, from GitHub's compare of the two (null
 # for a PR not open or when the compare cannot be read), caught_up, whether the task's latest
 # caught-up event of the PR made the live head from the ledger head, and its merge_authority null
-# for task_state_json to fill in: pr_part '<events>' '<pr event>' <dir>
+# for task_state_json to fill in. For the team's own project with the reviewer App on (own_bar), the
+# App's agent-review on the head, read from GitHub's agent-review check runs of the head and its
+# combined commit status: review_app, the App's id; review_check, success or failure by the App's
+# latest check run whose app.id is the App's and whose head_sha is the head (the highest id, a run
+# not completed with success a failure), else foreign when a check run of that name by another
+# App or a commit status of that name is on the head, else missing; review_check_run, the App's
+# run's id; and review_check_by, what a foreign one is ("a check run of App <id> (<slug>)" or "a
+# commit status by <login>"). Else the four are null, nothing more read, and agent_review alone
+# says agent-review's state: pr_part '<events>' '<pr event>' <dir>
 pr_part() {
-  local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts behind_by=null base head
+  local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts behind_by=null base head bar=false
+  local review='{"review_app": null, "review_check": null, "review_check_run": null, "review_check_by": null}'
   url=$(jq -r .url <<<"$pr") || return 1
   project=$(jq -r '.project // empty' <<<"$pr") || return 1
   if [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]; then
@@ -1805,6 +1885,7 @@ pr_part() {
   if [[ -n $project ]]; then
     repo=$(team_project "$project" repo) || return 1
     required_checks=$(team_project "$project" required_checks) || return 1
+    bar=$(own_bar "$project") || return 1
   fi
   facts=$(ledger_jq '{url: $url, number: $number, repo: $repo, project: $project,
       ledger_head: pr_head($url),
@@ -1815,9 +1896,29 @@ pr_part() {
     --argjson project "$(jq -n --arg p "$project" 'if $p == "" then null else $p end')" <<<"$events") || return 1
   if github "$dir" view pr view "$number" --repo "$repo" --json number,state,baseRefName,headRefOid,headRefName,changedFiles &&
     github "$dir" checks pr checks "$number" --repo "$repo" --json name,bucket,state &&
-    github "$dir" required pr checks "$number" --repo "$repo" --required --json name,bucket,state; then
+    github "$dir" required pr checks "$number" --repo "$repo" --required --json name,bucket,state && {
+      head=$(jq -r .headRefOid "$dir/view")
+      [[ $bar == false ]] || jq -e '.app == null' <<<"$bar" >/dev/null || {
+        github "$dir" review_runs api "repos/$repo/commits/$head/check-runs?check_name=agent-review&filter=latest&per_page=100" &&
+          github "$dir" review_status api "repos/$repo/commits/$head/status" &&
+          review=$(jq -c --argjson app "$(jq .app <<<"$bar")" --arg head "$head" --slurpfile status "$dir/review_status" '
+            [.check_runs[]? | select(.name == "agent-review")] as $runs
+            | ([$runs[] | select(.app.id == $app and .head_sha == $head)] | max_by(.id)) as $mine
+            | ([$runs[] | select(.app.id != $app)] | first) as $other
+            | ([$status[0].statuses[]? | select(.context == "agent-review")] | first) as $status
+            | {review_app: $app,
+               review_check: (if $mine != null then
+                   (if $mine.status == "completed" and $mine.conclusion == "success" then "success" else "failure" end)
+                 elif $other != null or $status != null then "foreign" else "missing" end),
+               review_check_run: ($mine.id // null),
+               review_check_by: (if $mine != null then null
+                 elif $other != null then "a check run of App \($other.app.id) (\($other.app.slug))"
+                 elif $status != null then "a commit status by \($status.creator.login)" else null end)}' \
+            "$dir/review_runs") || { echo "gh api: the agent-review check runs of the head cannot be read" >"$dir/error"; false; }
+      }
+    }; then
     if jq -e '.state == "OPEN"' "$dir/view" >/dev/null; then
-      base=$(jq -r .baseRefName "$dir/view") head=$(jq -r .headRefOid "$dir/view")
+      base=$(jq -r .baseRefName "$dir/view")
       if github "$dir" compare api "repos/$repo/compare/$base...$head" --jq .behind_by &&
         jq -e 'type == "number"' "$dir/compare" >/dev/null; then
         behind_by=$(<"$dir/compare")
@@ -1841,8 +1942,8 @@ pr_part() {
           agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing"),
           behind_by: $behind_by}
       | {url, number, repo, project, state, base, branch, head, ledger_head, head_moved, caught_up, checks, required,
-         required_missing, agent_review, merge_approved, behind_by, merge_authority}' \
-      -c --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" \
+         required_missing, agent_review, merge_approved, behind_by, merge_authority} + $review' \
+      -c --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" --argjson review "$review" \
       --slurpfile required "$dir/required" --argjson project_required "$required_checks" \
       --argjson behind_by "$behind_by" <<<"$facts"
   else
@@ -1997,7 +2098,7 @@ task_state_json() (
 
 # The pr part's merge_authority: the words the PR may merge on, as merge_authority in
 # bin/lib/ledger.jq derives them from the task's events, every task's withdrawals of the default
-# word (default_events_json) and whether the PR's project is the team's own (own_project), on the
+# word (default_events_json) and the bar the PR's project is held to (own_bar), on the
 # head GitHub shows (the ledger's when GitHub cannot be read), or null for a PR of no registered
 # project. While the task awaits merge and the default word holds on the ledger, the reasons
 # team-merge finds beyond the ledger in GitHub's view are added to it, and holds and word follow:
@@ -2007,10 +2108,10 @@ task_state_json() (
 # plan's files are not hashed and the checks are not judged:
 # pr_merge_authority '<events>' '<state>' '<pr part>' <dir>
 pr_merge_authority() {
-  local events=$1 state=$2 pr=$3 dir=$4 project own=false withdrawals authority out rc=0 reasons=()
+  local events=$1 state=$2 pr=$3 dir=$4 project own withdrawals authority out rc=0 reasons=()
   project=$(jq -r '.project // empty' <<<"$pr") || return 1
   if [[ -z $project ]]; then echo null; return; fi
-  if (own_project "$project"); then own=true; fi
+  own=$(own_bar "$project") || return 1
   withdrawals=$(default_events_json) || return 1
   authority=$(ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)' -c \
     --arg url "$(jq -r '.url | rtrimstr("/")' <<<"$pr")" --arg head "$(jq -r '.head // .ledger_head // ""' <<<"$pr")" \
