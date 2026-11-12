@@ -178,8 +178,8 @@ ticket() {
   jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   event T14 review '{head: "a1b2c3d4", verdict: "pass"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T14 The tooling: <https://github.com/owner/proj/pull/5>"
+  assert_equal "$(waiting_items_shown | head -n 1)" \
+    "- **1** T14 The tooling: ready to merge <https://github.com/owner/proj/pull/5> - unblocks 2 (1 task, 1 PR)"
   event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000", head: "a1b2c3d4"}'
   : >"$STUB_FIXTURES/inbox/calls"
   run_bin -0 --separate-stderr team-merge T14

@@ -18,7 +18,7 @@
 # own_project, own_projects, own_bar, review_app, base64url, review_app_jwt, review_app_api, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
 # discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_merge_authority, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, OPS_REQUEST_MAX_AGE, and
-# LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push.
+# LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push, and LEDGER_INBOX_DUE for refresh_inbox.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
 # that sets team_guard (below) exits 2 for every exit of its but 0.
 # shellcheck shell=bash
@@ -212,9 +212,10 @@ ledger_refused_data() {
   printf '%s' "$out"
 }
 
-# The tasks and kinds this script appended to the ledger, in order, and whether one of them makes a
-# push due (ledger_append), for ledger_push.
-LEDGER_TASKS=() LEDGER_KINDS=() LEDGER_PUSH_DUE=''
+# The tasks and kinds this script appended to the ledger, in order, whether one of them makes a
+# push due (ledger_append), for ledger_push, and whether one is of a kind the contract marks inbox,
+# for team-log's refresh_inbox.
+LEDGER_TASKS=() LEDGER_KINDS=() LEDGER_PUSH_DUE='' LEDGER_INBOX_DUE=''
 
 # Append one JSON object as one line to the ledger, under an exclusive lock beside it, so two
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
@@ -232,11 +233,11 @@ LEDGER_TASKS=() LEDGER_KINDS=() LEDGER_PUSH_DUE=''
 # writer acted before it logs, so its event is appended unchecked, saying nothing, and team-log
 # --check-lifecycle names it. With <seconds>, the lock is waited on at most that long, and a lock
 # still held then is a refusal, before any lifecycle check. An event of a kind the contract marks
-# push (Daniel's word, or an outside fact) makes a push due, which the script's ledger_push makes:
-# ledger_append <event> [<seconds>]
+# push (Daniel's word, or an outside fact) makes a push due, which the script's ledger_push makes,
+# and one of a kind it marks inbox sets LEDGER_INBOX_DUE: ledger_append <event> [<seconds>]
 ledger_append() {
-  local out line problems push task event refusing verdict ledger=$TEAM_HOME/ledger.jsonl lock_wait=()
-  # One jq run: the object's compact line, then "<push> <refusing> <task> <event>", then its
+  local out line problems push inbox task event refusing verdict ledger=$TEAM_HOME/ledger.jsonl lock_wait=()
+  # One jq run: the object's compact line, then "<push> <inbox> <refusing> <task> <event>", then its
   # problems ("none" when the input holds no object or is not JSON, "many" when it holds more than
   # one). Any other failure (an unreadable contract or table, an error in ledger.jq) is jq's own,
   # and its message is shown.
@@ -244,7 +245,8 @@ ledger_append() {
       | if ($objects | length) == 0 then "none" elif ($objects | length) > 1 then "many"
         else ($objects[0] | tojson),
           ($objects[0] | ((.event | strings) // "") as $event
-            | "\(($contract.kinds[$event] // {}).push == true) \($writer | IN(lifecycle_table.refusing_writers[]))"
+            | "\(($contract.kinds[$event] // {}).push == true) \(($contract.kinds[$event] // {}).inbox == true)"
+              + " \($writer | IN(lifecycle_table.refusing_writers[]))"
               + " \((.task | strings) // "") \($event)"),
           ([$objects[0] | append_problems($contract; $writer)] | join("; ")) end' \
     -nr --arg writer "${0##*/}" <<<"$1") || die "cannot check the event against the ledger contract: $1"
@@ -252,7 +254,7 @@ ledger_append() {
   [[ $line != none ]] || die "not a JSON object for the ledger: $1"
   [[ $line != many ]] || die "not one JSON object for the ledger: $1"
   out=${out#*$'\n'}
-  read -r push refusing task event <<<"${out%%$'\n'*}"
+  read -r push inbox refusing task event <<<"${out%%$'\n'*}"
   [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
   [[ ! $line =~ $DATA_EMAIL ]] || problems=$(ledger_refused_data "$line")
@@ -284,6 +286,8 @@ ledger_append() {
   [[ " ${LEDGER_TASKS[*]} " == *" $task "* ]] || LEDGER_TASKS+=("$task")
   [[ " ${LEDGER_KINDS[*]} " == *" $event "* ]] || LEDGER_KINDS+=("$event")
   [[ $push != true ]] || LEDGER_PUSH_DUE=1
+  # shellcheck disable=SC2034 # read by team-log
+  [[ $inbox != true ]] || LEDGER_INBOX_DUE=1
 }
 
 # Commit and push the ledger at once when this script appended an event of a kind the contract

@@ -181,8 +181,7 @@ closed"
   run_bin -0 team-open home feature feat work "Do the work"
   ledger_line '{ts: "2026-10-22T02:11:00Z", task: "T1", event: "asked", id: "go", text: "Go on?"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T1 go: Go on? <#1563000000000000001>"
+  assert_equal "$(waiting_items_shown | head -n 1)" "- **1** T1 go: Go on? <#1563000000000000001> - unblocks 1 (1 task)"
   run_bin -0 --separate-stderr team-close T1
   [[ $stderr != *"waiting.md"* ]]
   assert_equal "$(waiting_items_shown)" "Nothing waits on you."

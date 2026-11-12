@@ -5,23 +5,41 @@
 # Usage: team-inbox [--post | --item <n>]
 # With no argument it writes the list; --post writes it, then posts it; --item <n> names the item
 # numbered n (each below).
-# The list holds, for each open task in task number order: each ask nothing settled (an asked
-# with no answered or merge-preapproved of its id and no merge-approved whose url its text names,
-# as team-sweep reads it), with the task, the ask's id, its first line and a link to the question
-# (its discord_message, which team-ask logs, in the task's thread; else the thread); each PR ready
-# to merge (the task's phase awaiting-merge, the PR not merged and no merge-approved logged at its
-# head), with its full URL; and each interview under way (an interview-thread with no planner's
-# done or plan-approved after it), with its thread. Each is a line of its section ("**Asks**",
-# "**PRs ready to merge**", "**Interviews under way**", a section with none left out) under the
-# title "**Waiting on you**", its number in bold, as "- **3** T7 plan: Approve the plan? <link>",
-# and every URL in <>, so Discord shows no preview card for it; with none, the list says "Nothing
-# waits on you.". An ask's line is cut at 150 characters of its text, a title at 80.
+# The list holds: each ask nothing settled (an asked with no answered or merge-preapproved of its id
+# and no merge-approved whose url its text names, as team-sweep reads it), with the task, the
+# ask's id, its first line and a link to the question (its discord_message, which team-ask logs,
+# in the task's thread; else the thread); each PR ready to merge (the task's phase awaiting-merge,
+# the PR not merged and no merge-approved logged at its head), "<task> <title>: ready to merge
+# <its full URL>"; each interview under way (an interview-thread with no planner's done or
+# plan-approved after it), "<task> <title>: interview under way <its thread>"; and the asks of the
+# team home's tasks/current.md (team-current's ask lines, questions to Daniel with no asked), each
+# with its task unless -, its text and its where when that is a URL.
+# They are ranked by what each answer unblocks, the most first: while the item holds its task (an
+# ask no launch went past, a PR ready to merge, an interview under way), its task and each other
+# open task whose standing blocked park is on that task (cause task), and the task's tickets
+# team-tickets T<n> --json says are ready; and 1 for a PR ready to merge, or for an ask whose text
+# names one of its task's PRs not merged. A current.md ask holds no task the ledger knows, so it
+# counts 0. Ties go oldest first (an ask by its asked's ts, a PR by its first pr event's, an
+# interview by its interview-thread's, a current.md ask after every dated one, in its order), then
+# the asks, the PRs and the interviews, each in task number order. team-tickets runs once per task
+# with an item, its stderr dropped; a task whose tickets it cannot read counts none, with a line
+# on stderr saying why.
+# Each item is one line under the title "**Waiting on you**", its number in bold, ending with what
+# its answer unblocks, " - unblocks <n>" and, when n is more than 0, each part that is: "- **3** T7
+# plan: Approve the plan? <link> - unblocks 3 (1 task, 2 tickets)"; every URL is in <>, so Discord
+# shows no preview card for it. After the items, a line says how they are ranked ("-# Ranked by what
+# each answer unblocks: ..."), then one line per owe line of current.md, a reply owed to Daniel, in
+# its order: "-# Owed you: <task unless -> <text> <where when a URL>". With none, the list says
+# "Nothing waits on you.". An ask's line is cut at 150 characters of its text, a title at 80. A
+# current.md that cannot be read leaves its asks and owe lines out, with a line on stderr saying
+# why.
 # Numbers: an item is keyed "ask <task> <id> <the asked's ts>" (so a re-ask of the same id is a new
-# item), "pr <url>" (its trailing slash dropped) or "interview <task> <thread>". An item the last
-# run listed keeps its number, and each new one takes the lowest number no listed item holds and
-# no item of the latest post showed (waiting.json's posted, null until a post records one). A
-# waiting.json that is missing numbers the list afresh; one that cannot be read, or is of another
-# schema than team-waiting/1, does too, with a line on stderr saying why.
+# item), "pr <url>" (its trailing slash dropped), "interview <task> <thread>" or "note <id>", id
+# team-current's id of its line. An item the last run listed keeps its number, and each new one,
+# in rank order, takes the lowest number no listed item holds and no item of the latest post
+# showed (waiting.json's posted, null until a post records one). A waiting.json that is missing
+# numbers the list afresh; one that cannot be read, or is of another schema than team-waiting/1,
+# does too, with a line on stderr saying why.
 # A PR ready to merge is left out while it waits on no word of Daniel's: its default word, the
 # approved plan, holds on the ledger (merge_authority in bin/lib/ledger.jq, as team-sweep's
 # merge-due reads it: the plan approved and not withdrawn, the PR's project not the team's own by
@@ -66,16 +84,17 @@
 # without a token, and as Discord's refusal says (75 on a 429, else 1) when the guild cannot be
 # read or a message cannot be posted.
 # --item <n>, n from 1 to 999, for routing Daniel's numbered reply ("3 yes, 5 no"; team-answer
-# --item runs it): prints the standing item numbered n, as "ask <task> <id>", "pr <task> <url>" or
-# "interview <task> <thread>". It reads waiting.json alone, with no lock, no Discord and no lease
-# check (the lease-fence hook blocks it on a fenced machine), and refuses with exit 1 a number no
-# standing item holds: "item <n> no longer waits: the list posted <time> showed it as <its line>"
-# when the latest post showed it, else "no item <n> waits; the list holds 1, 2 and 4" (or
-# "nothing waits"); and a waiting.json that is missing or cannot be read.
+# --item runs it): prints the standing item numbered n, as "ask <task> <id>", "pr <task> <url>",
+# "interview <task> <thread>" or "note <task or -> <id>". It reads waiting.json alone, with no
+# lock, no Discord and no lease check (the lease-fence hook blocks it on a fenced machine), and
+# refuses with exit 1 a number no standing item holds: "item <n> no longer waits: the list posted
+# <time> showed it as <its line>" when the latest post showed it, else "no item <n> waits; the
+# list holds 1, 2 and 4" (or "nothing waits"); and a waiting.json that is missing or cannot be read.
 # Files: the team home's waiting.md, the list as Daniel reads it, with its final newline, and
 # waiting.json beside it ({schema: "team-waiting/1", items: [{n, key, kind, task, title, ...,
-# line}], withdrawn, posted}), which the scripts read; both are records, which the checkpoint
-# commits, and neither holds the time of a run, so a run that changes nothing makes no commit. A
+# since, unblocks: {tasks, tickets, prs}, line}], withdrawn, owed, posted}), which the scripts
+# read; both are records, which the checkpoint commits, and neither holds the time of a run, so a
+# run that changes nothing makes no commit. A
 # steal after a crash loses only what no push took: the numbers plain runs gave new items since the
 # last checkpoint, and a post's reservation whose push failed.
 # Each is written to a temporary file in the team home, then moved into place.
@@ -88,12 +107,14 @@
 # preview, then dropped from inbox.json; one Discord no longer has (404), or of another channel, is
 # dropped with no edit; any other failure keeps it for the next run, with a line on stderr. It
 # never edits anything else, and posts only on --post.
-# team-ask, team-answer, team-merge and team-close run it at their end (refresh_inbox in
-# bin/lib/team.sh), going on with a line on stderr when it fails; team-timers run runs it every
-# five minutes on the lease holder. It refuses in a worker session (worker_refusal in
-# bin/lib/team.sh), and, but on --item, on a machine that is fenced or lost the lease
-# (lease_refusal); one run at a time holds ~/.local/state/agent-team/inbox.lock, waiting for it at
-# most a minute (TEAM_INBOX_LOCK_SECONDS replaces the 60 s, the tests' seam; 0 does not wait).
+# team-ask, team-answer, team-merge, team-close, team-thread --interview on a new thread,
+# team-current on an ask or owe item, and team-log after an event of a kind the contract marks
+# inbox, run it at their end (refresh_inbox in bin/lib/team.sh), going on with a line on stderr
+# when it fails; team-timers run runs it every five minutes on the lease holder. It refuses
+# in a worker session (worker_refusal in bin/lib/team.sh), and, but on --item, on a machine that is
+# fenced or lost the lease (lease_refusal); one run at a time holds
+# ~/.local/state/agent-team/inbox.lock, waiting for it at most a minute (TEAM_INBOX_LOCK_SECONDS
+# replaces the 60 s, the tests' seam; 0 does not wait).
 # Prints "retired <the old message's link>" when it retired it, then "wrote waiting.md: <n> items"
 # ("1 item", "0 items"), then on --post "posted <link>" for each message posted, in order.
 # Exit codes: 0 written (and on --post, posted; on --item, named); 1 refused, a file cannot be
@@ -273,10 +294,38 @@ if [[ -e $waiting ]]; then
   fi
 fi
 
-ledger_jq 'ledger_events | (by_task | awaiting_resume) as $stowed | inbox_items($own)
+# The asks and owed replies of tasks/current.md, team-current's ask and owe lines, as [{kind, task,
+# text, where, id}], id team-current's; one that cannot be read leaves them out, saying why.
+notes='[]'
+current=$TEAM_HOME/tasks/current.md
+if [[ -e $current ]]; then
+  rc=0
+  found=$(grep -E '^- (ask|owe) (T[0-9]+|-) .+ \| [^|]+$' "$current" 2>"$scratch/current") || rc=$?
+  if ((rc > 1)); then
+    echo "team-inbox: leaves out the asks and owed replies of tasks/current.md, since it cannot be read: $(grep -m 1 . "$scratch/current" | sed 's/^grep: //' || echo "grep failed")" >&2
+  elif [[ -n $found ]]; then
+    notes=$(while IFS= read -r line; do
+      jq -cn --arg line "$line" --arg id "$(printf '%s' "${line#- }" | sha256sum | cut -c1-6)" \
+        '$line | capture("^- (?<kind>ask|owe) (?<task>\\S+) (?<text>.*) \\| (?<where>[^|]+)$") + {id: $id}'
+    done <<<"$found" | jq -sc .)
+  fi
+fi
+
+# The ready tickets of each open task with an item, as team-tickets --json says them ({"T<n>": n}),
+# for what each item's answer unblocks; a task whose tickets cannot be read counts none, saying why.
+tickets='{}'
+while IFS= read -r task; do
+  if list=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json 2>"$scratch/tickets" </dev/null); then
+    tickets=$(jq -c --arg task "$task" --argjson list "$list" '.[$task] = ([$list[] | select(.state == "ready")] | length)' <<<"$tickets")
+  else
+    echo "team-inbox: counts no ready tickets for $task, since team-tickets failed: $(grep . "$scratch/tickets" | tail -n 1 || echo "it said nothing")" >&2
+  fi
+done < <(ledger_jq 'ledger_events | inbox_items($own; []; {}) | [.items[].task] | unique[]' -nRr --argjson own "$own" "$ledger")
+
+ledger_jq 'ledger_events | (by_task | awaiting_resume) as $stowed | inbox_items($own; $notes; $tickets)
   | ($guild | if . == "" then null else . end) as $guild
   | waiting_list($previous; $guild) | ., waiting_text($guild), [resources_line($level; $stowed), $health | select(. != null)]' \
-  -nRc --argjson own "$own" \
+  -nRc --argjson own "$own" --argjson notes "$notes" --argjson tickets "$tickets" \
   --argjson level "$level" --argjson health "$health" --argjson previous "$previous" \
   --arg guild "$guild" "$ledger" >"$scratch/list"
 

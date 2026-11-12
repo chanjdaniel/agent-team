@@ -348,6 +348,19 @@ probe_denies() {
   done
 }
 
+# The kinds the contract marks inbox change what waits on Daniel or how it ranks: every script the
+# contract names as a writer of one brings waiting.md up to date (refresh_inbox) before it ends.
+@test "every writer of an inbox kind calls refresh_inbox" {
+  local contract=$REPO_ROOT/bin/lib/ledger-contract.json writer missing=()
+  assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.inbox == true) | .key] | sort | join(" ")' "$contract")" \
+    "answered asked blocked closed done interview-thread merge-approved merge-default-restored merge-default-withdrawn merged plan-approval-withdrawn plan-approved pr resumed review ticket-done waiting"
+  for writer in $(jq -r '[.kinds[] | select(.inbox == true) | .writer] | flatten | unique[]' "$contract"); do
+    grep -qE '^[[:space:]]*refresh_inbox$' "$REPO_ROOT/bin/$writer" || missing+=("$writer")
+  done
+  assert_equal "${missing[*]}" ""
+  assert_equal "$(jq -r '[.kinds[] | select(has("inbox") and .inbox != true)] | length' "$contract")" 0
+}
+
 # The kinds the contract marks push, Daniel's word and outside facts, are on origin the moment
 # they are logged: every script the contract names as a writer of one calls ledger_push, on a
 # line of its own, which commits and pushes the ledger before it ends.
