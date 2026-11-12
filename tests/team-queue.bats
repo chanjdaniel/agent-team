@@ -75,6 +75,13 @@ tasks/queued/index.md: not as team-queue index writes it"
   assert_equal "$stderr" ""
 }
 
+@test "--check of a stale index with a last file whose title ends in a carriage return names the stale index and exits 1" {
+  run_bin -0 team-queue index
+  printf '# item\r\n' >"$queued/zz-crlf.md"
+  run_bin -1 --separate-stderr team-queue index --check
+  assert_equal "$output" "tasks/queued/index.md: not as team-queue index writes it"
+}
+
 @test "migrate moves each queued line into its file's front matter, joining two for one file, and a second run changes nothing" {
   local tilde='~'
   ln -s "$TEAM_HOME" "$HOME/team"
