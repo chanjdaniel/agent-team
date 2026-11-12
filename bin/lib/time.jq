@@ -77,9 +77,9 @@ def park_class:
 # or another role's launch ends it), and a done (save one while the word plan or default merges),
 # merged or other review unattributed (the coordinator's turn, or a gate run the ledger did not
 # see); with no park, an ask the fold still holds open while the phase is unattributed is a wait on
-# Daniel (idle_class). A park logged after the fact with since takes effect at since, held to the
-# span from the event before it to its own ts. The task starts unattributed, and the walk stops at
-# the first event after $end.
+# Daniel, as is a PR waiting on Daniel's merge word (awaits_merge_word; idle_class). A park logged
+# after the fact with since takes effect at since, held to the span from the event before it to its
+# own ts. The task starts unattributed, and the walk stops at the first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 
 # What a park event waits on: a typed one's (a cause bin/lib/lifecycle.json's causes list) the
@@ -99,15 +99,26 @@ def park_time_class: {event: .kind, on, reason, cause: (if .typed then .cause el
 # A walk state's standing parks: the fold's, less those the walk does not count (unparked).
 def walk_parks: .unparked as $unparked | [.fold.parks[] | select(IN(.id; $unparked[]) | not)];
 
+# Whether a walk state's task waits on Daniel's merge word, as merge_ready_prs reads it at this
+# point of the walk: the fold's phase is awaiting-merge and an open PR has no merge-approved so far
+# naming its url (a trailing slash aside) at its head, or at no head, a legacy line. A default word
+# that holds is the walk's merging phase, read before this.
+def awaits_merge_word:
+  .approved as $approved
+  | (.fold | lifecycle_phase) == "awaiting-merge"
+    and any(.fold | lifecycle_open_prs[]; . as $pr
+      | any($approved[]; .url == ($pr.url // "" | tostring | rtrimstr("/")) and (.head == null or same_head(.head; $pr.head))) | not);
+
 # A walk state's class: its latest standing park's, else a wait on Daniel while its ask wait
-# stands, or while no worker is at work and the fold holds an ask open, else its phase.
+# stands, or while no worker is at work and the fold holds an ask open or the task waits on
+# Daniel's merge word (awaits_merge_word), else its phase.
 def idle_class:
   (walk_parks | last | if . == null then null else park_time_class end)
-  // if .askwait != null or (.phase == "unattributed" and .fold.asks != []) then "wait:daniel" else .phase end;
+  // if .askwait != null or (.phase == "unattributed" and (.fold.asks != [] or awaits_merge_word)) then "wait:daniel" else .phase end;
 def task_segments($end):
   ([.[] | select(.event == "opened") | .ts | fromdate] | first) as $t0
   | (([range(length) as $i | select(.[$i].ts | fromdate > $end) | $i] | first) // length) as $n
-  | reduce .[:$n][] as $e ({phase: "unattributed", word: null, preapproved: [], planned: false, held_back: false, fold: lifecycle_start, unparked: [],
+  | reduce .[:$n][] as $e ({phase: "unattributed", word: null, preapproved: [], planned: false, held_back: false, fold: lifecycle_start, unparked: [], approved: [],
         askwait: null, fix: false, cur: $t0, segments: []};
       ($e.ts | fromdate) as $ts
       | (if ($e | is_park) and ($e.since | type) == "string" then
@@ -135,7 +146,9 @@ def task_segments($end):
             elif $e.event == "review" and ($e.sent_back // [] | length) > 0 then .phase = "building"
             elif $e.event == "done" and $e.role == "reviewer" and .phase == "building" then .
             elif $e.event == "done" or $e.event == "merged" or $e.event == "review" then .phase = "unattributed"
-            elif $e.event == "merge-approved" then .phase = "merging" | .word = "head" | .askwait = null
+            elif $e.event == "merge-approved" then
+              .phase = "merging" | .word = "head" | .askwait = null
+              | .approved += [{url: ($e.url // "" | tostring | rtrimstr("/")), head: $e.head}]
             elif $e.event == "merge-preapproved" then .preapproved = (.preapproved - [$e.project]) + [$e.project]
             elif $e.event == "merge-preapproval-withdrawn" then
               .preapproved -= [$e.project]

@@ -42,7 +42,9 @@
 #   another review, a merged or another role's launch), and a done (save one in that merging),
 #   merged or other review unattributed (the coordinator's turn, or a gate run the ledger did not
 #   see); a task starts unattributed; with no park, an ask the fold holds open while the phase is
-#   unattributed is a wait on Daniel.
+#   unattributed is a wait on Daniel, and so is a PR ready to merge as team-inbox lists it (the
+#   task's phase awaiting-merge, the PR not merged and no merge-approved logged so far at its head;
+#   while the default word stands for it, it is merging, as above).
 # A gate-run's minutes, ending at its ts, are gate time taken from building, unattributed or a
 # wait on Daniel.
 # Then the counts, of the events in the window: gate runs per PR (a run's PR is the first pr
