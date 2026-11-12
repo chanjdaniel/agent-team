@@ -22,6 +22,11 @@ A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it a
 reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
 a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time, its -p or the -- after
 either, coproc, or coproc's or function's name; after any other word it is a word.
+An element's subscript (X[...]) is read as one bracket pair, as _pair_end reads it, where Bash's
+lexer reads one, in an assignment's place (its assignment_acceptable): where a reserved word may
+come, or after only assignments and redirections with their targets; so a separator, a
+parenthesis, a comment or a newline in it is part of its word, and its substitutions are read as
+arithmetic's are.
 The text it prints is the command with:
   - each heredoc's body left out, through its closing line, its marker's line kept. A body is kept
     whole, as code, when a shell may read it as its script: the heredoc is a shell's own, or its
@@ -37,8 +42,9 @@ The text it prints is the command with:
     each command piped into a shell, the text of each of its quoted strings and of each of its
     simple commands' words after the first, quotes dropped; each added on a line of its own.
 A shell here is bash, sh, zsh, dash, ksh, source or . where a pipeline's command starts, past
-reserved words, assignments and the wrappers env, nohup, command, exec, time, nice, ionice,
-stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock with its file, each word
+reserved words, assignments (a variable's or an element's, = or +=, its subscript one bracket
+pair as read above) and the wrappers env, nohup, command, exec, time, nice, ionice, stdbuf,
+timeout, setsid, sudo, doas, xargs, parallel, watch and flock with its file, each word
 read with its quotes removed (a backslash in $'...' quoting the next character, as in \\', so an
 escape such as \\x62 is not decoded); or a command a group or substitution in which starts one, as
 (bash) or tee >(bash) does; so a shell or . named as an argument feeds it nothing.
@@ -48,15 +54,15 @@ separator inside quotes too: a walk of the text sees more commands there, never 
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
 too): the assignments before its name, env's and an array element's (X[0]=1, its subscript one
-bracket pair as Bash's lexer reads it there, blanks, quotes and nested brackets in it, kept as
-written: X[ 0 ]=1) among them, since Bash runs the command after one it refuses; its words from the
-name of what runs on, past the wrappers env, command, exec, nohup, time, nice, ionice, stdbuf,
-timeout, setsid, sudo, doas, xargs, parallel, watch and flock with their options (env's lone -
-among them), numbers and flock's file, parallel's inputs after its ::: or :::: left out but for
-those with a scheme (https://host/u), read as URLs; the wrappers it ran behind, each its own words,
-the outermost first, with the command that ran its string, its find, or the shell or source that
-ran its file; and how it was reached: directly, in a string a tool runs, by find -exec, in a string
-watch or parallel join, as a shell's script file or by source.
+bracket pair as Bash's lexer reads it there, blanks, quotes, nested brackets and operators in it,
+kept as written: X[ 0 ]=1, X[;]=1) among them, since Bash runs the command after one it refuses;
+its words from the name of what runs on, past the wrappers env, command, exec, nohup, time, nice,
+ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock with their options
+(env's lone - among them), numbers and flock's file, parallel's inputs after its ::: or :::: left
+out but for those with a scheme (https://host/u), read as URLs; the wrappers it ran behind, each
+its own words, the outermost first, with the command that ran its string, its find, or the shell
+or source that ran its file; and how it was reached: directly, in a string a tool runs, by
+find -exec, in a string watch or parallel join, as a shell's script file or by source.
 A command string is walked in turn, its commands yielded after the command that runs it, where
 the tool itself takes one: what watch and parallel join of their command's words (from the first
 word that is no option, and the next too when an option may take that one), env's -S or
@@ -91,17 +97,25 @@ from dataclasses import dataclass
 METACHARACTERS = frozenset(" \t\n;&|()<>")
 # The reserved words a command may follow where it starts.
 RESERVED = r"(?:!|\{|if|then|else|elif|do|while|until|time|coproc)"
+# An assignment's word, of a variable or an element, = or +=, in a segment's shell text.
+ASSIGNING = r"[A-Za-z_]\w*(?:\[[^\s\]]*\])?\+?=\S*"
 # A shell that may read its script from stdin, where a pipeline's command starts, in a segment's
-# text with its words' quotes removed (_dequoted).
+# shell text (_shell_text).
 SHELL_START = re.compile(
-    rf"\s*(?:{RESERVED}[ \t]+)*(?:[A-Za-z_]\w*=\S*[ \t]+)*"
+    rf"\s*(?:{RESERVED}[ \t]+)*(?:{ASSIGNING}[ \t]+)*"
     r"(?:(?:(?:env|nohup|command|exec|time|nice|ionice|stdbuf|timeout|setsid|sudo|doas|xargs|parallel|watch)"
-    r"(?:[ \t]+(?:-[^\s;&|]*(?:[ \t]+[^-\s;&|][^\s;&|]*)?|[0-9][0-9.]*[smhd]?|[A-Za-z_]\w*=\S*))*"
+    rf"(?:[ \t]+(?:-[^\s;&|]*(?:[ \t]+[^-\s;&|][^\s;&|]*)?|[0-9][0-9.]*[smhd]?|{ASSIGNING}))*"
     r"|flock(?:[ \t]+-[^\s;&|]*)*[ \t]+[^-\s;&|][^\s;&|]*)[ \t]+)*"
     r"(?:(?:[^\s;&|]*/)?(?:(?:ba|z|da|k)?sh|source)(?=[\s;&|()<>]|$)|\.(?=[ \t]))"
 )
 # A word, from where it starts to a metacharacter.
 WORD = re.compile(r"[^\s;&|()<>]+")
+# A redirection operator where a word would start, with the fd or {name} before it.
+REDIRECT = re.compile(r"(?:[0-9]+|\{[A-Za-z_]\w*\})?(?:&>>?|<<<|<<-?|<>|[<>]&|>\||>>|[<>])")
+# A name and the [ that opens its subscript, where a word starts.
+SUBSCRIPTED = re.compile(r"[A-Za-z_]\w*\[")
+# A variable's assignment, where a word starts.
+ASSIGNED = re.compile(r"[A-Za-z_]\w*\+?=")
 # The reserved words after which another may come, each with the state it leaves: function's and
 # coproc's name lets one follow, as do time's -p and the -- after either (Bash's
 # reserved_word_acceptable).
@@ -135,12 +149,15 @@ class Heredoc:
 class Reading:
     """A command's pipelines (each its parent's pipeline and segment, or None, and its segments'
     spans), its closed heredocs, its here-strings (each its pipeline, its segment and its word),
-    and where its reading ended: past the ) that closes a group's reading, else the text's end."""
+    where its reading ended: past the ) that closes a group's reading, else the text's end, and
+    each subscript read as one bracket pair in an assignment's place, where its word starts mapped
+    to just past its ]."""
 
     pipelines: list
     heredocs: list
     strings: list
     end: int
+    subscripts: dict
 
 
 def _word(text, i):
@@ -279,14 +296,18 @@ def read_command(text, start=0, group=False):
     # case's case-word, case-pattern or case-body), its pipeline, where its segment starts,
     # whether a pipe began that segment, the quote it sits in, whether a reserved word may come
     # next (True, False, or "name", "coproc", "time" or "time -p" after function, coproc, time or
-    # time's -p), and that state for its parent once it ends: a compound command's end lets one
-    # come, a word's part does not.
+    # time's -p; or "assign" where only assignments and redirections came before in the command, so
+    # no reserved word may come but an element's assignment may, and "target" where a redirection's
+    # target comes next in such a place), and that state for its parent once it ends: a compound
+    # command's end lets one come, a word's part does not, but for keeping its assignment's place.
     frames = []
-    # Each arithmetic open at i, $((, $[ or ((, read only for the substitutions in it, which Bash
-    # runs: the depth of the frames it sits in, where its closing )) or ] starts, where it ends, the
-    # quote to go back to after it, and whether it is an arithmetic command, after which a reserved
-    # word may come.
+    # Each arithmetic open at i, $((, $[ or ((, or an element's subscript in an assignment's place,
+    # read only for the substitutions in it, which Bash runs: the depth of the frames it sits in,
+    # where its closing )) or ] starts, where it ends, the quote to go back to after it, and the
+    # state it leaves, or None for its word's: an arithmetic command lets a reserved word come, a
+    # subscript keeps its assignment's place when its = follows.
     ariths = []
+    subscripts = {}
     quote, i, n = None, start, len(text)
 
     def here():
@@ -303,7 +324,7 @@ def read_command(text, start=0, group=False):
         end_segment(at)
         frame = frames.pop()
         if frames:
-            frames[-1][5] = frame[6]
+            frames[-1][5] = True if frame[6] else "assign" if frames[-1][5] == "assign" else False
         return frame[4]
 
     def next_pipeline(at, after):
@@ -331,9 +352,10 @@ def read_command(text, start=0, group=False):
 
     def word_at(at):
         """A word that is no reserved word starts at at, or goes on there: one may follow it only
-        as function's or coproc's name."""
+        as function's or coproc's name, and a redirection's target keeps its assignment's place."""
         if at == 0 or text[at - 1] in METACHARACTERS:
-            frames[-1][5] = frames[-1][5] in ("name", "coproc")
+            state = frames[-1][5]
+            frames[-1][5] = "assign" if state == "target" else state in ("name", "coproc")
 
     push("(" if group else "root", start)
     while i < n and frames:
@@ -350,7 +372,7 @@ def read_command(text, start=0, group=False):
             continue
         if quote == '"':
             if text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
-                ariths.append((len(frames), arith - 2, arith, '"', False))
+                ariths.append((len(frames), arith - 2, arith, '"', None))
                 quote, i = None, i + 3
             elif text.startswith("$(", i) or text.startswith("${", i) or c == "`":
                 push("`" if c == "`" else "(" if text[i + 1] == "(" else "${", i + 1 + (c == "$"), '"')
@@ -360,16 +382,16 @@ def read_command(text, start=0, group=False):
             continue
         if ariths and ariths[-1][0] == len(frames):
             # In arithmetic only a quote, a $(, a backtick and a nested $(( are read, to its close.
-            _, close, end, resume, command = ariths[-1]
+            _, close, end, resume, after = ariths[-1]
             if i >= close:
                 ariths.pop()
                 quote, i = resume, max(i, end)
-                if command:
-                    frames[-1][5] = True
+                if after is not None:
+                    frames[-1][5] = after
             elif c in "'\"" or text.startswith("$'", i):
                 quote, i = "$'" if c == "$" else c, i + 1 + (c == "$")
             elif text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
-                ariths.append((len(frames), arith - 2, arith, None, False))
+                ariths.append((len(frames), arith - 2, arith, None, None))
                 i += 3
             elif text.startswith("$(", i) or c == "`":
                 push("`" if c == "`" else "(", i + 1 + (c == "$"))
@@ -382,12 +404,12 @@ def read_command(text, start=0, group=False):
             quote, i = "$'" if c == "$" else c, i + 1 + (c == "$")
         elif text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
             word_at(i)
-            ariths.append((len(frames), arith - 2, arith, None, False))
+            ariths.append((len(frames), arith - 2, arith, None, None))
             i += 3
         elif text.startswith("$[", i):
             word_at(i)
             end = _pair_end(text, i + 2, "[", "]")
-            ariths.append((len(frames), end - (text[end - 1 : end] == "]"), end, None, False))
+            ariths.append((len(frames), end - (text[end - 1 : end] == "]"), end, None, None))
             i += 2
         elif kind not in ("${", "[[") and text.startswith("((", i) and (arith := _arith_end(text, i)):
             # An arithmetic command, a compound one.
@@ -427,12 +449,13 @@ def read_command(text, start=0, group=False):
             # A pattern's opening parenthesis or its alternatives' bar.
             i += 1
         elif c == "(":
-            # A subshell, a function's () or body, or a word's part: a process substitution or an
-            # array assignment's list.
-            substitution = text[i - 1 : i] in ("<", ">", "=")
-            if substitution:
-                frames[-1][5] = False
-            push("array" if text[i - 1 : i] == "=" else "(", i + 1, ends=not substitution)
+            # A subshell, a function's () or body, or a word's part: a process substitution, which
+            # as a redirection's target keeps its assignment's place, or an array assignment's list.
+            array = text[i - 1 : i] == "="
+            substitution = array or text[i - 1 : i] in ("<", ">")
+            if substitution and not array:
+                frames[-1][5] = "assign" if frames[-1][5] == "target" else False
+            push("array" if array else "(", i + 1, ends=not substitution)
             i += 1
         elif c == ")":
             if kind in ("(", "array"):
@@ -510,14 +533,43 @@ def read_command(text, start=0, group=False):
             elif word == "--" and frames[-1][5] in ("time", "time -p"):
                 frames[-1][5] = True
             else:
+                # In an assignment's place (Bash's assignment_acceptable), a redirection keeps it,
+                # its target read as the next word, and Bash's lexer reads an element's subscript
+                # as one bracket pair before it looks for an operator, so a separator, a comment or
+                # a newline in it is part of the word.
+                begins = i == 0 or text[i - 1] in METACHARACTERS
+                place = (
+                    begins
+                    and kind not in ("case-word", "case-pattern", "array")
+                    and (reserved() or frames[-1][5] == "assign")
+                )
+                redirect = place and REDIRECT.match(text, i)
+                subscript = place and SUBSCRIPTED.match(text, i)
+                pair = subscript and _pair_end(text, subscript.end(), "[", "]")
+                if redirect and "<<" in redirect.group():
+                    # A heredoc's or here-string's fd, whose operator its own branch reads.
+                    i += redirect.group().index("<<")
+                    continue
+                if redirect and text[redirect.end() : redirect.end() + 1] != "(":
+                    frames[-1][5] = "target"
+                    i = redirect.end()
+                    continue
+                if pair and text[pair - 1] == "]":
+                    frames[-1][5] = "assign" if text.startswith(("=", "+="), pair) else False
+                    subscripts[i] = pair
+                    ariths.append((len(frames), pair - 1, pair, None, frames[-1][5]))
+                    i = subscript.end()
+                    continue
                 if word:
                     word_at(i)
+                    if place and ASSIGNED.match(text, i):
+                        frames[-1][5] = "assign"
                 word = None
             i += len(word) if word else 1
     end = n if frames else i
     while frames:
         pop(n)
-    return Reading(pipelines, heredocs, strings, end)
+    return Reading(pipelines, heredocs, strings, end, subscripts)
 
 
 def without_heredocs(command):
@@ -554,11 +606,27 @@ def _fed(reading, shells, pipeline, segment):
     return True
 
 
+def _shell_text(command, start, end, subscripts):
+    """The segment's text from start to end with its words' quotes removed (_dequoted), and each
+    subscript read_command read as one bracket pair in it written as [0], so SHELL_START reads
+    its assignment as one word."""
+    out, i = [], start
+    for at in sorted(at for at in subscripts if start <= at < end):
+        out.append(_dequoted(command, i, at))
+        out.append(SUBSCRIPTED.match(command, at).group() + "0]")
+        i = min(subscripts[at], end)
+    out.append(_dequoted(command, i, end))
+    return "".join(out)
+
+
 def code_text(command):
     """The command's text as code: heredoc bodies out, run strings and fed text added, as the
     header says."""
     reading = read_command(command)
-    shells = [[bool(SHELL_START.match(_dequoted(command, s, e))) for s, e in segments] for _, segments in reading.pipelines]
+    shells = [
+        [bool(SHELL_START.match(_shell_text(command, s, e, reading.subscripts))) for s, e in segments]
+        for _, segments in reading.pipelines
+    ]
     # A segment is a shell too when a group or substitution in it starts one, (bash) or >(bash),
     # since it reads the segment's stdin; a group's pipelines come after its parent's.
     for (parent, _), shell in reversed(list(zip(reading.pipelines, shells))):
@@ -594,10 +662,6 @@ def code_text(command):
     return "\n".join([text] + [inner for inner in added if inner])
 
 
-# A redirection operator where a word would start, with the fd or {name} before it.
-REDIRECT = re.compile(r"(?:[0-9]+|\{[A-Za-z_]\w*\})?(?:&>>?|<<<|<<-?|<>|[<>]&|>\||>>|[<>])")
-# A name and the [ that opens its subscript, where a word starts.
-SUBSCRIPTED = re.compile(r"[A-Za-z_]\w*\[")
 # The reserved words a simple command's words may start with, which are no part of it.
 LEADING = frozenset(
     ("!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac",
@@ -664,9 +728,10 @@ def _command_word(text, i, end):
     return "".join(out), i
 
 
-def _segment_commands(text, start, end, bodies):
+def _segment_commands(text, start, end, bodies, subscripts):
     """The simple commands of the segment from start to end, each its words, as simple_commands
-    says; bodies maps where each heredoc body starts to where its closing line ends."""
+    says; bodies maps where each heredoc body starts to where its closing line ends, and subscripts
+    where each subscript read_command read as one bracket pair starts its word to just past its ]."""
     commands, words, i = [], [], start
 
     def close():
@@ -706,18 +771,15 @@ def _segment_commands(text, start, end, bodies):
             # quote read_command found open.
             close()
             i += 1
+        elif i in subscripts:
+            # An element's subscript in an assignment's place, kept as written.
+            pair = min(subscripts[i], end)
+            rest, after = _command_word(text, pair, end)
+            words.append(text[i:pair] + rest)
+            i = after
         else:
-            subscript = SUBSCRIPTED.match(text, i)
-            pair = subscript and _pair_end(text, subscript.end(), "[", "]")
-            closed = pair and pair <= end and text[pair - 1] == "]"
-            if closed and all(word in LEADING or ASSIGNMENT.match(word) for word in words):
-                # In an assignment's place, Bash reads a name's subscript as one bracket pair,
-                # blanks, quotes and nested brackets in it, kept as written.
-                rest, i = _command_word(text, pair, end)
-                words.append(text[subscript.start() : pair] + rest)
-            else:
-                word, i = _command_word(text, i, end)
-                words.append(word)
+            word, i = _command_word(text, i, end)
+            words.append(word)
     close()
     return commands
 
@@ -725,7 +787,7 @@ def _segment_commands(text, start, end, bodies):
 def simple_commands(command):
     """Each simple command of every pipeline segment of the command, those in its groups and
     substitutions too, as the list of its words with their quotes removed (_command_word), but for
-    a subscript in an assignment's place, kept as written to its matching ]: its redirections,
+    a subscript read_command read as one bracket pair, kept as written to its ]: its redirections,
     their targets, its comments, its heredocs' bodies and the reserved words it starts with left
     out. A word holding a substitution keeps its text, $ or backtick and all; a quote that never
     closes ends its word and the rest of its segment. A segment holding a compound command yields
@@ -734,7 +796,7 @@ def simple_commands(command):
     bodies = {h.body[0]: h.end for h in reading.heredocs}
     for _, segments in reading.pipelines:
         for start, end in segments:
-            yield from _segment_commands(command, start, end, bodies)
+            yield from _segment_commands(command, start, end, bodies, reading.subscripts)
 
 
 # An assignment, as a command's word, of a variable or of an array's element (X[0]=1, its

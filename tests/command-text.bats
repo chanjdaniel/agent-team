@@ -39,6 +39,13 @@ walks() {
   walks 'X[ 0 ]=1 Y[a[0]]=2 Z["]"]=3 run x' \
     '{"reached":"direct","assignments":["X[ 0 ]=1","Y[a[0]]=2","Z[\"]\"]=3"],"wrappers":[],"words":["run","x"]}'
   walks 'echo X[ 0 ]=1' '{"reached":"direct","assignments":[],"wrappers":[],"words":["echo","X[","0","]=1"]}'
+  walks 'X[;]=1 run x' '{"reached":"direct","assignments":["X[;]=1"],"wrappers":[],"words":["run","x"]}'
+  walks 'X[ # ]=1 >f Y[)]=2 run x' \
+    '{"reached":"direct","assignments":["X[ # ]=1","Y[)]=2"],"wrappers":[],"words":["run","x"]}'
+  walks 'time X[ 0 ]=1 run x' '{"reached":"direct","assignments":["X[ 0 ]=1"],"wrappers":[["time","X[ 0 ]=1"]],"words":["run","x"]}'
+  walks 'X[$(c 2)]=1 run x' \
+    '{"reached":"direct","assignments":["X[$(c 2)]=1"],"wrappers":[],"words":["run","x"]}' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["c","2"]}'
   walks 'A=1 B+=2 run x; P=$!' \
     '{"reached":"direct","assignments":["A=1","B+=2"],"wrappers":[],"words":["run","x"]}' \
     '{"reached":"direct","assignments":["P=$!"],"wrappers":[],"words":[]}'
