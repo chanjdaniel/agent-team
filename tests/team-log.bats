@@ -611,21 +611,26 @@ LINES
 }
 
 @test "plan-approved takes the phases' caps as parallel, a cap from 1 to 3 per phase joined by commas, and refuses any other" {
-  opened_task T26
-  run_bin -0 team-log T26 plan-approved by=Daniel parallel=2
-  run_bin -0 team-log T26 plan-approved by=Daniel parallel=2,1,3
-  run_bin -0 team-log T26 plan-approved by=coordinator
-  assert_equal "$(logged_after 2)" "$(
+  plan_task
+  local task_dir=$BATS_TEST_TMPDIR/wt/.scratch/task message
+  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan?'
+  message=$(soon)
+  run_bin -0 team-log T14 plan-approved by=Daniel ask=plan discord_message="$message" parallel=2
+  echo "# the spec" >"$task_dir/spec.md"
+  run_bin -0 team-log T14 plan-approved by=coordinator parallel=2,1,3
+  echo "# the spec, again" >"$task_dir/spec.md"
+  run_bin -0 team-log T14 plan-approved by=coordinator
+  assert_equal "$(tail -n 3 "$TEAM_HOME/ledger.jsonl" | jq -c '{by, parallel}')" "$(
     cat <<'LINES'
-{"task":"T26","event":"plan-approved","by":"Daniel","parallel":"2"}
-{"task":"T26","event":"plan-approved","by":"Daniel","parallel":"2,1,3"}
-{"task":"T26","event":"plan-approved","by":"coordinator"}
+{"by":"Daniel","parallel":"2"}
+{"by":"coordinator","parallel":"2,1,3"}
+{"by":"coordinator","parallel":null}
 LINES
   )"
   local before value
   before=$(cat "$TEAM_HOME/ledger.jsonl")
   for value in 4 0 2,4 "2, 1" "2," ,2 two 12 "[2]"; do
-    run_bin -1 team-log T26 plan-approved by=Daniel "parallel=$value"
+    run_bin -1 team-log T14 plan-approved by=Daniel ask=plan discord_message="$message" "parallel=$value"
     assert_equal "$output" "team-log: parallel takes a cap from 1 to 3 per phase joined by commas (parallel=2 or parallel=2,1), got '$value'"
   done
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
