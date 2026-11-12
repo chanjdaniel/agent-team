@@ -18,8 +18,9 @@
 # id, no merge-approved whose url its text names), or when a park (held, blocked, waiting, paused)
 # stands in the ledger's lifecycle fold; an ask a launch went past (team-worker --past-ask) and its
 # wait park nothing, so that launch's worker is watched; an awaiting-merge task that nothing else parks is merge-due instead
-# while the default merge word, the approved plan, holds for one of its PRs. Findings, one line
-# each with the task,
+# while the default merge word, the approved plan, holds for one of its PRs and the checks of its
+# pass have passed, and ci-due while no wait of those checks has ended, and none of them was
+# rerun, for 100 minutes. Findings, one line each with the task,
 # the session and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
@@ -49,7 +50,9 @@
 #                  parks it, with session null: "stowing since <its time> (<cause>), with no
 #                  stowed; next: run team-stow T<n>, which finishes the stow or logs stow-failed"
 #   merge-due      an open task in awaiting-merge, with no ask nothing settled, no paused or
-#                  waiting standing, no merge-base round in flight (its latest builder launch or
+#                  waiting standing, the checks of its latest pass passed (checks_wait in
+#                  bin/lib/ledger.jq, read from the ledger alone: team-next T<n> --ci logged a ci
+#                  of outcome passed for the head the pass waits on), no merge-base round in flight (its latest builder launch or
 #                  resumed naming a merge-base brief, with no review, caught-up or merged since and
 #                  a worker on it live with no done since) and a PR not merged whose default word
 #                  holds on the ledger (merge_authority in bin/lib/ledger.jq, the derivation
@@ -69,6 +72,18 @@
 #                  is guarded or outside the plan's scope, the plan changed since its approval, or
 #                  a message does not read back. When the registry cannot be read, no task is
 #                  merge-due and a line on stderr says why
+#   ci-due         after the task's other findings, an open task in awaiting-merge, with no ask
+#                  nothing settled and no park standing, whose latest pass's checks_wait is waiting
+#                  (no ci logged for the head it waits on) or pending (its latest ci ended at
+#                  team-ci-wait's deadline) since 100 minutes or more, counted from the pass,
+#                  its catch-up, or the latest ci or ci-rerun of that head, since a rerun starts the
+#                  wait again (ci_due_seconds: the deadline's 90, its 2-minute settle, then room),
+#                  with session null: "the checks of <url> at <short>
+#                  have had no wait end for <h>h<mm>m; next: arm team-next T<n> --ci with Bash
+#                  run_in_background unless it is running". It is read from the ledger alone, no
+#                  GitHub and no process, so a wait still running past it is the coordinator's to
+#                  see in its background commands, and a second one armed beside it says so and
+#                  ends (team-next's lock)
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   coordinator-twin  after every task finding, with task null: one for each session named

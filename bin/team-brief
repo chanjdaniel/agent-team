@@ -51,8 +51,9 @@
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
 # reading rereview's too; a gated project's first review reads the branch's local head before the
-# gate, with no pr), and wait (the first review's wait on the PR's GitHub checks, started before it
-# reads; with no PR, a line saying there are none). Before the PR (no --set pr, and no open PR in
+# gate, with no pr), and wait (the first review's GitHub checks: on a PR, a line saying the review
+# starts no wait, since the coordinator's waits on the checks of a pass; with no PR, that there are
+# none). Before the PR (no --set pr, and no open PR in
 # the project's repo: no pr event, or a merged event for its latest, as in a later phase) on a
 # gated project, or on a direct-PR one whose plan's ## Disclosure section holds text past its HTML
 # comments (its builder pushes nothing before the review passes), <name>/<delivery>-before-pr.md takes the place of <name>/<delivery>.md where it
@@ -79,14 +80,24 @@
 # push. So are findings, findings_file and goal:
 # findings the latest review's sent_back, as "3, 5 and 6"; findings_file the newest (by mtime, a
 # tie by name) of review.md and rereview*.md in the worktree's <task_dir>/, written
-# <task_dir>/<file>; goal the first sentence of the plan's ## Goal section, its first line of
+# <task_dir>/<file>; for a round on a pass's failed checks (the latest review sent nothing back,
+# and a ci of outcome failed, team-next T<n> --ci's, is logged after it), findings "the failed
+# checks <its failures of class pr, by name> of <its head's first 8 characters>" and
+# findings_file that ci's report, tasks/T<n>/ci-<those 8>.md in the team home, refused as unfilled
+# while it does not exist; for a round on findings sent back whose reviewed head's look
+# (team-next's, on the findings verdict) logged such a ci, findings adds ", and the failed checks
+# <names> in <that report>", refused as unfilled while the report does not exist;
+# goal the first sentence of the plan's ## Goal section, its first line of
 # text past any HTML comment, a list marker dropped. A derived fact with no source is refused as
 # unfilled, naming its --set, only when the template uses it; GitHub unreadable for head is
 # refused naming --set head=.
 # since is always derived, the caller's --set or --set-file since= added after it as "The
 # coordinator adds: <text>": after fetching origin/<base> into the worktree (and reviewed and head,
 # when it lacks them; a failed fetch of the base is exit 75, nothing written), it gives the latest
-# review's head, verdict and sent_back; then, when reviewed is not an ancestor of head, that the
+# review's head, verdict and sent_back, for a pass that sent nothing back with that failed ci after
+# it "The last review, of <short>, passed; then the checks <names> failed on it, which this round
+# fixed.";
+# then, when reviewed is not an ancestor of head, that the
 # branch was rewritten and the git range-diff to compare with; else the commits reviewed..head not
 # on origin/<base>, each by short sha and subject, a merge of origin/<base> with its conflicted
 # files (git merge-tree of its parents) or no conflicts, and how many other commits came from the
@@ -178,9 +189,11 @@ events=$(open_task_events "$task")
 # In one jq run over its events: its opened event's title and path, its own open worktrees (as
 # task_worktrees has them, as one array, but for a ticket worktree), its latest thread and interview thread, and its latest
 # review (null when none), with that review's head (empty when none) and the findings it sent back
-# as a list ("3, 5 and 6"; empty when none); with --ticket, that ticket's open ticket worktree
-# (null when none).
-title='' path='' worktrees='' ticket_wt='' thread='' interview='' review='' review_head='' sent_list=''
+# as a list ("3, 5 and 6"; empty when none), the checks that went back as a round: the latest ci
+# of outcome failed logged after that review (team-next T<n> --ci's on a pass, or the findings
+# round's look), as its head and the names of its failures of the PR's own (empty when none), and
+# with --ticket, that ticket's open ticket worktree (null when none).
+title='' path='' worktrees='' ticket_wt='' thread='' interview='' review='' review_head='' sent_list='' ci_round=''
 json_vars --ledger title='map(select(.event == "opened")) | first | .title | tostring' \
   path='map(select(.event == "opened")) | first | .path | tostring' \
   worktrees='[open_worktrees(.[]; $home) | select(.ticket == null)] | tojson' \
@@ -190,7 +203,10 @@ json_vars --ledger title='map(select(.event == "opened")) | first | .title | tos
   review='map(select(.event == "review")) | last | tojson' \
   review_head='map(select(.event == "review")) | last | .head // empty' \
   sent_list='map(select(.event == "review")) | last | .sent_back // [] | map(tostring)
-    | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' -- --arg ticket "$ticket" <<<"$events"
+    | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' \
+  ci_round='([to_entries[] | select(.value.event == "review") | .key] | last) as $r | select($r != null)
+    | [.[$r + 1:][] | select(.event == "ci" and .outcome == "failed")] | last | select(. != null)
+    | {head, names: [(.failed // [])[] | select(.class == "pr") | .name]} | tojson' -- --arg ticket "$ticket" <<<"$events"
 
 # A path under $HOME, as ~/...
 tilde() {
@@ -450,20 +466,41 @@ fi
 if deriving findings; then
   if [[ $review == null ]]; then
     underivable findings "$task has no review; --set findings="
-  elif [[ -z $sent_list ]]; then
-    underivable findings "$task's latest review sent nothing back; --set findings="
-  else
+  elif [[ -n $sent_list && ( -z $ci_round || $(jq -c .names <<<"$ci_round") == '[]' ) ]]; then
     values[findings]=$sent_list
+  elif [[ -n $sent_list ]]; then
+    # The findings round's look found failed checks of the PR's own on the reviewed head.
+    report=$TEAM_HOME/tasks/$task/ci-$(jq -r '.head[:8]' <<<"$ci_round").md
+    if [[ -f $report ]]; then
+      values[findings]="$sent_list, and the failed checks $(and_list "$(jq -c .names <<<"$ci_round")") in $(tilde "$report")"
+    else
+      underivable findings "no report of the failed checks at $(tilde "$report"); --set findings="
+    fi
+  elif [[ -n $ci_round ]]; then
+    # A round on the pass's failed checks, which team-next T<n> --ci handed back.
+    values[findings]="the failed checks $(and_list "$(jq -c .names <<<"$ci_round")") of $(jq -r '.head[:8]' <<<"$ci_round")"
+  else
+    underivable findings "$task's latest review sent nothing back; --set findings="
   fi
 fi
 if deriving findings_file; then
-  # The newest of the reviews' findings files in the worktree's task directory.
-  dir=$chosen_wt/${values[task_dir]}
-  newest=$(findings_file "$dir")
-  if [[ -n $newest ]]; then
-    values[findings_file]=${values[task_dir]}/$newest
+  if [[ -z $sent_list && -n $ci_round ]]; then
+    # The report team-next T<n> --ci wrote of the failed checks, in the team home.
+    report=$TEAM_HOME/tasks/$task/ci-$(jq -r '.head[:8]' <<<"$ci_round").md
+    if [[ -f $report ]]; then
+      values[findings_file]=$(tilde "$report")
+    else
+      underivable findings_file "no report of the failed checks at $(tilde "$report"); --set findings_file="
+    fi
   else
-    underivable findings_file "no review.md or rereview*.md in $(tilde "$dir"); --set findings_file="
+    # The newest of the reviews' findings files in the worktree's task directory.
+    dir=$chosen_wt/${values[task_dir]}
+    newest=$(findings_file "$dir")
+    if [[ -n $newest ]]; then
+      values[findings_file]=${values[task_dir]}/$newest
+    else
+      underivable findings_file "no review.md or rereview*.md in $(tilde "$dir"); --set findings_file="
+    fi
   fi
 fi
 if deriving goal; then
@@ -607,7 +644,9 @@ if deriving since; then
     sent=$(jq -c '.sent_back // []' <<<"$review")
     case $(jq -r .verdict <<<"$review") in
       pass)
-        if [[ $sent == '[]' ]]; then
+        if [[ $sent == '[]' && -n $ci_round ]]; then
+          lines+=("The last review, of \`${of:0:8}\`, passed; then the checks $(and_list "$(jq -c .names <<<"$ci_round")") failed on it, which this round fixed.")
+        elif [[ $sent == '[]' ]]; then
           lines+=("The last review, of \`${of:0:8}\`, passed.")
         else
           lines+=("The last review, of \`${of:0:8}\`, passed, and sent back $(and_list "$sent").")

@@ -171,6 +171,8 @@ resumed team-log,team-answer
 pr team-log url head
 review team-log verdict head
 gate-run team-log run head outcome
+ci team-log url head outcome
+ci-rerun team-log url head check run job
 merge-approved team-log url discord_message
 merge-preapproved team-log project ask discord_message scope
 merge-preapproval-withdrawn team-log project discord_message
@@ -218,6 +220,8 @@ TABLE
   assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array","widening":"numbers","memory":"string"}'
   assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","default","plan","standing"]'
   assert_equal "$(jq -c '.kinds.walk.required.state' "$CONTRACT")" '["on","off"]'
+  assert_equal "$(jq -c '[.kinds.ci | .required.outcome, .optional]' "$CONTRACT")" '[["passed","failed","infrastructure","pending"],{"failed":"array","look":"boolean"}]'
+  assert_equal "$(jq -c '.kinds["ci-rerun"].required' "$CONTRACT")" '{"url":"string","head":"string","check":"string","run":"digits","job":"digits"}'
   assert_equal "$(jq -c '.kinds["plan-approved"] | [.required, .optional]' "$CONTRACT")" \
     '[{"by":["Daniel","coordinator"]},{"ask":"string","discord_message":"id","plan":"object","scope":"array","parallel":"string"}]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
@@ -238,6 +242,11 @@ TABLE
   grep -Eq 'key:value pairs .*findings=blocking:0,correctness:1' <<<"$output"
   grep -Eq 'numbers \(a list of whole numbers\)' <<<"$output"
   grep -Eq '^--fix-sent-back .*under the ledger.s lock' <<<"$output"
+  # The checks wait's two kinds, by their forms and their rows.
+  assert_contains "$output" "team-log T<n> ci url=<url> head=<sha> outcome=<passed|failed|infrastructure|pending> [failed=<JSON array>] [look=true]"
+  assert_contains "$output" "team-log T<n> ci-rerun url=<url> head=<sha> check=<name> run=<id> job=<id>"
+  grep -Eq '^  ci +team-log +url, head, outcome \(passed\|failed\|infrastructure\|pending\); optional failed \(list\), look \(boolean\)  \(.*\)$' <<<"$output"
+  grep -Eq '^  ci-rerun +team-log +url, head, check, run \(digits\), job \(digits\)  \(.*\)$' <<<"$output"
   local kind
   for kind in $(jq -r '.kinds | keys_unsorted[]' "$CONTRACT"); do
     grep -Eq "^  $kind +[a-z-]+(, [a-z-]+)* " <<<"$output" || {
@@ -459,6 +468,58 @@ LINES
   assert_ledger_empty
 }
 
+@test "a checks wait's end is logged as ci, with its failures and a findings round's look, and each rerun as ci-rerun, its ids kept as digits" {
+  opened_task T14
+  local url=https://github.com/owner/proj/pull/5 head=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
+  local shard='{"name":"test-shards (2)","class":"pr","kind":"failed","link":"https://github.com/owner/proj/actions/runs/42/job/43","step":"Run the bats suite"}'
+  local rollup='{"name":"test","class":"rollup","kind":"rollup","link":"https://github.com/owner/proj/actions/runs/42/job/44","step":null}'
+  local runner='{"name":"macos-shards (1)","class":"infrastructure","kind":"never-started","link":"https://github.com/owner/proj/actions/runs/41904778858/job/117300000000000001","step":null}'
+  run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=passed
+  run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=failed "failed=[$shard,$rollup]" look=true
+  run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=infrastructure "failed=[$runner]"
+  run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=pending
+  run_bin -0 team-log T14 ci-rerun "url=$url" "head=$head" 'check=macos-shards (1)' run=41904778858 job=117300000000000001
+  assert_equal "$(logged_after 2)" "$(
+    cat <<LINES
+{"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"passed"}
+{"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"failed","failed":[$shard,$rollup],"look":true}
+{"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"infrastructure","failed":[$runner]}
+{"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"pending"}
+{"task":"T14","event":"ci-rerun","url":"$url","head":"$head","check":"macos-shards (1)","run":"41904778858","job":"117300000000000001"}
+LINES
+  )"
+  run_bin -0 team-log --check
+}
+
+@test "a ci with an outcome outside its four, a missing field or failures that are no list, and a ci-rerun whose run or job is no whole number, are refused" {
+  opened_task T14
+  local url=https://github.com/owner/proj/pull/5
+  run_bin -1 team-log T14 ci "url=$url" head=a1b2c3d outcome=green
+  assert_contains "$output" "outcome must be one of passed, failed, infrastructure, pending"
+  run_bin -1 team-log T14 ci "url=$url" outcome=passed
+  assert_contains "$output" "ci needs head"
+  run_bin -1 team-log T14 ci head=a1b2c3d outcome=passed
+  assert_contains "$output" "ci needs url"
+  run_bin -1 team-log T14 ci "url=$url" head=a1b2c3d
+  assert_contains "$output" "ci needs outcome"
+  run_bin -1 team-log T14 ci "url=$url" head=a1b2c3d outcome=failed 'failed={"name":"test"}'
+  assert_contains "$output" "failed must be a list, got an object"
+  run_bin -1 team-log T14 ci "url=$url" head=a1b2c3d outcome=failed look=yes
+  assert_contains "$output" "look must be a boolean, got a string"
+  local run
+  for run in 4190x 12.5 -3 '4190 1'; do
+    run_bin -1 team-log T14 ci-rerun "url=$url" head=a1b2c3d check=test "run=$run" job=117
+    assert_contains "$output" "run must be a whole number written in digits, got a string that is not one"
+  done
+  run_bin -1 team-log T14 ci-rerun "url=$url" head=a1b2c3d check=test run=4190 job=x
+  assert_contains "$output" "job must be a whole number written in digits, got a string that is not one"
+  run_bin -1 team-log T14 ci-rerun "url=$url" head=a1b2c3d run=4190 job=117
+  assert_contains "$output" "ci-rerun needs check"
+  run_bin -1 team-log T14 ci-rerun "url=$url" head=a1b2c3d check=test job=117
+  assert_contains "$output" "ci-rerun needs run"
+  assert_equal "$(logged_after 2)" ""
+}
+
 @test "a field the contract types as a string stays a string even when it looks like JSON" {
   opened_task T14
   run_bin -0 team-log T14 ticket-done ticket=12 'commits=["1234567"]'
@@ -525,7 +586,7 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
           elif .key == "scope" and ($k | startswith("merge-default-")) then "task" elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
           elif .key == "retro" then "T150" elif .key == "by" and $k == "plan-approved" then "coordinator"
           elif .key == "discord_channel" then $coordinator
-          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
+          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" or . == "digits" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4"),
       (select($k == "paused") | "cause=limit"), (select($k == "held") | "discord_message=\($soon)"),
       (select($k == "resumed") | "all=true"),
@@ -534,7 +595,7 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select(([.value.writer] | flatten | index("team-log")) and (.value.retired | not)) | .key' "$CONTRACT")
-  assert_equal "$count" "24"
+  assert_equal "$count" "26"
   run_bin -0 team-log --check
 }
 
@@ -2343,7 +2404,7 @@ origin_subject() {
           elif .key == "scope" and ($k | startswith("merge-default-")) then "task" elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
           elif .key == "retro" then "T150" elif .key == "by" and $k == "plan-approved" then "coordinator"
           elif .key == "discord_channel" then $coordinator
-          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
+          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" or . == "digits" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4"),
       (select($k == "paused") | "cause=limit"), (select($k == "held") | "discord_message=\($soon)"),
       (select($k == "resumed") | "all=true"),

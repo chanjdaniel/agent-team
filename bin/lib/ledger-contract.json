@@ -1,7 +1,7 @@
 {
   "about": [
     "The ledger contract: every event kind in ledger.jsonl, the script that writes it (or the list of scripts that do), and its fields.",
-    "Each field's type is string, number, array (a list), numbers (a list of whole numbers, 0 or more), object or id (a Discord id: a string of digits, which --check also takes as a whole number, the form team-log wrote before), or a list of the strings it may be.",
+    "Each field's type is string, number, array (a list), numbers (a list of whole numbers, 0 or more), object, boolean, id (a Discord id: a string of digits, which --check also takes as a whole number, the form team-log wrote before) or digits (any other whole number kept as a string of digits, as a GitHub run or job id is), or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
     "A kind's field_writers names the one script that may append a line holding each field it lists, among the kind's writers; the others append the kind without it.",
     "A kind with push true records Daniel's word or an outside fact, so the script that appends it commits the ledger and pushes it to the team home's origin at once (ledger_push), not at the next checkpoint.",
@@ -183,6 +183,17 @@
       "about": "one per gate run, at its end: run is the gate's run id, head the commit it ran on, cause why it repeats an earlier run on the same PR, minutes each step's minutes as no-mistakes axi status --run prints them, approved the ids of the parks the builder approved itself in the run, each a kind its brief or the project's review rules name (team-time counts them), absent when it approved none",
       "required": {"run": "string", "head": "string", "outcome": ["pushed", "red", "aborted", "stopped-green"]},
       "optional": {"cause": ["review", "notes", "gate-finding", "load", "tooling", "base-merge", "other"], "minutes": "object", "approved": "array"}
+    },
+    "ci": {
+      "writer": "team-log",
+      "about": "one per end of a wait on a PR's checks after a pass, and per findings round's look at them: url is the PR's; head the full sha waited on; outcome passed (the checks passed), failed (a failure of the PR's own), infrastructure (infrastructure failures with no rerun left) or pending (team-ci-wait's 90-minute deadline); failed each failure's {name, class, kind, link, step}, as team-ci-wait --json gives them, the roll-ups among them; look true for the findings round's look (team-ci-wait --look) on the head the round replaces, absent for a wait; checks_wait in bin/lib/ledger.jq reads the latest one of the head a pass waits on",
+      "required": {"url": "string", "head": "string", "outcome": ["passed", "failed", "infrastructure", "pending"]},
+      "optional": {"failed": "array", "look": "boolean"}
+    },
+    "ci-rerun": {
+      "writer": "team-log",
+      "about": "one per rerun of a check that failed as infrastructure, made by the wait on a PR's checks after a pass: url is the PR's; head the full sha whose check it reran; check the check's name, by which checks_wait in bin/lib/ledger.jq lists the checks rerun on a head, since a rerun gives the job a new id; run the workflow run's id and job the job's, as GitHub gives them",
+      "required": {"url": "string", "head": "string", "check": "string", "run": "digits", "job": "digits"}
     },
     "merge-approved": {
       "writer": "team-log",

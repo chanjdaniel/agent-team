@@ -338,6 +338,23 @@ $WORKER_INSTRUCTIONS"
   grep -E '^\| `PR <url>` \| `team-next` \| .*logging `branch-renamed` when the gate moved the PR.s branch' "$manual"
 }
 
+# T295: after a pass the coordinator's checks wait, team-next T<n> --ci, waits on the PR's checks,
+# not a worker; its reruns are a sanctioned write beside team-merge and team-catch-up, and the merge
+# still needs every check green on the exact head.
+@test "the manual arms the checks wait at the pass and the catch-up, names its reruns among the sanctioned actions, and keeps the merge green" {
+  local merge
+  merge=$(awk '/^6\. \*\*Merge\.\*\*/ { on = 1 } /^7\. / { on = 0 } on' "$manual")
+  grep -qxF -- "- You change projects only through the scripts' sanctioned actions: making and returning worktrees, fetching, merging through \`team-merge\` and \`team-catch-up\`, and the checks wait's reruns of an infrastructure failure." "$manual"
+  assert_contains "$merge" "On a reviewer's pass on a PR, \`team-next\` logs a \`DONE pass\`, refusing a pass whose PR head moved, and says to arm the checks wait, \`team-next T<n> --ci\` with Bash \`run_in_background\`, which prints the next step once the checks end (the merge ask, a fix round or a \`blocked:\` line; on exit 75, arm it again)"
+  assert_contains "$merge" "\`team-catch-up T<n>\` when the merge is clean, which needs no rereview and says to arm \`team-next T<n> --ci\` again"
+  section coordinator 'Branches and merging' | grep -qF "and never red: every required check, the project's local checks (which \`team-merge\` runs through \`team-checks\`) and \`agent-review\` green on the exact head; the checks wait of step 6 waits on them with \`team-ci-wait\`, which always ends."
+  # The lines the manual names are the scripts' own.
+  grep -qF '"checks: arm team-next $task --ci with Bash run_in_background unless it is already running' "$REPO_ROOT/bin/team-next"
+  grep -qF 'next: arm team-next $task --ci with Bash run_in_background' "$REPO_ROOT/bin/team-catch-up"
+  # No worker waits on its PR's checks any more.
+  if grep -nF 'a worker waits on its PR' "$manual"; then return 1; fi
+}
+
 # The retired words (T276): the plan-time word with its registry key, and the standing word.
 retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing word|pre-approved|preapprov'
 
@@ -429,24 +446,18 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   grep -qF 'queue each plain `before` note as a follow-up' "$manual"
   grep -qF '`change` when it is on a line the PR adds or changes, `before` when it is on code the PR did not change' <<<"$reviewer"
   grep -qF 'a plain `note` goes back when its scope is `change`, and is queued as a follow-up, never sent back, when it is `before`' <<<"$reviewer"
-  section builder 'What you do' | grep -qF 'When every finding it sends is a plain `note` and the PR exists, report `PR <full url>` as soon as the fix is pushed'
-  # The early report ends the round, so no CI-fix push moves the head under the verify reviewer.
-  section builder 'What you do' | grep -qF 'and stop there, without waiting for the PR'"'"'s GitHub checks or pushing anything more'
-  grep -qF 'and each plain `note` whose scope is `change`) is fixed at' "$REPO_ROOT/templates/briefs/rereview.md"
-  grep -qF 'When every one of findings {{findings}} is a plain `note` and the PR exists, send `{{task}} PR <full url>` as soon as the fix is pushed' \
+  # Every round, a notes-only one too, reports at the push and stops: no builder waits on CI or
+  # pushes a fix under a review, and a red check comes back as a fix round from the checks wait.
+  grep -qF '   The delivery ends at the `PR` it sends (on a gated project, once the gate'"'"'s run, its ci step skipped, or the base'"'"'s merge after it has pushed), with no wait on the PR'"'"'s GitHub checks and nothing more pushed' \
     "$REPO_ROOT/templates/briefs/builder-round.md"
-  grep -qF 'and stop there: skip the delivery'"'"'s wait for the PR'"'"'s GitHub checks and every step after it, and push nothing more' \
+  # The round updates the PR body's local checks line before its report.
+  grep -qF 'bring the PR body'"'"'s local checks line up to the head you pushed (`gh pr edit <full url> --body-file <file>`)' \
     "$REPO_ROOT/templates/briefs/builder-round.md"
-  # It skips the delivery's step that updates the PR body, so the round updates it before its report.
-  grep -qF 'and the PR body'"'"'s local checks line names that head (`gh pr edit <full url> --body-file <file>`)' \
-    "$REPO_ROOT/templates/briefs/builder-round.md"
-  section builder 'What you do' | grep -qF 'and the PR body'"'"'s local checks line names that head, and stop there'
-  # Any other round reports at the push too, its wait on the checks behind it, so the rereview reads
-  # while CI runs; a fix of the PR's own failed check sends no new report, so no second review starts
-  # on it.
-  section builder 'What you do' | grep -qF 'On every delivery, send `PR <full url>` as soon as the push and the PR body are in (on a gated one, once the gate'"'"'s run, its ci step skipped, has opened or updated the PR and you have read the title and body it drafted against the project'"'"'s rules and fixed them on the PR), with `team-ci-wait --no-agent-review` started in the background before it, and keep the wait, never fixing or pushing for the reviewer'"'"'s `agent-review`'
-  section builder 'What you do' | grep -qF 'you push a fix of each failure the wait names as `the PR'"'"'s:` at once with no new report'
-  section reviewer 'What you do' | grep -qF 'On a PR, start `team-ci-wait <pr> <head>` with Bash `run_in_background` before you read'
+  section builder 'What you do' | grep -qF 'On every delivery, send `PR <full url>` as soon as the push and the PR body are in (on a gated one, once the gate'"'"'s run, its ci step skipped, has opened or updated the PR and you have read the title and body it drafted against the project'"'"'s rules and fixed them on the PR), and on a merge-base round `DONE merged ...` once its push is in, and stop there: you never wait on the PR'"'"'s GitHub checks, since a red check comes back to you from the coordinator as a fix round.'
+  section builder 'What you do' | grep -qF -- '- Fix the review findings and failed checks the coordinator sends you on the same branch'
+  section reviewer 'What you do' | grep -qxF -- '- On a PR, start no wait on its GitHub checks: read, and deliver on the head you read, since the coordinator'"'"'s script waits on the checks of a pass.'
+  if section builder 'What you do' | grep -F -e team-ci-wait -e 'When every finding it sends is a plain `note`'; then return 1; fi
+  if section reviewer 'What you do' | grep -F team-ci-wait; then return 1; fi
   jq -er '.kinds.review.about | contains("or a plain note on a line the PR adds or changes, never one before lists")' \
     "$REPO_ROOT/bin/lib/ledger-contract.json"
   # Nothing still says the old rule, that every plain note is a follow-up.
@@ -614,7 +625,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 26940 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 27240 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -652,10 +663,12 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # once the merge rule and step 6 named the default word in place of the plan-time and standing
   # words, with what it never holds on and the command that withdraws it for a task, a project or
   # all, 26830 once the review step named team-review-check, the reviewer App's check the
-  # coordinator posts, and 26940 once it said team-next posts it on a verdict taken only with
-  # --from the reviewer's session id).
+  # coordinator posts, 26940 once it said team-next posts it on a verdict taken only with --from
+  # the reviewer's session id, and 27240 once step 6 named the checks wait, team-next T<n> --ci,
+  # what it prints at its end and its re-arm after a catch-up and on exit 75, and the sanctioned
+  # actions team-catch-up and its reruns).
   (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 26940))
+  (($(wc -c <"$manual") <= 27240))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

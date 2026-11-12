@@ -165,7 +165,7 @@ review_facts() {
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
-    waiting: null, parks: [], stowing: null, walk: null, rehome_failures: [], pr: null,
+    waiting: null, parks: [], stowing: null, walk: null, rehome_failures: [], checks_wait: null, pr: null,
     progress: {tickets: {done: [], total: 0, graph: null}, on: [],
       reviews: {count: 0, verdict: null, head: null, sent_back: null}}}')"
   assert_equal "$(stub_calls gh)" ""
@@ -700,7 +700,7 @@ EOF
     '[{"name": "test", "bucket": "fail", "state": "FAILURE"}, {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]' '[]'
   run_bin -0 team-state T14
   assert_equal "$output" \
-    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 merged a1b2c3d (head moved) checks 1/2 agent-review success"
+    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 merged a1b2c3d (head moved) checks 1/2 agent-review success | checks waiting"
 }
 
 @test "a head team-catch-up made from the ledger head is caught up cleanly, not moved" {
@@ -716,7 +716,7 @@ EOF
     '["feat/T14-tooling","1111111",true,true]'
   run_bin -0 team-state T14
   assert_equal "$output" \
-    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d (caught up cleanly with main) checks 1/1 agent-review success"
+    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d (caught up cleanly with main) checks 1/1 agent-review success | checks waiting"
 }
 
 @test "a moved head that no latest caught-up event of the PR made from the ledger head is moved, not caught up" {
@@ -950,13 +950,13 @@ files_read() {
     '"number,state,baseRefName,headRefOid,headRefName,changedFiles"'
   run_bin -0 team-state T14
   assert_equal "$output" \
-    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | default word covers it"
+    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | checks waiting | default word covers it"
 
   # It is said before any waiting.
   event T14 waiting '{on: "CI", reason: "a rerun"}'
   run_bin -0 team-state T14
   assert_equal "$output" \
-    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | default word covers it | parks: waiting-1 outside since 2026-10-22T02:00:00Z: a rerun"
+    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | checks waiting | default word covers it | parks: waiting-1 outside since 2026-10-22T02:00:00Z: a rerun"
 }
 
 @test "a PR of the team's own project has the default word's one reason, with no file list read" {
@@ -971,7 +971,7 @@ files_read() {
   run ! files_read
   run_bin -0 team-state T14
   assert_equal "${output#*agent-review missing}" \
-    " | default word does not cover it: the team's own project merges unattended only behind the reviewer App's check, which is not set up"
+    " | checks waiting | default word does not cover it: the team's own project merges unattended only behind the reviewer App's check, which is not set up"
 }
 
 @test "a PR the default word does not cover names the first reason, how many more, and every one in the JSON" {
@@ -983,7 +983,7 @@ files_read() {
     ".github/workflows/ci.yml is outside the approved plan'"'"'s scope: src/, README.md"]]')"
   run_bin -0 team-state T14
   assert_equal "${output#*agent-review missing}" \
-    " | default word does not cover it: .github/workflows/ci.yml is a guarded path (ci): a change there comes back to Daniel (and 1 more)"
+    " | checks waiting | default word does not cover it: .github/workflows/ci.yml is a guarded path (ci): a change there comes back to Daniel (and 1 more)"
 
   # A ledger reason is named alone, with no file list read.
   event T14 review "{verdict: \"fail\", head: \"1111111\", findings: {security: 1, \"real-data\": 0}, guarded: []}"
@@ -1000,7 +1000,7 @@ files_read() {
   GH_VIEW=${GH_VIEW/feat\/T14-tooling/fix\/other}
   run_bin -0 team-state T14
   assert_equal "${output#*agent-review missing}" \
-    " | default word does not cover it: PR #5 comes from fix/other, not feat/T14-tooling, T14's branch for proj"
+    " | checks waiting | default word does not cover it: PR #5 comes from fix/other, not feat/T14-tooling, T14's branch for proj"
 
   # GitHub it cannot read leaves it uncovered, saying why.
   : >"$TEAM_HOME/ledger.jsonl"
@@ -1023,12 +1023,12 @@ files_read() {
       "1563000000000000001"]')"
   run ! files_read
   run_bin -0 team-state T14
-  assert_equal "${output#*agent-review missing}" " | default word withdrawn"
+  assert_equal "${output#*agent-review missing}" " | checks waiting | default word withdrawn"
 
   # Given back for every project, it covers the PR again; Daniel's message is team-merge's to read.
   said merge-default-restored all 1563000000000000002
   run_bin -0 team-state T14
-  assert_equal "${output#*agent-review missing}" " | default word covers it"
+  assert_equal "${output#*agent-review missing}" " | checks waiting | default word covers it"
 }
 
 @test "a task not awaiting merge, or with no plan approved, has no default word text and reads no file list" {
@@ -1050,7 +1050,35 @@ files_read() {
     '[false,["T14 has no approved plan: no plan-approved is logged"]]'
   run ! files_read
   run_bin -0 team-state T14
-  assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing"
+  assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | checks waiting"
+}
+
+@test "checks_wait is what the latest pass waits on, null with none, and the line says checks <state> while one stands" {
+  awaiting_merge
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .checks_wait <<<"$output")" \
+    "$(jq -cn --arg head "$head" '{url: "https://github.com/owner/proj/pull/5", reviewed: $head[:8], head: $head[:8],
+      since: "2026-10-22T02:00:00Z", state: "waiting", reruns: []}')"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | checks waiting"
+
+  # The checks wait's ends, as team-next T14 --ci logs them, each the state shown.
+  local outcome
+  for outcome in pending infrastructure failed passed; do
+    ledger_line --arg head "$head" --arg o "$outcome" \
+      '{ts: "2026-10-22T03:00:00Z", task: "T14", event: "ci", url: "https://github.com/owner/proj/pull/5", head: $head, outcome: $o}'
+    run_bin -0 team-state T14 --json
+    assert_equal "$(jq -c '.checks_wait | [.state, .since]' <<<"$output")" "[\"$outcome\",\"2026-10-22T03:00:00Z\"]"
+    run_bin -0 team-state T14
+    assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | checks $outcome"
+  done
+
+  # A review that is not a pass stands no wait: null, and nothing on the line.
+  event T14 review "{verdict: \"findings\", head: \"$head\", findings: {blocking: 1, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, sent_back: [1], guarded: []}"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .checks_wait <<<"$output")" null
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature in-review | no live worker | review 2 findings, sent back 1 | PR #5 a1b2c3d checks 1/1 agent-review missing"
 }
 
 # The task T14 of project proj opened in a worktree that is a real directory, with <n> tickets in
@@ -1233,7 +1261,7 @@ SH
     '{"tickets":{"done":[],"total":0,"graph":null},"on":[],"reviews":{"count":0,"verdict":null,"head":null,"sent_back":null}}'
 }
 
-@test "--help documents progress, the tickets' graph, each worker's brief and the PR's behind_by and caught_up" {
+@test "--help documents progress, the tickets' graph, each worker's brief, the PR's behind_by and caught_up, and checks_wait" {
   run_bin -0 team-state --help
   assert_contains "$output" "progress"
   assert_contains "$output" "behind_by"
@@ -1245,4 +1273,6 @@ SH
   assert_contains "$output" "(caught up cleanly with <base>)"
   assert_contains "$output" "walk on since <ts>"
   assert_contains "$output" '{"since": "<ts>"}'
+  assert_contains "$output" "checks_wait"
+  assert_contains "$output" '"checks <state>"'
 }

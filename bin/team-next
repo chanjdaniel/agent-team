@@ -5,6 +5,8 @@
 # Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>]
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
 #        team-next T<n> --fill [--next <NN>]
+#        team-next T<n> --ci
+#   --ci         the checks wait of a pass, with no message and no other option (below)
 #   --from       the sender, as team-log --from-message takes it, when the message cannot tell it;
 #                required with a reviewer's verdict when the reviewer App posts agent-review on the
 #                project of a PR of the task, or of its latest reviewer launch: the session id of
@@ -112,9 +114,9 @@
 # logged skips the checks and the logging ("already logged ..."), and goes on from the return; the
 # "already handed off" refusal above holds for a DONE from the task worktree only. Nothing is
 # pushed: the task branch reaches origin with the deliverer's push.
-# Every run, before its hand-off (once its events are logged, or in --fill before it launches),
-# returns each open ticket worktree on this machine whose ticket is done (a ticket-done since the
-# worktree was given to it and its latest launch there) through team-close T<n> --ticket NN,
+# Every run but --ci's, before its hand-off (once its events are logged, or in --fill before it
+# launches), returns each open ticket worktree on this machine whose ticket is done (a ticket-done
+# since the worktree was given to it and its latest launch there) through team-close T<n> --ticket NN,
 # "returned <path> for ticket NN", or, when its builder is still busy (exit 75), "kept <path>:
 # <team-close's reason>; the next team-next run of T<n> returns it"; any other failure exits with
 # its code.
@@ -148,27 +150,108 @@
 # a PR of a project the App posts for (own_bar in bin/lib/team.sh), once the review and its done
 # are logged it runs team-review-check on the reviewed head, success for a pass and failure for
 # findings, its summary "T<n>'s review of <head> passed" or "... found findings", and prints
-# "posted agent-review <conclusion> on <head> as the reviewer App's check run <id>", the merge
-# line then naming that conclusion; findings on a head the PR moved past, and a review naming its
-# head by a prefix, not in full, post nothing and say so; a post that fails exits 1 after naming
-# the team-review-check command, the review staying logged, and a rerun posts it again, but one
-# whose check run was posted and whose token alone was not revoked is said as posted, with why. Once the review and its done are logged, the last line is
-# what is left for the coordinator, the holder being the task's latest builder launch, under
-# 250k while team-state reads its context under 250,000 tokens or none, and gone when its session
-# is not live.
-# For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks green"
-# (or the failing, pending and missing checks; the state the reviewer App's check's, review_check in
-# bin/lib/team.sh's pr_part, on the team's own project with the App on), or "merge on the default
-# word: run team-merge T<n> for ..." instead while the default word, the approved plan, holds on the
-# ledger for the PR at the reviewed head, read once the review is logged (merge_authority in
-# bin/lib/ledger.jq, the derivation team-merge, team-state and team-sweep read: the plan approved
-# and not withdrawn, the PR's project not the team's own by own_project in bin/lib/team.sh, or the
-# team's own on a plan Daniel approved with the reviewer App on, the default not withdrawn for the
-# task, its project or every project, the task's branch logged, the review found no guarded area and
-# no review of the task counted a security or real-data finding or logged no counts); on a merge
-# ask, each guarded area of the six bin/lib/guarded names and each such review named, with ", so the
-# default word does not hold" while the plan stands approved on a project not the team's own, or the
-# team's own with the reviewer App on, and the before notes to queue as follow-ups; for a PR
+# "posted agent-review <conclusion> on <head> as the reviewer App's check run <id>", which --ci's
+# merge line then names as GitHub shows it; findings on a head the PR moved past, and a review
+# naming its head by a prefix, not in full, post nothing and say so; a post that fails exits 1 after naming the
+# team-review-check command, the review staying logged, and a rerun posts it again, but one whose
+# check run was posted and whose token alone was not revoked is said as posted, with why. Once
+# the review and its done are logged, the last line is what is left for the coordinator, the
+# holder being the task's latest builder launch, under 250k while team-state reads its context
+# under 250,000 tokens or none, and gone when its session is not live. For a pass on a PR,
+# whatever its checks show, the last line arms the checks wait and no
+# merge line is printed: "checks: arm team-next T<n> --ci with Bash run_in_background unless it
+# is already running: it waits on the checks of <url> at <short>, then prints the merge ask or
+# hands a red check back as a round".
+# For a pass with no PR (a review-ready, a gated or Disclosure task's, or a later phase's whose
+# earlier PR GitHub says is merged), the message telling the holder to go on with its delivery.
+# For findings, or a pass that sent some back (which team-log logs as findings): the message for
+# the holder under 250k (its name, the findings sent back and the findings file the message names,
+# for a pass the newest of review.md and rereview*.md in the holder's task directory, as
+# team-brief derives a round's, and that each is fixed as narrowly as it asks, a fix reaching
+# shapes it does not name a T<n> QUESTION first), else the T<n> STOW to send it (after recovering
+# it when gone), or no hand-off when nothing was sent back.
+# The findings round's look: when findings go back on a PR, before that line, one look at the
+# reviewed head, team-ci-wait --no-agent-review --json --look <url> <head> (the review's own
+# agent-review is no check). Its failures of class pr (the PR's own) are written to the report
+# tasks/T<n>/ci-<the head's first 8 characters>.md in the team home (the PR's own alone, as --ci's
+# report lays them out), logged once as ci outcome=failed look=true failed=<them> after the review,
+# and named after the findings, as ", and the failed checks <names> of <short> in <the report>";
+# infrastructure failures and roll-ups, on a head the round replaces, are neither named nor
+# logged, and with none of the PR's own nothing is logged and the line is as above. A look that
+# ends unreadable, offline, other-head or moved, or prints no object, adds "; the checks of
+# <short> could not be read (<its text>)" at the end of the line, nothing logged. With no PR (a
+# gated project's before its gate, a Disclosure task's before its first push), no look.
+# team-next T<n> --ci is that checks wait, run with Bash run_in_background; it always ends, since
+# team-ci-wait does. One runs a task at a time, under the lock
+# ~/.local/state/agent-team/ci/T<n>.lock (a no-wait flock): a second one prints "the checks wait of
+# T<n> is already running (<lock>): its end prints the next step", exit 0, waiting on nothing.
+# Refused, exit 1, logging nothing, before it waits and again, the ledger read anew, once each
+# wait ends (so a hold, an ask, a close or a review logged while it waited stops that end, before
+# any rerun, log or hand-off, and the end takes a new pass's facts): launch_refusal's texts for a
+# launch of no role (closed, Daniel's hold, an ask open), "T<n>'s latest review is not a pass on
+# an open PR, so no checks wait for a merge" when checks_wait in bin/lib/ledger.jq is null, "the
+# checks of <short> failed and went back as a round on <ts>" when its state is failed, and, once a
+# wait ended, "the checks wait of T<n> moved to <url> at <short> while it waited on <short>: arm
+# team-next T<n> --ci again" when a catch-up moved it. Else it runs
+# team-ci-wait --no-agent-review --json <url> <head> on checks_wait's url and head (the passed
+# head, or the merge the latest team-catch-up made from it), and on its end:
+#   passed or none   once team-state shows the PR open at that head (a later head is the moved
+#                    line below, nothing logged; exit 75 when GitHub cannot be read; "<url> is
+#                    merged: its checks no longer matter", exit 0, when it shows it merged), logs
+#                    ci outcome=passed of the head (already logged when checks_wait's state is
+#                    passed), then prints the merge line below, exit 0
+#   failed           with a failure of class pr (the PR's own): writes the report
+#                    tasks/T<n>/ci-<the head's first 8 characters>.md in the team home (a heading
+#                    naming the PR and head, one line per failure, the PR's, then infrastructure,
+#                    then roll-ups, each with its class, name, kind, failing step, link and rerun
+#                    command, and a closing line: the PR's are the round's blocking findings, the
+#                    others not), logs ci outcome=failed failed=<every failure's name, class,
+#                    kind, link and step>, reruns nothing, and prints the round's hand-off as a
+#                    findings round's: the message to fix "the failed checks <the PR's names> of
+#                    <short> in <the report>" for the holder under 250k, else its STOW, after
+#                    recovering it when gone, exit 0
+#                    with infrastructure and roll-up failures alone: reruns each never-started,
+#                    setup or stuck check (never a queued one, a roll-up or one of the PR's own)
+#                    that no ci-rerun of the head names since its latest ci outcome=infrastructure,
+#                    so once a check and head until Daniel's word re-arms it after the blocked
+#                    line: lease_refusal first, then one gh run rerun a run (<run> --job <job>
+#                    for one job, <run> --failed for more, <run> alone for a stuck one), seen to
+#                    start by gh api repos/<repo>/actions/runs/<run> every 10 s for 2 minutes (a
+#                    higher run_attempt or a status not completed), then logs ci-rerun of each
+#                    check and waits again; with none left to rerun, logs ci
+#                    outcome=infrastructure failed=<every failure> and prints "blocked: the
+#                    checks <names> of <url> at <short> failed as infrastructure again after a
+#                    rerun" (or "with no runner for 20 minutes" for queued ones) ": <each link>;
+#                    tell Daniel, and run team-next T<n> --ci again once they say the runners are
+#                    back", exit 1; a lease refusal, a run it cannot read, a rerun GitHub refuses
+#                    or a run that does not start: "blocked: <the reason>: <each link>", exit 1,
+#                    nothing logged for that check
+#   deadline         logs ci outcome=pending, then "re-arm: the checks of <short> are still
+#                    pending after 90 minutes (<team-ci-wait's text>): run team-next T<n> --ci
+#                    again with Bash run_in_background", exit 75
+#   moved or         "the head of <url> is <short>, not the passed <short>: a commit no round
+#   other-head       made; read it with team-state T<n> before anything else", exit 1, nothing
+#                    logged
+#   closed           team-ci-wait's text, exit 0, nothing logged
+#   unreadable or    team-ci-wait's text, exit 75, nothing logged: run it again
+#   offline
+# A team-ci-wait that prints no such object (a refused command line) has its output printed and
+# its exit code, else 1.
+# The merge line: "merge ask: <full PR URL> at <head>, agent-review <state>, checks green" (or
+# the failing, pending and missing checks; the state the reviewer App's check's, review_check in
+# bin/lib/team.sh's pr_part, on the team's own project with the App on), <head> the PR's, or after
+# a team-catch-up the reviewed head it was made from, as team-catch-up's next line names it, or
+# "merge on the default word: run team-merge T<n> for ..." instead while the default word, the
+# approved plan, holds on the ledger for the PR at the reviewed head, read once the ci is logged
+# (merge_authority in bin/lib/ledger.jq, the derivation team-merge, team-state and team-sweep
+# read: the plan approved and not withdrawn, the PR's project not the team's own by own_project
+# in bin/lib/team.sh, or the team's own on a plan Daniel approved with the reviewer App on, the
+# default not withdrawn for the task, its project or every project, the task's branch logged, the
+# review found no guarded area and no review of the task counted a security or real-data finding
+# or logged no counts); on a merge ask, each guarded area of the six bin/lib/guarded names and
+# each such review named, with ", so the default word does not hold" while the plan stands
+# approved on a project not the team's own, or the team's own with the reviewer App on, and the
+# before notes to queue as follow-ups; for a PR
 # behind its base, "merge base: ..." instead, read with base_merge in the project's primary checkout
 # once the PR's branch and the base are fetched there: "run team-catch-up T<n>, which needs no
 # rereview" when the reviewed head merges the base cleanly, then "then, once the checks pass on its
@@ -176,14 +259,7 @@
 # reviews and before notes as they are), else the builder-merge-base brief for the holder under
 # 250k, else a fresh builder, after the holder's STOW when it is live, with "conflicts on <files>"
 # after the behind count for a conflict, or "(whether the merge is clean is not known: <why>)" when
-# the fetch or git fails. For a pass with no PR (a review-ready, a gated or Disclosure task's, or a
-# later phase's whose earlier PR GitHub says is merged), the message telling the holder to go on
-# with its delivery. For findings, or a pass that sent some back (which team-log logs as findings):
-# the message for the holder under 250k (its name, the findings sent back and the findings file the
-# message names, for a pass the newest of review.md and rereview*.md in the holder's task directory,
-# as team-brief derives a round's, and that each is fixed as narrowly as it asks, a fix reaching
-# shapes it does not name a T<n> QUESTION first), else the T<n> STOW to send it (after recovering it
-# when gone), or no hand-off when nothing was sent back.
+# the fetch or git fails.
 # The churn rule: when this review sent back a finding its widening= marks (one in what the last
 # fix added), the task's previous review (the latest before this one, on a rerun the latest
 # before the line that holds it) sent back one of its own, and every finding this one sent back
@@ -202,11 +278,14 @@
 # review, or a first review, marks no widening, so either breaks a chain, and so does a phase's
 # first review, which follows a pass.
 # A PAUSED stowed (its reason the word stowed, alone or with more after it) while the latest
-# review sent findings back, with no launch since
-# it but an ops session's, launches the fix round: team-brief T<n> builder-round --name
-# round-<k>, the lowest k from 1 whose brief no launch read, every fact derived (the findings,
-# the newest findings file, the PR and the plan's goal), in the project of the task's latest
-# builder launch, as a builder with its toolkits; any other PAUSED stowed has no hand-off.
+# review sent findings back, or a ci of outcome failed (--ci's round on a pass's checks) was
+# logged after it, with no launch since that review or that ci but an ops session's, launches the
+# fix round: team-brief T<n> builder-round --name round-<k>, the lowest k from 1 whose brief no
+# launch read, every fact derived (the findings, the newest findings file, or the failed checks
+# and their report, the PR and the plan's goal), in the project of the task's latest builder
+# launch, as a builder with its toolkits; any other PAUSED stowed has no hand-off. The builder's
+# next PR after a round on failed checks gets a rereview, since the latest review is a pass that
+# sent nothing back, whose derived since says those checks failed on the pass.
 # A ticket's brief is refused when a launch already read it (the deliverer, round and rereview
 # names take the next free one instead), and each brief is rendered again with --force when none
 # did (a rerun after a failed launch). The brief is rendered before the events
@@ -216,28 +295,34 @@
 # Any other message is logged, and the last line says it has no hand-off: an ops session's DONE
 # among them, whatever its first word, which team-log logs as its length and never its text, as
 # it does the ops session's QUESTION.
-# It never posts to Discord, sends a message, merges, approves a plan or answers a question.
+# It never posts to Discord, sends a message, merges, approves a plan or answers a question; its
+# writes to GitHub are the reviewer App's check at a verdict and --ci's reruns.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 # Exit codes: 0 done, 1 refused, 2 a malformed command line; when a script it runs fails, that
-# script's own code, 75 (try again later) among them.
+# script's own code, 75 (try again later) among them; --ci's ends as its table says.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 why=$(worker_refusal "" "runs no team-next") && die "$why"
 
 bin=$(dirname "$TEAM_LIB")
-usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>' | team-next T<n> --fill [--next <NN>]"
+usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--relay <id>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>' | team-next T<n> --fill [--next <NN>] | team-next T<n> --ci"
 
 [[ $# -ge 1 && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"
 task=$1
 shift
-log_opts=() next='' checks='' since='' template_opt='' fill=''
+log_opts=() next='' checks='' since='' template_opt='' fill='' ci=''
 declare -A given=()
 while (($#)) && [[ $1 != -- ]]; do
   case $1 in
     --fill)
       [[ -z $fill ]] || usage_error "--fill is given twice"
       fill=1
+      shift
+      ;;
+    --ci)
+      [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
+      given[$1]=1 ci=1
       shift
       ;;
     --from | --sent-back | --relay | --next | --checks | --since | --template)
@@ -267,7 +352,11 @@ while (($#)) && [[ $1 != -- ]]; do
     *) usage_error "missing '--' before the worker's message; $usage" ;;
   esac
 done
-if [[ -n $fill ]]; then
+if [[ -n $ci ]]; then
+  (($# == 0 && ${#given[@]} == 1)) && [[ -z $fill ]] ||
+    usage_error "--ci takes no message and no other option: team-next T<n> --ci"
+  message=''
+elif [[ -n $fill ]]; then
   [[ $# -eq 0 ]] || usage_error "--fill takes no message; $usage"
   for opt in "${!given[@]}"; do
     [[ $opt == --next ]] || usage_error "--fill takes only --next, not $opt; $usage"
@@ -285,7 +374,370 @@ sibling() {
   TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}"
 }
 
+# "3, 5 and 6" from a JSON list.
+and_list() {
+  jq -r 'map(tostring) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$1"
+}
+
+# Whether two heads are the same commit, either one a prefix of the other.
+same_commit() {
+  [[ -n $1 && -n $2 && ($1 == "$2"* || $2 == "$1"*) ]]
+}
+
+# ci_report <path> <url> <head> <look>: writes the report of team-ci-wait --json's failures on
+# stdin to <path>: a heading, one line per failure in class order (the PR's, infrastructure,
+# roll-ups), and the closing line; <look> true for the findings round's look, whose failures are
+# the PR's own alone, beside the review's findings.
+ci_report() {
+  jq -r --arg url "$2" --arg head "$3" --argjson look "$4" --arg q "'" '
+    {pr: "the PR\($q)s", infrastructure: "infrastructure", rollup: "roll-up"} as $words
+    | (.failures | sort_by({pr: 0, infrastructure: 1, rollup: 2}[.class] // 3)) as $failures
+    | [$failures[] | select(.class == "pr") | "`\(.name)`"]
+    | (if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end) as $own
+    | "# The failed checks of \($url) at \($head)", "",
+      (if $look then "The findings round\($q)s look at the reviewed head found these failures of the PR\($q)s own, one a line: each one\($q)s class, check, kind, failing step, link and rerun command."
+       else "The checks wait after the pass ended on these failures, one a line, the PR\($q)s first: each one\($q)s class, check, kind, failing step, link and rerun command." end),
+      "",
+      ($failures[] | "- \($words[.class] // .class): `\(.name)`, \(.kind), at \(if .step then "the step \"\(.step)\"" else "no step" end), \(.link // "no link"), \(if .rerun then "rerun with `\(.rerun)`" else "no rerun" end)"),
+      "",
+      if $look then "The PR\($q)s failures, \($own), are `blocking` findings of this round beside the review\($q)s; the look leaves out infrastructure failures and roll-ups, since the round\($q)s new head runs every check again."
+      else "The PR\($q)s failures, \($own), are this round\($q)s `blocking` findings; the others are not, since an infrastructure failure or a roll-up is no defect of the PR, and the round\($q)s new head runs every check again." end' >"$1"
+}
+
+# read_state: the task's state (team-state T<n> --json) as $state, and what the hand-offs read of
+# it for the review $review, each in a variable of its own.
+read_state() {
+  state=$(sibling team-state "$task" --json) || exit
+  # In one jq run over the task's state: its PR (null when none); the builder who holds the
+  # worktree's context, the task's latest builder launch (holder, false when none), its session,
+  # whether it holds it (live and under 250k: holds, else full or gone) and its context as
+  # "<context>k"; whether GitHub could not be read for the PR, its url, error and head; whether
+  # that head is the reviewed one; the fix round's findings (sent), the reviewed head's first 8
+  # characters, and the PR's facts for a merge base.
+  pr='' holder='' session='' holds='' context='' pr_error='' pr_url='' pr_reason='' live_head='' reviewed=''
+  same='' sent='' short='' behind='' base='' pr_project='' branch='' before=''
+  json_vars --ledger pr='.pr | if (.state? // "") == "merged" then null else . end | tojson' holder='[.workers[] | select(.role == "builder")] | last | . != null' \
+    session='[.workers[] | select(.role == "builder")] | last | .session | tostring' \
+    holds='[.workers[] | select(.role == "builder")] | last
+      | if .live | not then "gone" elif (.context | type) == "number" and .context >= 250000 then "full" else "holds" end' \
+    context='[.workers[] | select(.role == "builder")] | last
+      | if .live | not then "gone" elif (.context | type) == "number" then "\(.context / 1000 | round)k" else "context unknown" end' \
+    pr_error='.pr | objects | has("error")' pr_url='.pr | objects | .url | tostring' pr_reason='.pr | objects | .error | tostring' \
+    live_head='.pr | objects | .head | tostring' reviewed='$review.head | tostring' \
+    same='same_head(.pr | objects | .head | tostring; $review.head | tostring)' \
+    sent='$review.sent_back // [] | tojson' short='$review.head[:8] | tostring' \
+    behind='.pr | objects | .behind_by // 0' base='.pr | objects | .base | tostring' \
+    pr_project='.pr | objects | .project // empty' branch='.pr | objects | .branch // empty' \
+    before='$review.before // [] | map(tostring)
+      | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' \
+    -- --argjson review "$review" <<<"$state"
+  [[ $holder == true ]] || die "$task has no builder launch, so no builder holds the review's work"
+  who="$task-builder ($session, $context)"
+  gone="$task-builder $session is gone: recover it (the recover-worker skill), then send it"
+}
+
+# round_line <what>: a fix round's hand-off, from read_state's variables, for findings sent back
+# or for the failed checks of a pass: the message to fix <what> for the holder under 250k, else
+# the STOW to send it, after recovering it when gone.
+round_line() {
+  local stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
+  case $holds in
+    holds) echo "send to $who: $task fix $1 on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a $task QUESTION first), then deliver again as your brief says" ;;
+    full) echo "send to $who: $stow" ;;
+    gone) echo "$gone $stow" ;;
+  esac
+}
+
+# merge_line: what is left once the checks of the reviewed head ($reviewed, in full) passed, from
+# read_state's variables and the task's events: the merge ask or the default word's merge, or for a
+# PR behind its base the merge base step (see the header).
+merge_line() {
+  local url caught behind_by project primary rc fetched merged step risky default own withdrawals
+  url=$pr_url
+  caught=''
+  if ((behind > 0)); then
+    # Whether the reviewed head merges the base cleanly, read in the project's primary checkout once
+    # the PR's branch and the base are fetched: clean is team-catch-up's, else the holder's step.
+    behind_by="$behind behind $base"
+    if [[ -z $pr_project ]]; then
+      behind_by+=" (whether the merge is clean is not known: the PR's repo is no registered project's)"
+    else
+      project=$pr_project
+      primary=$(team_project "$project" path)
+      rc=0
+      if [[ -z $branch ]]; then
+        behind_by+=" (whether the merge is clean is not known: GitHub did not name the PR's branch)"
+      elif ! fetched=$(git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" \
+        "+refs/heads/$base:refs/remotes/origin/$base" 2>&1); then
+        behind_by+=" (whether the merge is clean is not known: the PR's branch $branch and $base cannot be fetched into $primary: $(grep -m1 . <<<"$fetched" || echo "git fetch failed"))"
+      elif merged=$(base_merge "$primary" "$live_head" "origin/$base") || rc=$?; ((rc == 0)); then
+        echo "merge base: $url is $behind_by, and merges it cleanly: run team-catch-up $task, which needs no rereview (step 6)"
+        caught=1
+      elif ((rc == 1)); then
+        behind_by+=" and conflicts on $(and_list "$(jq -Rnc '[inputs | select(. != "")]' <<<"$merged")")"
+      else
+        behind_by+=" (whether the merge is clean is not known: $merged)"
+      fi
+    fi
+    if [[ -z $caught ]]; then
+      step="merge base: $url is $behind_by, so it merges $base first (step 6):"
+      case $holds in
+        holds) echo "$step render team-brief $task builder-merge-base, send its path to $who and log team-log $task resumed brief=<its file name without .md>, which holds team-sweep's merge-due" ;;
+        full) echo "$step send $task STOW to $who, then launch a fresh builder on team-brief $task builder-merge-base" ;;
+        gone) echo "$step $task-builder $session is gone, so launch a fresh builder on team-brief $task builder-merge-base" ;;
+      esac
+      return 0
+    fi
+  fi
+  # The task's reviews, each one that counted a security or real-data finding or logged no counts
+  # named: team-merge refuses the default word for such a task.
+  risky=$(jq -c '
+    map(select(.event == "review"))
+    | [.[] | "the review of \(.head[:7]) at \(.ts) " as $r
+      | if has("findings") | not then "\($r)logged no counts"
+        else [.findings | ("security", "real-data") as $k | .[$k] // 0 | select(. > 0) | "\(.) \($k)"]
+          | select(. != []) | (map(split(" ")[0] | tonumber) | add) as $n
+          | "\($r)counted \(join(" and ")) finding\(if $n == 1 then "" else "s" end)" end]' <<<"$events")
+  # The default word on the reviewed head, from the task's events now the ci is logged
+  # (merge_authority, as team-merge, team-state and team-sweep read it): null for a PR of no
+  # registered project.
+  default=null
+  if [[ -n $pr_project ]]; then
+    own=$(own_bar "$pr_project") || exit 1
+    withdrawals=$(default_events_json) || exit 1
+    default=$(task_event_array "$task" | ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)
+      | .words[] | select(.word == "default") | .own = $own' -c --arg url "${url%/}" --arg head "$reviewed" \
+      --arg project "$pr_project" --argjson own "$own" --argjson withdrawals "$withdrawals") || exit 1
+  fi
+  # The merge ask's facts at the reviewed head, or the default word's merge; after a clean
+  # catch-up's line, the same for once the merge's checks pass, with no checks of the head it was
+  # made from.
+  ledger_jq '
+    (.pr | if $caught != "" then "\(.url) at \($at)"
+      else "\(.url) at \($at), agent-review \(.review_check // .agent_review), "
+        + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
+            (.checks.pending | select(. != []) | "pending: \(join(", "))"),
+            (.required_missing | select(. != []) | "missing: \(join(", "))")]
+          | if . == [] then "checks green" else "checks \(join("; "))" end) end) as $facts
+    | ($default != null and $default.applies and ($default.own == false or $default.own.app != null)) as $applies
+    | (if $applies then ", so the default word does not hold" else "" end) as $held
+    | [($review.guarded // [])[] | select(IN(guarded_areas[]))] as $guarded
+    | (if $caught != "" then "then, once the checks pass on its merge: " else "" end)
+    + if $default.holds == true then "merge on the default word: run team-merge \($task) for \($facts)"
+      else "merge ask: \($facts)" end
+    + (if $guarded == [] then ""
+       else "; the review found guarded areas: \($guarded | join(", "))\($held)" end)
+    + (if $held != "" and $risky != [] then "; \($risky | and_text)\($held)" else "" end)
+    + (if $before == "" then "" else "; queue before notes \($before) as follow-ups and say where each went" end)' \
+    -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg caught "$caught" \
+    --arg before "$before" --argjson default "$default" --arg at "$reviewed" <<<"$state"
+}
+
 events=$(task_event_array "$task")
+
+# --ci: the checks wait of a pass (see the header).
+if [[ -n $ci ]]; then
+  # ci_read: the task's events as the ledger has them now, refused as the header says (a launch of
+  # no role, no pass on an open PR, its checks failed), and what waits on the checks, after a
+  # catch-up with the reviewed head the merge was made from; run before the first wait and again
+  # after each wait ends, so a hold, an ask, a close or a review logged meanwhile stops the end.
+  ci_read() {
+    local refusal=''
+    events=$(task_event_array "$task")
+    json_vars --ledger refusal='[launch_refusal($task; ""; [])] | join("; ")' -- --arg task "$task" <<<"$events"
+    [[ -z $refusal ]] || die "$refusal"
+    wait_url='' wait_head='' wait_state='' wait_since='' wait_from=''
+    json_vars --ledger wait_url='checks_wait | .url' wait_head='checks_wait | .head' wait_state='checks_wait | .state' \
+      wait_since='checks_wait | .since' \
+      wait_from='checks_wait as $w | select($w != null and (same_head($w.head; $w.reviewed) | not))
+        | [.[] | select(.event == "caught-up" and same_head(.head; $w.head))] | last | .from' <<<"$events"
+    [[ -n $wait_url ]] || die "$task's latest review is not a pass on an open PR, so no checks wait for a merge"
+    wait_short=${wait_head:0:8}
+    [[ $wait_state != failed ]] || die "the checks of $wait_short failed and went back as a round on $wait_since"
+    # The checks already rerun on the waited head: each ci-rerun of it logged since its latest ci of
+    # outcome infrastructure (a blocked line, after which a re-arm on Daniel's word reruns them once
+    # more), so the cap of one rerun a check holds across a restart.
+    rerun_names=$(ledger_jq 'checks_wait as $w | if $w == null then [] else
+        (($w.url | rtrimstr("/")) as $url | def ours: (.url | rtrimstr("/")) == $url and same_head(.head; $w.head);
+         (to_entries | map(select(.value.event == "ci" and .value.outcome == "infrastructure" and (.value | ours)))
+           | last | .key // -1) as $k
+         | [.[$k + 1:][] | select(.event == "ci-rerun" and ours) | .check] | unique) end' -c <<<"$events")
+  }
+  # One checks wait a task: a second one armed beside it says so and ends, waiting on nothing; the
+  # ledger is read under the lock, so a wait that just ended has logged its end.
+  ci_lock=$HOME/.local/state/agent-team/ci/$task.lock
+  mkdir -p "${ci_lock%/*}"
+  exec {ci_lock_fd}>>"$ci_lock"
+  if ! flock -n "$ci_lock_fd"; then
+    echo "the checks wait of $task is already running ($ci_lock): its end prints the next step"
+    exit 0
+  fi
+  ci_read
+  repo=${wait_url#https://github.com/}
+  repo=${repo%%/pull/*}
+
+  # log_ci <outcome> [<field>=<value>]...: logs the ci of ci_head, but a passed one checks_wait
+  # already holds.
+  log_ci() {
+    local fields=("url=$wait_url" "head=$ci_head" "outcome=$1" "${@:2}")
+    if [[ $1 == passed && $wait_state == passed ]]; then
+      echo "already logged ci ${fields[*]}"
+    else
+      sibling team-log "$task" ci "${fields[@]}" || exit
+      echo "logged ci ${fields[*]}"
+    fi
+  }
+  moved_line() {
+    echo "the head of $wait_url is ${1:0:8}, not the passed $wait_short: a commit no round made; read it with team-state $task before anything else"
+    exit 1
+  }
+  # The run <run>'s attempt and status as "<attempt> <status>", or its first error line, failing.
+  run_now() {
+    local out
+    if out=$(bounded 30 gh api "repos/$repo/actions/runs/$1" 2>&1) &&
+      out=$(jq -er '"\(.run_attempt | numbers) \(.status | strings)"' <<<"$out" 2>/dev/null); then
+      echo "$out"
+    else
+      grep -m1 . <<<"$out" || echo "gh api failed"
+      return 1
+    fi
+  }
+  # infrastructure_end: a failed end with infrastructure and roll-up failures alone. Each
+  # never-started, setup or stuck check not rerun on this head yet is rerun, one gh run rerun a
+  # run, and once its run starts logged as ci-rerun, then the loop waits again; with none left to
+  # rerun, the ci of outcome infrastructure and the blocked line for Daniel; a rerun that cannot be
+  # made or seen to start, the blocked line with nothing logged for it.
+  infrastructure_end() {
+    local infra rerun links runs run members names job before now args out n why
+    infra=$(jq -c '[.failures[] | select(.class == "infrastructure")]' <<<"$ended")
+    rerun=$(jq -c --argjson reran "$rerun_names" '[.[] | select((.kind | IN("never-started", "setup", "stuck"))
+      and (.run | numbers) and (.name | IN($reran[]) | not))]' <<<"$infra")
+    links=$(jq -r 'map(.link // "no link") | join(", ")' <<<"$infra")
+    blocked() {
+      echo "blocked: $1: $links"
+      exit 1
+    }
+    if [[ $rerun == '[]' ]]; then
+      log_ci infrastructure "failed=$(jq -c '.failures | map({name, class, kind, link, step})' <<<"$ended")"
+      jq -r --arg url "$wait_url" --arg short "$wait_short" --arg task "$task" --arg links "$links" '
+        (map(.kind == "queued") | unique) as $q
+        | "blocked: the checks \(map(.name) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end) of \($url) at \($short) failed as infrastructure "
+          + (if $q == [true] then "with no runner for 20 minutes" elif $q == [false] then "again after a rerun"
+             else "again after a rerun and with no runner for 20 minutes" end)
+          + ": \($links); tell Daniel, and run team-next \($task) --ci again once they say the runners are back"' <<<"$infra"
+      exit 1
+    fi
+    runs=$(jq -r 'map(.run) | unique[]' <<<"$rerun")
+    for run in $runs; do
+      members=$(jq -c --argjson run "$run" 'map(select(.run == $run))' <<<"$rerun")
+      # GitHub reruns no job of a run that is running again, so one rerun a run: a lost status
+      # reruns the whole run (team-ci-wait's command), two jobs or more the run's failed jobs, one
+      # job by its id.
+      if jq -e 'any(.[]; .kind == "stuck")' <<<"$members" >/dev/null; then
+        args=(run rerun "$run" --repo "$repo")
+      elif jq -e 'length > 1' <<<"$members" >/dev/null; then
+        args=(run rerun "$run" --failed --repo "$repo")
+      else
+        args=(run rerun "$run" --job "$(jq -r '.[0].job' <<<"$members")" --repo "$repo")
+      fi
+      if why=$(lease_refusal "reruns no check"); then blocked "$why"; fi
+      now=$(run_now "$run") || blocked "run $run cannot be read before its rerun ($now)"
+      before=${now%% *}
+      out=$(bounded 60 gh "${args[@]}" 2>&1) || blocked "GitHub refused gh ${args[*]} ($(grep -m1 . <<<"$out" || echo "gh failed"))"
+      # Seen to start: a later attempt, or a status not completed, within 2 minutes of looks.
+      for ((n = 0; ; n++)); do
+        if now=$(run_now "$run"); then
+          if ((${now%% *} > before)) || [[ ${now#* } != completed ]]; then break; fi
+        fi
+        ((n * RERUN_LOOK_SECONDS < RERUN_START_SECONDS)) || blocked "run $run did not start again within $((RERUN_START_SECONDS / 60)) minutes of gh ${args[*]}"
+        sleep "$RERUN_LOOK_SECONDS"
+      done
+      while IFS=$'\t' read -r names job; do
+        sibling team-log "$task" ci-rerun "url=$wait_url" "head=$ci_head" "check=$names" "run=$run" "job=$job" || exit
+        echo "logged ci-rerun url=$wait_url head=$ci_head check=$names run=$run job=$job"
+      done < <(jq -r '.[] | [.name, .job] | @tsv' <<<"$members")
+      rerun_names=$(jq -c --argjson m "$members" '. + ($m | map(.name)) | unique' <<<"$rerun_names")
+    done
+  }
+  # The look between reads of a rerun's run, and how long it may take to start.
+  RERUN_LOOK_SECONDS=10
+  RERUN_START_SECONDS=120
+
+  # The wait, again after each rerun, until an end hands on.
+  while :; do
+    rc=0
+    ended=$(sibling team-ci-wait --no-agent-review --json "$wait_url" "$wait_head") || rc=$?
+    outcome='' end_head='' end_text=''
+    if ! json_vars outcome='select(.schema == "team-ci-wait/1") | .outcome' end_head='.head' end_text='.text' \
+      <<<"$ended" 2>/dev/null || [[ -z $outcome ]]; then
+      [[ -z $ended ]] || echo "$ended"
+      exit $((rc ? rc : 1))
+    fi
+    # The ledger again: what was logged while it waited stops the end, and a catch-up moves the
+    # wait to its merge, which a new run waits on.
+    waited_url=$wait_url waited_head=$wait_head
+    ci_read
+    if [[ ${wait_url%/} != "${waited_url%/}" ]] || ! same_commit "$wait_head" "$waited_head"; then
+      die "the checks wait of $task moved to $wait_url at $wait_short while it waited on ${waited_head:0:8}: arm team-next $task --ci again"
+    fi
+    wait_head=$waited_head wait_short=${waited_head:0:8}
+    # The head a ci names: the waited head, in full when the wait read it so.
+    ci_head=$wait_head
+    if same_commit "$end_head" "$wait_head"; then ci_head=$end_head; fi
+    case $outcome in
+      passed | none)
+        review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
+        read_state
+        if [[ $pr_error == true ]]; then
+          echo "${0##*/}: GitHub cannot be read for $pr_url ($pr_reason); run the same command again" >&2
+          exit 75
+        fi
+        if [[ $pr == null ]]; then
+          echo "${0##*/}: $wait_url is merged: its checks no longer matter"
+          exit 0
+        fi
+        same_commit "$live_head" "$wait_head" || moved_line "$live_head"
+        log_ci passed
+        # The facts name the reviewed head: the PR's own, or the one a catch-up made the merge from.
+        reviewed=${wait_from:-$live_head}
+        merge_line
+        exit 0
+        ;;
+      failed)
+        # A failure of the PR's own goes back to the builder as a round, with every failure in the
+        # report; infrastructure alone is not the PR's to fix.
+        names=$(jq -c '[.failures[]? | select(.class == "pr") | .name]' <<<"$ended")
+        if [[ $names == '[]' ]]; then
+          infrastructure_end
+          continue
+        fi
+        review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
+        read_state
+        report=$TEAM_HOME/tasks/$task/ci-${wait_head:0:8}.md
+        ci_report "$report" "$wait_url" "$ci_head" false <<<"$ended"
+        echo "report $report"
+        log_ci failed "failed=$(jq -c '.failures | map({name, class, kind, link, step})' <<<"$ended")"
+        round_line "the failed checks $(and_list "$names") of $wait_short in $report"
+        exit 0
+        ;;
+      deadline)
+        log_ci pending
+        echo "re-arm: the checks of $wait_short are still pending after 90 minutes ($end_text): run team-next $task --ci again with Bash run_in_background"
+        exit 75
+        ;;
+      other-head | moved) moved_line "$end_head" ;;
+      closed)
+        echo "$end_text"
+        exit 0
+        ;;
+      unreadable | offline)
+        echo "$end_text"
+        exit 75
+        ;;
+      *) die "team-ci-wait ended as '$outcome', which team-next does not know" ;;
+    esac
+  done
+fi
 
 # The message's events, as team-log reads them, nothing logged yet: one compact object a line,
 # joined into one array; --fill has none.
@@ -651,13 +1103,18 @@ fill() {
   fi
 }
 
-# A stow hands a round on only while the latest review (findings, or a pass logged before team-log made it so)
-# sent findings back and no launch (an ops session's aside) has taken them since.
-if [[ $handoff == round ]] && ! jq -e '(to_entries | map(select(.value.event == "review")) | last) as $r
-    | $r != null and ($r.value.sent_back // []) != []
-      and (any(.[$r.key + 1:][]; .event == "launch" and .role != "ops") | not)' <<<"$events" >/dev/null; then
+# A stow hands a round on only while the latest review (findings, or a pass logged before team-log
+# made it so) sent findings back, or a ci of outcome failed was logged after it (a pass's checks
+# that --ci handed back), and no launch (an ops session's aside) has taken them since.
+if [[ $handoff == round ]] && ! jq -e '. as $events
+    | def untaken($at): any($events[$at + 1:][]; .event == "launch" and .role != "ops") | not;
+    (to_entries | map(select(.value.event == "review")) | last) as $r
+    | $r != null
+      and ((($r.value.sent_back // []) != [] and untaken($r.key))
+        or ([to_entries[] | select(.key > $r.key and .value.event == "ci" and .value.outcome == "failed") | .key] | last
+          | . != null and untaken(.)))' <<<"$events" >/dev/null; then
   log_events
-  echo "no hand-off for $kind: no review's sent-back findings wait for a round"
+  echo "no hand-off for $kind: no review's sent-back findings or failed checks wait for a round"
   exit 0
 fi
 
@@ -678,11 +1135,6 @@ plan_withdrawn_refusal
 ledger_jq 'plan_approval != null' -e <<<"$events" >/dev/null ||
   die "$task has no plan-approved, so no $handoff hand-off; approve the plan first (step 3 of the manual)"
 
-# "3, 5 and 6" from a JSON list.
-and_list() {
-  jq -r 'map(tostring) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$1"
-}
-
 # holder_findings_file: the library's findings_file in the task directory of the task's latest
 # builder launch's worktree, as <task_dir>/<file>, or nothing; team-brief derives a round's from
 # the same function.
@@ -695,34 +1147,52 @@ holder_findings_file() {
   if [[ -n $newest ]]; then echo "$dir/$newest"; fi
 }
 
+# findings_look: the findings round's look at the reviewed head of the PR (see the header), once
+# the review is logged: sets look_what, the clause naming the failed checks of the PR's own and
+# their report for the round's message, and look_note, the clause for a look that could not be
+# read; both empty with no PR, or when nothing of the PR's own failed.
+findings_look() {
+  look_what='' look_note=''
+  [[ $pr != null && -n $pr_url ]] || return 0
+  local looked rc=0 outcome='' end_head='' end_text='' own names look_head report fields logged
+  looked=$(sibling team-ci-wait --no-agent-review --json --look "$pr_url" "$reviewed") || rc=$?
+  if ! json_vars outcome='select(.schema == "team-ci-wait/1") | .outcome' end_head='.head' end_text='.text' \
+    <<<"$looked" 2>/dev/null || [[ -z $outcome ]]; then
+    outcome=unread end_text=$(grep -m1 . <<<"$looked" || echo "team-ci-wait exited $rc")
+  fi
+  case $outcome in
+    failed)
+      own=$(jq -c '[.failures[] | select(.class == "pr")]' <<<"$looked")
+      [[ $own != '[]' ]] || return 0
+      names=$(jq -c 'map(.name)' <<<"$own")
+      look_head=$reviewed
+      if same_commit "$end_head" "$reviewed"; then look_head=$end_head; fi
+      report=$TEAM_HOME/tasks/$task/ci-${look_head:0:8}.md
+      jq -c --argjson own "$own" '.failures = $own' <<<"$looked" | ci_report "$report" "$pr_url" "$look_head" true
+      echo "report $report"
+      fields=("url=$pr_url" "head=$look_head" outcome=failed look=true "failed=$(jq -c 'map({name, class, kind, link, step})' <<<"$own")")
+      # A rerun of the same message logs the look once: a ci look of this head after the review
+      # the ledger already held.
+      logged=$(jq -r --argjson held "$held" --arg url "${pr_url%/}" --arg head "$look_head" '
+        ([$held.events[] | select(.event.event == "review") | .at] | first) as $at
+        | select($at != null) | any(.[$at + 1:][]; .event == "ci" and .look == true
+          and (.url | rtrimstr("/")) == $url and (.head | startswith($head) or ($head | startswith(.head))))' <<<"$events")
+      if [[ $logged == true ]]; then
+        echo "already logged ci ${fields[*]}"
+      else
+        sibling team-log "$task" ci "${fields[@]}" || exit
+        echo "logged ci ${fields[*]}"
+      fi
+      look_what=", and the failed checks $(and_list "$names") of $short in $report"
+      ;;
+    unreadable | offline | other-head | moved | unread)
+      look_note="; the checks of $short could not be read (${end_text#team-ci-wait: })"
+      ;;
+  esac
+}
+
 if [[ $handoff == verdict ]]; then
-  state=$(sibling team-state "$task" --json) || exit
-  # In one jq run over the task's state: its PR (null when none); the builder who holds the
-  # worktree's context, the task's latest builder launch (holder, false when none), its session,
-  # whether it holds it (live and under 250k: holds, else full or gone) and its context as
-  # "<context>k"; whether GitHub could not be read for the PR, its url, error and head; whether
-  # that head is the reviewed one; the fix round's findings (sent), the reviewed head's first 8
-  # characters, and the PR's facts for a merge base.
-  pr='' holder='' session='' holds='' context='' pr_error='' pr_url='' pr_reason='' live_head='' reviewed=''
-  same='' sent='' short='' behind='' base='' pr_project='' branch='' before=''
-  json_vars --ledger pr='.pr | if (.state? // "") == "merged" then null else . end | tojson' holder='[.workers[] | select(.role == "builder")] | last | . != null' \
-    session='[.workers[] | select(.role == "builder")] | last | .session | tostring' \
-    holds='[.workers[] | select(.role == "builder")] | last
-      | if .live | not then "gone" elif (.context | type) == "number" and .context >= 250000 then "full" else "holds" end' \
-    context='[.workers[] | select(.role == "builder")] | last
-      | if .live | not then "gone" elif (.context | type) == "number" then "\(.context / 1000 | round)k" else "context unknown" end' \
-    pr_error='.pr | objects | has("error")' pr_url='.pr | objects | .url | tostring' pr_reason='.pr | objects | .error | tostring' \
-    live_head='.pr | objects | .head | tostring' reviewed='$review.head | tostring' \
-    same='same_head(.pr | objects | .head | tostring; $review.head | tostring)' \
-    sent='$review.sent_back // [] | tojson' short='$review.head[:8] | tostring' \
-    behind='.pr | objects | .behind_by // 0' base='.pr | objects | .base | tostring' \
-    pr_project='.pr | objects | .project // empty' branch='.pr | objects | .branch // empty' \
-    before='$review.before // [] | map(tostring)
-      | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' \
-    -- --argjson review "$review" <<<"$state"
-  [[ $holder == true ]] || die "$task has no builder launch, so no builder holds the review's work"
-  who="$task-builder ($session, $context)"
-  gone="$task-builder $session is gone: recover it (the recover-worker skill), then send it"
+  read_state
   if [[ $kind == "DONE pass" && $pr != null ]]; then
     # A pass is taken only on the PR's head as GitHub has it now.
     if [[ $pr_error == true ]]; then
@@ -784,12 +1254,8 @@ if [[ $handoff == verdict ]]; then
         file=$(holder_findings_file)
       fi
       where=${file:+in $file}
-      stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
-      case $holds in
-        holds) fix="send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $short} on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a $task QUESTION first), then deliver again as your brief says" ;;
-        full) fix="send to $who: $stow" ;;
-        gone) fix="$gone $stow" ;;
-      esac
+      findings_look
+      fix="$(round_line "findings $(and_list "$sent") ${where:-of the review of $short}$look_what")$look_note"
       # The churn rule (see the header), over the ledger as it was before this run logged anything,
       # the previous review on a rerun the latest before the index that holds this one.
       churn=$(jq -c --argjson review "$review" --argjson held "$held" '
@@ -825,85 +1291,7 @@ if [[ $handoff == verdict ]]; then
     if [[ $holds == gone ]]; then echo "$gone $go_on"; else echo "send to $who: $go_on"; fi
     exit 0
   fi
-  url=$pr_url
-  caught=''
-  if ((behind > 0)); then
-    # Whether the reviewed head merges the base cleanly, read in the project's primary checkout once
-    # the PR's branch and the base are fetched: clean is team-catch-up's, else the holder's step.
-    behind_by="$behind behind $base"
-    if [[ -z $pr_project ]]; then
-      behind_by+=" (whether the merge is clean is not known: the PR's repo is no registered project's)"
-    else
-      project=$pr_project
-      primary=$(team_project "$project" path)
-      rc=0
-      if [[ -z $branch ]]; then
-        behind_by+=" (whether the merge is clean is not known: GitHub did not name the PR's branch)"
-      elif ! fetched=$(git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" \
-        "+refs/heads/$base:refs/remotes/origin/$base" 2>&1); then
-        behind_by+=" (whether the merge is clean is not known: the PR's branch $branch and $base cannot be fetched into $primary: $(grep -m1 . <<<"$fetched" || echo "git fetch failed"))"
-      elif merged=$(base_merge "$primary" "$live_head" "origin/$base") || rc=$?; ((rc == 0)); then
-        echo "merge base: $url is $behind_by, and merges it cleanly: run team-catch-up $task, which needs no rereview (step 6)"
-        caught=1
-      elif ((rc == 1)); then
-        behind_by+=" and conflicts on $(and_list "$(jq -Rnc '[inputs | select(. != "")]' <<<"$merged")")"
-      else
-        behind_by+=" (whether the merge is clean is not known: $merged)"
-      fi
-    fi
-    if [[ -z $caught ]]; then
-      step="merge base: $url is $behind_by, so it merges $base first (step 6):"
-      case $holds in
-        holds) echo "$step render team-brief $task builder-merge-base, send its path to $who and log team-log $task resumed brief=<its file name without .md>, which holds team-sweep's merge-due" ;;
-        full) echo "$step send $task STOW to $who, then launch a fresh builder on team-brief $task builder-merge-base" ;;
-        gone) echo "$step $task-builder $session is gone, so launch a fresh builder on team-brief $task builder-merge-base" ;;
-      esac
-      exit 0
-    fi
-  fi
-  # The task's reviews, this one too once (a rerun finds it logged), each one that counted a
-  # security or real-data finding or logged no counts named: team-merge refuses the default word
-  # for such a task.
-  risky=$(jq -c --argjson review "$review" --argjson held "$held" '
-    map(select(.event == "review"))
-    + (if any($held.events[]; .event.event == "review" and .at == null) then [$review] else [] end)
-    | [.[] | "the review of \(.head[:7]) at \(.ts) " as $r
-      | if has("findings") | not then "\($r)logged no counts"
-        else [.findings | ("security", "real-data") as $k | .[$k] // 0 | select(. > 0) | "\(.) \($k)"]
-          | select(. != []) | (map(split(" ")[0] | tonumber) | add) as $n
-          | "\($r)counted \(join(" and ")) finding\(if $n == 1 then "" else "s" end)" end]' <<<"$events")
-  # The default word on the reviewed head, from the task's events now this review is logged
-  # (merge_authority, as team-merge, team-state and team-sweep read it): null for a PR of no
-  # registered project.
-  default=null
-  if [[ -n $pr_project ]]; then
-    own=$(own_bar "$pr_project") || exit 1
-    withdrawals=$(default_events_json) || exit 1
-    default=$(task_event_array "$task" | ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)
-      | .words[] | select(.word == "default") | .own = $own' -c --arg url "${url%/}" --arg head "$reviewed" \
-      --arg project "$pr_project" --argjson own "$own" --argjson withdrawals "$withdrawals") || exit 1
-  fi
-  # The merge ask's facts, or the default word's merge; after a clean catch-up's line, the same for
-  # once the merge's checks pass, with no checks of the head it was made from.
-  ledger_jq '
-    (.pr | if $caught != "" then "\(.url) at \(.head)"
-      else "\(.url) at \(.head), agent-review \(if $posted != "" then $posted else .review_check // .agent_review end), "
-        + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
-            (.checks.pending | select(. != []) | "pending: \(join(", "))"),
-            (.required_missing | select(. != []) | "missing: \(join(", "))")]
-          | if . == [] then "checks green" else "checks \(join("; "))" end) end) as $facts
-    | ($default != null and $default.applies and ($default.own == false or $default.own.app != null)) as $applies
-    | (if $applies then ", so the default word does not hold" else "" end) as $held
-    | [($review.guarded // [])[] | select(IN(guarded_areas[]))] as $guarded
-    | (if $caught != "" then "then, once the checks pass on its merge: " else "" end)
-    + if $default.holds == true then "merge on the default word: run team-merge \($task) for \($facts)"
-      else "merge ask: \($facts)" end
-    + (if $guarded == [] then ""
-       else "; the review found guarded areas: \($guarded | join(", "))\($held)" end)
-    + (if $held != "" and $risky != [] then "; \($risky | and_text)\($held)" else "" end)
-    + (if $before == "" then "" else "; queue before notes \($before) as follow-ups and say where each went" end)' \
-    -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg caught "$caught" \
-    --arg before "$before" --argjson default "$default" --arg posted "$posted" <<<"$state"
+  echo "checks: arm team-next $task --ci with Bash run_in_background unless it is already running: it waits on the checks of $pr_url at $short, then prints the merge ask or hands a red check back as a round"
   exit 0
 fi
 

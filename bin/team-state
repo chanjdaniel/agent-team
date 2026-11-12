@@ -16,7 +16,7 @@
 # workers (every launch, live when claude agents --json lists its session, with that session's
 # status, state and context, the tokens its latest main-conversation reply read, from its
 # transcript, or null, and the brief its launch logged, or null), last_event, pending_asks,
-# waiting, parks, stowing, walk, rehome_failures, pr, and progress;
+# waiting, parks, stowing, walk, rehome_failures, checks_wait, pr, and progress;
 # pending_asks are the asks no later event settles, an answered or a
 # merge-preapproved with the ask's id or a merge-approved whose url its text names.
 # progress is where the task is: tickets (done, the ticket numbers with a ticket-done, each once,
@@ -98,6 +98,11 @@
 # project's latest rehome-failed, as {project, branch, machine, reason, since}, until a later
 # opened, worktree-added, worktree-moved, rehomed or worktree-returned in that project; the text
 # form says "not re-homed: <project> on <machine>: <reason>", before the parks.
+# checks_wait is what the task's latest pass waits on, as checks_wait in bin/lib/ledger.jq reads it
+# from the ledger alone: null unless the latest review is a pass on a PR not merged, else {url,
+# reviewed, head, since, state, reruns}, state the outcome of the latest ci team-next T<n> --ci
+# logged of head (passed, failed, infrastructure or pending), or waiting with none; the text form
+# says "checks <state>" while one stands, after the PR part.
 # Exit 1 for a task with no events, or when the live session list or the registry cannot be read.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"

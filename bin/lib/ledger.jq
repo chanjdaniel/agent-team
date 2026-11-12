@@ -27,7 +27,8 @@ def line_problems:
   end;
 
 # How the value breaks field <name>'s contract type (a type name, or a list of allowed strings).
-# An id is a Discord id, a string of digits; with $legacy (--check), a whole number too, as
+# An id is a Discord id, a string of digits, and digits any other whole number kept as one (a
+# GitHub run or job id). With $legacy (--check), an id may be a whole number too, as
 # team-log wrote one before the contract typed every Discord id (its digits are the id, since jq
 # keeps a number's literal through tostring). A list of whole numbers whose other items are whole
 # numbers written as strings, as team-log stored sent_back before the contract typed it, passes
@@ -46,6 +47,9 @@ def type_problems($name; $want; $legacy):
     if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a Discord id, a string of digits, got a string that is not one"
     elif type == "number" and $legacy then select(. < 0 or . != floor) | "\($name) must be a Discord id, a string of digits, got a number that is not one"
     else "\($name) must be a Discord id, a string of digits, got \(type | noun)" end
+  elif $want == "digits" then
+    if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a whole number written in digits, got a string that is not one"
+    else "\($name) must be a whole number written in digits, got \(type | noun)" end
   elif type != $want then
     "\($name) must be \($want | noun), got \(type | noun)"
   else empty end;
@@ -82,7 +86,7 @@ def kind_problems($contract; $legacy):
 # starts with [ or { is JSON; any other list is a comma list, each item trimmed, none the empty
 # list, and any other object key:value pairs separated by commas, each trimmed, a value a number
 # when it reads as one. A list of whole numbers holds each item that is a whole number written as
-# a string as the number. A choice, a string or an id, any discord_* field, and a whole number of
+# a string as the number. A choice, a string, an id or digits, any discord_* field, and a whole number of
 # 16 digits or more (which a JSON number cannot hold exactly) are kept as written; anything else is
 # JSON when it parses as JSON, else a string.
 def typed_value($name; $want):
@@ -106,7 +110,7 @@ def typed_value($name; $want):
             else {value: ($parsed | map({key, value: (.value | if test("^-?[0-9]+(\\.[0-9]+)?$") then tonumber else . end)}) | from_entries)}
             end
         end
-    elif ($want | type) == "array" or ($want | IN("string", "id")) or ($name | startswith("discord_"))
+    elif ($want | type) == "array" or ($want | IN("string", "id", "digits")) or ($name | startswith("discord_"))
       or test("^-?[0-9]{16,}$") then {value: .}
     else {value: ((try fromjson catch null) | if . == null or (type == "number" and isnan) then $raw else . end)}
     end
@@ -241,7 +245,7 @@ def pad($width): . + ([range($width - length)] | map(" ") | add // "");
 def field_text($want):
   if ($want | type) == "array" then "\(.) (\($want | join("|")))"
   elif $want == "string" then .
-  elif $want == "id" then "\(.) (id)"
+  elif $want == "id" or $want == "digits" then "\(.) (\($want))"
   else "\(.) (\($want | noun | sub("^an? "; "")))" end;
 
 # The contract as a table, one row per kind: event, writer, fields, "pushed at once" for a push
@@ -1115,6 +1119,42 @@ def review_app_pin_problems($app):
   | (select(any((. // {}).checks[]?; .context == "agent-review" and .app_id == $app) | not) | {kind: "pin"}),
     (select(. != null and .enforcement_level != "everyone") | {kind: "admins", level: (.enforcement_level // "no one")});
 
+# What waits on the checks of a pass, over the task's events, or null: null unless the task's
+# latest review is a pass on one of its PRs not merged, the PR whose head the pass names (by the
+# shorter prefix), else the latest PR whose first pr event came before the pass (a fix's head, which
+# no pr event logs). Else {url, reviewed, head, since, state, reruns}: url the PR's; reviewed the
+# passed head; head the latest caught-up made from it since the pass, followed on through each
+# caught-up made from that one (reviewed_head's rule, forward), else reviewed; state the outcome of
+# the latest ci of head on the PR logged after the pass and that catch-up (passed, failed,
+# infrastructure or pending), waiting when none; since the ts of the latest of the pass, that
+# catch-up, and each ci and ci-rerun of head on the PR logged after them (a rerun starts the wait
+# again); reruns the names of the checks with a ci-rerun of head on the PR, whenever logged, each
+# once, in the order first rerun. URLs compare with a trailing slash aside.
+def checks_wait:
+  . as $events
+  | def url_of: .url // "" | tostring | rtrimstr("/");
+    ([range(length) | select($events[.].event == "review")] | last) as $r
+  | if $r == null or $events[$r].verdict != "pass" then null
+    else $events[$r] as $pass
+    | [$events[:$r][] | select(.event == "pr") | url_of] as $before
+    | [lifecycle.prs[] | select(url_of as $u | any($before[]; . == $u))] as $prs
+    | (first($prs[] | select(same_head(.head; $pass.head))) // ($prs | last)) as $pr
+    | if $pr == null or $pr.merged then null
+      else ($pr | url_of) as $url
+      | (reduce range($r + 1; length) as $i ({head: $pass.head, at: $r};
+          $events[$i] as $e
+          | if $e.event == "caught-up" and ($e | url_of) == $url and same_head($e.from; .head) then {head: $e.head, at: $i}
+            else . end)) as $up
+      | [range($up.at + 1; length) | $events[.]
+          | select((.event == "ci" or .event == "ci-rerun") and url_of == $url and same_head(.head; $up.head))] as $ends
+      | ([$ends[] | select(.event == "ci")] | last) as $ci
+      | {url: $pr.url, reviewed: $pass.head, head: $up.head, since: ($ends | last | .ts // $events[$up.at].ts),
+         state: ($ci.outcome // "waiting"),
+         reruns: (reduce ($events[] | select(.event == "ci-rerun" and url_of == $url and same_head(.head; $up.head)) | .check) as $c
+           ([]; if any(.[]; . == $c) then . else . + [$c] end))}
+      end
+    end;
+
 # Why the task's reviews do not let the default word, given on no head, merge the PR's
 # head $head unasked, one string per reason, none when they do, judged on the latest review of
 # reviewed_head($head), so a head team-catch-up made with no review of its own stands on the
@@ -1258,13 +1298,14 @@ def task_state($sessions; $home):
      thread: (map(select(.event == "thread") | .discord_thread) | last),
      workers: $workers, last_event: last, pending_asks: ($state | lifecycle_pending_asks),
      waiting: ($state | lifecycle_waiting), parks: ($state | lifecycle_parks), stowing: ($state | lifecycle_stowing), walk: qc_walk,
-     rehome_failures: rehome_failures, pr: null,
+     rehome_failures: rehome_failures, checks_wait: checks_wait, pr: null,
      progress: progress($workers)};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands
 # and the brief it is on, then the tickets done, with the graph fresh or stale when there is one,
-# the latest review, the PR and the words on it, the walk, a stow under way, and last the standing
-# parks:
+# the latest review, the PR, the state of the checks wait of its latest pass while one stands
+# ("checks <state>", checks_wait's), the words on the PR, the walk, a stow under way, and last the
+# standing parks:
 # T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7, graph stale | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
 def state_line:
   .task as $task
@@ -1300,6 +1341,7 @@ def state_line:
              else " agent-review \(.review_check) (the reviewer App's check)" end
          end
      end)
+  + (if .checks_wait == null then "" else " | checks \(.checks_wait.state)" end)
   + (if (.rehome_failures // []) == [] then ""
      else " | not re-homed: " + (.rehome_failures | map("\(.project) on \(.machine): \(.reason)") | join("; ")) end)
   + (if .phase != "awaiting-merge" then ""
@@ -1355,21 +1397,23 @@ def default_holds($pr; $withdrawals; $own):
          | any(.words[]; .word == "default" and .holds));
 
 # team-sweep's merge-due finding, over a task's events and the session list, or nothing: the task
-# awaits merge, nothing else parks it (no ask nothing settled, pause or wait), no merge-base round
-# is in flight, and a PR not merged has the default word holding on the ledger (default_holds,
-# merge_authority's word: the plan approved, the team's own project's by Daniel with the reviewer
-# App on and never with it off, not withdrawn for the task, its project or all, the task's branch
-# logged, and no review-side reason, as team-state and team-merge read them: the sweep reads no
-# GitHub, so a guarded path a reviewer did not name, a plan changed since its approval, Daniel's
-# message not reading back or the App's check is team-merge's to find, and of two open PRs the
-# later review stands for both); only such PRs are named. $withdrawals is default_events' and $own
-# own_projects' {projects, app} (own_in), or null when the registry cannot be read, which raises
-# none.
+# awaits merge, nothing else parks it (no ask nothing settled, pause or wait), the checks of its
+# latest pass have passed (checks_wait's state is passed: team-next T<n> --ci logged a ci passed of
+# the head it waits on), no merge-base round is in flight, and a PR not merged has the default
+# word holding on the ledger (default_holds, merge_authority's word: the plan approved, the team's
+# own project's by Daniel with the reviewer App on and never with it off, not withdrawn for the
+# task, its project or all, the task's branch logged, and no review-side reason, as team-state and
+# team-merge read them: the sweep reads no GitHub, so a guarded path a reviewer did not name, a
+# plan changed since its approval, Daniel's message not reading back or the App's check is
+# team-merge's to find, and of two open PRs the later review stands for both); only such PRs are
+# named. $withdrawals is default_events' and $own own_projects' {projects, app} (own_in), or null
+# when the registry cannot be read, which raises none.
 def merge_due_finding($withdrawals; $sessions; $own):
   .[0].task as $task
   | . as $events
   | lifecycle as $state
-  | if $own != null and ($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == [] then
+  | if $own != null and ($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == []
+      and ($events | checks_wait | .state) == "passed" then
       select($events | merge_base_round($sessions) | not)
       | task_prs as $prs
       | [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
@@ -1394,6 +1438,26 @@ def stowing_finding:
 def duration:
   (. / 60 | floor) as $m
   | if $m < 60 then "\($m)m" else "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" end;
+
+# How long, in seconds, a pass's checks may go with no wait of them ending before team-sweep calls
+# it ci-due: 100 minutes, team-ci-wait's 90-minute deadline, then its 2-minute settle, then room.
+def ci_due_seconds: 6000;
+
+# team-sweep's ci-due finding, over a task's events, or nothing: the task awaits merge with no ask
+# nothing settled and no standing park, and its checks_wait is waiting or pending since
+# ci_due_seconds or more, so no team-next T<n> --ci has ended on the checks of the head its pass
+# waits on, or rerun one of them (whose wait then starts again), for that long; with session null. It reads no GitHub and no process: a wait still
+# running is the coordinator's to see in its background commands.
+def ci_due_finding:
+  .[0].task as $task
+  | lifecycle as $state
+  | select(($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == [])
+  | checks_wait
+  | select(. != null and (.state | IN("waiting", "pending")))
+  | (now - (.since | fromdate)) as $age
+  | select($age >= ci_due_seconds)
+  | finding($task; "ci-due"; null; null; "the checks of \(.url) at \(.head[:8]) have had no wait end for \($age | duration)";
+      "arm team-next \($task) --ci with Bash run_in_background unless it is running");
 
 # The stall limits, in seconds: how long a busy session's transcripts may go unwritten before
 # team-sweep calls it stalled. default, 50 minutes, so with the sweep watch's three-minute stand
@@ -1651,7 +1715,7 @@ def coordinator_twin_findings($self):
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
 # takes it): each open task's stowing finding, then its merge-due (on the default word, judged with
-# every task's withdrawals), else its findings unless it is parked, then the stray sessions (named
+# every task's withdrawals), else its findings unless it is parked, then its ci-due, then the stray sessions (named
 # like a team worker whose task is closed or not in the ledger, never the load check's T0, whose
 # session the coordinator waits on for up to 30 minutes), in task number order; then the
 # coordinator-twin, activity, level, retro-due and health findings. $own is the registered projects
@@ -1665,7 +1729,8 @@ def sweep($sessions; $plan; $activity; $own; $health; $self):
   | ([($tasks[] | select(is_open) | stowing_finding,
         ([merge_due_finding($withdrawals; $sessions; $own)] as $due
          | if $due != [] then $due[] elif parked then empty
-           else task_findings($sessions; $activity) end)),
+           else task_findings($sessions; $activity) end),
+        ci_due_finding),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";
@@ -1753,10 +1818,19 @@ def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
 def session_text:
   "\(.name) \(.session) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end;
 
+# The checks waits to arm, over team-snapshot's JSON: each open task whose checks_wait (in its
+# team-state JSON) is waiting or pending, as {task, url, head, since}, in task number order, so a
+# restart or a compaction rearms each team-next T<n> --ci not running.
+def checks_waits_to_arm:
+  [.tasks[] | select(.error == null and (.checks_wait.state // null | IN("waiting", "pending")))
+   | {task} + (.checks_wait | {url, head, since})];
+
 # team-snapshot's text form, one line per string, from its JSON. Lines are cut at 120 columns, so
 # ten open tasks fit one screen, but an open task's state, the resources line, the Production line
 # and a current item at 200, each being a whole thought (a task's progress and its PR part come
-# last on its line). After the resources line, one line per withdrawal of the default merge word
+# last on its line). After the open tasks, one line per checks wait to arm (checks_waits_to_arm):
+# "Checks waits to arm unless running: team-next T<n> --ci (<url> at <short>, since <ts>)", none
+# when there is none. After the resources line, one line per withdrawal of the default merge word
 # that stands. The Production line, after them, is team-uptime's status line, or "Production
 # unreadable: <error>", and there is none when no project has a check.
 def snapshot_text:
@@ -1764,6 +1838,8 @@ def snapshot_text:
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
   def section($title; $lines): section($title; $lines; 120);
   section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]; 200),
+  (checks_waits_to_arm[]
+   | "Checks waits to arm unless running: team-next \(.task) --ci (\(.url) at \(.head[:8]), since \(.since))" | clip(200)),
   (.resources // "Resources unreadable: \(.level.error // "team-level said nothing")" | clip(200)),
   ((.default_withdrawn // [])[]
    | "Default merge word withdrawn for \(default_scope_text) since \(.ts) (Discord message \(.discord_message), \(.task))" | clip(120)),

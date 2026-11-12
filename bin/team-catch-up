@@ -36,9 +36,9 @@
 # A status or check that cannot be set is said on stderr with the command to set it; the merge is
 # pushed and logged all the same, exit 1. A check posted whose token alone was not revoked
 # (team-review-check printed its id) is said as posted, with why, and is no failure.
-# Prints what it merged, the merge's full sha, and last the next step: wait for the checks on the
-# merge, then ask Daniel to merge at the reviewed head, or run team-merge when team-state says
-# the default word covers it.
+# Prints what it merged, the merge's full sha, and last the next step: arm team-next T<n> --ci,
+# the checks wait on the merge, which then prints the merge ask at the reviewed head (or the
+# default word's merge, when it covers it).
 # The coordinator runs it; lease-fence blocks it on a machine that lost the lease, as its git push
 # and team-merge.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
@@ -215,4 +215,4 @@ if [[ -n $unset_status ]]; then
 fi
 echo "team-catch-up: merged $base ${onto:0:7} cleanly onto ${head:0:7} as ${merge:0:7} and pushed it to $branch"
 echo "$merge"
-echo "next: wait for the checks on ${merge:0:7} (team-ci-wait $url $merge, in the background), then ask Daniel to merge $url at $reviewed, whose word holds through this merge, or run team-merge $task when team-state says the default word covers it"
+echo "next: arm team-next $task --ci with Bash run_in_background: it waits on the checks of the merge ${merge:0:7} and prints the merge ask at ${reviewed:0:7}, whose word holds through this merge"
