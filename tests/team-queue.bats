@@ -58,6 +58,23 @@ tasks/queued/index.md: not as team-queue index writes it"
   assert_equal "$(find "$queued" -name 'index.md.*')" ""
 }
 
+@test "--check of a stale index prints its one line and nothing more when cmp stops at the first difference with SIGPIPE ignored, as on macOS" {
+  local n
+  for n in $(seq -w 1 30); do printf -- '---\nsummary: item %s\n---\n' "$n" >"$queued/item-$n.md"; done
+  echo stale >"$queued/index.md"
+  # macOS's cmp exits at the first byte that differs, where GNU's reads a whole buffer first; this
+  # one stops after the first line, so whatever is written to it after that finds no reader.
+  stub_command cmp
+  stub_script cmp <<<'IFS= read -r _ || true; exit 1'
+  # Ignored on entry, SIGPIPE stays ignored in every process the script starts, as on CI's macOS
+  # runners, so a write to a reader that stopped early fails with an error on stderr instead of
+  # ending the writer quietly.
+  run --separate-stderr bash -c 'trap "" PIPE; exec "$0" index --check' "$REPO_ROOT/bin/team-queue"
+  assert_equal "$status" 1
+  assert_equal "$output" "tasks/queued/index.md: not as team-queue index writes it"
+  assert_equal "$stderr" ""
+}
+
 @test "migrate moves each queued line into its file's front matter, joining two for one file, and a second run changes nothing" {
   local tilde='~'
   ln -s "$TEAM_HOME" "$HOME/team"
