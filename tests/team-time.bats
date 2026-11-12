@@ -415,6 +415,10 @@ merge_ready_rounds() {
   assert_equal "$(t90_hours 06:00 "${rounds[@]}" \
     '04:00 merge-approved {url: "https://github.com/chanjdaniel/agent-team/pull/30", discord_message: "1"}' \
     '04:30 done {role: "builder", session: "s1"}')" '{"building":1,"review":1,"merging":0.5,"unattributed":1.5,"wait:daniel":2}'
+  # A legacy word with no url names no PR, as team-inbox reads it: the PR still waits.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}" \
+    '04:00 merge-approved {head: "aaaaaaa", discord_message: "1"}' \
+    '04:30 done {role: "builder", session: "s1"}')" '{"building":1,"review":1,"merging":0.5,"wait:daniel":3.5}'
   # Merged, nothing waits.
   assert_equal "$(t90_hours 06:00 "${rounds[@]}" '03:00 merged {pr: 30, merge: "m", head: "aaaaaaa", by: "team-merge"}')" \
     '{"building":1,"review":1,"unattributed":3,"wait:daniel":1}'

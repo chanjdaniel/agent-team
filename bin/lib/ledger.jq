@@ -1978,9 +1978,15 @@ def interview_under_way:
   latest_index("interview-thread") as $i
   | $i >= 0 and all(.[$i + 1:][]; ((.event == "done" and .role == "planner") or .event == "plan-approved") | not);
 
+# Whether the event is a merge-approved naming the PR $pr (one of task_prs) at its head: its url is
+# the PR's, a trailing slash aside, and its head the PR's, or none, as a legacy line.
+def approves_pr($pr):
+  .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
+  and (.head == null or same_head(.head; $pr.head));
+
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
-# awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
-# head, or at no head, as a legacy line, and whose default word does not hold on the ledger
+# awaiting-merge, then each not merged that no merge-approved names at its head (approves_pr), and
+# whose default word does not hold on the ledger
 # (default_holds over $withdrawals, default_events', and $own, own_projects' {projects, app}, the
 # team's own and the reviewer App; with $own null, as when the registry cannot be read, none holds).
 def merge_ready_prs($withdrawals; $own):
@@ -1988,8 +1994,7 @@ def merge_ready_prs($withdrawals; $own):
   | task_prs as $prs
   | if phase != "awaiting-merge" then []
     else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
-      | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
-          and (.head == null or same_head(.head; $pr.head))) | not)
+      | select(any($events[]; approves_pr($pr)) | not)
       | select($own != null and ($events | default_holds($pr; $withdrawals; $own)) | not)] end;
 
 # What waits on Daniel, over every ledger event, each open task's in task number order: {items,

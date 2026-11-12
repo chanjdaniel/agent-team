@@ -101,13 +101,12 @@ def walk_parks: .unparked as $unparked | [.fold.parks[] | select(IN(.id; $unpark
 
 # Whether a walk state's task waits on Daniel's merge word, as merge_ready_prs reads it at this
 # point of the walk: the fold's phase is awaiting-merge and an open PR has no merge-approved so far
-# naming its url (a trailing slash aside) at its head, or at no head, a legacy line. A default word
-# that holds is the walk's merging phase, read before this.
+# (approved) naming it at its head (approves_pr). A default word that holds is the walk's merging
+# phase, read before this.
 def awaits_merge_word:
   .approved as $approved
   | (.fold | lifecycle_phase) == "awaiting-merge"
-    and any(.fold | lifecycle_open_prs[]; . as $pr
-      | any($approved[]; .url == ($pr.url // "" | tostring | rtrimstr("/")) and (.head == null or same_head(.head; $pr.head))) | not);
+    and any(.fold | lifecycle_open_prs[]; . as $pr | any($approved[]; approves_pr($pr)) | not);
 
 # A walk state's class: its latest standing park's, else a wait on Daniel while its ask wait
 # stands, or while no worker is at work and the fold holds an ask open or the task waits on
@@ -148,7 +147,7 @@ def task_segments($end):
             elif $e.event == "done" or $e.event == "merged" or $e.event == "review" then .phase = "unattributed"
             elif $e.event == "merge-approved" then
               .phase = "merging" | .word = "head" | .askwait = null
-              | .approved += [{url: ($e.url // "" | tostring | rtrimstr("/")), head: $e.head}]
+              | .approved += [$e]
             elif $e.event == "merge-preapproved" then .preapproved = (.preapproved - [$e.project]) + [$e.project]
             elif $e.event == "merge-preapproval-withdrawn" then
               .preapproved -= [$e.project]
