@@ -94,6 +94,17 @@
 # team-brief derives a round's, and that each is fixed as narrowly as it asks, a fix reaching
 # shapes it does not name a T<n> QUESTION first), else the T<n> STOW to send it (after recovering
 # it when gone), or no hand-off when nothing was sent back.
+# The findings round's look: when findings go back on a PR, before that line, one look at the
+# reviewed head, team-ci-wait --no-agent-review --json --look <url> <head> (the review's own
+# agent-review is no check). Its failures of class pr (the PR's own) are written to the report
+# tasks/T<n>/ci-<the head's first 8 characters>.md in the team home (the PR's own alone, as --ci's
+# report lays them out), logged once as ci outcome=failed look=true failed=<them> after the review,
+# and named after the findings, as ", and the failed checks <names> of <short> in <the report>";
+# infrastructure failures and roll-ups, on a head the round replaces, are neither named nor
+# logged, and with none of the PR's own nothing is logged and the line is as above. A look that
+# ends unreadable, offline, other-head or moved, or prints no object, adds "; the checks of
+# <short> could not be read (<its text>)" at the end of the line, nothing logged. With no PR (a
+# gated project's before its gate, a Disclosure task's before its first push), no look.
 # team-next T<n> --ci is that checks wait, run with Bash run_in_background; it always ends, since
 # team-ci-wait does. Refused, exit 1, logging nothing and before it waits: launch_refusal's texts
 # for a launch of no role (closed, Daniel's hold, an ask open), "T<n>'s latest review is not a
@@ -270,6 +281,31 @@ and_list() {
   jq -r 'map(tostring) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$1"
 }
 
+# Whether two heads are the same commit, either one a prefix of the other.
+same_commit() {
+  [[ -n $1 && -n $2 && ($1 == "$2"* || $2 == "$1"*) ]]
+}
+
+# ci_report <path> <url> <head> <look>: writes the report of team-ci-wait --json's failures on
+# stdin to <path>: a heading, one line per failure in class order (the PR's, infrastructure,
+# roll-ups), and the closing line; <look> true for the findings round's look, whose failures are
+# the PR's own alone, beside the review's findings.
+ci_report() {
+  jq -r --arg url "$2" --arg head "$3" --argjson look "$4" --arg q "'" '
+    {pr: "the PR\($q)s", infrastructure: "infrastructure", rollup: "roll-up"} as $words
+    | (.failures | sort_by({pr: 0, infrastructure: 1, rollup: 2}[.class] // 3)) as $failures
+    | [$failures[] | select(.class == "pr") | "`\(.name)`"]
+    | (if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end) as $own
+    | "# The failed checks of \($url) at \($head)", "",
+      (if $look then "The findings round\($q)s look at the reviewed head found these failures of the PR\($q)s own, one a line: each one\($q)s class, check, kind, failing step, link and rerun command."
+       else "The checks wait after the pass ended on these failures, one a line, the PR\($q)s first: each one\($q)s class, check, kind, failing step, link and rerun command." end),
+      "",
+      ($failures[] | "- \($words[.class] // .class): `\(.name)`, \(.kind), at \(if .step then "the step \"\(.step)\"" else "no step" end), \(.link // "no link"), \(if .rerun then "rerun with `\(.rerun)`" else "no rerun" end)"),
+      "",
+      if $look then "The PR\($q)s failures, \($own), are `blocking` findings of this round beside the review\($q)s; the look leaves out infrastructure failures and roll-ups, since the round\($q)s new head runs every check again."
+      else "The PR\($q)s failures, \($own), are this round\($q)s `blocking` findings; the others are not, since an infrastructure failure or a roll-up is no defect of the PR, and the round\($q)s new head runs every check again." end' >"$1"
+}
+
 # read_state: the task's state (team-state T<n> --json) as $state, and what the hand-offs read of
 # it for the review $review, each in a variable of its own.
 read_state() {
@@ -427,10 +463,6 @@ if [[ -n $ci ]]; then
   repo=${wait_url#https://github.com/}
   repo=${repo%%/pull/*}
 
-  # Whether two heads are the same commit, either one a prefix of the other.
-  same_commit() {
-    [[ -n $1 && -n $2 && ($1 == "$2"* || $2 == "$1"*) ]]
-  }
   # log_ci <outcome> [<field>=<value>]...: logs the ci of ci_head, but a passed one checks_wait
   # already holds.
   log_ci() {
@@ -561,18 +593,7 @@ if [[ -n $ci ]]; then
         review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
         read_state
         report=$TEAM_HOME/tasks/$task/ci-${wait_head:0:8}.md
-        # The report: a heading, one line per failure in class order, and the closing line.
-        jq -r --arg url "$wait_url" --arg head "$ci_head" --arg q "'" '
-          {pr: "the PR\($q)s", infrastructure: "infrastructure", rollup: "roll-up"} as $words
-          | (.failures | sort_by({pr: 0, infrastructure: 1, rollup: 2}[.class] // 3)) as $failures
-          | [$failures[] | select(.class == "pr") | "`\(.name)`"] as $own
-          | "# The failed checks of \($url) at \($head)", "",
-            "The checks wait after the pass ended on these failures, one a line, the PR\($q)s first: each one\($q)s class, check, kind, failing step, link and rerun command.",
-            "",
-            ($failures[] | "- \($words[.class] // .class): `\(.name)`, \(.kind), at \(if .step then "the step \"\(.step)\"" else "no step" end), \(.link // "no link"), \(if .rerun then "rerun with `\(.rerun)`" else "no rerun" end)"),
-            "",
-            "The PR\($q)s failures, \($own | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end), are this round\($q)s `blocking` findings; the others are not, since an infrastructure failure or a roll-up is no defect of the PR, and the round\($q)s new head runs every check again."' \
-          <<<"$ended" >"$report"
+        ci_report "$report" "$wait_url" "$ci_head" false <<<"$ended"
         echo "report $report"
         log_ci failed "failed=$(jq -c '.failures | map({name, class, kind, link, step})' <<<"$ended")"
         round_line "the failed checks $(and_list "$names") of $wait_short in $report"
@@ -805,6 +826,50 @@ holder_findings_file() {
   if [[ -n $newest ]]; then echo "$dir/$newest"; fi
 }
 
+# findings_look: the findings round's look at the reviewed head of the PR (see the header), once
+# the review is logged: sets look_what, the clause naming the failed checks of the PR's own and
+# their report for the round's message, and look_note, the clause for a look that could not be
+# read; both empty with no PR, or when nothing of the PR's own failed.
+findings_look() {
+  look_what='' look_note=''
+  [[ $pr != null && -n $pr_url ]] || return 0
+  local looked rc=0 outcome='' end_head='' end_text='' own names look_head report fields logged
+  looked=$(sibling team-ci-wait --no-agent-review --json --look "$pr_url" "$reviewed") || rc=$?
+  if ! json_vars outcome='select(.schema == "team-ci-wait/1") | .outcome' end_head='.head' end_text='.text' \
+    <<<"$looked" 2>/dev/null || [[ -z $outcome ]]; then
+    outcome=unread end_text=$(grep -m1 . <<<"$looked" || echo "team-ci-wait exited $rc")
+  fi
+  case $outcome in
+    failed)
+      own=$(jq -c '[.failures[] | select(.class == "pr")]' <<<"$looked")
+      [[ $own != '[]' ]] || return 0
+      names=$(jq -c 'map(.name)' <<<"$own")
+      look_head=$reviewed
+      if same_commit "$end_head" "$reviewed"; then look_head=$end_head; fi
+      report=$TEAM_HOME/tasks/$task/ci-${look_head:0:8}.md
+      jq -c --argjson own "$own" '.failures = $own' <<<"$looked" | ci_report "$report" "$pr_url" "$look_head" true
+      echo "report $report"
+      fields=("url=$pr_url" "head=$look_head" outcome=failed look=true "failed=$(jq -c 'map({name, class, kind, link, step})' <<<"$own")")
+      # A rerun of the same message logs the look once: a ci look of this head after the review
+      # the ledger already held.
+      logged=$(jq -r --argjson held "$held" --arg url "${pr_url%/}" --arg head "$look_head" '
+        ([$held.events[] | select(.event.event == "review") | .at] | first) as $at
+        | select($at != null) | any(.[$at + 1:][]; .event == "ci" and .look == true
+          and (.url | rtrimstr("/")) == $url and (.head | startswith($head) or ($head | startswith(.head))))' <<<"$events")
+      if [[ $logged == true ]]; then
+        echo "already logged ci ${fields[*]}"
+      else
+        sibling team-log "$task" ci "${fields[@]}" || exit
+        echo "logged ci ${fields[*]}"
+      fi
+      look_what=", and the failed checks $(and_list "$names") of $short in $report"
+      ;;
+    unreadable | offline | other-head | moved | unread)
+      look_note="; the checks of $short could not be read (${end_text#team-ci-wait: })"
+      ;;
+  esac
+}
+
 if [[ $handoff == verdict ]]; then
   read_state
   if [[ $kind == "DONE pass" && $pr != null ]]; then
@@ -828,7 +893,8 @@ if [[ $handoff == verdict ]]; then
         file=$(holder_findings_file)
       fi
       where=${file:+in $file}
-      fix=$(round_line "findings $(and_list "$sent") ${where:-of the review of $short}")
+      findings_look
+      fix="$(round_line "findings $(and_list "$sent") ${where:-of the review of $short}$look_what")$look_note"
       # The churn rule (see the header), over the ledger as it was before this run logged anything,
       # the previous review on a rerun the latest before the index that holds this one.
       churn=$(jq -c --argjson review "$review" --argjson held "$held" '

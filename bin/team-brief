@@ -74,7 +74,10 @@
 # and a ci of outcome failed, team-next T<n> --ci's, is logged after it), findings "the failed
 # checks <its failures of class pr, by name> of <its head's first 8 characters>" and
 # findings_file that ci's report, tasks/T<n>/ci-<those 8>.md in the team home, refused as unfilled
-# while it does not exist; goal the first sentence of the plan's ## Goal section, its first line of
+# while it does not exist; for a round on findings sent back whose reviewed head's look
+# (team-next's, on the findings verdict) logged such a ci, findings adds ", and the failed checks
+# <names> in <that report>", refused as unfilled while the report does not exist; goal the first
+# sentence of the plan's ## Goal section, its first line of
 # text past any HTML comment, a list marker dropped. A derived fact with no source is refused as
 # unfilled, naming its --set, only when the template uses it; GitHub unreadable for head is
 # refused naming --set head=.
@@ -170,9 +173,9 @@ events=$(open_task_events "$task")
 # In one jq run over its events: its opened event's title and path, its open worktrees (as
 # task_worktrees has them, as one array), its latest thread and interview thread, and its latest
 # review (null when none), with that review's head (empty when none) and the findings it sent back
-# as a list ("3, 5 and 6"; empty when none), and the pass's checks that went back as a round: the
-# latest ci of outcome failed logged after that review, as its head and the names of its failures
-# of the PR's own (empty when none).
+# as a list ("3, 5 and 6"; empty when none), and the checks that went back as a round: the latest
+# ci of outcome failed logged after that review (team-next T<n> --ci's on a pass, or the findings
+# round's look), as its head and the names of its failures of the PR's own (empty when none).
 title='' path='' worktrees='' thread='' interview='' review='' review_head='' sent_list='' ci_round=''
 json_vars --ledger title='map(select(.event == "opened")) | first | .title | tostring' \
   path='map(select(.event == "opened")) | first | .path | tostring' \
@@ -420,8 +423,16 @@ fi
 if deriving findings; then
   if [[ $review == null ]]; then
     underivable findings "$task has no review; --set findings="
-  elif [[ -n $sent_list ]]; then
+  elif [[ -n $sent_list && ( -z $ci_round || $(jq -c .names <<<"$ci_round") == '[]' ) ]]; then
     values[findings]=$sent_list
+  elif [[ -n $sent_list ]]; then
+    # The findings round's look found failed checks of the PR's own on the reviewed head.
+    report=$TEAM_HOME/tasks/$task/ci-$(jq -r '.head[:8]' <<<"$ci_round").md
+    if [[ -f $report ]]; then
+      values[findings]="$sent_list, and the failed checks $(and_list "$(jq -c .names <<<"$ci_round")") in $(tilde "$report")"
+    else
+      underivable findings "no report of the failed checks at $(tilde "$report"); --set findings="
+    fi
   elif [[ -n $ci_round ]]; then
     # A round on the pass's failed checks, which team-next T<n> --ci handed back.
     values[findings]="the failed checks $(and_list "$(jq -c .names <<<"$ci_round")") of $(jq -r '.head[:8]' <<<"$ci_round")"

@@ -2365,6 +2365,36 @@ ci_failed() {
   assert_contains "$output" "findings (T14's latest review sent nothing back; --set findings=)"
 }
 
+@test "a findings round whose reviewed head had a failed look names the review's findings, then the failed checks and their report, which must exist" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 cut=0123456789abcdef0123456789abcdef01234567 brief
+  # shellcheck disable=SC2088 # the brief writes the path with a literal ~
+  local report='~/agent-team-records/tasks/T14/ci-01234567.md'
+  event T14 pr "$(jq -cn --arg url "$pr" --arg h "$cut" '{url: $url, head: $h}')"
+  event T14 review "$(jq -cn --arg h "$cut" '{verdict: "findings", head: $h, sent_back: [3, 5]}')"
+  findings_files agent-team/.claude/worktrees/2 .work/task review.md
+  plan_goal T14 'The team has its tooling.'
+  # The look's ci, of the PR's own failures alone.
+  event T14 ci "$(jq -cn --arg url "$pr" --arg h "$cut" --arg j https://github.com/chanjdaniel/agent-team/actions/runs/7/job '{url: $url,
+    head: $h, outcome: "failed", look: true, failed: [{name: "test-shards (2)", class: "pr", kind: "failed", link: "\($j)/8", step: "Run the tests"},
+    {name: "lint", class: "pr", kind: "failed", link: "\($j)/11", step: "Lint"}]}')"
+  # The report the look writes is not there: refused, naming it.
+  run_bin -1 team-brief T14 builder-round
+  assert_equal "$output" "team-brief: unfilled placeholders: findings; nothing to derive them from: findings (no report of the failed checks at $report; --set findings=)"
+  echo "# The failed checks" >"$TEAM_HOME/tasks/T14/ci-01234567.md"
+  run_bin -0 --separate-stderr team-brief T14 builder-round --name round-1
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief-round-1.json")" \
+    "$(jq -cn --arg pr "$pr" --arg r "$report" '{findings: "3 and 5, and the failed checks test-shards (2) and lint in \($r)",
+      findings_file: ".work/task/review.md", goal: "The team has its tooling.", pr: $pr}')"
+  brief=$(<"$output")
+  assert_contains "$brief" "and findings 3 and 5, and the failed checks test-shards (2) and lint in $report in \`.work/task/review.md\`."
+  # A look before the latest review is not this round's: the review's findings alone.
+  event T14 review "$(jq -cn --arg h "$cut" '{verdict: "findings", head: $h, sent_back: [6]}')"
+  run_bin -0 --separate-stderr team-brief T14 builder-round --name round-2
+  assert_equal "$(jq -r .values.findings "$TEAM_HOME/tasks/T14/brief-round-2.json")" 6
+}
+
 @test "a rereview after a round on a pass's failed checks says in its since that they failed on the pass and this round fixed them" {
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 tree=$HOME/agent-team/.claude/worktrees/2 cut fix

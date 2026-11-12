@@ -144,6 +144,25 @@ red_checks() {
     {name: "lint", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/11", run: 7, job: 11, step: "Lint", rerun: null}]')"
 }
 
+# look_red <head>: the findings round's look at <head> ends failed, exit 1, with a roll-up, a
+# failed shard of the PR's own, a runner that never started and a lint step of the PR's own, as
+# team-ci-wait --json --look gives them; look_own is what a ci logs of the PR's two.
+look_red() {
+  local job=https://github.com/owner/proj/actions/runs/7/job
+  ci_wait_ends failed "$1" 1 "team-ci-wait: the checks on ${1:0:7} did not pass" "$(jq -cn --arg j "$job" '[
+    {name: "test", class: "rollup", kind: "rollup", state: "FAILURE", link: "\($j)/9", run: 7, job: 9, step: null, rerun: null},
+    {name: "test-shards (2)", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/8", run: 7, job: 8,
+     step: "Run the tests", rerun: null},
+    {name: "macos-shards (1)", class: "infrastructure", kind: "never-started", state: "CANCELLED", link: "\($j)/10", run: 7,
+     job: 10, step: null, rerun: "gh run rerun 7 --job 10 --repo owner/proj"},
+    {name: "lint", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/11", run: 7, job: 11, step: "Lint", rerun: null}]')"
+}
+look_own() {
+  local job=https://github.com/owner/proj/actions/runs/7/job
+  jq -cn --arg j "$job" '[{name: "test-shards (2)", class: "pr", kind: "failed", link: "\($j)/8", step: "Run the tests"},
+    {name: "lint", class: "pr", kind: "failed", link: "\($j)/11", step: "Lint"}]'
+}
+
 # The failures red_checks logs on its ci: each one's name, class, kind, link and step.
 red_logged() {
   jq -c '.failures | map({name, class, kind, link, step})' "$STUB_FIXTURES/team-ci-wait.out"
@@ -802,7 +821,11 @@ round_check() {
 
 @test "a direct-PR Disclosure task's fix round before any push passes its branch check, and its review-ready goes to a re-review of the local head that posts nothing" {
   local head fixed again check
+  # The briefs render from the checkout whose team-ci-wait is the stub: a findings round with no
+  # PR makes no look.
+  code_checkout
   head=$(commit two.txt "feat: ticket 02")
+  ci_wait_ends passed "$head"
   printf '%s\n' "" "## Disclosure" "" "Describe it as hardening the input checks." >>"$TEAM_HOME/tasks/T7/plan.md"
   run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready $head"
   echo "# review" >"$wt/.scratch/task/review.md"
@@ -861,6 +884,7 @@ launched T7-reviewer c0000003"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $again $counts before=none guarded=none"
   assert_contains "$(tail -n 1 <<<"$output")" "T7 the review of ${again:0:8} passed: go on with your delivery"
   assert_equal "$(jq -r 'select(.event == "pr")' "$TEAM_HOME/ledger.jsonl")" ""
+  assert_equal "$(stub_calls team-ci-wait)" ""
 }
 
 @test "a DONE review-ready with a run of whitespace before its sha reads the sha as team-log does" {
@@ -937,7 +961,9 @@ counts="findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,n
 
 # pr_on_github <head> [<behind_by>] [<checks as JSON>]: the gh stub answers team-state's reads
 # of PR 9 (open, against main, at <head>), its checks (agent-review passed by default), its
-# required checks (none) and the compare of main with <head> (0 behind by default).
+# required checks (none) and the compare of main with <head> (0 behind by default), and the real
+# team-ci-wait's look at it (the PR's state and head, and no workflow run of the head), so a
+# findings round's look ends on its first look.
 pr_on_github() {
   export GH_HEAD=$1 GH_BEHIND=${2:-0}
   export GH_CHECKS=${3:-'[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'}
@@ -946,6 +972,8 @@ case "$*" in
   "pr view 9 --repo owner/proj --json number,state,baseRefName,headRefOid,headRefName,changedFiles")
     jq -cn --arg h "$GH_HEAD" '{number: 9, state: "OPEN", baseRefName: "main", headRefOid: $h, headRefName: "feat/T7-toil",
       changedFiles: 1}' ;;
+  "pr view 9 --repo owner/proj --json state,headRefOid") jq -cn --arg h "$GH_HEAD" '{state: "OPEN", headRefOid: $h}' ;;
+  "api repos/owner/proj/actions/runs?head_sha=$GH_HEAD&per_page=100") echo '{"total_count": 0, "workflow_runs": []}' ;;
   "pr checks 9 --repo owner/proj --required"*) echo '[]' ;;
   "pr checks 9 --repo owner/proj"*) echo "$GH_CHECKS" ;;
   "api repos/owner/proj/compare/main...$GH_HEAD --jq .behind_by") echo "$GH_BEHIND" ;;
@@ -982,10 +1010,12 @@ live() {
   echo "$list" >"$STUB_FIXTURES/agents"
 }
 
-# The calls that could reach Discord, merge or post: curl's, and gh's beyond team-state's reads.
+# The calls that could reach Discord, merge or post: curl's, and gh's beyond team-state's and
+# team-ci-wait's reads.
 outside_calls() {
   stub_calls curl
-  stub_calls gh | jq -c 'select((.[0] == "pr" and (.[1] == "view" or .[1] == "checks")) or (.[0] == "api" and (.[1] | test("/compare/|/pulls/[0-9]+/files$"))) | not)'
+  stub_calls gh | jq -c 'select((.[0] == "pr" and (.[1] == "view" or .[1] == "checks"))
+    or (.[0] == "api" and (.[1] | test("/compare/|/pulls/[0-9]+/files$|/actions/runs[?]head_sha="))) | not)'
 }
 
 @test "a pass whose PR head moved past the reviewed head is refused naming both, nothing logged" {
@@ -1627,6 +1657,115 @@ SH
   # Nothing sent back: no round.
   run_bin -0 --separate-stderr team-next T7 --sent-back none -- "T7 DONE findings .scratch/task/review.md ${counts/note-before:0/note-before:1} before=2 guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" "no hand-off: the review sent nothing back, so there is no fix round"
+}
+
+@test "a findings round's look names the PR's own failed checks of the reviewed head and their report in the holder's message, logged once, infrastructure and roll-ups left out" {
+  local count report=$TEAM_HOME/tasks/T7/ci-${sha:0:8}.md job=https://github.com/owner/proj/actions/runs/7/job
+  local message="T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:2} before=none guarded=none"
+  code_checkout
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 120000
+  echo "# review" >"$wt/.scratch/task/review.md"
+  look_red "$sha"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3,5 -- "$message"
+  # One look at the reviewed head, its agent-review left out: the review's own status is no check.
+  assert_equal "$(stub_calls team-ci-wait)" "$(jq -cn --arg url "$url" --arg h "$sha" '["--no-agent-review", "--json", "--look", $url, $h]')"
+  assert_equal "$(tail -n 3 <<<"$output")" "report $report
+logged ci url=$url head=$sha outcome=failed look=true failed=$(look_own)
+send to T7-builder (b0000001, 120k): T7 fix findings 3 and 5 in .scratch/task/review.md, and the failed checks test-shards (2) and lint of ${sha:0:8} in $report on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a T7 QUESTION first), then deliver again as your brief says"
+  # The ci follows the review, and holds the PR's own failures alone.
+  assert_equal "$(logged_from $((count + 1)) | jq -r .event | paste -sd ' ')" "review done ci"
+  assert_equal "$(logged_from $((count + 1)) | jq -cS 'select(.event == "ci")')" \
+    "$(jq -cnS --arg url "$url" --arg h "$sha" --argjson f "$(look_own)" '{task: "T7", event: "ci", url: $url, head: $h, outcome: "failed", failed: $f, look: true}')"
+  assert_equal "$(<"$report")" "# The failed checks of $url at $sha
+
+The findings round's look at the reviewed head found these failures of the PR's own, one a line: each one's class, check, kind, failing step, link and rerun command.
+
+- the PR's: \`test-shards (2)\`, failed, at the step \"Run the tests\", $job/8, no rerun
+- the PR's: \`lint\`, failed, at the step \"Lint\", $job/11, no rerun
+
+The PR's failures, \`test-shards (2)\` and \`lint\`, are \`blocking\` findings of this round beside the review's; the look leaves out infrastructure failures and roll-ups, since the round's new head runs every check again."
+  assert_equal "$(outside_calls)" ""
+  assert_equal "$(bg_calls)" ""
+  # A rerun of the message logs nothing twice and prints the same message.
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3,5 -- "$message"
+  assert_contains "$output" "already logged ci url=$url head=$sha outcome=failed look=true"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$count"
+  assert_contains "$(tail -n 1 <<<"$output")" "T7 fix findings 3 and 5 in .scratch/task/review.md, and the failed checks test-shards (2) and lint of ${sha:0:8} in $report on the same branch"
+  # A full holder gets the STOW, and the round's brief names the review's findings and, after
+  # them, the failed checks and their report.
+  live b0000001 250000
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3,5 -- "$message"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 250k): T7 STOW; its PAUSED stowed goes to team-next, which launches the round"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-round-1.md"
+  assert_equal "$(record round-1 | jq -c '.values | {findings, findings_file}')" \
+    "$(jq -cn --arg r "$report" '{findings: "3 and 5, and the failed checks test-shards (2) and lint in \($r)", findings_file: ".scratch/task/review.md"}')"
+  grep -qF "and findings 3 and 5, and the failed checks test-shards (2) and lint in $report in \`.scratch/task/review.md\`." \
+    "$TEAM_HOME/tasks/T7/brief-round-1.md"
+}
+
+@test "a findings round's look with nothing of the PR's own failed logs nothing and prints today's message; one that cannot be read says so" {
+  local message="T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:1} before=none guarded=none"
+  local job=https://github.com/owner/proj/actions/runs/7/job end
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 120000
+  # The real look on the fake GitHub, which has no check of the head: nothing failed.
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "$message"
+  assert_equal "$(tail -n 1 <<<"$output")" "$(fix_line 3 .scratch/task/review.md)"
+  stub_calls gh | grep -qF '"state,headRefOid"'
+  # Infrastructure failures and roll-ups alone, a pass so far and checks still pending: today's.
+  ci_wait_ends failed "$sha" 1 "team-ci-wait: the checks on ${sha:0:7} did not pass" "[$(infra "macos-shards (1)" never-started 7 10),
+    $(rollup macos 7 12), $(infra build setup 8 20 "Run actions/checkout@v4")]"
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "$message"
+  assert_equal "$(tail -n 1 <<<"$output")" "$(fix_line 3 .scratch/task/review.md)"
+  for end in passed none pending; do
+    ci_wait_ends "$end" "$sha" 0 "team-ci-wait: $end"
+    run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "$message"
+    assert_equal "$(tail -n 1 <<<"$output")" "$(fix_line 3 .scratch/task/review.md)"
+  done
+  [[ $output != *report* ]]
+  assert_equal "$(jq -c 'select(.event == "ci")' "$TEAM_HOME/ledger.jsonl")" ""
+  [[ ! -e $TEAM_HOME/tasks/T7/ci-${sha:0:8}.md ]]
+  # A look GitHub cannot read, or whose head moved, adds why, and logs nothing.
+  ci_wait_ends unreadable "$sha" 75 "team-ci-wait: GitHub could not be read for owner/proj#9 for 2 minutes: HTTP 502"
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "$message"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "$(fix_line 3 .scratch/task/review.md); the checks of ${sha:0:8} could not be read (GitHub could not be read for owner/proj#9 for 2 minutes: HTTP 502)"
+  ci_wait_ends other-head 0123456789abcdef 1 "team-ci-wait: the head of owner/proj#9 is 0123456, not ${sha:0:7}"
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "$message"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "$(fix_line 3 .scratch/task/review.md); the checks of ${sha:0:8} could not be read (the head of owner/proj#9 is 0123456, not ${sha:0:7})"
+  # A team-ci-wait that prints no object, its first line the reason.
+  stub_reply team-ci-wait "usage: team-ci-wait [--no-agent-review] [--json] [--look] <pr url> [<sha>]" 2
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "$message"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "$(fix_line 3 .scratch/task/review.md); the checks of ${sha:0:8} could not be read (usage: team-ci-wait [--no-agent-review] [--json] [--look] <pr url> [<sha>])"
+  assert_equal "$(jq -c 'select(.event == "ci")' "$TEAM_HOME/ledger.jsonl")" ""
+  # The STOW of a full holder says it too.
+  ci_wait_ends offline "$sha" 75 "team-ci-wait: the team holds offline"
+  live b0000001 250000
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "$message"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 250k): T7 STOW; its PAUSED stowed goes to team-next, which launches the round; the checks of ${sha:0:8} could not be read (the team holds offline)"
+}
+
+@test "a pass that sends findings back looks at the reviewed head too, and names the PR's own failed checks" {
+  local fix
+  fix=$(commit two.txt "fix: findings 1 and 2")
+  rereviewing "$fix" '[1, 2]'
+  look_red "$fix"
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- \
+    "T7 DONE pass $url ${counts/note-change:0/note-change:1} before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "$(fix_line 3 ".scratch/task/rereview-2.md, and the failed checks test-shards (2) and lint of ${fix:0:8} in $TEAM_HOME/tasks/T7/ci-${fix:0:8}.md")"
+  assert_equal "$(jq -c 'select(.event == "ci") | [.head, .outcome, .look]' "$TEAM_HOME/ledger.jsonl")" \
+    "$(jq -cn --arg h "$fix" '[$h, "failed", true]')"
 }
 
 # rereviewing <fix> <earlier sent_back as JSON> [<earlier review's other fields as a jq object>]:
