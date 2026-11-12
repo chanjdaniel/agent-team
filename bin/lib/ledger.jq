@@ -780,15 +780,17 @@ def qc_walk:
   if task_status == "closed" then null
   else map(select(.event == "walk")) | last | if .state == "on" then {since: .ts} else null end end;
 
-# The worktrees team-resume could not re-home that still are not made: each project's latest
-# rehome-failed with no later opened, worktree-added, worktree-moved, rehomed or worktree-returned
-# in that project, as {project, branch, machine, reason, since}, in the order they failed.
+# The worktrees team-resume could not re-home that still are not made: the latest rehome-failed of
+# each project and ticket (none for the task's own worktree in the project) with no later opened,
+# worktree-added, worktree-moved, rehomed or worktree-returned of that project and ticket, as
+# {project, branch, machine, reason, since}, with ticket for a ticket worktree's, in the order
+# they failed.
 def rehome_failures:
   . as $events
   | [to_entries[] | select(.value.event == "rehome-failed") | .key as $i | .value as $failed
-     | select(all($events[$i + 1:][]; .project != $failed.project
+     | select(all($events[$i + 1:][]; .project != $failed.project or .ticket != $failed.ticket
          or (.event | IN("rehome-failed", "opened", "worktree-added", "worktree-moved", "rehomed", "worktree-returned") | not)))
-     | $failed | {project, branch, machine, reason, since: .ts}];
+     | $failed | {project, branch, machine, reason, since: .ts} + if .ticket then {ticket} else {} end];
 
 # The index of the task's latest event of $kind, or -1 when it has none.
 def latest_index($kind): [to_entries[] | select(.value.event == $kind) | .key] | last // -1;
@@ -854,13 +856,15 @@ def lifecycle_refused_launches:
   end;
 def refused_launches: lifecycle | lifecycle_refused_launches;
 
-# Whether the task's worktree in <project> resumes on <machine> from the last checkpoint's
-# snapshot: the task crashed, read on <machine>, or its latest stowed recorded that worktree with
-# uncommitted changes, which the handoff's checkpoint kept as wip/<project>/T<n> on the team
-# home's origin.
-def snapshot_due($project; $machine):
+# Whether the task's worktree in <project> of <ticket> (null for the task's own worktree there)
+# resumes on <machine> from the last checkpoint's snapshot: the task crashed, read on <machine>,
+# or its latest stowed recorded that worktree with uncommitted changes, which the handoff's
+# checkpoint kept as wip/<project>/T<n> (a ticket worktree's as wip/<project>/T<n>--NN) on the
+# team home's origin. With two arguments, the task's own worktree in <project>.
+def snapshot_due($project; $ticket; $machine):
   crashed($machine) or (latest_stowed as $stowed | $stowed >= 0
-    and any(.[$stowed].worktrees[]?; .project == $project and .uncommitted == true));
+    and any(.[$stowed].worktrees[]?; .project == $project and .ticket == $ticket and .uncommitted == true));
+def snapshot_due($project; $machine): snapshot_due($project; null; $machine);
 
 # Whether the event ends the worker of the launch <launch> (a launch event, its role, session and
 # ticket): a launch with a ticket (a builder in that ticket's worktree) only by a done of its
@@ -1297,7 +1301,8 @@ def state_line:
          end
      end)
   + (if (.rehome_failures // []) == [] then ""
-     else " | not re-homed: " + (.rehome_failures | map("\(.project) on \(.machine): \(.reason)") | join("; ")) end)
+     else " | not re-homed: " + (.rehome_failures
+       | map("\(.project)\(if .ticket then "--\(.ticket)" else "" end) on \(.machine): \(.reason)") | join("; ")) end)
   + (if .phase != "awaiting-merge" then ""
      else first((.pr.merge_authority // {} | .words // [])[] | select(.word == "default" and .applies)
        | if .holds then " | default word covers it"

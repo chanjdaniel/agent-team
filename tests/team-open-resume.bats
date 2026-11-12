@@ -158,11 +158,12 @@ launch() {
     event: "launch", role: $role, session: "81f08540", worktree: $wt, toolkits: [], machine: $machine}' >>"$TEAM_HOME/ledger.jsonl"
 }
 
-# checkpoint_of <wt>: home-pc's checkpoint of the worktree <wt> of T1, as team-checkpoint makes
-# it: feature.txt edited, new.txt added and README.md deleted, uncommitted, pushed as wip/home/T1
-# to the team home's origin with the worktree's HEAD as parent. Sets wip; the worktree keeps the changes.
+# checkpoint_of <wt> [<ref>]: home-pc's checkpoint of the worktree <wt> of T1, as team-checkpoint
+# makes it: feature.txt edited, new.txt added and README.md deleted, uncommitted, pushed as <ref>
+# (wip/home/T1 by default) to the team home's origin with the worktree's HEAD as parent. Sets wip;
+# the worktree keeps the changes.
 checkpoint_of() {
-  local wt=$1 index=$BATS_TEST_TMPDIR/wip-index tree
+  local wt=$1 ref=${2:-wip/home/T1} index=$BATS_TEST_TMPDIR/wip-index tree
   echo "edited" >"$wt/feature.txt"
   echo "new" >"$wt/new.txt"
   rm "$wt/README.md"
@@ -171,7 +172,7 @@ checkpoint_of() {
   GIT_INDEX_FILE=$index git -C "$wt" add -A
   tree=$(GIT_INDEX_FILE=$index git -C "$wt" write-tree)
   wip=$(git -C "$wt" commit-tree "$tree" -p HEAD -m "wip: T1 checkpoint on home-pc at 2026-10-23T10:00:00Z")
-  git -C "$wt" push -q "$team_origin" "+$wip:refs/heads/wip/home/T1"
+  git -C "$wt" push -q "$team_origin" "+$wip:refs/heads/$ref"
 }
 
 # crash_elsewhere: T1 opened in home on home-pc, with a pushed commit, a builder launched and a
@@ -204,12 +205,12 @@ restart_here() {
   archive T1 scratch
 }
 
-# The snapshot facts of wip/home/T1 <wip> on <parent>, applied (true or false) for <reason> (a JSON
-# string or null).
+# The snapshot facts of <ref> (wip/home/T1 by default) <wip> on <parent>, applied (true or false)
+# for <reason> (a JSON string or null): snapshot_facts <wip> <parent> <applied> <reason> [<ref>]
 snapshot_facts() {
-  jq -cn --arg commit "$1" --arg parent "$2" --argjson applied "$3" --argjson reason "$4" \
+  jq -cn --arg commit "$1" --arg parent "$2" --argjson applied "$3" --argjson reason "$4" --arg ref "${5:-wip/home/T1}" \
     --arg at "$(git -C "$home" show -s --format=%ct "$1" | jq -r 'tonumber | todate')" \
-    '{ref: "wip/home/T1", commit: $commit, parent: $parent, at: $at, applied: $applied, reason: $reason}'
+    '{ref: $ref, commit: $commit, parent: $parent, at: $at, applied: $applied, reason: $reason}'
 }
 
 # Fail unless the task directory <dir> holds exactly the archive <folder> of T1.
@@ -745,4 +746,208 @@ restored_from() {
   assert_contains "$output" "team-open --task T<n> --resume <project>"
   assert_contains "$output" "worktree-moved"
   assert_contains "$output" "wip/<project>/T<n>"
+}
+
+# ticket_elsewhere [head | snapshot | none]: T1 opened in home on home-pc, its branch pushed, and
+# ticket 02's worktree opened beside it (team-open --ticket), which committed ticket.txt on its
+# ticket branch, never pushed; the team home's origin keeps that head as wip/home/T1--02 (head,
+# the default), or, after ticket 02's builder was launched on home-pc, a checkpoint's snapshot of
+# it with uncommitted changes (checkpoint_of), or nothing (none); scratch and scratch--02 archived;
+# then nothing of T1 is on this machine. Sets wt, branch and head (the task worktree's), twt,
+# tbranch and thead (the ticket worktree's) and, for a snapshot, wip.
+ticket_elsewhere() {
+  run_bin -0 --separate-stderr team-open home feature feat work "Work in home"
+  wt=$(jq -r .worktree <<<"$output") branch=$(jq -r .branch <<<"$output")
+  head=$(work "$wt" feature.txt)
+  push "$wt"
+  mkdir -p "$wt/.scratch/task/tickets"
+  printf '# 02: t\n\nBlocked by: None\n' >"$wt/.scratch/task/tickets/02-t.md"
+  run_bin -0 --separate-stderr team-open --task T1 --ticket 02
+  twt=$(jq -r .worktree <<<"$output") tbranch=$(jq -r .branch <<<"$output")
+  thead=$(work "$twt" ticket.txt)
+  case ${1:-head} in
+    head) git -C "$twt" push -q "$team_origin" "+$thead:refs/heads/wip/home/T1--02" ;;
+    snapshot)
+      jq -cn --arg wt "$twt" --arg b "$tbranch" '{ts: (now | todate), task: "T1", event: "launch", role: "builder",
+        session: "02bbbbbb", worktree: $wt, toolkits: [], machine: "home-pc", project: "home", branch: $b,
+        brief: "brief-build-02", ticket: "02"}' >>"$TEAM_HOME/ledger.jsonl"
+      checkpoint_of "$twt" wip/home/T1--02
+      ;;
+  esac
+  archive T1 scratch
+  archive T1 scratch--02
+  echo "ticket 02's note" >"$TEAM_HOME/tasks/T1/scratch--02/note.md"
+  forget_here "$home" "$tbranch" "$twt"
+  forget_here "$home" "$branch" "$wt"
+  rehome_ledger
+}
+
+# The facts --resume --ticket 02 prints for ticket 02's worktree <wt> at <head>, recorded at <from>,
+# restored from scratch--02, with no snapshot.
+ticket_facts() {
+  facts home "$tbranch" "$1" "$2" "$3" '"tasks/T1/scratch--02"' | jq -c '. + {ticket: "02"}'
+}
+
+@test "T287: --resume --ticket makes ticket 02's worktree from wip/home/T1--02's head, its task directory from scratch--02" {
+  ticket_elsewhere
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c . <<<"$output")" "$(ticket_facts "$twt" "$thead" "$twt")"
+  assert_equal "$(git -C "$twt" rev-parse --abbrev-ref HEAD)" "$tbranch"
+  assert_equal "$(git -C "$twt" rev-parse HEAD)" "$thead"
+  run -128 git -C "$twt" rev-parse --abbrev-ref '@{upstream}'
+  assert_equal "$(git -C "$twt" status --porcelain)" ""
+  restored_from "$twt/.scratch/task" scratch--02
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+  # Only the ticket's worktree is made; its branch is on no origin of the project, and its ref is
+  # read here as team-home/wip/home/T1--02.
+  [[ ! -e $wt ]]
+  assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/home.git" for-each-ref "refs/heads/$tbranch")" ""
+  assert_equal "$(git -C "$home" rev-parse team-home/wip/home/T1--02)" "$thead"
+
+  # The task's own worktree is made apart, from origin's branch and scratch, and a second run of
+  # the ticket's finds it where the first put it.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -c . <<<"$output")" "$(facts home "$branch" "$wt" "$head" "$wt" '"tasks/T1/scratch"')"
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c . <<<"$output")" "$(ticket_facts "$twt" "$thead" "$twt")"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+}
+
+@test "T287: a crashed ticket worktree's snapshot is its branch at the snapshot's parent with its tree restored uncommitted" {
+  ticket_elsewhere snapshot
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$stderr" "team-open: applied wip/home/T1--02 ${wip:0:7} (the checkpoint of $(jq -r .snapshot.at <<<"$output")) to $twt as uncommitted changes"
+  assert_equal "$(jq -c .snapshot <<<"$output")" "$(snapshot_facts "$wip" "$thead" true null wip/home/T1--02)"
+  assert_equal "$(jq -c 'del(.snapshot)' <<<"$output")" "$(ticket_facts "$twt" "$thead" "$twt" | jq -c 'del(.snapshot)')"
+  assert_equal "$(git -C "$twt" rev-parse --abbrev-ref HEAD)" "$tbranch"
+  assert_equal "$(git -C "$twt" rev-parse HEAD)" "$thead"
+  assert_equal "$(git -C "$twt" status --porcelain)" "$(printf '%s\n' " D README.md" " M feature.txt" "?? new.txt")"
+  assert_equal "$(git -C "$twt" diff --cached --name-only)" ""
+  restored_from "$twt/.scratch/task" scratch--02
+
+  # A second run finds it applied and changes nothing.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_contains "$stderr" "is already applied in $twt"
+  assert_equal "$(git -C "$twt" status --porcelain)" "$(printf '%s\n' " D README.md" " M feature.txt" "?? new.txt")"
+}
+
+@test "T287: a stowed ticket worktree with uncommitted changes gets its own snapshot applied, and the task worktree none" {
+  ticket_elsewhere snapshot
+  # home-pc handed off: its stowed kept ticket 02's uncommitted changes, while the task worktree
+  # in the same project was clean.
+  jq -cn --arg b "$branch" --arg h "$head" --arg tb "$tbranch" --arg th "$thead" '{ts: (now | todate), task: "T1",
+    event: "stowed", machine: "home-pc", worktrees: [{project: "home", branch: $b, head: $h},
+    {project: "home", branch: $tb, head: $th, uncommitted: true, ticket: "02"}], roles: ["builder"]}' >>"$TEAM_HOME/ledger.jsonl"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c .snapshot <<<"$output")" null
+  assert_equal "$(git -C "$wt" status --porcelain)" ""
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$(jq -c .snapshot <<<"$output")" "$(snapshot_facts "$wip" "$thead" true null wip/home/T1--02)"
+  assert_equal "$(git -C "$twt" status --porcelain)" "$(printf '%s\n' " D README.md" " M feature.txt" "?? new.txt")"
+}
+
+@test "T287: a ticket worktree with no wip/home/T1--02 on the team home's origin is refused, taking no slot" {
+  ticket_elsewhere none
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+
+  run_bin -1 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$stderr" "team-open: $tbranch is on no origin, a ticket branch being never pushed, and the team home's origin has no wip/home/T1--02, so T1's ticket 02 worktree in home cannot be made here"
+  [[ ! -e $twt ]]
+  assert_equal "$(git -C "$home" worktree list --porcelain | grep -c '^worktree ')" 1
+  run -1 git -C "$home" show-ref -q --verify "refs/heads/$tbranch"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+}
+
+@test "T287: a ticket worktree made elsewhere logs worktree-moved with its ticket, and the task's worktree keeps its own" {
+  ticket_elsewhere
+  # Ticket 02's recorded slot is held here, so the first free slot is taken.
+  git -C "$home" worktree add -q --detach "$twt" origin/main
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$(jq -c . <<<"$output")" "$(ticket_facts "$wt" "$thead" "$twt")"
+  assert_equal "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" "$tbranch"
+  restored_from "$wt/.scratch/task" scratch--02
+  assert_equal "$(events worktree-moved | jq -c 'del(.ts)')" "$(jq -cn --arg b "$tbranch" --arg from "$twt" --arg wt "$wt" \
+    '{task: "T1", event: "worktree-moved", project: "home", branch: $b, from: $from, worktree: $wt, machine: "laptop", ticket: "02"}')"
+  run_bin -0 team-log --check
+  stub_reply claude '[]'
+  run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c '.worktrees | map({branch, worktree, ticket})' <<<"$output")" "$(jq -cn --arg b "$branch" --arg tb "$tbranch" \
+    --arg wt "$wt" --arg twt "$twt" '[{branch: $b, worktree: $wt, ticket: null}, {branch: $tb, worktree: $wt, ticket: "02"}]')"
+}
+
+@test "T287: made at its recorded path while its ticket's rehome-failed stands, a ticket worktree logs rehomed with its ticket" {
+  ticket_elsewhere
+  # team-resume's failures, of the task's worktree in home and of ticket 02's.
+  jq -cn --arg b "$branch" '{ts: (now | todate), task: "T1", event: "rehome-failed", project: "home",
+    branch: $b, machine: "laptop", reason: "no slot"}' >>"$TEAM_HOME/ledger.jsonl"
+  jq -cn --arg b "$tbranch" '{ts: (now | todate), task: "T1", event: "rehome-failed", project: "home",
+    branch: $b, machine: "laptop", reason: "no wip ref", ticket: "02"}' >>"$TEAM_HOME/ledger.jsonl"
+  stub_reply claude '[]'
+  run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c '.rehome_failures | map([.project, .ticket])' <<<"$output")" '[["home",null],["home","02"]]'
+  run_bin -0 team-state T1
+  assert_contains "$output" " | not re-homed: home on laptop: no slot; home--02 on laptop: no wip ref"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$(events rehomed | jq -c 'del(.ts)')" "$(jq -cn --arg b "$tbranch" --arg wt "$twt" \
+    '{task: "T1", event: "rehomed", project: "home", branch: $b, worktree: $wt, machine: "laptop", ticket: "02"}')"
+  run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c '.rehome_failures | map([.project, .ticket])' <<<"$output")" '[["home",null]]'
+
+  # The task's own worktree logs its own rehomed, with no ticket, which clears the last.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(events rehomed | jq -c 'del(.ts) | [.branch, .ticket]')" "$(printf '%s\n' "[\"$tbranch\",\"02\"]" "[\"$branch\",null]")"
+  run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c .rehome_failures <<<"$output")" '[]'
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$(events rehomed | wc -l)" 2
+}
+
+@test "T287: a ticket branch here past its wip ref is kept; one that has diverged from it is refused with the salvage command" {
+  ticket_elsewhere
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  # This machine's builder committed on since the checkpoint: the branch here holds the ref's head.
+  local later
+  later=$(work "$twt" later.txt)
+  run_bin -0 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_equal "$stderr" "team-open: $tbranch here is at ${later:0:7}, past wip/home/T1--02 at ${thead:0:7}, so it is kept"
+  assert_equal "$(jq -r .head <<<"$output")" "$later"
+  assert_equal "$(git -C "$twt" rev-parse HEAD)" "$later"
+
+  # A branch here that lacks the ref's head has commits it lacks: refused, with where to save them.
+  git -C "$twt" reset -q --hard "$head"
+  work "$twt" other.txt >/dev/null
+  run_bin -1 --separate-stderr team-open --task T1 --resume home --ticket 02
+  assert_contains "$stderr" "team-open: $tbranch here has commits that wip/home/T1--02 lacks; save them with: git -C $twt push $team_origin HEAD:refs/heads/salvage/home/T1--02-laptop, then make $tbranch here equal to wip/home/T1--02 and run this again"
+}
+
+@test "T287: --resume --ticket needs two digits after it, and an open worktree of that ticket" {
+  run_bin -2 team-open --task T1 --resume home --ticket 2
+  assert_contains "$output" "ticket must be a two-digit number like 03, got '2'"
+  run_bin -2 team-open --task T1 --resume home --ticket
+  assert_contains "$output" "usage: team-open --task T<n> --resume <project> [--ticket <NN>]"
+  run_bin -2 team-open --task T1 --resume home --add 02
+  assert_contains "$output" "usage: team-open --task T<n> --resume <project> [--ticket <NN>]"
+  ticket_elsewhere
+  run_bin -1 --separate-stderr team-open --task T1 --resume home --ticket 03
+  assert_equal "$stderr" "team-open: T1 has no open worktree of ticket 03 in home"
+  # --ticket before --resume is the same command.
+  run_bin -0 --separate-stderr team-open --task T1 --ticket 02 --resume home
+  assert_equal "$(jq -r '"\(.ticket) \(.worktree)"' <<<"$output")" "02 $twt"
+}
+
+@test "T287: --help documents --resume --ticket" {
+  run_bin -0 team-open --help
+  assert_contains "$output" "team-open --task T<n> --resume <project> [--ticket <NN>]"
+  assert_contains "$output" "wip/<project>/T<n>--NN"
+  assert_contains "$output" "scratch--NN"
 }

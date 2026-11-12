@@ -3,7 +3,7 @@
 #
 # Usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <path> <type> <slug> <title...>
 #        team-open --task T<n> --add <project> <type> <slug>
-#        team-open --task T<n> --resume <project>
+#        team-open --task T<n> --resume <project> [--ticket <NN>]
 #        team-open --task T<n> --ticket <NN>
 #   project  a project in projects.toml (team-project --list)
 #   path     feature | bug | small | research | retro (retro marks a retro task for team-retro)
@@ -78,6 +78,16 @@
 # resume from one.
 # Needs this machine's name; refused for a task that is not open or has no open worktree in
 # <project>; re-running after a failure finishes it.
+# With --resume and --ticket NN (either side of --resume <project>), the same for ticket NN's open
+# ticket worktree in <project>, whose branch, never pushed, is kept only as wip/<project>/T<n>--NN
+# on the team home's origin, by the checkpoint: that ref is always fetched, and refused when it is
+# missing; the ticket branch goes to its head (a clean checkpoint's head, or a snapshot's parent),
+# but a branch here that holds that head is kept, said on stderr, and one with commits it lacks is
+# refused with the push of it as salvage/<project>/T<n>--NN-<machine>. A snapshot is applied as
+# above when the task crashed or its latest stowed recorded that ticket worktree with uncommitted
+# changes (snapshot_due by project and ticket). The archive is the ticket worktree's,
+# tasks/T<n>/scratch--NN (scratch-<project>--NN for an added project); worktree-moved and rehomed
+# (while a rehome-failed of that ticket stands) carry ticket, and the JSON gains ticket.
 # With --ticket, gives ticket NN of the open task T<n> a ticket worktree of its own, in the project
 # of the task directory team-tickets T<n> --json reads the ticket from, for a phase whose tickets
 # build in parallel: refused for a task with no opened event or with a closed one, for an NN that
@@ -105,7 +115,7 @@ templates=$(dirname "$bin")/templates
 ledger=$TEAM_HOME/ledger.jsonl
 usage="usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <path> <type> <slug> <title...>"
 add_usage="usage: team-open --task T<n> --add <project> <type> <slug>"
-resume_usage="usage: team-open --task T<n> --resume <project>"
+resume_usage="usage: team-open --task T<n> --resume <project> [--ticket <NN>]"
 ticket_usage="usage: team-open --task T<n> --ticket <NN>"
 
 task='' add='' resume='' story='' ticket=''
@@ -133,8 +143,8 @@ while [[ ${1:-} == --task || ${1:-} == --story || ${1:-} == --add || ${1:-} == -
 done
 [[ -z $add || -z $resume ]] || usage_error "--add and --resume do not go together"
 [[ -z $story || (-z $add && -z $resume) ]] || usage_error "--story goes only with a new task, not with --add or --resume"
-[[ -z $ticket || (-z $add && -z $resume && -z $story) ]] || usage_error "--ticket goes only with --task, not with --add, --resume or --story"
-if [[ -n $ticket ]]; then
+[[ -z $ticket || (-z $add && -z $story) ]] || usage_error "--ticket goes only with --task or --resume, not with --add or --story"
+if [[ -n $ticket && -z $resume ]]; then
   [[ -n $task ]] || usage_error "--ticket needs --task T<n>, the open task whose ticket to give a worktree"
   [[ $# -eq 0 ]] || usage_error "$ticket_usage"
   path='' type='' slug='' title=''
@@ -145,6 +155,11 @@ if [[ -n $ticket ]]; then
   [[ -n $project ]] || die "$task has no ticket $ticket; its tickets: $(jq -r 'map(.ticket) | join(", ") | if . == "" then "none" else . end' <<<"$tickets")"
 elif [[ -n $resume ]]; then
   [[ -n $task ]] || usage_error "--resume needs --task T<n>, the open task whose worktree to make here"
+  if [[ $# -eq 3 && $2 == --ticket && -z $ticket ]]; then
+    ticket=$3
+    [[ $ticket =~ ^[0-9]{2}$ ]] || usage_error "ticket must be a two-digit number like 03, got '$ticket'"
+    set -- "$1"
+  fi
   [[ $# -eq 1 ]] || usage_error "$resume_usage"
   project=$1 path='' type='' slug='' title=''
 elif [[ -n $add ]]; then
@@ -197,10 +212,15 @@ mkdir -p "$TEAM_HOME/tasks"
 claimed=
 if [[ -n $resume ]]; then
   events=$(open_task_events "$task")
-  open=$(ledger_jq 'archived_worktrees($home) | select(.project == $project and .ticket == null)' -c --arg project "$project" <<<"$events")
-  [[ -n $open ]] || die "$task has no open worktree in $project"
-  snapshot_due=$(ledger_jq 'snapshot_due($project; $machine)' --arg project "$project" --arg machine "$machine" <<<"$events")
-  rehome_failed=$(ledger_jq 'any(rehome_failures[]; .project == $project)' --arg project "$project" <<<"$events")
+  # The ticket worktree of NN, or the task's own worktree in the project (ticket null).
+  nn=$(jq -n --arg n "$ticket" 'if $n == "" then null else $n end')
+  open=$(ledger_jq 'archived_worktrees($home) | select(.project == $project and .ticket == $nn)' -c \
+    --arg project "$project" --argjson nn "$nn" <<<"$events")
+  [[ -n $open ]] || die "$task has no open worktree ${ticket:+of ticket $ticket }in $project"
+  snapshot_due=$(ledger_jq 'snapshot_due($project; $nn; $machine)' --arg project "$project" --argjson nn "$nn" \
+    --arg machine "$machine" <<<"$events")
+  rehome_failed=$(ledger_jq 'any(rehome_failures[]; .project == $project and .ticket == $nn)' --arg project "$project" \
+    --argjson nn "$nn" <<<"$events")
   branch=$(jq -r .branch <<<"$open")
   recorded=$(jq -r .worktree <<<"$open")
   archive=tasks/$task/$(jq -r .archive <<<"$open")
@@ -244,9 +264,11 @@ else
   done
   task=T$n claimed=1
 fi
-if [[ -n $ticket ]]; then
+if [[ -n $resume ]]; then
+  :
+elif [[ -n $ticket ]]; then
   branch=$task_branch--$ticket
-elif [[ -z $resume ]]; then
+else
   branch=$type/$task-$slug
 fi
 # Who a treehouse lease is held by: the task, or for a ticket worktree T<n>--NN (resume_slot has a
@@ -282,8 +304,8 @@ on_exit() {
     return 0
   fi
   if [[ -n $resume ]]; then
-    echo "team-open: $task's worktree in $project is $worktree, not yet finished; finish it with:" \
-      "team-open --task $task --resume $project" >&2
+    echo "team-open: $task's ${ticket:+ticket $ticket }worktree in $project is $worktree, not yet finished; finish it with:" \
+      "team-open --task $task --resume $project${ticket:+ --ticket $ticket}" >&2
   elif [[ -n $ticket ]]; then
     echo "team-open: $task's ticket $ticket is half open in $worktree; finish it with:" \
       "team-open --task $task --ticket $ticket" >&2
@@ -297,10 +319,14 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# A new branch starts at origin's base; a resumed one is origin's branch, made here when missing.
+# A new branch starts at origin's base; a resumed one is origin's branch, made here when missing,
+# and a ticket branch, never pushed, its wip ref's head.
 if [[ -n $resume ]]; then
-  remote=$(git -C "$primary" ls-remote origin "refs/heads/$branch") || die "cannot reach origin from $primary"
-  remote=${remote%%[[:space:]]*}
+  remote=''
+  if [[ -z $ticket ]]; then
+    remote=$(git -C "$primary" ls-remote origin "refs/heads/$branch") || die "cannot reach origin from $primary"
+    remote=${remote%%[[:space:]]*}
+  fi
   if [[ -n $remote ]]; then
     git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" ||
       die "cannot fetch $branch from origin in $primary"
@@ -310,9 +336,10 @@ if [[ -n $resume ]]; then
   # from its snapshot (after a crash, or a handoff that stopped a worker with uncommitted changes)
   # or for a branch that is nowhere else: a snapshot (its parent is the branch head it saw) or the
   # branch head itself. A head there that origin's branch lacks, or a branch only there, is where
-  # the branch goes: target.
-  wip='' wip_head='' target=$remote target_name="origin's $branch" wip_ref=wip/$project/$task
-  if [[ $snapshot_due == true || (-z $remote && -z $here) ]]; then
+  # the branch goes: target. A ticket worktree's is wip/<project>/T<n>--NN, read always, since
+  # nothing else keeps its branch.
+  wip='' wip_head='' target=$remote target_name="origin's $branch" wip_ref=wip/$project/$task${ticket:+--$ticket}
+  if [[ -n $ticket || $snapshot_due == true || (-z $remote && -z $here) ]]; then
     wip_url=$(wip_origin) || exit 1
     wip=$(git -C "$primary" ls-remote "$wip_url" "refs/heads/$wip_ref") ||
       die "cannot reach the team home's origin from $primary"
@@ -323,7 +350,14 @@ if [[ -n $resume ]]; then
       die "cannot fetch $wip_ref from the team home's origin in $primary"
     wip_head=$wip
     if is_snapshot "$primary" "$wip" "$task"; then wip_head=$(git -C "$primary" rev-parse "$wip^1"); fi
-    if [[ -z $remote ]] ||
+    if [[ -n $ticket ]]; then
+      # A ticket branch here holding the ref's head is this machine's later work: kept.
+      target=$wip_head target_name=$wip_ref
+      if [[ -n $here && $here != "$wip_head" ]] && git -C "$primary" merge-base --is-ancestor "$wip_head" "$here"; then
+        target=$here target_name="$branch here"
+        echo "team-open: $branch here is at ${here:0:7}, past $wip_ref at ${wip_head:0:7}, so it is kept" >&2
+      fi
+    elif [[ -z $remote ]] ||
       { [[ $wip_head != "$remote" ]] && git -C "$primary" merge-base --is-ancestor "$remote" "$wip_head"; }; then
       target=$wip_head target_name=$wip_ref
       if [[ -z $remote ]]; then
@@ -333,6 +367,9 @@ if [[ -n $resume ]]; then
       fi
     fi
   fi
+  [[ -n $wip || -z $ticket ]] ||
+    die "$branch is on no origin, a ticket branch being never pushed, and the team home's origin has no $wip_ref," \
+      "so $task's ticket $ticket worktree in $project cannot be made here"
   [[ -n $target || -n $here ]] ||
     die "$branch is neither on origin nor here, so $task's worktree in $project cannot be made here"
   start=''
@@ -519,7 +556,7 @@ slot_at() {
 # origin's head, a branch here with commits origin's lacks is refused, and with no worktree holding
 # it, the recorded slot when free, else one from the pool, is put on it.
 resume_slot() {
-  local wt holder='' salvage url found=() list
+  local wt holder='' salvage ref url found=() list
   for wt in "${!holds[@]}"; do
     [[ ${holds[$wt]} != "$branch" ]] && continue
     if same_path "$wt" "$recorded"; then
@@ -532,8 +569,9 @@ resume_slot() {
   if [[ -n $here && -n $target && $here != "$target" ]] && ! git -C "$primary" merge-base --is-ancestor "$here" "$target"; then
     # To the team home's origin, as a snapshot goes: the project's origin may be public.
     url=$(wip_origin) || exit 1
-    salvage="git -C $primary push $url refs/heads/$branch:refs/heads/salvage/$project/$task-$machine"
-    [[ -z $holder ]] || salvage="git -C $holder push $url HEAD:refs/heads/salvage/$project/$task-$machine"
+    ref=refs/heads/salvage/$project/$task${ticket:+--$ticket}-$machine
+    salvage="git -C $primary push $url refs/heads/$branch:$ref"
+    [[ -z $holder ]] || salvage="git -C $holder push $url HEAD:$ref"
     die "$branch here has commits that $target_name lacks; save them with: $salvage," \
       "then make $branch here equal to $target_name and run this again"
   fi
@@ -616,8 +654,8 @@ apply_snapshot() {
 
 # The primary checkout follows the base, so the pool's lease and return commands it holds, run from
 # it, are the merged ones: brought level with origin's when it can be, else left as it is.
-# A ticket worktree needs no network, so it leaves the primary checkout as it is.
-if [[ -n $ticket ]]; then
+# A new ticket worktree needs no network, so it leaves the primary checkout as it is.
+if [[ -n $ticket && -z $resume ]]; then
   :
 elif same_path "$primary" "$TEAM_HOME"; then
   echo "team-open: the primary checkout $primary is the team home, so the next records push (team-checkpoint, team-handoff) brings it level with origin's $base" >&2
@@ -661,9 +699,11 @@ if [[ -z $worktree ]]; then
     *) die "team-open does not take worktrees from a $provider pool" ;;
   esac
 fi
-if [[ -n $ticket ]]; then
+if [[ -n $resume ]]; then
+  :
+elif [[ -n $ticket ]]; then
   base_sha=$(git -C "$worktree" merge-base HEAD "$tip")
-elif [[ -z $resume ]]; then
+else
   base_sha=$(git -C "$worktree" merge-base HEAD "origin/$base")
 fi
 
@@ -696,21 +736,21 @@ if [[ -n $resume ]]; then
   if ! same_path "$worktree" "$recorded"; then
     moved=true
     ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" --arg from "$recorded" \
-      --arg worktree "$worktree" --arg machine "$machine" \
+      --arg worktree "$worktree" --arg machine "$machine" --argjson nn "$nn" \
       '{ts: (now | todate), task: $task, event: "worktree-moved", project: $project, branch: $branch,
-        from: $from, worktree: $worktree, machine: $machine}')"
+        from: $from, worktree: $worktree, machine: $machine} + if $nn then {ticket: $nn} else {} end')"
   elif [[ $rehome_failed == true ]]; then
     ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" \
-      --arg worktree "$worktree" --arg machine "$machine" \
+      --arg worktree "$worktree" --arg machine "$machine" --argjson nn "$nn" \
       '{ts: (now | todate), task: $task, event: "rehomed", project: $project, branch: $branch,
-        worktree: $worktree, machine: $machine}')"
+        worktree: $worktree, machine: $machine} + if $nn then {ticket: $nn} else {} end')"
   fi
 
   jq -n --arg task "$task" --arg project "$project" --arg branch "$branch" --arg worktree "$worktree" \
     --arg task_dir "$worktree/$task_dir" --arg head "$(git -C "$worktree" rev-parse HEAD)" --arg from "$recorded" \
-    --argjson moved "$moved" --argjson archive "$restored" --argjson snapshot "$snapshot" \
+    --argjson moved "$moved" --argjson archive "$restored" --argjson snapshot "$snapshot" --argjson nn "$nn" \
     '{task: $task, project: $project, branch: $branch, worktree: $worktree, task_dir: $task_dir, head: $head,
-      from: $from, moved: $moved, archive: $archive, snapshot: $snapshot}'
+      from: $from, moved: $moved, archive: $archive, snapshot: $snapshot} + if $nn then {ticket: $nn} else {} end'
   # The overlap with other tasks was judged when this one opened.
   exit 0
 elif [[ -n $ticket ]]; then
