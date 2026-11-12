@@ -829,3 +829,19 @@ closed_t1() {
   assert_equal "$output" "team-log: could not take the ledger's lock within 1s"
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
 }
+
+@test "team_sessions reads T<n>-<role>-NN as that role and ticket, and T<n>-<role> as before" {
+  printf '%s\n' '{"ts": "2026-10-22T02:00:00Z", "task": "T7", "event": "opened", "path": "feature"}' \
+    '{"ts": "2026-10-22T02:10:00Z", "task": "T7", "event": "launch", "role": "builder", "session": "22222222", "ticket": "02"}' \
+    >"$TEAM_HOME/ledger.jsonl"
+  run jq -L "$REPO_ROOT/bin/lib" -nRc --slurpfile contract "$REPO_ROOT/bin/lib/ledger-contract.json" --arg home "$HOME" \
+    --argjson sessions '[{"id": "22222222", "name": "T7-builder-02", "status": "idle"}, {"id": "33333333", "name": "T7-reviewer", "status": "busy"},
+      {"id": "44444444", "name": "T9-builder-003", "status": "idle"}, {"id": "55555555", "name": "T9-merge-base", "status": "idle"}]' \
+    'include "ledger"; $contract[0] as $contract | ledger_events | by_task as $tasks
+      | team_sessions($tasks; $sessions)[] | [.task, .role, .ticket, .logged, .task_state]' "$TEAM_HOME/ledger.jsonl"
+  assert_equal "$status" 0
+  assert_equal "$output" '["T7","builder","02",true,"open"]
+["T7","reviewer",null,false,"open"]
+["T9","builder-003",null,false,"unknown"]
+["T9","merge-base",null,false,"unknown"]'
+}

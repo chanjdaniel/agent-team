@@ -437,3 +437,20 @@ stop aaaaaaaa"
     done
   done
 }
+
+@test "T287: the fence stops a ticket builder, T7-builder-02, beside its task's other workers" {
+  stub_script claude <<'EOF2'
+case $1 in
+  agents) echo '[{"id": "22222222", "name": "T7-builder-02"}, {"id": "33333333", "name": "T7-builder-03"},
+    {"id": "77777777", "name": "T7-reviewer"}, {"id": "1baf2408", "name": "notes"}]' ;;
+  stop) ;;
+esac
+EOF2
+  run_bin -0 team-lease take
+  steal_lease laptop home-pc
+  run_bin -1 --separate-stderr team-lease renew
+  assert_contains "$stderr" "fenced home-pc: stopped T7-builder-02 (22222222), T7-builder-03 (33333333), T7-reviewer (77777777);"
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "stop") | .[1]')" "22222222
+33333333
+77777777"
+}

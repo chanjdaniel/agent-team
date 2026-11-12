@@ -185,9 +185,9 @@ phase_of() {
      "name": "T14-builder", "status": "idle", "state": "blocked"}]'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .workers <<<"$output")" "$(jq -cn '[
-    {role: "builder", session: "59709d99", launched: "2026-10-22T02:00:00Z", worktree: "/w/1",
+    {role: "builder", session: "59709d99", name: "T14-builder", ticket: null, launched: "2026-10-22T02:00:00Z", worktree: "/w/1",
      live: true, status: "idle", state: "blocked", context: null, brief: null},
-    {role: "reviewer", session: "3ed2d1f2", launched: "2026-10-22T02:00:00Z", worktree: "/w/1",
+    {role: "reviewer", session: "3ed2d1f2", name: "T14-reviewer", ticket: null, launched: "2026-10-22T02:00:00Z", worktree: "/w/1",
      live: false, status: null, state: null, context: null, brief: null}]')"
   assert_equal "$(stub_calls claude)" '["agents","--json"]'
 }
@@ -1141,4 +1141,24 @@ SH
   assert_contains "$output" "(caught up cleanly with <base>)"
   assert_contains "$output" "walk on since <ts>"
   assert_contains "$output" '{"since": "<ts>"}'
+}
+
+@test "T287: each worker is named by its session's name, T<n>-builder-NN for a builder in ticket NN's worktree" {
+  open_task
+  event T14 plan-approved '{by: "Daniel", parallel: "2"}'
+  event T14 worktree-added '{project: "proj", branch: "feat/T14-tooling--02", base: "feat/T14-tooling", base_sha: "0123456",
+    worktree: "/w/2", ticket: "02"}'
+  event T14 launch '{role: "builder", session: "22222222", worktree: "/w/2", toolkits: [], project: "proj",
+    branch: "feat/T14-tooling--02", brief: "brief-build-02", ticket: "02"}'
+  event T14 worktree-added '{project: "proj", branch: "feat/T14-tooling--03", base: "feat/T14-tooling", base_sha: "0123456",
+    worktree: "/w/3", ticket: "03"}'
+  event T14 launch '{role: "builder", session: "33333333", worktree: "/w/3", toolkits: [], project: "proj",
+    branch: "feat/T14-tooling--03", brief: "brief-build-03", ticket: "03"}'
+  stub_reply claude '[{"id": "22222222", "cwd": "/w/2", "name": "T14-builder-02", "status": "busy", "state": "working"},
+    {"id": "33333333", "cwd": "/w/3", "name": "T14-builder-03", "status": "idle", "state": "working"}]'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.workers[] | [.name, .ticket, .live]]' <<<"$output")" \
+    '[["T14-builder",null,false],["T14-builder-02","02",true],["T14-builder-03","03",true]]'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | T14-builder-02 busy on build-02, T14-builder-03 idle on build-03"
 }

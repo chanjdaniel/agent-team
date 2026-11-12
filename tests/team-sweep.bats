@@ -1838,3 +1838,124 @@ refused_t5() {
   assert_equal "$(jq -c '.[1] | del(.text)' <<<"$output")" \
     '{"task":null,"kind":"level","session":null,"name":null,"next":"fix what team-capacity names"}'
 }
+
+# A parallel phase of <task>: its plan approved at cap 2, and ticket <NN>'s worktree /w/<NN>
+# added for each <NN> after it.
+parallel_phase() {
+  local task=$1 n
+  opened "$task"
+  event "$task" plan-approved '{by: "Daniel", parallel: "2"}'
+  for n in "${@:2}"; do
+    event "$task" worktree-added "{project: \"proj\", branch: \"feat/$task-work--$n\", base: \"feat/$task-work\",
+      base_sha: \"0123456\", worktree: \"/w/$n\", ticket: \"$n\"}"
+  done
+}
+
+# ticket_launch <task> <NN> <session> [<ts>]: ticket NN's builder launched in its ticket worktree.
+ticket_launch() {
+  ledger_line --arg t "$1" --arg n "$2" --arg s "$3" --arg ts "${4:-2026-10-22T02:10:00Z}" \
+    '{ts: $ts, task: $t, event: "launch", role: "builder", session: $s, worktree: "/w/\($n)", toolkits: [],
+      project: "proj", branch: "feat/\($t)-work--\($n)", brief: "brief-build-\($n)", ticket: $n}'
+}
+
+@test "T287: each ticket builder is judged by its own events, silent beside a busy one and at work until its ticket is done" {
+  parallel_phase T7 02 03
+  ticket_launch T7 03 33333333
+  ticket_launch T7 02 22222222 2026-10-22T02:12:00Z
+  # T7-builder-03's launch is not the task's last event, but nothing since names it: it is silent.
+  sessions "$(session 22222222 T7-builder-02 busy working)" "$(session 33333333 T7-builder-03 idle)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 silent: T7-builder-03 33333333 is idle with no ledger event since its launch at 2026-10-22T02:10:00Z; next: read claude logs 33333333, then send it one line or log what is known with team-log"
+  # Its own pause names it, and parks only its ticket: the task is still watched, and 02 is busy.
+  event T7 paused '{reason: "waiting on the gate", cause: "worker", role: "builder", session: "33333333"}'
+  run_bin -0 team-sweep
+  # T7-builder-02 idle with nothing naming it since its launch is silent in its turn, by its own launch.
+  sessions "$(session 22222222 T7-builder-02 idle)" "$(session 33333333 T7-builder-03 idle)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 silent: T7-builder-02 22222222 is idle with no ledger event since its launch at 2026-10-22T02:12:00Z; next: read claude logs 22222222, then send it one line or log what is known with team-log"
+  # Once its pause ends, 03 idle with an event of its own since, but its ticket not done, is still
+  # at work, so the task has a worker though every live session is idle.
+  event T7 resumed '{id: "paused-1"}'
+  event T7 ticket-done '{ticket: "02", commits: ["abc1234"], head: "abc1234"}'
+  event T7 worktree-returned '{project: "proj", worktree: "/w/02", ticket: "02"}'
+  run_bin -0 team-sweep
+  # Its ticket done, it has handed back like any worker.
+  event T7 ticket-done '{ticket: "03", commits: ["bcd2345"], head: "bcd2345"}'
+  event T7 worktree-returned '{project: "proj", worktree: "/w/03", ticket: "03"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: every live worker is idle with a ledger event since its launch (latest T7-builder-02 22222222); next: send it its next step or launch the next worker with team-worker, or log why the task waits with team-log"
+  no_github
+}
+
+@test "T287: ticket-gone names a running ticket whose builder's session is gone, in place of no-worker, but not a stowed or parked one" {
+  parallel_phase T7 02 03
+  ticket_launch T7 02 22222222
+  ticket_launch T7 03 33333333
+  sessions "$(session 33333333 T7-builder-03 busy working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 ticket-gone: ticket 02: its builder T7-builder-02 22222222 is gone with the ticket not done; next: recover it (the recover-worker skill)"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[] | [.task, .kind, .session, .name]' <<<"$output")" '["T7","ticket-gone","22222222","T7-builder-02"]'
+  # Both gone: one line each, and no no-worker beside them.
+  sessions
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 ticket-gone: ticket 02: its builder T7-builder-02 22222222 is gone with the ticket not done; next: recover it (the recover-worker skill)
+T7 ticket-gone: ticket 03: its builder T7-builder-03 33333333 is gone with the ticket not done; next: recover it (the recover-worker skill)"
+  # A ticket done is not running; a park naming the session of 03's builder, its answer to STOW,
+  # stands for it.
+  event T7 ticket-done '{ticket: "02", commits: ["abc1234"], head: "abc1234"}'
+  event T7 worktree-returned '{project: "proj", worktree: "/w/02", ticket: "02"}'
+  event T7 paused '{reason: "stowed", cause: "stow", role: "builder", session: "33333333"}'
+  run_bin -0 team-sweep
+  # A stowed after the launch stands for it too, though the park has ended.
+  event T7 resumed '{id: "paused-1"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T7 ticket-gone: ticket 03"
+  event T7 stowed '{machine: "home-pc", cause: "level", roles: ["builder"], worktrees: []}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 no-worker: no live session among its 2 launches (latest T7-builder-03 33333333); next: read claude logs 33333333 for how it ended, then launch the next worker with team-worker or log what is known with team-log"
+  # The relaunch of ticket 03 after the stow is running again, and gone again once its session is.
+  ticket_launch T7 03 34343434
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 ticket-gone: ticket 03: its builder T7-builder-03 34343434 is gone with the ticket not done; next: recover it (the recover-worker skill)"
+  no_github
+}
+
+@test "T287: ticket-worktree-left names a done ticket's worktree still open, until it is returned, but not a stowed or parked one" {
+  parallel_phase T7 02 03
+  ticket_launch T7 02 22222222
+  ticket_launch T7 03 33333333
+  event T7 ticket-done '{ticket: "02", commits: ["abc1234"], head: "abc1234"}'
+  sessions "$(session 22222222 T7-builder-02 busy working)" "$(session 33333333 T7-builder-03 busy working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 ticket-worktree-left: ticket 02 is done, but its worktree /w/02 is still open; next: team-close T7 --ticket 02"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[] | [.task, .kind, .session, .name]' <<<"$output")" '["T7","ticket-worktree-left",null,null]'
+  # A stow after the ticket-done keeps it with the task's other worktrees.
+  event T7 stowed '{machine: "home-pc", cause: "level", roles: ["builder"], worktrees: []}'
+  run_bin -0 team-sweep
+  # A worktree of ticket 02 added again after its ticket-done is not left until its ticket is done again.
+  event T7 worktree-added '{project: "proj", branch: "feat/T7-work--02", base: "feat/T7-work", base_sha: "0123456", worktree: "/w/02", ticket: "02"}'
+  run_bin -0 team-sweep
+  event T7 ticket-done '{ticket: "02", commits: ["abc1234"], head: "abc1234"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T7 ticket-worktree-left: ticket 02"
+  # A park of its ticket standing (a room refusal of its brief) stands for it.
+  event T7 paused '{reason: "no room for session:builder", cause: "room", role: "builder", brief: "brief-build-02"}'
+  run_bin -0 team-sweep
+  event T7 resumed '{id: "paused-1"}'
+  run_bin -1 team-sweep
+  event T7 worktree-returned '{project: "proj", worktree: "/w/02", ticket: "02"}'
+  run_bin -0 team-sweep
+  no_github
+}
+
+@test "T287: a ticket builder of a closed or unknown task is a stray, by its session's name" {
+  parallel_phase T7 02
+  ticket_launch T7 02 22222222
+  event T7 closed '{archive: [], returned: [], kept: []}'
+  sessions "$(session 22222222 T7-builder-02 idle)" "$(session 44444444 T44-builder-03 busy working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T7 stray: T7-builder-02 22222222 is live but T7 is closed; next: read claude logs 22222222 for anything left to log, then stop it with claude stop 22222222
+T44 stray: T44-builder-03 44444444 is live but T44 is not in the ledger; next: read claude logs 44444444 for anything left to log, then stop it with claude stop 44444444"
+}
