@@ -26,7 +26,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `guarded`: the short list, one extended regular expression per line with its area, `@<project>` or `@own` for one project's line, any changed path of which brings a merge on the default word, the approved plan, back to Daniel for the per-head word, read by `team-merge` from its own checkout.
     - `health.jq`: the health module, the one place that says what unhealthy means: the fold of each heartbeat run into the health record, the ledger's one-pass scan, every health threshold, and the view `team-timers health` prints, its problems and its line in markup and plain text.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
-    - `lifecycle.json`: the task lifecycle's table, its statuses, phases, start states, what each kind may follow and does, the park causes and what ends each, and the `lifecycle_from` cutover, which `ledger.jq` imports.
+    - `lifecycle.json`: the task lifecycle's table, its statuses, phases, start states, what each kind may follow and does, the park causes and what ends each, and the `lifecycle_from` and `asked_parks_from` cutovers, which `ledger.jq` imports.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
     - `notice.jq`: the notice module, the one lifecycle of every notice of a standing problem the heartbeat posts in `#coordinator`: the notice record `notices.json`, the table of each source's rules, the judging, its outcomes and the move from the old records.
     - `notices.sh`: the notice record's reads and locked writes, and the move of each old record into it, sourced after `team.sh` by `team-timers` and `team-uptime`.
@@ -114,8 +114,8 @@ It holds:
 | `ledger.jsonl` | The append-only record of every task's events |
 | `level.jsonl` | The team's resource level and mode, one line per change (`team-level`), committed with the ledger so a level holds across restarts and handoffs |
 | `drills.jsonl` | Each run of a drill, one line per run (`team-drill`): what ran, on which machine, code commit and Claude Code version, and its verdict, appended and never rewritten |
-| `waiting.md` | What waits on Daniel, every open ask, PR ready to merge, interview and walk, numbered, as `team-inbox` last wrote it from the ledger |
-| `waiting.json` | The same list with each item's number and key and the latest post, which `team-inbox` reads to keep each number while its item stands |
+| `waiting.md` | What waits on Daniel, every open ask, PR ready to merge, interview and walk, and the asks and owed replies of `tasks/current.md`, numbered and ranked by what each answer unblocks, as `team-inbox` last wrote it from the ledger and that file |
+| `waiting.json` | The same list with each item's number, key and count and the latest post, which `team-inbox` reads to keep each number while its item stands |
 | `projects.toml` | The project registry, read only through `bin/team-project`, whose `--help` documents every key |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `projects/` | Each project's planning (Conventioner's backlog) |
@@ -170,7 +170,6 @@ It holds:
   `tests/helpers/common.bash` documents the helpers.
 - macOS assesses each new executable file on its first run, about a quarter of a second each, so a test never writes or copies an executable it could share: `stub_command`, `copy_bin` and the doctor's version stubs hard-link a read-only copy made once per run (`shared` in `tests/helpers/common.bash`).
 - No test reads the records of the checkout it runs in, so the suite passes on the code alone: a test that needs a real-shaped registry or secrets manifest copies it from `tests/fixtures/`, and `team-doctor`'s `records` line checks the team home's real ledger, registry and secrets description.
-- CI's runner has jq 1.7.1, so keep to jq 1.7 features.
 - A jq program that includes a module of `bin/lib` also includes, after it, every module that one includes, directly or not (`include "workers"; include "time"; include "ledger";`), which `tests/repo.bats` holds.
   jq 1.8.2, Homebrew's on the `macos-shards` jobs, loads a module before the ones it includes unless the program loaded them first, and frees the definitions that only another module calls, so a call into one reads freed memory and may fail an assertion ("Unknown function type"); jq fixed it after 1.8.2 (jqlang/jq#3620), and a program's includes load last first.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.

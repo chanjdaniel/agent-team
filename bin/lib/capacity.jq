@@ -2,7 +2,7 @@
 # settings of capacity.json, the worktrees held, a reading of the machine's load with the team's
 # use per task, the cost samples it learns from, the estimates, the level record (level.jsonl),
 # the budget, the reservations and the room, the admission rule, the slice's limits, the stow and
-# resume plans, and the texts. jq 1.7.
+# resume plans, and the texts.
 # Included as: jq -L bin/lib 'include "capacity"; include "stack"; ...', stack after it, as
 # CLAUDE.md's script conventions say for jq 1.8.2. The program, not this module, reads the ledger
 # (held_worktrees; plan_tasks in ledger.jq for the plans).

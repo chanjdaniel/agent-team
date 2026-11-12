@@ -13,6 +13,8 @@
 #   --interview  Opens the open task's interview thread under the interview channel
 #             (INTERVIEW_CHANNEL in bin/lib/team.sh), named as its thread from its opened event,
 #             logs it as interview-thread and prints its id, or prints the one already logged.
+#             A new one brings the team home's waiting.md up to date (refresh_inbox in
+#             bin/lib/team.sh: team-inbox; a failure is one line on stderr, and the exit stays 0).
 #             The plugin delivers nothing from that channel, so the coordinator never hears what
 #             is said there: a planner whose brief is planner-interview or planner-walk talks with Daniel there.
 #   wait      Blocks until Daniel posts in the open task's interview thread, then prints each of
@@ -276,6 +278,10 @@ if [[ $# -eq 2 && $2 == --interview ]]; then
     fenced "opens no interview thread; the coordinator on the holder does."
   open_thread "$task" interview-thread "$INTERVIEW_CHANNEL" \
     "$(jq -r 'map(select(.event == "opened")) | last | "\(.task) · \(.project) · \(.title)"' <<<"$events")"
+  # The interview is listed in waiting.md once its thread is logged; one already logged changed nothing.
+  if ((${#LEDGER_KINDS[@]})); then
+    refresh_inbox
+  fi
   exit 0
 fi
 

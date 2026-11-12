@@ -11,6 +11,10 @@ load helpers/common
 setup() {
   sandbox
   hold_lease home-pc >/dev/null
+  # #coordinator's guild, as team-inbox keeps it after its first read, so team-log's refresh of the
+  # waiting list calls Discord for nothing.
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"channel":"1562486564871995482","guild":"1560000000000000000"}' >"$HOME/.local/state/agent-team/inbox.json"
   primary=$(make_repo proj)
   wt=$HOME/slots/proj/1
   git -C "$primary" worktree add -q -b feat/T7-toil "$wt"

@@ -425,13 +425,18 @@ TABLE
   assert_equal "$stderr" "team-answer: Discord message 1564000000000000010 names no item 3 (it names no item by number); log it with team-answer T7 sign-in 1564000000000000010 if it answers that ask"
 }
 
-@test "a PR's or an interview's number is refused, naming what to do instead, with nothing read or logged" {
+@test "a PR's, an interview's or a current item's number is refused, naming what to do instead, with nothing read or logged" {
   listed
-  message "$COORDINATOR" 1564000000000000010 757 "2 yes, 4 yes"
+  # tasks/current.md's ask a1b2c3, numbered 6.
+  jq '.items += [{n: 6, key: "note a1b2c3", kind: "note", task: "-", title: null, id: "a1b2c3", text: "Open it?", where: "1563000000000000045"}]' \
+    "$TEAM_HOME/waiting.json" >"$BATS_TEST_TMPDIR/w" && mv "$BATS_TEST_TMPDIR/w" "$TEAM_HOME/waiting.json"
+  message "$COORDINATOR" 1564000000000000010 757 "2 yes, 4 yes, 6 yes"
   run_bin -1 --separate-stderr team-answer --item 2 1564000000000000010
   assert_equal "$stderr" "team-answer: item 2 is T9's PR https://github.com/o/r/pull/9, which Daniel's word merges: on a merge word, log team-log T9 merge-approved url=https://github.com/o/r/pull/9 discord_message=1564000000000000010 head=<the full sha you asked on>, then run team-merge T9"
   run_bin -1 --separate-stderr team-answer --item 4 1564000000000000010
   assert_equal "$stderr" "team-answer: item 4 is T10's interview, which Daniel answers in <#1010>; nothing is logged"
+  run_bin -1 --separate-stderr team-answer --item 6 1564000000000000010
+  assert_equal "$stderr" "team-answer: item 6 is the current item a1b2c3 of tasks/current.md, an ask with no asked, which no answer is logged for: act on the answer, then team-current done a1b2c3"
   assert_equal "$(reads)" ""
   assert_equal "$(logged_since)" ""
 }

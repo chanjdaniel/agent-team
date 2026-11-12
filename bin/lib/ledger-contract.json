@@ -3,6 +3,7 @@
     "The ledger contract: every event kind in ledger.jsonl, the script that writes it (or the list of scripts that do), and its fields.",
     "Each field's type is string, number, array (a list), numbers (a list of whole numbers, 0 or more), object, boolean, id (a Discord id: a string of digits, which --check also takes as a whole number, the form team-log wrote before) or digits (any other whole number kept as a string of digits, as a GitHub run or job id is), or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
+    "A kind marked inbox changes what waits on Daniel or how it ranks (an ask, an answer, a merge word or its withdrawal, a plan's approval, a PR, its review or merge, a close, a worker's done, a ticket done, an interview thread, a park or its end), so team-log runs team-inbox (refresh_inbox in bin/lib/team.sh) once after it logs one, as the other writers of one do at their end; a launch also moves the counts (past an ask, onto a ready ticket, ending a park on another task) but is not marked, so the heartbeat's inbox step brings them up to date.",
     "A kind's field_writers names the one script that may append a line holding each field it lists, among the kind's writers; the others append the kind without it.",
     "A kind with push true records Daniel's word or an outside fact, so the script that appends it commits the ledger and pushes it to the team home's origin at once (ledger_push), not at the next checkpoint.",
     "A kind's field_when names, for each field it lists, the values another field must hold for a line to carry it, as {\"discord_message\": {\"role\": [\"ops\"]}}: a line holding the field with any other value there is refused.",
@@ -32,6 +33,7 @@
     "interview-thread": {
       "writer": "team-thread",
       "about": "team-thread --interview: the task's thread under the interview channel, where a planner interviews Daniel",
+      "inbox": true,
       "required": {"discord_thread": "id"}
     },
     "launch": {
@@ -48,12 +50,14 @@
       "optional": {"branch": "string", "ticket": "string"}
     },
     "closed": {
+      "inbox": true,
       "writer": "team-close",
       "push": true,
       "about": "a legacy task's lists are empty; the hand-written legacy closes before strict_from have none",
       "required": {"archive": "array", "returned": "array", "kept": "array"}
     },
     "merged": {
+      "inbox": true,
       "writer": "team-merge",
       "push": true,
       "about": "approval: the word it merged on, head (a merge-approved of the PR at its head) or default (the task's approved plan), and for history plan (a merge-preapproved of its project, retired) or standing (Daniel's merge-standing, retired); by, discord_message and discord_channel name Daniel's Discord message, or on a plan the coordinator approved, by says so with the approval's time and the two are left out; phases_left: the phases of the task with a ticket not done when the PR merged, from team-tickets, [] when every ticket was done, absent for a task with no tickets or whose tickets could not be read; a non-empty list makes the task a merged part (bin/lib/lifecycle.json), whose next phase is still to build; check_run: the id of the reviewer App's agent-review check run on the head, when the team's own project merged behind it",
@@ -77,6 +81,7 @@
       "required": {"url": "string", "from": "string", "head": "string", "base": "string"}
     },
     "done": {
+      "inbox": true,
       "writer": "team-log",
       "about": "a worker's report; an ops session's carries report_chars, its report's length in characters, never its text, and relay, the coordinator's message in Discord that relayed it",
       "required": {"role": "string", "session": "string"},
@@ -84,6 +89,7 @@
       "field_when": {"report_chars": {"role": ["ops"]}, "relay": {"role": ["ops"]}}
     },
     "ticket-done": {
+      "inbox": true,
       "writer": "team-log",
       "about": "head is the task branch's tip a ticket landed as, which team-next logs through team-log only when it integrated the ticket from its ticket worktree, absent for a ticket built in the task worktree",
       "required": {"ticket": "string", "commits": "array"},
@@ -98,13 +104,15 @@
       "field_when": {"chars": {"role": ["ops"]}}
     },
     "asked": {
+      "inbox": true,
       "writer": ["team-log", "team-ask"],
-      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs only once Daniel's latest answer to the ask, read back from Discord, has a line that starts with yes, or, when that answered names an item, a part with that number, every such part starting with yes, and only while the file hashes the same",
+      "about": "a decision put to Daniel, which parks the task by itself until it is answered (the fold adds its wait, cause ask); discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs only once Daniel's latest answer to the ask, read back from Discord, has a line that starts with yes, or, when that answered names an item, a part with that number, every such part starting with yes, and only while the file hashes the same",
       "required": {"id": "string", "text": "string"},
       "optional": {"discord_message": "id", "script": "string", "sha256": "string"},
       "field_writers": {"script": "team-ask", "sha256": "team-ask"}
     },
     "answered": {
+      "inbox": true,
       "writer": ["team-log", "team-answer"],
       "push": true,
       "about": "Daniel's answer to the asked of its id; discord_message: the message team-answer read it from, never logged twice for one ask; item: the waiting list's number Daniel's message answered it by, logged by team-answer --item alone",
@@ -119,6 +127,7 @@
       "required": {"id": "string", "exit": "number"}
     },
     "plan-approved": {
+      "inbox": true,
       "writer": "team-log",
       "push": true,
       "about": "the task's plan approved by Daniel, with ask the asked it answers and discord_message their message, which team-log requires of every new line of theirs, or by the coordinator, with neither; plan each file approved, the team home's tasks/T<n>/plan.md and the task directory's spec.md and scope.txt (plan_files in bin/lib/team.sh), to its sha256, and scope scope.txt's lines, both written by team-log itself; a line with no plan is from before T276, read as the coordinator's whatever its by (plan_approval in bin/lib/ledger.jq); it stands until a later plan-approval-withdrawn; parallel the approved cap on the tickets of each phase that build at once, one from 1 to 3 per phase in phase order joined by commas (2, 2,1), the last holding for any later phase, and with none every phase builds one ticket at a time",
@@ -127,6 +136,7 @@
       "field_when": {"ask": {"by": ["Daniel"]}, "discord_message": {"by": ["Daniel"]}}
     },
     "plan-approval-withdrawn": {
+      "inbox": true,
       "writer": "team-log",
       "push": true,
       "about": "Daniel withdrew the task's standing plan approval in discord_message, which stops its build until the plan is approved again; team-log takes whatever message it names, since it only stops work",
@@ -139,6 +149,7 @@
       "optional": {"cause": ["worker", "room", "stow", "coordinator-hold", "offline", "limit", "machine", "shutdown"], "role": "string", "session": "string", "brief": "string", "since": "string"}
     },
     "blocked": {
+      "inbox": true,
       "writer": "team-log",
       "about": "a worker stopped by an obstacle; it stands until a launch or a resumed id= or all=true ends it, by its cause's rules in bin/lib/lifecycle.json (a worker's block that names its role only at a launch of that role), an old line with no cause as before; cause: why, a cause bin/lib/lifecycle.json gives blocked, task when on names a task, else worker unless given; role and session: the blocked worker's, when the line names one; since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
@@ -157,22 +168,26 @@
       "optional": {"cause": ["daniel-hold"], "discord_message": "id", "head": "string", "since": "string"}
     },
     "waiting": {
-      "writer": ["team-log", "team-ask"],
-      "about": "a task parked on Daniel or something outside the team; it stands until a launch or a resumed id= or all=true ends it, but team-ask's wait on its ask, which only that ask's answered ends, an old line with no cause as before; cause: why, a cause bin/lib/lifecycle.json gives waiting, daniel when on is Daniel (any case), else outside unless given, and ask for team-ask's wait on its ask, whose id ask names; since: when the park began, when it is logged after the fact",
+      "inbox": true,
+      "writer": ["team-log"],
+      "about": "a task parked on Daniel or something outside the team; it stands until a launch or a resumed id= or all=true ends it, but a wait on an ask, which only that ask's answered ends, an old line with no cause as before; cause: why, a cause bin/lib/lifecycle.json gives waiting, daniel when on is Daniel (any case), else outside unless given, and ask for a wait on an ask, whose id ask names, which an asked now parks by itself, so only old lines (team-ask's until T303) carry it; since: when the park began, when it is logged after the fact",
       "required": {"on": "string", "reason": "string"},
       "optional": {"cause": ["ask", "daniel", "outside"], "ask": "string", "since": "string"}
     },
     "resumed": {
+      "inbox": true,
       "writer": ["team-log", "team-answer"],
       "about": "ends standing parks, by bin/lib/lifecycle.json's causes: id, the park it ends (team-state's parks name each), Daniel's hold only with discord_message, Daniel's message lifting it, and an ask's wait never; all true, every park whose cause takes all; brief alone, the file name without .md of the brief the holder was sent, on a merge-base round, which holds team-sweep's merge-due, ends none; an old line with none of the three ended every park",
       "required": {},
       "optional": {"id": "string", "all": "boolean", "discord_message": "id", "brief": "string"}
     },
     "pr": {
+      "inbox": true,
       "writer": "team-log",
       "required": {"url": "string", "head": "string"}
     },
     "review": {
+      "inbox": true,
       "writer": "team-log",
       "about": "verdict: findings whenever sent_back names a finding, whatever the reviewer's word, since a pass whose notes go back is not ready to merge (team-log logs it so); sent_back: the numbers of the findings sent back to the builder before the merge, each a blocking finding, a correctness, security or real-data note, or a plain note on a line the PR adds or changes, never one before lists; findings: the count of each kind, exactly blocking, correctness, security, real-data, note-change (plain notes on lines the PR adds or changes) and note-before (plain notes on code it did not change), each a whole number; before: the numbers of the plain notes on code the PR did not change, each queued as a follow-up; guarded: the guarded areas the reviewer found the change touching, each one of ci, migrations, deploy, permissions, secrets and guardrails (the team's own guards), the areas of bin/lib/guarded in its order, whose header says what each covers, empty for none; a review logged before T276 may name dependencies or settings, retired areas nothing holds a PR back for; widening: the numbers of the new findings that sit in what the last fix added for an earlier finding, so reverting that fix would end them, as a rereview marks them; empty for none; memory: the file in the task directory of the memories the reviewer added there for the coordinator to file in the project's memory at close, since the hook refuses a reviewer the memory directory",
       "required": {"verdict": ["pass", "findings"], "head": "string"},
@@ -196,6 +211,7 @@
       "required": {"url": "string", "head": "string", "check": "string", "run": "digits", "job": "digits"}
     },
     "merge-approved": {
+      "inbox": true,
       "writer": "team-log",
       "push": true,
       "about": "Daniel's word on the PR at url, one of the task's pr events, at head, the full sha the ask named, which a pr event of url, or a review of the task since url's first pr event, logged, its discord_message sent no earlier than the first of those that logged it; team-log requires head of every new line, and earlier lines without it hold for any head; legacy lines name only the number",
@@ -231,12 +247,14 @@
       "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
     },
     "merge-default-withdrawn": {
+      "inbox": true,
       "writer": "team-log",
       "push": true,
       "about": "Daniel withdrew the default merge word, the approved plan, for scope: task, the task the line is logged under, a registered project's name, every task's PRs in it, or all, every project; said in discord_message in discord_channel, #coordinator's channel or the task's thread, a message team-merge never reads back, since a withdrawal only stops merges; read across the whole ledger with merge-default-restored: for a PR, the latest of the two whose scope covers it (its task's, its project's or all) decides, and the default stands unless that is a withdrawal (merge_authority in bin/lib/ledger.jq)",
       "required": {"scope": "string", "discord_message": "id", "discord_channel": "id"}
     },
     "merge-default-restored": {
+      "inbox": true,
       "writer": "team-log",
       "push": true,
       "about": "Daniel gave the default merge word back for scope (task, a registered project or all, as a merge-default-withdrawn's) in discord_message in discord_channel, #coordinator's channel or the thread of the task the line is logged under; team-log refuses one when no withdrawal stands that it covers, and team-merge holds it only when Discord shows the message there from an allowFrom author, so a giving back of all gives back a project or task withdrawn by name before it",

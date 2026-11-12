@@ -450,7 +450,12 @@ def park_ticket($state):
 #           id) in past_ask, so it parks nothing. A typed park ends by its cause's rules in the
 #           table's causes: a launch by lifecycle_launch_ends (a ticket's park only by a launch of
 #           that ticket), a resumed by lifecycle_resume_ends,
-#           and an ask's wait (lifecycle_ask_wait) only once no ask of the state is its ask. An old
+#           and an ask's wait (lifecycle_ask_wait) only once no ask of the state is its ask. An
+#           asked from the table's asked_parks_from on parks by itself (one before it parks
+#           nothing, as history read it): it adds its ask's wait, {id: asked-<n> (n its ordinal among the
+#           task's asked events), kind waiting, cause ask, typed, on Daniel, reason "ask <id>", ask
+#           <id>, asked true}, which an old line's typed wait on the same ask (team-ask logged one
+#           until T303) takes the place of, keeping that line's id and since. An old
 #           park (no cause on its line) ends as before: at a launch unless it is a held, and at a
 #           resumed with none of id, all and brief; a resumed's id naming it ends it too, and all
 #           true when its legacy_cause takes all. A brief alone (a merge-base round's holder brief)
@@ -465,7 +470,8 @@ def park_ticket($state):
 #   tickets each ticket launch's session (a builder's in a ticket worktree), as {<session>: NN}.
 #   ticket_worktrees the tickets whose ticket worktree is open (a worktree-added with ticket and
 #           no worktree-returned of that ticket since), in the order added.
-#   counts  each park kind's events so far, for the next park's id.
+#   counts  each park kind's events so far, and the asked events that parked (asked), for the
+#           next park's id.
 #   seen    the events folded so far, the next event's index.
 def lifecycle_start:
   {status: "unknown", path: null, opened_at: null, phase: "planning", since: null, approval: null, withdrawal: null, prs: [], reviews: [], parks: [],
@@ -604,6 +610,13 @@ def lifecycle_step($e):
         else lifecycle_review_phase($e.ts) end
     elif $effect == "ask" then
       .asks += [{id: $e.id, text: $e.text, ts: $e.ts, i: $i, passed: false}]
+      | if ($e.ts | tostring) < lifecycle_table.asked_parks_from then .
+        else
+          .counts.asked = ((.counts.asked // 0) + 1)
+          | .parks += [{id: "asked-\(.counts.asked)", kind: "waiting", cause: "ask", typed: true, on: "Daniel",
+              reason: "ask \($e.id)", role: null, session: null, ticket: null, ask: $e.id, since: $e.ts, ts: $e.ts,
+              i: $i, passed: false, asked: true}]
+        end
     elif $effect == "settle" then
       .asks |= map(. as $ask | select($e | settles($ask) | not))
       | if $e.event == "merge-approved" then .parks |= map(select(lifecycle_old_wait_on_daniel | not)) else . end
@@ -611,6 +624,8 @@ def lifecycle_step($e):
       | .parks |= map(select(lifecycle_ask_wait and (.ask as $ask | all($asks[]; .id != $ask)) | not))
     elif $effect == "park" then
       .counts[$e.event] = ((.counts[$e.event] // 0) + 1)
+      | if $e.event == "waiting" and $e.cause == "ask" and $e.ask != null
+        then .parks |= map(select(.asked == true and .ask == $e.ask | not)) else . end
       | . as $state
       | .parks += [{id: "\($e.event)-\(.counts[$e.event])", kind: $e.event, cause: ($e | park_cause),
           typed: ($e.cause != null), on: ($e.on // null), reason: ($e.reason // null), role: ($e | park_role),
@@ -1723,16 +1738,26 @@ def retro_opened: .event == "opened" and .path == "retro";
 # The retro tasks' opened events in ledger order, each with its place in the ledger as i.
 def retros: [to_entries[] | select(.value | retro_opened) | .value + {i: .key}];
 
+# Whether the retro task of one of retros' opened events ran, over every ledger event $events: it
+# has a launch, or no closed yet (one still open may be running). A retro closed with no launch was
+# opened by mistake, so it is no window's previous retro and no due time's last retro.
+def retro_ran($events):
+  .task as $task
+  | [$events[] | select(.task == $task) | .event] | IN(.[]; "launch") or (IN(.[]; "closed") | not);
+
+# The retros (retros') that ran (retro_ran), in ledger order.
+def retros_ran: . as $events | [retros[] | select(retro_ran($events))];
+
 # team-retro status's JSON. The schedule is the latest retro-schedule, on while every_hours is
-# above 0; the next retro is due every_hours after the later of its time and the latest retro
-# task's opening, unless a retro task is still open.
+# above 0; the next retro is due every_hours after the later of its time and the opening of the
+# latest retro task that ran (retro_ran), unless a retro task is still open.
 def retro_status:
   . as $events
   | retros as $retros
   | ($events | map(select(.event == "retro-schedule")) | last
      | if . != null and (.every_hours | type) == "number" and .every_hours > 0 then {every_hours, since: .ts, discord_message, task}
        else null end) as $schedule
-  | ($retros | last) as $last
+  | (retros_ran | last) as $last
   | ([$retros[] | .task as $task | select($events | map(select(.task == $task)) | task_status == "open")] | last | .task) as $running
   | (if $schedule == null then null
      else ([$schedule.since, ($last.ts // empty)] | max | fromdate) + $schedule.every_hours * 3600 | floor | todate end) as $next
@@ -1914,7 +1939,7 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # results ($production, team-uptime status --json's object or {error}). It carries $level as level,
 # the open tasks stowed, waiting to resume, as awaiting_resume, the resources_line as resources
 # (null when $level is {error}), and $production as production.
-def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production):
+def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production; $waiting; $queued):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed
   | {schema: "team-snapshot/1",
@@ -1928,7 +1953,9 @@ def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $prod
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
      prs: $prs,
      pending_asks: [$states[] | .task as $task | (.pending_asks // [])[] | {task: $task} + .],
-     items: $items};
+     waiting: $waiting,
+     items: $items,
+     queued: $queued};
 
 # The current items of tasks/current.md, over its lines (-R): each line starting "- ", without it.
 def current_items: [inputs | rtrimstr("\r") | select(startswith("- ")) | .[2:]];
@@ -1982,12 +2009,24 @@ def snapshot_text:
            (.prs[] | "    #\(.number) \(.branch)" + (if .draft then " (draft)" else "" end) + ": \(.title)" | clip(120))
          end)
    end),
-  section("Pending asks"; [.pending_asks[] | "\(.task) \(.id): \(.text)"]),
-  ((.items // []) as $items
+  (.waiting as $w
+   | if $w != null and $w.error == null then
+       (if $w.total == 0 then "Waiting on Daniel: nothing"
+        else "Waiting on Daniel (\($w.total)), ranked by what each answer unblocks:", ($w.lines[] | "  " + . | clip(200)),
+          (if $w.total > ($w.lines | length) then "  and \($w.total - ($w.lines | length)) more in waiting.md" else empty end)
+        end),
+       ($w.owed[] | "  Owed you: " + . | clip(200))
+     else
+       (if $w.error != null then "Waiting on Daniel unreadable: \($w.error)" | clip(120) else empty end),
+       section("Pending asks"; [.pending_asks[] | "\(.task) \(.id): \(.text)"])
+     end),
+  ((if .waiting != null and .waiting.error == null then ["queued", "ask", "owe"] else ["queued"] end) as $left_out
+   | [(.items // [])[] | select(split(" ")[0] | IN($left_out[]) | not)] as $items
    | if $items == [] then "Current items: none"
      else "Current items (\($items | length)):", ($items[:40][] | "  - " + . | clip(200)),
        if $items | length > 40 then "  and \($items | length - 40) more in tasks/current.md" else empty end
-     end);
+     end),
+  (.queued // 0 | if . > 0 then "Queued work: \(.) file\(if . == 1 then "" else "s" end), listed in tasks/queued/index.md" else empty end);
 
 # Whether the default word may hold for some PR, over every ledger event as an array: an open task
 # awaits merge with its plan approved. team-sweep and team-inbox read the registry for own_in only
@@ -2002,9 +2041,15 @@ def interview_under_way:
   latest_index("interview-thread") as $i
   | $i >= 0 and all(.[$i + 1:][]; ((.event == "done" and .role == "planner") or .event == "plan-approved") | not);
 
+# Whether the event is a merge-approved naming the PR $pr (one of task_prs) at its head: its url is
+# the PR's, a trailing slash aside, and its head the PR's, or none, as a legacy line.
+def approves_pr($pr):
+  .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
+  and (.head == null or same_head(.head; $pr.head));
+
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
-# awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
-# head, or at no head, as a legacy line, and whose default word does not hold on the ledger
+# awaiting-merge, then each not merged that no merge-approved names at its head (approves_pr), and
+# whose default word does not hold on the ledger
 # (default_holds over $withdrawals, default_events', and $own, own_projects' {projects, app}, the
 # team's own and the reviewer App; with $own null, as when the registry cannot be read, none holds).
 def merge_ready_prs($withdrawals; $own):
@@ -2012,9 +2057,16 @@ def merge_ready_prs($withdrawals; $own):
   | task_prs as $prs
   | if phase != "awaiting-merge" then []
     else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
-      | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
-          and (.head == null or same_head(.head; $pr.head))) | not)
+      | select(any($events[]; approves_pr($pr)) | not)
       | select($own != null and ($events | default_holds($pr; $withdrawals; $own)) | not)] end;
+
+# Each open task's count of the other open tasks blocked on it, over by_task's answer: {"T<n>": n},
+# counting each task whose standing blocked park of cause task (no launch went past it) is on it.
+def blocked_on_counts:
+  [to_entries[] | select(.value | is_open) | .key as $t
+   | [.value | lifecycle | lifecycle_parks[] | select(.kind == "blocked" and .cause == "task" and (.passed | not))
+      | .on | tostring | ascii_upcase | select(. != $t)] | unique[] | {on: ., task: $t}]
+  | group_by(.on) | map({key: .[0].on, value: length}) | from_entries;
 
 # What waits on Daniel, over every ledger event, each open task's in task number order: {items,
 # withdrawn}. items, each keyed as waiting_numbered reads it: the open asks ({key: "ask <task> <id>
@@ -2025,35 +2077,68 @@ def merge_ready_prs($withdrawals; $own):
 # then the interviews under way ({key: "interview <task> <thread>", kind: "interview", task, title,
 # thread}), none whose walk is on in that thread, which the walks list, then the walks under way
 # ({key: "walk <task> <its start's ts>", kind: "walk", task, title, thread (the thread it runs in,
-# or null)}); withdrawn: the withdrawals of the default merge word that stand (default_withdrawals),
-# in ledger order.
-def inbox_items($own):
+# or null)}), then the asks of tasks/current.md, $notes' of kind ask ({key: "note <id>", kind:
+# "note", task (T<n> or -), title: null, id (team-current's), text, where}), in its order; each also
+# with since, when it began (the asked's ts, the PR's first pr event's, the latest
+# interview-thread's, the walk's start's; null for a note, which the ledger does not date), and
+# unblocks, what its answer unblocks, {tasks, tickets, prs}: while the item holds its task (an ask
+# no launch went past, a PR ready to merge, an interview or a walk under way), tasks is 1 for it
+# and 1 for each other open task blocked on it (blocked_on_counts) and tickets its ready tickets,
+# $tickets' count for it ({"T<n>": n}, 0 when it has none), else both are 0, as for a note, which
+# holds no task; prs is 1 for a PR ready to merge and for an ask whose text names one of its task's
+# PRs not merged, else 0. withdrawn: the withdrawals of the default merge word that stand
+# (default_withdrawals), in ledger order; owed: the replies owed to Daniel, $notes' of kind owe, as
+# {task, text, where}. $notes is current.md's ask and owe lines as team-inbox reads them, [{kind,
+# task, text, where, id}].
+def inbox_items($own; $notes; $tickets):
   default_events as $withdrawals
   | ($withdrawals | default_withdrawals(task_projects)) as $withdrawn
-  | [by_task | to_entries[] | select(.value | is_open)
+  | by_task as $tasks
+  | ($tasks | blocked_on_counts) as $blocked
+  | [$tasks | to_entries[] | select(.value | is_open)
     | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
   | by_task_number
-  | {items: ([.[] | . as $t | .events as $events | $events | unsettled_asks[]
+  | def unblocks($t; $holds; $prs):
+      if $holds then {tasks: (1 + ($blocked[$t] // 0)), tickets: ($tickets[$t] // 0)} else {tasks: 0, tickets: 0} end
+      + {prs: $prs};
+    {items: ([.[] | . as $t | .events as $events
+        | ($events | task_prs | map(select(pr_merged($events; $events | task_prs) | not) | .url | rtrimstr("/"))) as $open_prs
+        | ($events | lifecycle.asks | map({key: (.i | tostring), value: .passed}) | from_entries) as $passed
+        | $events | unsettled_asks[]
+        | (.ask.text | tostring) as $text
         | {key: "ask \($t.task) \(.ask.id) \(.ask.ts)", kind: "ask", task: $t.task, title: $t.title, id: .ask.id,
-           text: (.ask.text | tostring | split("\n")[0]),
+           text: ($text | split("\n")[0]),
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
-           message: (.ask.discord_message | if . == null then null else tostring end)}]
-      + [.[] | . as $t | .events | merge_ready_prs($withdrawals; $own)[] | .url
-        | {key: "pr \(rtrimstr("/"))", kind: "pr", task: $t.task, title: $t.title, url: .}]
+           message: (.ask.discord_message | if . == null then null else tostring end),
+           since: .ask.ts,
+           unblocks: unblocks($t.task; $passed[.k | tostring] != true;
+             if any($open_prs[]; . as $url | $text | contains($url)) then 1 else 0 end)}]
+      + [.[] | . as $t | .events as $events | $events | merge_ready_prs($withdrawals; $own)[] | .url
+        | rtrimstr("/") as $url
+        | {key: "pr \($url)", kind: "pr", task: $t.task, title: $t.title, url: .,
+           since: ([$events[] | select(.event == "pr" and (.url | strings | rtrimstr("/")) == $url) | .ts] | first),
+           unblocks: unblocks($t.task; true; 1)}]
       + [.[] | select(.events | interview_under_way and (qc_walk.thread != "interview"))
-        | (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring) as $thread
-        | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread}]
+        | (.events | map(select(.event == "interview-thread")) | last) as $interview
+        | ($interview.discord_thread | tostring) as $thread
+        | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread, since: $interview.ts,
+           unblocks: unblocks(.task; true; 0)}]
       + [.[] | (.events | qc_walk) as $walk | select($walk != null)
         | (if $walk.thread == "interview" then "interview-thread" else "thread" end) as $kind
         | {key: "walk \(.task) \($walk.since)", kind: "walk", task, title,
-           thread: (.events | map(select(.event == $kind) | .discord_thread | strings) | last)}]),
-     withdrawn: [$withdrawn[] | {task, scope, ts, discord_message, discord_channel}]};
+           thread: (.events | map(select(.event == $kind) | .discord_thread | strings) | last), since: $walk.since,
+           unblocks: unblocks(.task; true; 0)}]
+      + [$notes[] | select(.kind == "ask")
+        | {key: "note \(.id)", kind: "note", task, title: null, id, text, where, since: null,
+           unblocks: {tasks: 0, tickets: 0, prs: 0}}]),
+     withdrawn: [$withdrawn[] | {task, scope, ts, discord_message, discord_channel}],
+     owed: [$notes[] | select(.kind == "owe") | {task, text, where}]};
 
-# The items of inbox_items, in its order, each given its number n, from the previous waiting.json
-# $previous (null when there is none or it cannot be read): an item whose key $previous's items
-# hold keeps its number, and each other item, in order, takes the lowest positive number that no
-# kept item holds, no earlier new item took and no item of the latest post ($previous.posted's
-# items) showed.
+# The items of inbox_items, in the order given, each given its number n, from the previous
+# waiting.json $previous (null when there is none or it cannot be read): an item whose key
+# $previous's items hold keeps its number, and each other item, in order, takes the lowest
+# positive number that no kept item holds, no earlier new item took and no item of the latest post
+# ($previous.posted's items) showed.
 def waiting_numbered($previous):
   ([$previous.items[]? | objects | select((.key | type) == "string" and (.n | type) == "number")]
    | map({key, value: .n}) | from_entries) as $kept
@@ -2068,49 +2153,65 @@ def waiting_numbered($previous):
         | .items[$i].n = $n | .taken += [$n] end)
   | .items;
 
+# What an item's answer unblocks, as one count: the sum of its unblocks.
+def waiting_rank: [.unblocks // {} | .[] | numbers] | add // 0;
+
 # A numbered item's line in waiting.md, its number in bold rather than an ordered list's marker,
 # which Discord and GitHub both renumber, and every URL in <>, which keeps Discord from showing a
 # preview card for it: an ask linked to the question's message in guild $guild (null when unknown),
-# to the task's thread when either is unknown, and to nothing with no thread; a PR with its URL; an
-# interview with its thread; a walk with the thread it runs in, or nothing with none.
+# to the task's thread when either is unknown, and to nothing with no thread; a PR, "ready to
+# merge", with its URL; an interview, "interview under way", with its thread; a walk, "walk under
+# way", with the thread it runs in, or nothing with none; an ask of current.md with its task unless
+# -, and its where when that is a URL (note_text); then what its answer unblocks, " - unblocks
+# <n>", n being its unblocks' sum, and when it is more than 0 each part that is, as "(1 task, 2
+# tickets, 1 PR)".
+def note_text:
+  (if .task == "-" then "" else "\(.task) " end) + (.text | clip(150))
+  + if (.where // "") | test("^https?://\\S+$") then " <\(.where)>" else "" end;
 def waiting_line($guild):
   def named: .task + if .title == null then "" else " \(.title | clip(80))" end;
-  "- **\(.n)** "
+  def count($n; $what): if $n == 0 then empty else "\($n) \($what)\(if $n == 1 then "" else "s" end)" end;
+  (.unblocks // {}) as $u
+  | ([count($u.tasks // 0; "task"), count($u.tickets // 0; "ticket"), count($u.prs // 0; "PR")] | join(", ")) as $parts
+  | "- **\(.n)** "
   + if .kind == "ask" then "\(.task) \(.id): \(.text | clip(150))"
       + if .thread == null then ""
         elif .message != null and $guild != null then " <https://discord.com/channels/\($guild)/\(.thread)/\(.message)>"
         else " <#\(.thread)>" end
-    elif .kind == "pr" then "\(named): <\(.url)>"
-    elif .kind == "walk" and .thread == null then named
-    else "\(named): <#\(.thread)>" end;
+    elif .kind == "pr" then "\(named): ready to merge <\(.url)>"
+    elif .kind == "note" then note_text
+    elif .kind == "walk" then "\(named): walk under way" + if .thread == null then "" else " <#\(.thread)>" end
+    else "\(named): interview under way <#\(.thread)>" end
+  + " - unblocks \(waiting_rank)" + if $parts == "" then "" else " (\($parts))" end;
 
-# waiting.json from inbox_items' answer: the items numbered (waiting_numbered, from $previous), in
-# the order waiting.md shows them (the asks, the PRs, the interviews, the walks, each in number
-# order), each
-# with its line (waiting_line, in guild $guild), the withdrawals as inbox_items has them, and
-# $previous's post, null until team-inbox --post records one.
+# waiting.json from inbox_items' answer: the items ranked by what each answer unblocks
+# (waiting_rank), the most first, ties oldest first (by since, a note's null after every date),
+# then in inbox_items' order, then numbered in that order (waiting_numbered, from $previous), so a
+# new item's number follows its rank, each with its line (waiting_line, in guild $guild); the
+# withdrawals and the owed replies as inbox_items has them, and $previous's post, null until
+# team-inbox --post records one.
 def waiting_list($previous; $guild):
   {schema: "team-waiting/1",
-   items: (.items | waiting_numbered($previous)
-     | sort_by(.kind as $kind | [(["ask", "pr", "interview", "walk"] | index($kind)), .n])
+   items: (.items | sort_by([- waiting_rank, .since // "~"]) | waiting_numbered($previous)
      | map({n} + . + {line: waiting_line($guild)})),
    withdrawn: .withdrawn,
+   owed: .owed,
    posted: ($previous.posted // null)};
 
+# How waiting_rank counts, the line after the items.
+def waiting_rank_text:
+  "-# Ranked by what each answer unblocks: its task while that waits on it, the open tasks blocked on that task, the task's ready tickets and a PR to merge; ties oldest first.";
+
 # waiting.md from waiting_list's answer, with a final newline: its title; "Nothing waits on you."
-# or each section with items, its heading then its items' lines; and one line per withdrawal of the
-# default merge word that stands,
-# linked to Daniel's message in its channel in guild $guild (named by its id and channel when the
-# guild is unknown).
+# or the items' lines in their order and how they are ranked (waiting_rank_text); one line per
+# reply owed to Daniel, "-# Owed you: <note_text>"; and one line per withdrawal of the default
+# merge word that stands, linked to Daniel's message in its channel in guild $guild (named by its
+# id and channel when the guild is unknown).
 def waiting_text($guild):
   .items as $items
   | ["**Waiting on you**"]
-  + if $items == [] then ["Nothing waits on you."]
-    else [[["ask", "**Asks**"], ["pr", "**PRs ready to merge**"], ["interview", "**Interviews under way**"],
-        ["walk", "**Walks under way**"]][]
-      as [$kind, $heading]
-      | [$items[] | select(.kind == $kind) | .line] | select(. != []) | $heading, .[]]
-    end
+  + if $items == [] then ["Nothing waits on you."] else [$items[].line, waiting_rank_text] end
+  + [.owed[]? | "-# Owed you: \(note_text)"]
   + [.withdrawn[] | "-# Default merge word withdrawn for \(default_scope_text) since "
       + if $guild != null then "<https://discord.com/channels/\($guild)/\(.discord_channel)/\(.discord_message)>"
         else "message \(.discord_message) in <#\(.discord_channel)>" end]
@@ -2131,8 +2232,8 @@ def waiting_posted($at; $ids; $sent):
 
 # team-inbox --item's answer for the number $n, over waiting.json read whole (jq -s): {item} for
 # the standing item numbered $n, the line naming it ("ask <task> <id>", "pr <task> <url>",
-# "interview <task> <thread>", or "walk <task>" with the thread it runs in when it has one), else
-# {refusal}: the item the latest post showed as $n, which no
+# "interview <task> <thread>", "walk <task>" with the thread it runs in when it has one, or "note
+# <task or -> <id>"), else {refusal}: the item the latest post showed as $n, which no
 # longer waits, or the numbers that do; or a waiting.json of another schema.
 def waiting_item($n):
   if length != 1 or (.[0] | type != "object" or .schema != "team-waiting/1") then
@@ -2144,6 +2245,7 @@ def waiting_item($n):
         {item: (if $item.kind == "ask" then "ask \($item.task) \($item.id)"
           elif $item.kind == "pr" then "pr \($item.task) \($item.url)"
           elif $item.kind == "walk" then "walk \($item.task)" + if $item.thread == null then "" else " \($item.thread)" end
+          elif $item.kind == "note" then "note \($item.task) \($item.id)"
           else "\($item.kind) \($item.task) \($item.thread)" end)}
       elif $shown != null then {refusal: "item \($n) no longer waits: the list posted \(.posted.at) showed it as \($shown.line)"}
       else {refusal: ("no item \($n) waits; "
@@ -2167,15 +2269,16 @@ def retro_status_text:
     end;
 
 # A retro's window as {task, previous, since, until, start, end}, start and end being places in
-# the ledger (end exclusive). For the retro task $task: after the opening of the retro opened
-# before it, or from the first event, up to and including its own opening. For a dry run ($task
-# null): after the latest retro's opening, up to now.
+# the ledger (end exclusive). For the retro task $task: after the opening of the last retro opened
+# before it that ran (retro_ran), or from the first event, up to and including its own opening.
+# For a dry run ($task null): after the opening of the latest retro that ran, up to now.
 def retro_window($task):
   . as $events
   | retros as $retros
-  | (if $task == null then {this: null, previous: ($retros | last)}
+  | (if $task == null then {this: null, previous: (retros_ran | last)}
      else ($retros | map(.task == $task) | index(true)) as $k
-       | {this: $retros[$k], previous: (if $k > 0 then $retros[$k - 1] else null end)} end) as $w
+       | $retros[$k] as $this
+       | {this: $this, previous: ([retros_ran[] | select(.i < $this.i)] | last)} end) as $w
   | {task: $task, previous: $w.previous.task,
      since: ($w.previous.ts // $events[0].ts), until: ($w.this.ts // (now | todate)),
      start: (if $w.previous == null then 0 else $w.previous.i + 1 end),

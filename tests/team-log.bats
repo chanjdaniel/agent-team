@@ -166,7 +166,7 @@ paused team-log,team-worker reason
 blocked team-log reason
 denied team-log,denial-log role what why
 held team-log reason
-waiting team-log,team-ask on reason
+waiting team-log on reason
 resumed team-log,team-answer
 pr team-log url head
 review team-log verdict head
@@ -271,9 +271,9 @@ TABLE
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head; pushed at once  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, discord_message \(id\), brief, template, admission, past_ask \(list\), ticket  \(request is the link to Daniel.s Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on \(team-worker refuses one that did\), which only an ops launch carries; model is the --model the session launched on, .*; admission is the id of the capacity admission the launch was made on \(team-capacity admit.s first line\), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past \(team-worker --past-ask\), which then park nothing, absent when it names none; ticket is the two-digit number of the ticket whose ticket worktree a builder launched in .*\)$' <<<"$output"
   grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\), item \(number\); pushed at once  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask; item: .*team-answer --item alone\)$' <<<"$output"
-  grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
+  grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel, which parks the task by itself until it is answered .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
   grep -Eq '^  ran +team-run-approved +id, exit \(number\); pushed at once  \(.*\)$' <<<"$output"
-  grep -Eq '^  waiting +team-log, team-ask +on, reason; optional cause \(ask\|daniel\|outside\), ask, since  \(.*cause: why, .*daniel when on is Daniel.*\)$' <<<"$output"
+  grep -Eq '^  waiting +team-log +on, reason; optional cause \(ask\|daniel\|outside\), ask, since  \(.*cause: why, .*daniel when on is Daniel.*\)$' <<<"$output"
   grep -Eq '^  resumed +team-log, team-answer +-; optional id, all \(boolean\), discord_message \(id\), brief +\(ends standing parks, by bin/lib/lifecycle.json.s causes: id, .*all true, .*brief alone, .*ends none; .*\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional cause \(task\|worker\|denial\), role, session, since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
   grep -Eq '^  held +team-log +reason; optional cause \(daniel-hold\), discord_message \(id\), head, since  \(Daniel.s hold on the task; .*\)$' <<<"$output"
@@ -287,6 +287,26 @@ TABLE
   grep -Eq '^  stow-failed +team-stow +machine, reason  \(a stow of the task under way .*the run stopped: <its last error line>.*read as stowed with the stowing.s roles.*\)$' <<<"$output"
   grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason; optional ticket  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
+}
+
+@test "an event of a kind the contract marks inbox brings waiting.md up to date, in either form, and another kind leaves it" {
+  opened_task T14
+  run_bin -0 --separate-stderr team-log T14 failed reason="a crash"
+  assert_equal "$stderr" ""
+  [[ ! -e $TEAM_HOME/waiting.md ]]
+  run_bin -0 --separate-stderr team-log T14 asked id=port text="Which port?"
+  assert_equal "$stderr" ""
+  assert_contains "$(cat "$TEAM_HOME/waiting.md")" "T14 port: Which port? <#1563000000000000000>"
+  run_bin -0 --separate-stderr team-log T14 answered id=port answer=8080
+  assert_equal "$stderr" ""
+  assert_equal "$(cat "$TEAM_HOME/waiting.md")" "**Waiting on you**
+Nothing waits on you."
+  # A worker's message logged whole refreshes it too.
+  rm "$TEAM_HOME/waiting.md"
+  run_bin -0 --separate-stderr team-log T14 --from-message 'T14 BLOCKED the build needs T15 merged'
+  assert_equal "$stderr" ""
+  assert_equal "$(cat "$TEAM_HOME/waiting.md")" "**Waiting on you**
+Nothing waits on you."
 }
 
 @test "an event is appended as one line with ts now, task and event" {

@@ -23,6 +23,10 @@ LEDGER
   echo 0 >"$DISCORD_DIR/poll"
   stub_discord
   declare -f say >"$DISCORD_DIR/say.bash"
+  # #coordinator's guild, as team-inbox keeps it after its first read, so the refresh of the
+  # waiting list after an interview thread opens calls Discord for nothing.
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"channel":"1562486564871995482","guild":"1560000000000000000"}' >"$HOME/.local/state/agent-team/inbox.json"
   stub_command sleep uname
   stub_reply uname Linux
   # Each sleep is a poll's interval: it moves on to the next poll, sourcing at-poll.<n> first
@@ -220,7 +224,7 @@ reads() {
   stub_calls curl | jq -r '.[-1] | select(contains("/messages")) | ltrimstr("https://discord.com/api/v10/")'
 }
 
-@test "the interview thread opens under the interview channel, is logged once, and leaves the task's thread as it was" {
+@test "the interview thread opens under the interview channel, is logged once, is listed in waiting.md, and leaves the task's thread as it was" {
   run_bin -0 --separate-stderr team-thread T7 --interview
   assert_equal "$output" "$THREAD"
   assert_equal "$(stub_calls curl | wc -l)" "1"
@@ -229,6 +233,8 @@ reads() {
     '{"name":"T7 · conventioner · Sign-in limits","type":11,"auto_archive_duration":4320}'
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
     "{\"task\":\"T7\",\"event\":\"interview-thread\",\"discord_thread\":\"$THREAD\"}"
+  # waiting.md lists the interview by the end of the command.
+  assert_contains "$(cat "$TEAM_HOME/waiting.md")" "- **1** T7 Sign-in limits: interview under way <#$THREAD>"
 
   run_bin -0 team-thread T7 --interview
   assert_equal "$output" "$THREAD"
