@@ -1811,6 +1811,76 @@ zizmor_problems() {
   done
 }
 
+# The Ubuntu runner's own jq (1.7.1) is older than any machine's, so every Linux job that runs the
+# repository's jq programs installs the jq bin/lib/tools.lock takes as its floor, before it runs them.
+@test "every Linux job that runs the bats or toolkit tests installs the jq tools.lock's floor names, by one pin" {
+  run -0 ci_jq_problems "$REPO_ROOT/.github/workflows/ci.yml" "$REPO_ROOT/bin/lib/tools.lock"
+  assert_equal "$output" "checked test-shards toolkits"
+}
+
+# What breaks the jq rule in the CI workflow <ci>, one per line, then "checked" and the ids of the
+# jobs it holds to it: ci_jq_problems <ci> <tools.lock>
+ci_jq_problems() {
+  local ci=$1 floor id jobs sha='' block checked=()
+  floor=$(jq -r '.tools[] | select(.name == "jq") | .min' "$2")
+  # Each Linux job that runs tests/run bats or tests/run toolkits.
+  jobs=$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$ci")
+  for id in $jobs; do
+    block=$(sed -n '/^jobs:$/,$p' "$ci" | sed -n "/^  $id:\$/,/^  [a-z_-]*:\$/p" | sed '1!{/^  [a-z_-]*:$/d}')
+    grep -qx '    runs-on: ubuntu-.*' <<<"$block" || continue
+    grep -qE '^      - run: tests/run (bats|toolkits)' <<<"$block" || continue
+    checked+=("$id")
+    [[ $(sed -n 's/^      JQ_VERSION: //p' <<<"$block") == "$floor" ]] || echo "$id: JQ_VERSION is not tools.lock's jq floor $floor"
+    if [[ -z $sha ]]; then
+      sha=$(sed -n 's/^      JQ_SHA256: //p' <<<"$block")
+      [[ $sha =~ ^[0-9a-f]{64}$ ]] || echo "$id: JQ_SHA256 is no sha256"
+    elif [[ $(sed -n 's/^      JQ_SHA256: //p' <<<"$block") != "$sha" ]]; then
+      echo "$id: JQ_SHA256 differs from the first job's"
+    fi
+    # The install step, its version check, then the tests, in that order.
+    grep -xE '      - name: Install jq \$\{\{ env.JQ_VERSION \}\}|      - run: jq --version|      - run: tests/run (bats|toolkits).*' <<<"$block" \
+      | sed -E 's/.*Install jq.*/install/; s/.*jq --version/version/; s/.*tests\/run.*/tests/' | tr '\n' ' ' \
+      | grep -qx 'install version tests ' || echo "$id: does not install jq and print its version before its tests"
+  done
+  echo "checked ${checked[*]}"
+}
+
+@test "a Linux test job with no jq, a jq off the floor or another sha256 is named" {
+  local ci=$BATS_TEST_TMPDIR/ci.yml lock=$BATS_TEST_TMPDIR/tools.lock
+  echo '{"tools": [{"name": "jq", "min": "1.8.1"}]}' >"$lock"
+  cat >"$ci" <<'YAML'
+jobs:
+  one:
+    runs-on: ubuntu-24.04
+    env:
+      JQ_VERSION: 1.8.1
+      JQ_SHA256: 020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
+    steps:
+      - name: Install jq ${{ env.JQ_VERSION }}
+      - run: jq --version
+      - run: tests/run bats --shard "$SHARD/3"
+  two:
+    runs-on: ubuntu-24.04
+    env:
+      JQ_VERSION: 1.7.1
+      JQ_SHA256: 1111111111111111111111111111111111111111111111111111111111111111
+    steps:
+      - run: tests/run toolkits
+      - name: Install jq ${{ env.JQ_VERSION }}
+      - run: jq --version
+  three:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: tests/run shellcheck
+  four:
+    runs-on: macos-26
+    steps:
+      - run: tests/run bats --shard "$SHARD/3"
+YAML
+  run -0 ci_jq_problems "$ci" "$lock"
+  assert_equal "$output" $'two: JQ_VERSION is not tools.lock\'s jq floor 1.8.1\ntwo: JQ_SHA256 differs from the first job\'s\ntwo: does not install jq and print its version before its tests\nchecked one two'
+}
+
 @test "a zizmor ignore without an audit or a reason, or a zizmor config, is named" {
   local copy=$BATS_TEST_TMPDIR/copy
   git init -q "$copy"

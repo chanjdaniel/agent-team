@@ -4,7 +4,7 @@
 # the I/O (the registry, the fetches, the known-good probe, Discord, the state file and the notice
 # record); these are pure functions of the previous state, the notice record, the registry's
 # checks, this run's results, now, the lease record's taken_at and the limits.
-# jq 1.7. Includes notice, so a caller includes both, uptime first, on one line:
+# Includes notice, so a caller includes both, uptime first, on one line:
 #   jq -L bin/lib 'include "uptime"; include "notice"; ...'
 include "notice";
 #

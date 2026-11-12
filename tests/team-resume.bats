@@ -356,7 +356,7 @@ lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coo
 
 @test "a FAIL from the doctor stops the resume before the lease is touched; its lease and heartbeat lines do not" {
   hand_off
-  doctor_says '{"check": "tool jq", "verdict": "FAIL", "reason": "1.6, below the minimum 1.7.1", "fix": "pacman -S jq"}' \
+  doctor_says '{"check": "tool jq", "verdict": "FAIL", "reason": "1.6, below the minimum 1.8.1", "fix": "pacman -S jq"}' \
     '{"check": "lease", "verdict": "FAIL", "reason": "fenced since 2026-10-23T10:00:00Z", "fix": "team-resume here"}' \
     '{"check": "heartbeat", "verdict": "FAIL", "reason": "enabled, but this machine does not hold the lease", "fix": "team-timers disable"}'
   local before
@@ -364,7 +364,7 @@ lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coo
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_equal "$stderr" "team-resume: team-doctor reports what this machine lacks; fix each, then run team-resume again (nothing changed):
-  FAIL tool jq: 1.6, below the minimum 1.7.1; fix: pacman -S jq"
+  FAIL tool jq: 1.6, below the minimum 1.8.1; fix: pacman -S jq"
   assert_equal "$(laptop_state)" "$before"
   assert_equal "$(coordinator_launches)" ""
 
