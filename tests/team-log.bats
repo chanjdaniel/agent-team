@@ -86,11 +86,12 @@ open_t7() {
   opened T7 proj
 }
 
-# A launch of the task, as team-worker logs it: launched <task> <role> <session> [<brief>]
+# A launch of the task, as team-worker logs it, in project <project> (default proj):
+# launched <task> <role> <session> [<brief>] [<project>]
 launched() {
-  jq -cn --arg task "$1" --arg role "$2" --arg session "$3" --arg brief "${4:-}" \
-    '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session, worktree: "/w/proj",
-      toolkits: [], project: "proj", branch: "feat/\($task)-x", machine: "m"}
+  jq -cn --arg task "$1" --arg role "$2" --arg session "$3" --arg brief "${4:-}" --arg project "${5:-proj}" \
+    '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session, worktree: "/w/\($project)",
+      toolkits: [], project: $project, branch: "feat/\($task)-x", machine: "m"}
      + if $brief == "" then {} else {brief: $brief} end' >>"$TEAM_HOME/ledger.jsonl"
 }
 
@@ -2069,6 +2070,41 @@ assert_no_answer_logged() {
   # The kind's role wins, and a --from of another role is refused.
   refuses_message "team-log: the message is a builder's, but --from names T7-reviewer" \
     --from-message 'T7 DONE review-ready a1b2c3d' --from T7-reviewer
+}
+
+@test "--from-message takes a verdict on a project with the reviewer App on only with --from naming the task's latest reviewer session" {
+  plan_registry "$(plan_project agent-team)"
+  opened T7 agent-team
+  review_app_on
+  launched T7 builder b0000001 '' agent-team
+  launched T7 reviewer c0000001 '' agent-team
+  launched T7 reviewer c0000002 '' agent-team
+  local pass="T7 DONE pass $HEAD_A findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none"
+  local findings="T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none"
+  local needs="the reviewer App posts agent-review on agent-team, so its verdict is taken only from T7's latest reviewer session, T7-reviewer (c0000002)"
+  # No --from, or one naming the builder, an earlier reviewer or the role alone: refused, naming it.
+  refuses_message "team-log: $needs: run it again with --from c0000002 once the message came from that session" \
+    --from-message "$pass"
+  refuses_message "team-log: $needs: run it again with --from c0000002 once the message came from that session" \
+    --from-message "$findings" --sent-back 1
+  local from
+  for from in b0000001 c0000001 T7-reviewer x0000009; do
+    refuses_message "team-log: --from $from is not T7's latest reviewer session, T7-reviewer (c0000002): the reviewer App posts agent-review on agent-team, so its verdict is taken only from that session" \
+      --from-message "$pass" --from "$from"
+  done
+  # The latest reviewer's session: logged.
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"$HEAD_A\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0},\"before\":[],\"guarded\":[]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000002\"}" \
+    --from-message "$pass" --from c0000002
+  # A builder's message there takes no --from, as before.
+  logs_events '{"task":"T7","event":"done","role":"builder","session":"b0000001","report":"review-ready a1b2c3d"}' \
+    --from-message 'T7 DONE review-ready a1b2c3d'
+  # With the App off, a verdict takes no --from there either.
+  rm "$CODE_CHECKOUT/bin/lib/review-app"
+  launched T7 reviewer c0000003 '' agent-team
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"$HEAD_A\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0},\"before\":[],\"guarded\":[]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000003\"}" \
+    --from-message "$pass"
 }
 
 @test "--from-message refuses a kind whose role has no launch, and a sender none is without a report" {

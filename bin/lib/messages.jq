@@ -109,17 +109,34 @@ def message_paused_cause:
   (first(capture("^(?<w>\\w+)") | .w | ascii_downcase) // "") as $word
   | {stowed: "stow", held: "coordinator-hold", offline: "offline"}[$word] // "worker";
 
+# On a project whose agent-review the reviewer App posts ($app, its name, or "" for any other), a
+# verdict is taken only with --from naming the session id of the task's latest reviewer launch,
+# the session the coordinator saw the message come from: null when it does (or there is no
+# reviewer launch, which message_sender refuses), else a refusal naming that session. The name T<n>-reviewer is
+# refused there too, since it names a role and not the session.
+def message_app_sender($task; $events; $from; $app):
+  ($events | message_launches | map(select(.role == "reviewer")) | last) as $l
+  | if $app == "" or $l == null or $from == $l.session then null
+    else "\($task)'s latest reviewer session, \($l | message_launch_name($task))" as $latest
+      | "the reviewer App posts agent-review on \($app), so its verdict is taken only from" as $why
+      | if $from == "" then
+          message_refused("\($why) \($latest): run it again with --from \($l.session) once the message came from that session")
+        else message_refused("--from \($from) is not \($latest): \($why) that session") end end;
+
 # A reviewer's DONE pass or findings: the review and the reviewer's done, the review carrying
 # widening=, the numbers of a rereview's new findings in what the last fix added, and memory=, the
 # file of memories the reviewer added for the coordinator to file, when it names them.
+# Its sender is checked by message_app_sender first.
 # Its head is the head of the brief record its latest launch read ($records, by brief name), else
 # the message's own head for a pass on a head, else it is refused naming head=. Its verdict is the
 # message's word, raw:
 # team-log types the event and logs a pass whose sent_back names any finding as findings
 # (review_sent_back in ledger.jq), as it does a review logged by hand.
-def message_review($task; $events; $records; $from; $sent_back; $verdict; $rest):
+def message_review($task; $events; $records; $from; $sent_back; $app; $verdict; $rest):
   ($rest | capture("^(?<target>\\S+)(?:\\s+(?<pairs>.*))?$"; "s") // null) as $m
-  | if $m == null or ($m.pairs // "") == "" then message_refused("DONE \($verdict) needs findings= and guarded=")
+  | message_app_sender($task; $events; $from; $app) as $refused
+  | if $refused != null then $refused
+    elif $m == null or ($m.pairs // "") == "" then message_refused("DONE \($verdict) needs findings= and guarded=")
     elif $verdict == "pass" and ($m.target | (message_sha or message_pr_url) | not) then
       message_refused("DONE pass takes a PR url or a head of 7 to 40 hex digits, got '\($m.target)'")
     else ($m.pairs | message_pairs("DONE \($verdict)")) as $p
@@ -180,7 +197,7 @@ def message_from_ops($task; $events; $from):
 
 # A DONE: an ops session's when --from names one, else the forms above by their first word, else
 # the sender's done with its report, or an ops sender's with its length.
-def message_done($task; $events; $records; $from; $sent_back; $rest):
+def message_done($task; $events; $records; $from; $sent_back; $app; $rest):
   ($rest | capture("^(?<word>\\S+)(?:\\s+(?<more>.*))?$"; "s")) as $d
   | ($d.more // "") as $more
   | if message_from_ops($task; $events; $from) then
@@ -193,7 +210,7 @@ def message_done($task; $events; $records; $from; $sent_back; $rest):
       if ($more | test("^\\S+\\s+[0-9a-f]{7,40}\\s+conflicts:\\s*\\S"; "s")) then message_builder_done($task; $events; $from; $rest)
       else message_refused("DONE merged takes 'DONE merged <base> <sha> conflicts: <files or none>', got 'DONE \($rest)'") end
     elif $d.word == "pass" or $d.word == "findings" then
-      message_review($task; $events; $records; $from; $sent_back; $d.word; $more)
+      message_review($task; $events; $records; $from; $sent_back; $app; $d.word; $more)
     elif $d.word == "gate" then
       ($more | message_pairs("DONE gate")) as $p
       | if $p.problems then $p else {events: [message_event("gate-run"; $p.pairs)]} end
@@ -203,9 +220,11 @@ def message_done($task; $events; $records; $from; $sent_back; $rest):
 
 # The message (the input) of $task read into {events: [{event, fields}...]}, or {problems}. $events
 # are the task's events, $records its brief records by name (brief-review: {template, project,
-# values}), $from the --from session or "", $sent_back the --sent-back list or "". A pr event's
-# head is left for the caller to read from GitHub: it carries github: <url> and no head.
-def parse_message($task; $events; $records; $from; $sent_back):
+# values}), $from the --from session or "", $sent_back the --sent-back list or "", $app the
+# project whose agent-review the reviewer App posts, the project of the task's latest reviewer
+# launch, or "" (message_app_sender). A pr event's head is left for the caller to read from
+# GitHub: it carries github: <url> and no head.
+def parse_message($task; $events; $records; $from; $sent_back; $app):
   gsub("^\\s+|\\s+$"; "") as $text
   | ($text | capture("^(?<task>T[0-9]+)\\s+(?<kind>\\S+)(?:\\s+(?<rest>.*))?$"; "s") // null) as $m
   | ($m.rest // "") as $rest
@@ -231,7 +250,7 @@ def parse_message($task; $events; $records; $from; $sent_back):
       | if $pr == null or ($pr.url | message_pr_url | not) then
           message_refused("PR takes 'PR <full url>', optionally followed by 'merged <base> conflicts: <files or none>', got 'PR \($rest)'")
         else {events: [message_event("pr"; [["url", $pr.url]]) + {github: $pr.url}]} end
-    elif $m.kind == "DONE" then message_done($task; $events; $records; $from; $sent_back; $rest)
+    elif $m.kind == "DONE" then message_done($task; $events; $records; $from; $sent_back; $app; $rest)
     elif $m.kind == "FAILED" then {events: [message_event("failed"; [["reason", $rest]])]}
     elif $m.kind == "INJECTION" then
       ($rest | capture("^(?<source>\\S+)\\s+(?<text>\\S.*)$"; "s") // null) as $i

@@ -84,7 +84,8 @@ green_pr() {
 
 # gh answers from $GH_DIR, PR #5's head origin's tip of its branch; a read of the head alone shows
 # the PR's first head while $GH_DIR/lag counts down, as GitHub may for a moment after a push. A
-# status POST is kept in $GH_DIR/statuses, or refused once $GH_DIR/refuse exists.
+# status POST is kept in $GH_DIR/statuses, or refused once $GH_DIR/refuse exists. The head's
+# agent-review check runs and commit statuses, read only with the reviewer App on, are none.
 stub_gh() {
   echo "$head" >"$GH_DIR/first-head"
   stub_script gh <<'EOF'
@@ -107,6 +108,9 @@ case "$*" in
     if [[ -e $GH_DIR/refuse ]]; then echo "HTTP 422: Unprocessable Entity" >&2; exit 1; fi
     jq -cn '$ARGS.positional' --args -- "$@" >>"$GH_DIR/statuses"
     echo '{}' ;;
+  "api repos/owner/proj/commits/"*"/check-runs?check_name=agent-review&filter=latest&per_page=100")
+    echo '{"total_count": 0, "check_runs": []}' ;;
+  "api repos/owner/proj/commits/"*"/status") echo '{"state": "pending", "statuses": []}' ;;
   *) echo "unplanned gh call: $*" >&2; exit 1 ;;
 esac
 EOF
@@ -456,6 +460,50 @@ EOF
   AGENT_TEAM_ROLE=coordinator AGENT_TEAM_TASK='' run_bin -0 --separate-stderr team-catch-up T14
   assert_contains "$stderr" "agent-review success on owner/proj@"
   [[ -s $GH_DIR/statuses ]]
+}
+
+# proj is the team's own project (its repo the code checkout's origin), with the reviewer App on
+# and team-review-check the stub, which keeps how many caught-up events the ledger held when called.
+own_app() {
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  review_app_on
+  stub_script team-review-check <<'SH'
+grep -c '"event":"caught-up"' "$TEAM_HOME/ledger.jsonl" >>"$STUB_FIXTURES/caught-up-at-post"
+echo 4243
+SH
+}
+
+@test "with the reviewer App on, a clean catch-up logs caught-up, then posts the App's check on the merge, setting no status" {
+  local base merge description
+  own_app
+  base=$(base_moves)
+  run_bin -0 --separate-stderr team-catch-up T14
+  merge=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
+  [[ $merge != "$head" ]]
+  description="clean merge of dev ${base:0:7} onto ${head:0:7}, reviewed"
+  assert_equal "$(stub_calls team-review-check)" "$(jq -cn --arg url "$url" --arg m "$merge" --arg d "$description" '[$url, $m, "success", $d]')"
+  assert_equal "$(cat "$STUB_FIXTURES/caught-up-at-post")" 1
+  assert_contains "$stderr" "team-catch-up: posted agent-review success on ${merge:0:7} as the reviewer App's check run 4243"
+  [[ ! -e $GH_DIR/statuses ]]
+  assert_equal "${lines[-2]}" "$merge"
+  assert_equal "$(jq -c 'select(.event == "caught-up") | .head' "$TEAM_HOME/ledger.jsonl")" "\"$merge\""
+
+  # A check that cannot be posted is said with its command; the merge is pushed and logged, exit 1.
+  stub_script team-review-check <<'SH'
+echo "team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)" >&2
+exit 1
+SH
+  review "$merge" pass
+  base=$(base_moves src/third.py)
+  run_bin -1 --separate-stderr team-catch-up T14
+  local next
+  next=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
+  [[ $next != "$merge" ]]
+  assert_contains "$stderr" "team-catch-up: pushed ${next:0:7} to $branch, but agent-review could not be set on it: team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)"
+  assert_contains "$stderr" "run: team-review-check $url $next success 'clean merge of dev ${base:0:7} onto ${merge:0:7}, reviewed'"
+  assert_equal "$(jq -c 'select(.event == "caught-up")' "$TEAM_HOME/ledger.jsonl" | wc -l)" 2
+  [[ ! -e $GH_DIR/statuses ]]
 }
 
 @test "a check the base's protection pins to an App is required as its contexts are, so one missing on the head is refused" {

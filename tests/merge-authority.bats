@@ -14,12 +14,14 @@ load helpers/merge
 
 counts="findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0"
 
-# T14's builder and reviewer launches in its worktree, so team-next takes the reviewer's verdict.
+# T14's builder and reviewer launches in its worktree, in the project it was opened in, so
+# team-next takes the reviewer's verdict.
 launches() {
-  local wt=$BATS_TEST_TMPDIR/wt
-  event T14 launch "{role: \"builder\", session: \"b0000001\", worktree: \"$wt\", toolkits: [], project: \"proj\",
+  local wt=$BATS_TEST_TMPDIR/wt project
+  project=$(jq -r 'select(.task == "T14" and .event == "opened") | .project' "$TEAM_HOME/ledger.jsonl" | tail -n 1)
+  event T14 launch "{role: \"builder\", session: \"b0000001\", worktree: \"$wt\", toolkits: [], project: \"$project\",
     branch: \"feat/T14-tooling\"}"
-  event T14 launch "{role: \"reviewer\", session: \"r0000001\", worktree: \"$wt\", toolkits: [], project: \"proj\",
+  event T14 launch "{role: \"reviewer\", session: \"r0000001\", worktree: \"$wt\", toolkits: [], project: \"$project\",
     branch: \"feat/T14-tooling\"}"
 }
 
@@ -37,8 +39,9 @@ said() {
 }
 
 # Feed the case to every reader and check what each says: readers <holds> <ledger reasons as a JSON
-# list> <merge>, team-next's line naming agent-review as $REVIEW_STATE (default success), <merge>
-# being "default" or "head" (team-merge merges on that word) or "refused" (it refuses, naming each
+# list> <merge>, team-next's line naming agent-review success (with the reviewer App on, the check
+# team-next posts, team-review-check the stub, whatever GitHub's stub then shows), <merge> being
+# "default" or "head" (team-merge merges on that word) or "refused" (it refuses, naming each
 # ledger reason, then any further reason given after it): readers <holds> <reasons> <merge>
 # [<team-merge's reason>...]
 readers() {
@@ -46,12 +49,12 @@ readers() {
   stub_reply claude '[]'
 
   # team-next takes the reviewer's pass and says what to do with it.
-  run_bin -0 --separate-stderr team-next T14 -- "T14 DONE pass $head $counts before=none guarded=none"
+  run_bin -0 --separate-stderr team-next T14 --from r0000001 -- "T14 DONE pass $head $counts before=none guarded=none"
   if [[ $holds == true ]]; then
     assert_equal "${lines[-1]}" \
-      "merge on the default word: run team-merge T14 for https://github.com/owner/proj/pull/5 at $head, agent-review ${REVIEW_STATE:-success}, checks green"
+      "merge on the default word: run team-merge T14 for https://github.com/owner/proj/pull/5 at $head, agent-review success, checks green"
   else
-    assert_equal "${lines[-1]#merge ask: }" "https://github.com/owner/proj/pull/5 at $head, agent-review ${REVIEW_STATE:-success}, checks green"
+    assert_equal "${lines[-1]#merge ask: }" "https://github.com/owner/proj/pull/5 at $head, agent-review success, checks green"
   fi
 
   # team-sweep sends the coordinator to the merge only on a default word that holds.
@@ -187,6 +190,9 @@ readers() {
   launches
   readers true '[]' default
   assert_equal "$(merged_events | jq -r .check_run)" 4242
+  # team-next posted the App's check on the reviewed head, from the reviewer's session.
+  assert_equal "$(stub_calls team-review-check)" \
+    "$(jq -cn --arg h "$head" '["https://github.com/owner/proj/pull/5", $h, "success", "T14'"'"'s review of \($h[:8]) passed"]')"
 }
 
 @test "the coordinator's or a legacy approval on the team's own project, with the reviewer App on: no reader says the default word holds" {
@@ -218,5 +224,5 @@ readers() {
   default_word Daniel
   event T14 answered '{id: "plan-T14", answer: "yes", discord_message: "1562661774950400000"}'
   launches
-  REVIEW_STATE=missing readers true '[]' refused "the reviewer App's agent-review check is missing on the head ${head:0:7}"
+  readers true '[]' refused "the reviewer App's agent-review check is missing on the head ${head:0:7}"
 }

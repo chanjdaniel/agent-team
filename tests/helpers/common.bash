@@ -281,6 +281,24 @@ with_lifecycle_from() {
   mv -f "$table.new" "$table"
 }
 
+# review_app_on: the reviewer App on for the scripts run_bin runs: CODE_CHECKOUT (a copy of bin/
+# made here when the test made none) gets bin/lib/review-app, id 123456 and slug team-reviewer,
+# and its bin/team-review-check is the logging stub (tests/helpers/stub), its calls in
+# $STUB_CALLS/team-review-check.log, printing check run 4242 until the test gives it another
+# fixture (stub_reply or stub_script team-review-check).
+review_app_on() {
+  if [[ -z ${CODE_CHECKOUT:-} ]]; then
+    export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+  fi
+  rm -f "$CODE_CHECKOUT/bin/lib/review-app" "$CODE_CHECKOUT/bin/team-review-check"
+  printf 'id=123456\nslug=team-reviewer\n' >"$CODE_CHECKOUT/bin/lib/review-app"
+  shared_make stub "$REPO_ROOT/tests/helpers/stub"
+  ln "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-review-check"
+  stub_reply team-review-check 4242
+}
+
 # plan_md T<n> [<text>]: write the task's plan, tasks/T<n>/plan.md in the sandbox's team home,
 # which team-log takes a plan-approved of only when it exists.
 plan_md() {

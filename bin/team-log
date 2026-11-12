@@ -129,7 +129,10 @@
 # it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's
 # launch (its session name T<n>-<role>, or its session id), else that of the only latest launch of a
 # role with no report since (a done, review, ticket-done or pr that ends it); two are refused,
-# naming both. The session is that role's latest launch.
+# naming both. The session is that role's latest launch. A DONE pass or DONE findings on a project
+# whose agent-review the reviewer App posts (the project of the task's latest reviewer launch, when
+# own_bar in bin/lib/team.sh gives it the App) is refused, logging nothing, unless --from is that
+# launch's session id, the refusal naming it; the name T<n>-reviewer is refused there too.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
@@ -638,10 +641,21 @@ if ((${#files[@]})); then
 fi
 
 task_events_once
+# A reviewer's verdict on a project whose agent-review the reviewer App posts, the project of the
+# task's latest reviewer launch when own_bar gives it the App, is taken only from that launch's
+# session (message_app_sender in bin/lib/messages.jq).
+app=''
+if [[ $message =~ ^[[:space:]]*T[0-9]+[[:space:]]+DONE[[:space:]]+(pass|findings)([[:space:]]|$) ]]; then
+  reviewed_in=$(jq -r 'map(select(.event == "launch" and .role == "reviewer")) | last | .project // empty' <<<"$TASK_EVENTS")
+  if [[ -n $reviewed_in ]]; then
+    bar=$(own_bar "$reviewed_in") || exit 1
+    if [[ $(jq -r '.app? // empty' <<<"$bar") ]]; then app=$reviewed_in; fi
+  fi
+fi
 parsed=$(jq -L "$TEAM_LIB" -c --arg task "$task" --arg message "$message" --arg from "$from" \
-  --arg sent_back "$sent_back" --arg relay "$relay" --argjson records "$brief_records" \
+  --arg sent_back "$sent_back" --arg relay "$relay" --arg app "$app" --argjson records "$brief_records" \
   'include "messages"; include "ledger"; . as $events
-    | $message | parse_message($task; $events; $records; $from; $sent_back) | message_relay($task; $message; $relay)' <<<"$TASK_EVENTS")
+    | $message | parse_message($task; $events; $records; $from; $sent_back; $app) | message_relay($task; $message; $relay)' <<<"$TASK_EVENTS")
 problem=$(jq -r '.problems // empty | join("; ")' <<<"$parsed")
 [[ -z $problem ]] || die "$problem"
 

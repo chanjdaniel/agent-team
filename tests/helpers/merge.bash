@@ -471,16 +471,15 @@ both_words() {
     + if \"${2:-}\" == \"\" then {} else {head: \"${2:-}\"} end"
 }
 
-# The reviewer App on, App 123456 (team-reviewer): a copy of bin/ holding bin/lib/review-app, run
-# in place of this checkout's (CODE_CHECKOUT), with the App's successful agent-review check run
-# 4242 on the head, no commit status of that name, and dev's protection pinning agent-review to
-# the App, enforced for everyone: app_on
+# The reviewer App on, App 123456 (team-reviewer): a copy of bin/ holding bin/lib/review-app and
+# the stub team-review-check (review_app_on), run in place of this checkout's (CODE_CHECKOUT), with
+# the App's successful agent-review check run 4242 on the head, no commit status of that name, and
+# dev's protection pinning agent-review to the App, enforced for everyone: app_on
 app_on() {
   export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
   mkdir -p "$CODE_CHECKOUT"
   copy_bin "$CODE_CHECKOUT/bin"
-  rm -f "$CODE_CHECKOUT/bin/lib/review-app"
-  printf 'id=123456\nslug=team-reviewer\n' >"$CODE_CHECKOUT/bin/lib/review-app"
+  review_app_on
   app_runs "$(app_run 4242 success)"
   echo '{"state": "pending", "statuses": []}' >"$gh_dir/status.json"
   pinned 123456 everyone

@@ -26,12 +26,15 @@
 # <branch>", touching no worktree, index or branch, and pushed to origin's branch, never forced
 # and through the checkout's hooks; a push origin refuses because the branch moved meanwhile is
 # exit 1, nothing logged: run it again.
-# Then agent-review is set to success on the merge through team-review-status, its description
-# "clean merge of <base> <short base> onto <short head>, reviewed", once GitHub shows the merge as
-# the PR's head (waited on for up to TEAM_CATCH_UP_WAIT seconds, default 30), and caught-up is
-# logged with url (the PR's), from (the reviewed head, the same through each catch-up of it), head
-# (the merge) and base (the base's commit merged), all full shas. A status that cannot be set is
-# said on stderr with the command to set it; the merge is pushed and logged all the same, exit 1.
+# Then, once GitHub shows the merge as the PR's head (waited on for up to TEAM_CATCH_UP_WAIT
+# seconds, default 30), caught-up is logged with url (the PR's), from (the reviewed head, the same
+# through each catch-up of it), head (the merge) and base (the base's commit merged), all full
+# shas, and agent-review is set to success on the merge, its description "clean merge of <base>
+# <short base> onto <short head>, reviewed": through team-review-check, as the reviewer App's
+# check run, on a project whose agent-review the App posts (own_bar in bin/lib/team.sh), which
+# reads the review the merge stands on through that caught-up, else through team-review-status.
+# A status or check that cannot be set is said on stderr with the command to set it; the merge is
+# pushed and logged all the same, exit 1.
 # Prints what it merged, the merge's full sha, and last the next step: wait for the checks on the
 # merge, then ask Daniel to merge at the reviewed head, or run team-merge when team-state says
 # the default word covers it.
@@ -87,6 +90,10 @@ url=${url%/}
 number=$(jq -r .number <<<"$facts") repo=$(jq -r .repo <<<"$facts") project=$(jq -r '.project // empty' <<<"$facts")
 [[ -n $project ]] || die "PR #$number is in $repo, which is not a project in projects.toml, so it has no base"
 base=$(team_project "$project" base)
+# What sets agent-review on the merge: the reviewer App's check where it posts agent-review.
+poster=team-review-status
+bar=$(own_bar "$project") || exit 1
+if [[ $(jq -r '.app? // empty' <<<"$bar") ]]; then poster=team-review-check; fi
 jq -e 'has("error") | not' <<<"$facts" >/dev/null || die "GitHub cannot be read: $(jq -r .error <<<"$facts")"
 github "$scratch" branch api "repos/$repo/branches/$base" || die "GitHub cannot be read: $(<"$scratch/error")"
 head=$(jq -r .head <<<"$facts") branch=$(jq -r .headRefName "$scratch/view")
@@ -161,7 +168,9 @@ if ! git -C "$primary" push -q origin "$merge:refs/heads/$branch" 2>"$scratch/pu
 fi
 trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-catch-up: ${merge:0:7} is pushed to $branch, but its caught-up event was not logged" >&2' EXIT
 
-# agent-review on the merge, once GitHub shows it as the PR's head.
+# agent-review on the merge, once GitHub shows it as the PR's head and caught-up is logged, which
+# the App's check needs (team-review-check reads the review the merge stands on through it): the
+# reviewer App's check run where the App posts agent-review (own_bar), else the commit status.
 description="clean merge of $base ${onto:0:7} onto ${head:0:7}, reviewed"
 unset_status=''
 shown=$head
@@ -170,23 +179,32 @@ for ((waited = 0; ; waited++)); do
   if [[ $shown == "$merge" ]] || ((waited >= wait_for)); then break; fi
   sleep 1
 done
+
+ledger_append "$(jq -cn --arg task "$task" --arg url "$url" --arg from "$reviewed" --arg merge "$merge" --arg base "$onto" \
+  '{ts: (now | todate), task: $task, event: "caught-up", url: $url, from: $from, head: $merge, base: $base}')"
+trap 'rm -rf "$scratch"' EXIT
+
 if [[ $shown != "$merge" ]]; then
   unset_status="GitHub still shows ${shown:0:7} as the head of $url after ${wait_for}s"
   [[ -n $shown ]] || unset_status="GitHub's head of $url cannot be read after ${wait_for}s"
+elif [[ $poster == team-review-check ]]; then
+  if run=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-review-check" "$url" "$merge" success "$description" \
+    2>"$scratch/status-error"); then
+    echo "team-catch-up: posted agent-review success on ${merge:0:7} as the reviewer App's check run $run" >&2
+  else
+    unset_status=$(grep . "$scratch/status-error" | tail -n 1)
+    unset_status=${unset_status:-team-review-check failed}
+  fi
 elif ! TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-review-status" "$url" "$merge" success "$description" \
   >&2 2>"$scratch/status-error"; then
   unset_status=$(grep . "$scratch/status-error" | tail -n 1)
   unset_status=${unset_status:-team-review-status failed}
 fi
 
-ledger_append "$(jq -cn --arg task "$task" --arg url "$url" --arg from "$reviewed" --arg merge "$merge" --arg base "$onto" \
-  '{ts: (now | todate), task: $task, event: "caught-up", url: $url, from: $from, head: $merge, base: $base}')"
-trap 'rm -rf "$scratch"' EXIT
-
 if [[ -n $unset_status ]]; then
   {
     echo "team-catch-up: pushed ${merge:0:7} to $branch, but agent-review could not be set on it: $unset_status"
-    echo "  run: team-review-status $url $merge success '$description'"
+    echo "  run: $poster $url $merge success '$description'"
   } >&2
   exit 1
 fi
