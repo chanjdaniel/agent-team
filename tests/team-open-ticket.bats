@@ -186,9 +186,11 @@ open_task() {
   run_bin -2 team-open --task T1 --ticket 01 home
   assert_contains "$output" "usage: team-open --task T<n> --ticket <NN>"
   run_bin -2 team-open --task T1 --ticket 01 --add home feat two
-  assert_contains "$output" "--ticket goes only with --task, not with --add, --resume or --story"
-  run_bin -2 team-open --task T1 --ticket 01 --resume home
-  assert_contains "$output" "--ticket goes only with --task, not with --add, --resume or --story"
+  assert_contains "$output" "--ticket goes only with --task or --resume, not with --add or --story"
+  # With --resume it re-makes the ticket's worktree (tests/team-open-resume.bats), which needs
+  # this machine's name.
+  run_bin -1 team-open --task T1 --ticket 01 --resume home
+  assert_contains "$output" "this machine has no team name"
 
   run_bin -1 team-open --task T7 --ticket 01
   assert_contains "$output" "T7 is not open: the ledger has no opened event for it"

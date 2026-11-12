@@ -789,3 +789,55 @@ refusal() {
   builder_launch b1
   assert_equal "$(fold_read '[crashed("m"), crashed("n")]')" '[true,true]'
 }
+
+@test "T287's ticket parks: a ticket builder's park ends only at a launch of its ticket, and parks the task only while no other ticket builds" {
+  opened feature
+  on plan-approved '{by: "Daniel", parallel: "2"}'
+  on worktree-added '{project: "proj", branch: "feat/T1-tooling--02", worktree: "/w/2", ticket: "02"}'
+  on launch '{role: "builder", session: "b2", worktree: "/w/2", toolkits: [], brief: "brief-build-02", ticket: "02"}'
+  on worktree-added '{project: "proj", branch: "feat/T1-tooling--03", worktree: "/w/3", ticket: "03"}'
+  on launch '{role: "builder", session: "b3", worktree: "/w/3", toolkits: [], brief: "brief-build-03", ticket: "03"}'
+  # T1-builder-03's PAUSED names its session, so it parks ticket 03's builder.
+  on paused '{reason: "waiting on the gate", cause: "worker", role: "builder", session: "b3"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map([.id, .ticket])')" '[["paused-1","03"]]'
+  # Ticket 02 still builds, so the task is not parked; a launch of ticket 02 ends nothing of 03's.
+  assert_equal "$(fold_read parked)" false
+  on launch '{role: "builder", session: "b2b", worktree: "/w/2", toolkits: [], brief: "brief-resume-build-02", ticket: "02"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map(.id)')" '["paused-1"]'
+  # With ticket 02 done, the only ticket building is parked, and so is the task.
+  on ticket-done '{ticket: "02", commits: ["abc1234"], head: "abc1234"}'
+  assert_equal "$(fold_read parked)" true
+  # A launch of ticket 03 ends it.
+  on launch '{role: "builder", session: "b3b", worktree: "/w/3", toolkits: [], brief: "brief-resume-build-03", ticket: "03"}'
+  assert_equal "$(fold_read '[parked, lifecycle.parks]')" '[false,[]]'
+
+  # team-worker's room refusal of brief-build-04 while ticket 04's worktree is open is ticket 04's:
+  # ticket 03's launch leaves it, ticket 04's ends it.
+  on worktree-added '{project: "proj", branch: "feat/T1-tooling--04", worktree: "/w/4", ticket: "04"}'
+  on paused '{reason: "no room for session:builder at minor (30%)", cause: "room", role: "builder", brief: "brief-build-04"}'
+  assert_equal "$(fold_read '[(lifecycle.parks | map([.id, .ticket])), refused_launches.roles, parked]')" '[[["paused-2","04"]],["builder"],false]'
+  on launch '{role: "builder", session: "b3c", worktree: "/w/3", toolkits: [], brief: "brief-resume-build-03", ticket: "03"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map(.id)')" '["paused-2"]'
+  on launch '{role: "builder", session: "b4", worktree: "/w/4", toolkits: [], brief: "brief-build-04", ticket: "04"}'
+  assert_equal "$(fold_read '[lifecycle.parks, refused_launches]')" '[[],null]'
+
+  # A returned ticket worktree takes its ticket out: a room refusal of its brief is the task's, as
+  # before T287, and any builder's launch ends it; so is a park naming a session no ticket launch had.
+  on worktree-returned '{project: "proj", worktree: "/w/4", ticket: "04"}'
+  on paused '{reason: "no room for session:builder", cause: "room", role: "builder", brief: "brief-build-04"}'
+  on blocked '{reason: "the push was refused", cause: "worker", role: "builder", session: "t1"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map([.id, .ticket])')" '[["paused-3",null],["blocked-1",null]]'
+  assert_equal "$(fold_read parked)" true
+  on launch '{role: "builder", session: "b3d", worktree: "/w/3", toolkits: [], brief: "brief-resume-build-03", ticket: "03"}'
+  assert_equal "$(fold_read lifecycle.parks)" '[]'
+  # Old shapes keep T279's rules: a cap-1 builder's room refusal of brief-build-05 in the task
+  # worktree ends at the next builder launch, whatever its brief.
+  events=()
+  opened feature
+  on plan-approved '{by: "Daniel"}'
+  builder_launch b1
+  on paused '{reason: "no room for session:builder", cause: "room", role: "builder", brief: "brief-build-05"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map(.ticket)')" '[null]'
+  on launch '{role: "builder", session: "b6", worktree: "/w/1", toolkits: [], brief: "brief-build-06"}'
+  assert_equal "$(fold_read lifecycle.parks)" '[]'
+}

@@ -291,13 +291,13 @@
     },
     "rehome-failed": {
       "writer": "team-resume",
-      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project with the same ticket (none for the task's own worktree); ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
       "required": {"project": "string", "branch": "string", "machine": "string", "reason": "string"},
       "optional": {"ticket": "string"}
     },
     "rehomed": {
       "writer": "team-open",
-      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project with the same ticket stands; made anywhere else, the worktree-moved clears it; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
       "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"},
       "optional": {"ticket": "string"}
     },

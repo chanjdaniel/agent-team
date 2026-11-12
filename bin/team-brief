@@ -39,7 +39,9 @@
 # is empty without --ticket; with it, a newline and three lines telling a ticket worktree's
 # builder that its branch is local and never pushed, where the task branch is, to merge the task
 # branch's tip into its branch and run its checks again on that head before its DONE, listing it
-# last, and to do so again when the coordinator answers that the task branch moved. tickets,
+# last, and to do so again when the coordinator answers that the task branch moved; builder-ticket
+# places it after its ui, and resume and resume-crash after their worktree line, so a ticket
+# builder relaunched after a stow or a crash (team-next --fill) has it too. tickets,
 # what builder-deliver delivers, is "every ticket" unless set (team-next sets a phase's tickets for that phase's deliverer);
 # paths under $HOME are written ~/..., except team_bin, this checkout's bin/, always absolute
 # because the workers' allow rules name the scripts in it by their full path. ui is empty unless

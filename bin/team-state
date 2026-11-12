@@ -5,7 +5,8 @@
 # Prints one line: the task, its project and path, its phase, its live workers, its progress and
 # its PR, as
 #   T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7, graph stale | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
-# each live worker with its status, its state unless working or unknown, its context in thousands
+# each live worker by its session's name (T<n>-<role>, or T<n>-builder-NN for a builder in ticket
+# NN's worktree) with its status, its state unless working or unknown, its context in thousands
 # and the brief its launch logged, less "brief-"; then "tickets <done>/<total>" ("tickets <done>
 # done" while the total is unknown or 0, nothing with neither), with ", graph fresh" or ", graph
 # stale" when the tickets have a graph, "review <count> <verdict>" with
@@ -13,9 +14,10 @@
 # and in the PR part "<n> behind <base>" when the base has commits the head lacks.
 # With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
 # worktrees (returned or not, ticket the number of a ticket worktree, else null), thread,
-# workers (every launch, live when claude agents --json lists its session, with that session's
-# status, state and context, the tokens its latest main-conversation reply read, from its
-# transcript, or null, and the brief its launch logged, or null), last_event, pending_asks,
+# workers (every launch, with its session's name and its ticket, the number of a builder's in a
+# ticket worktree, else null, live when claude agents --json lists its session, with that
+# session's status, state and context, the tokens its latest main-conversation reply read, from
+# its transcript, or null, and the brief its launch logged, or null), last_event, pending_asks,
 # waiting, parks, stowing, walk, rehome_failures, checks_wait, pr, and progress;
 # pending_asks are the asks no later event settles, an answered or a
 # merge-preapproved with the ask's id or a merge-approved whose url its text names.
@@ -97,10 +99,11 @@
 # on that port was just reseeded (team-ui --reseeded), and null while it is off or the task is
 # closed; the text form says "walk on since <ts>" while it is on, then " in its interview thread"
 # for such a walk, before the parks, and nothing of it while it is off.
-# rehome_failures are the worktrees team-resume could not re-home and nothing has made since: each
-# project's latest rehome-failed, as {project, branch, machine, reason, since}, until a later
-# opened, worktree-added, worktree-moved, rehomed or worktree-returned in that project; the text
-# form says "not re-homed: <project> on <machine>: <reason>", before the parks.
+# rehome_failures are the worktrees team-resume could not re-home and nothing has made since: the
+# latest rehome-failed of each project and ticket, as {project, branch, machine, reason, since},
+# with ticket for a ticket worktree's, until a later opened, worktree-added, worktree-moved,
+# rehomed or worktree-returned of that project and ticket; the text form says "not re-homed:
+# <project> on <machine>: <reason>" (<project>--NN for a ticket worktree), before the parks.
 # checks_wait is what the task's latest pass waits on, as checks_wait in bin/lib/ledger.jq reads it
 # from the ledger alone: null unless the latest review is a pass on a PR not merged, else {url,
 # reviewed, head, since, state, reruns}, state the outcome of the latest ci team-next T<n> --ci
