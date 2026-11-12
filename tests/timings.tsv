@@ -57,7 +57,7 @@ tests/team-lease.bats	34	51
 tests/team-level.bats	87	123
 tests/team-load-check.bats	35	91
 tests/team-log.bats	66	104
-tests/team-merge-standing.bats	66	145
+tests/team-merge-default.bats	66	145
 tests/team-merge.bats	249	416
 tests/team-next.bats	230	342
 tests/team-open-add.bats	15	41

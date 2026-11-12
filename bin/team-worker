@@ -25,10 +25,13 @@
 # discord_message=<their message id>"), a task with an unanswered ask no --past-ask and no earlier
 # launch's past_ask names ("T<n> has an unanswered ask, <id>, since <ts>; launch past it with
 # --past-ask <id>"), and a --past-ask naming none ("--past-ask <id> names no unanswered ask of
-# T<n>"); and a builder or reviewer of a feature task still planning ("T<n> is a feature task with
-# no approved plan (no plan-approved), so it takes no <role> yet"). It also refuses a task with no
-# Discord thread, a worktree not one of the task's open worktrees, and a launch on a machine that
-# does not hold the lease (`team-lease check`, confirmed against origin) or cannot reach GitHub.
+# T<n>"); a builder or reviewer of a task on any path whose plan approval is withdrawn ("T<n>'s
+# plan approval was withdrawn at <ts> in Discord message <id>, so it takes no <role> until Daniel
+# approves the plan again (plan-approved by=Daniel)"); and a builder or reviewer of a feature task
+# still planning ("T<n> is a feature task with no approved plan (no plan-approved), so it takes no
+# <role> yet"). It also refuses a task with no Discord thread, a worktree not one of the task's open
+# worktrees, and a launch on a machine that does not hold the lease (`team-lease check`, confirmed
+# against origin) or cannot reach GitHub.
 # Prints the background session id and logs the launch to ledger.jsonl, with the worktree's
 # project and branch, the machine's team name
 # (~/.config/agent-team/machine), and for ops the request's link and message id. T0, the load check, needs no thread and
@@ -40,7 +43,10 @@
 # trailing punctuation dropped, ~/, $HOME/ and ${HOME}/ expanded, and a relative one taken from the
 # worktree; an ops prompt, the brief's text, is checked the same way. When the prompt names one
 # directly under the task's tasks/T<n>/, the launch logs it as brief, its file name without .md
-# (brief-rereview-3); a brief of another task's directory, or none, logs no brief.
+# (brief-rereview-3); a brief of another task's directory, or none, logs no brief. With it, the
+# launch logs template, the template team-brief rendered the brief from (verify for a verify on
+# brief-rereview-3), read from the brief's record beside it (brief-rereview-3.json); a brief with
+# no record, or a record naming none, logs no template, and one that cannot be read is a warning.
 # Then, after those refusals and the stop of the task's finished sessions below, the session must
 # fit the level's memory budget beside what the team's work reserves: `team-capacity admit --kind
 # session:<role> --task <task>`, with --freed for each session it stopped or saw end while it
@@ -262,6 +268,15 @@ while IFS= read -r word; do
 done < <(tr -s '[:space:]' '\n' <<<"$prompt")
 [[ -n $named || ${prompt,,} != *"your brief"* ]] ||
   die "the prompt says 'your brief' but names no brief*.md file"
+
+# The template the launch's brief was rendered from, as team-brief's record beside it names it.
+template=''
+record=$TEAM_HOME/tasks/$task/$brief.json
+if [[ -n $brief && -e $record ]] &&
+  ! template=$(jq -r 'if type == "object" then .template | strings else error("no object") end' "$record" 2>/dev/null); then
+  template=''
+  echo "team-worker: warning: $record is no brief record team-brief writes, so the launch logs no template" >&2
+fi
 
 # T0 is the load check, not a task: it has no ledger entry and stays out of the ledger.
 worktree_event='' project=''
@@ -756,7 +771,7 @@ fi
 
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --argjson at "${worktree_event:-null}" --argjson past "$(jq -cn '$ARGS.positional' --args ${past[@]+"${past[@]}"})" --args '{ts: (now | todate), task: $task,
+    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --arg template "$template" --argjson at "${worktree_event:-null}" --argjson past "$(jq -cn '$ARGS.positional' --args ${past[@]+"${past[@]}"})" --args '{ts: (now | todate), task: $task,
       event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
       + ($at // {} | {project, branch} | with_entries(select(.value != null)))
       + {machine: $machine}
@@ -765,6 +780,7 @@ if [[ $task != T0 ]]; then
       + (if $request == "" then {} else {request: $request} end)
       + (if $discord_message == "" then {} else {discord_message: $discord_message} end)
       + (if $brief == "" then {} else {brief: $brief} end)
+      + (if $template == "" then {} else {template: $template} end)
       + (if $past == [] then {} else {past_ask: $past} end)' "${toolkits[@]}")"
   # Logged, the admission is its session's (paired by its id), and nothing releases it now.
   admission=''

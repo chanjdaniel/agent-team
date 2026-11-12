@@ -288,6 +288,22 @@ launched T7-builder c0000001"
   refused "T7 is closed" T7 -- "T7 DONE 01 $sha done"
 }
 
+@test "refused with nothing changed while the plan approval is withdrawn, naming the withdrawal, until the plan is approved again" {
+  event plan-approval-withdrawn '{discord_message: "1563000000000000047"}'
+  local named="T7's plan approval was withdrawn at 2026-11-01T10:00:00Z in Discord message 1563000000000000047"
+  refused "team-next: $named, so no ticket hand-off; approve the plan again first (step 3 of the manual)" T7 -- "T7 DONE 01 $sha done"
+  refused "team-next: $named, so no review hand-off; approve the plan again first (step 3 of the manual)" T7 -- "T7 DONE review-ready $sha"
+  # A message that launches no one meets the same refusal once it would hand off.
+  launched r0000001 brief-review '[]' reviewer
+  refused "team-next: $named, so no verdict hand-off; approve the plan again first (step 3 of the manual)" T7 --from r0000001 -- \
+    "T7 DONE pass $sha findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none"
+  # A message that hands nothing off is logged as before.
+  run_bin -0 team-next T7 --from b0000001 -- "T7 QUESTION which way? | options: a, b"
+  event plan-approved '{by: "coordinator", plan: {"tasks/T7/plan.md": "ab12"}}'
+  run_bin -0 team-next T7 -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "launched T7-builder c0000001"
+}
+
 # The manual: a message team-next refuses for an open ask is logged with team-log --from-message,
 # and team-next runs on it once the ask is settled, logging nothing twice.
 @test "a DONE logged by team-log --from-message while an ask was open is handed off once it is answered, logged once" {
@@ -559,6 +575,9 @@ $list"
   run_bin -0 --separate-stderr team-next T7 -- "T7 PR $url"
   assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-rereview-2.md"
   assert_equal "$(record rereview-2 | jq -c '{template, findings: .values.findings}')" '{"template":"verify","findings":"3 and 4"}'
+  # The launch says it is a verify, though its brief is named rereview-2.
+  assert_equal "$(jq -c 'select(.event == "launch") | {brief, template}' "$TEAM_HOME/ledger.jsonl" | tail -n 1)" \
+    '{"brief":"brief-rereview-2","template":"verify"}'
 
   # A blocking finding whose round only edited the PR body: the same head again.
   review_logged findings "$fix" '[5]' '{"blocking": 1}'
@@ -572,6 +591,7 @@ launched T7-reviewer c0000002"
   review_logged findings "$fix" '[6]' '{"blocking": 1}'
   run_bin -0 --separate-stderr team-next T7 --template rereview -- "T7 PR $url"
   assert_equal "$(record rereview-4 | jq -r .template)" rereview
+  assert_equal "$(jq -r 'select(.event == "launch") | .template' "$TEAM_HOME/ledger.jsonl" | tail -n 1)" rereview
 }
 
 @test "a DONE merged renders the next rereview, its since naming the merge's conflicts, and refuses a sha that is not the worktree's HEAD" {
@@ -853,7 +873,7 @@ outside_calls() {
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci"
   assert_equal "$output" "logged review verdict=pass head=$sha findings={\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0} before=[] guarded=[\"ci\"]
 logged done role=reviewer session=r0000002
-merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci"
+merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, so the default word does not hold"
   assert_equal "$(logged_from $((count + 1)) | jq -c '{event, verdict, head, guarded, role, session}')" \
     "$(jq -cn --arg h "$sha" '{event: "review", verdict: "pass", head: $h, guarded: ["ci"], role: null, session: null},
       {event: "done", verdict: null, head: null, guarded: null, role: "reviewer", session: "r0000002"}' | jq -c .)"
@@ -866,7 +886,7 @@ merge ask: $url at $sha, agent-review success, checks green; the review found gu
   pr_on_github "$sha" 0 '[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}, {"name": "test", "bucket": "pending", "state": "PENDING"}]'
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts%:0}:2 before=4,5 guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge ask: $url at $sha, agent-review success, checks pending: test; queue before notes 4 and 5 as follow-ups and say where each went"
+    "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks pending: test; queue before notes 4 and 5 as follow-ups and say where each went"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts%:0}:2 before=4,5 guarded=none"
   assert_contains "$output" "already logged review verdict=pass head=$sha"
   assert_contains "$output" "already logged done role=reviewer session=r0000002"
@@ -894,7 +914,7 @@ on_origin() {
   assert_contains "$output" "logged review verdict=pass head=$sha"
   assert_equal "$(tail -n 2 <<<"$output")" \
     "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
-then, once the checks pass on its merge: merge ask: $url at $sha"
+then, once the checks pass on its merge: merge on the default word: run team-merge T7 for $url at $sha"
   # It changed no branch, worktree or index: the merge is team-catch-up's to make.
   assert_equal "$(git -C "$wt" rev-parse HEAD)" "$sha"
   assert_equal "$(git -C "$primary" status --porcelain)" ""
@@ -903,20 +923,18 @@ then, once the checks pass on its merge: merge ask: $url at $sha"
 
 @test "a pass on a PR behind its base that merges it cleanly still says the review's before notes, guarded areas and words" {
   on_origin
-  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
-  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
   reviewing "$sha"
   pr_on_github "$sha" 3
   live b0000001 120000
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 2 <<<"$output")" \
     "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
-then, once the checks pass on its merge: merge pre-approved: run team-merge T7 for $url at $sha"
+then, once the checks pass on its merge: merge on the default word: run team-merge T7 for $url at $sha"
   launched r0000003 brief-review '["browser"]' reviewer
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts/note-before:0/note-before:2} before=4,5 guarded=ci"
   assert_equal "$(tail -n 2 <<<"$output")" \
     "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
-then, once the checks pass on its merge: merge ask: $url at $sha; the review found guarded areas: ci, so the plan-time word does not hold; queue before notes 4 and 5 as follow-ups and say where each went"
+then, once the checks pass on its merge: merge ask: $url at $sha; the review found guarded areas: ci, so the default word does not hold; queue before notes 4 and 5 as follow-ups and say where each went"
   assert_equal "$(outside_calls)" ""
 }
 
@@ -961,31 +979,42 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   assert_equal "$(outside_calls)" ""
 }
 
-@test "a pass with a plan-time approval not withdrawn says merge pre-approved, unless the review found guarded areas" {
-  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
-  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
+@test "a pass while the default word holds says to merge on it, unless the review found guarded areas or the default is withdrawn" {
   reviewing "$sha"
   pr_on_github "$sha"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge pre-approved: run team-merge T7 for $url at $sha, agent-review success, checks green"
+    "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
   # A later review that found a guarded area brings the merge back to Daniel.
   launched r0000003 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci,settings"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci,secrets"
   assert_contains "$output" "logged review verdict=pass head=$sha"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, settings, so the plan-time word does not hold"
-  # A withdrawn approval no longer holds.
-  event merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000046"}'
+    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, secrets, so the default word does not hold"
+  # A withdrawal of the default word for the task's project, logged under another task, holds it
+  # back; its giving back for every project lets it merge again.
+  launched r0000004 brief-review '["browser"]' reviewer
+  jq -cn '{ts: "2026-11-01T10:00:00Z", task: "T6", event: "merge-default-withdrawn", scope: "proj",
+    discord_message: "1563000000000000046", discord_channel: "1563000000000000012"}' >>"$TEAM_HOME/ledger.jsonl"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
+  launched r0000005 brief-review '["browser"]' reviewer
+  event merge-default-restored '{scope: "all", discord_message: "1563000000000000047", discord_channel: "1563000000000000012"}'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
+  # A guarded area a review names only from the areas retired since (T276) holds nothing back.
+  launched r0000006 brief-review '["browser"]' reviewer
+  event review "$(jq -cn --arg h "$sha" '{verdict: "pass", head: $h, guarded: ["settings"],
+    findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}}')"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
   assert_equal "$(outside_calls)" ""
 }
 
 @test "a pass counting findings that go back prints no merge line: refused until --sent-back sends them, then routed as findings are" {
   local back count
-  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
-  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
   reviewing "$sha"
   pr_on_github "$sha"
   live b0000001 120000
@@ -1024,81 +1053,24 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
 }
 
 @test "a security or real-data count on any review of the task, or a review with no counts, keeps the merge Daniel's" {
-  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
-  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
   review_logged findings 0123456 '[1]' '{"security": 1}'
   launched b0000002 brief-round-1 '["browser"]'
   reviewing "$sha"
   pr_on_github "$sha"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge ask: $url at $sha, agent-review success, checks green; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, so the plan-time word does not hold"
+    "merge ask: $url at $sha, agent-review success, checks green; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, so the default word does not hold"
   # A review that logged no counts, and a real-data one, are named too.
   event review '{verdict: "findings", head: "89abcde", sent_back: [2], guarded: []}'
   review_logged findings fedcba9 '[1]' '{"real-data": 2}'
   launched r0000003 brief-review '["browser"]' reviewer
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, so the plan-time word does not hold; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, the review of 89abcde at 2026-11-01T10:00:00Z logged no counts and the review of fedcba9 at 2026-11-01T10:00:00Z counted 2 real-data findings, so the plan-time word does not hold"
+    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, so the default word does not hold; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, the review of 89abcde at 2026-11-01T10:00:00Z logged no counts and the review of fedcba9 at 2026-11-01T10:00:00Z counted 2 real-data findings, so the default word does not hold"
   assert_equal "$(outside_calls)" ""
 }
 
-@test "a pass under Daniel's standing word on the PR's project says to merge on it, unless a review keeps the merge Daniel's" {
-  local standing='{project: "proj", discord_message: "1563000000000000047", discord_channel: "1563000000000000012"}'
-  event merge-standing "$standing"
-  reviewing "$sha"
-  pr_on_github "$sha"
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge on the standing word: run team-merge T7 for $url at $sha, agent-review success, checks green"
-  # A review that found a guarded area brings the merge back to Daniel.
-  launched r0000003 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=guardrails"
-  assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: guardrails, so the standing word does not hold"
-  # With the plan-time word standing too, the plan-time line comes first, and a guarded area holds both back.
-  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
-  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
-  launched r0000004 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge pre-approved: run team-merge T7 for $url at $sha, agent-review success, checks green"
-  launched r0000005 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci"
-  assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, so the plan-time and standing words do not hold"
-  event merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000046"}'
-  # A security finding on any review of the task keeps it Daniel's.
-  review_logged findings 0123456 '[1]' '{"security": 1}'
-  launched r0000006 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge ask: $url at $sha, agent-review success, checks green; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, so the standing word does not hold"
-  assert_equal "$(outside_calls)" ""
-}
-
-@test "a pass whose project the standing word does not stand for is the merge ask" {
-  reviewing "$sha"
-  pr_on_github "$sha"
-  # A word on another project, or one withdrawn, asks Daniel as before.
-  event merge-standing '{project: "web", discord_message: "1563000000000000047", discord_channel: "1563000000000000012"}'
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
-  event merge-standing '{project: "all", discord_message: "1563000000000000048", discord_channel: "1563000000000000012"}'
-  event merge-standing-withdrawn '{project: "proj", discord_message: "1563000000000000049", discord_channel: "1563000000000000012"}'
-  launched r0000003 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
-  # A word on every project stands for it.
-  event merge-standing '{project: "all", discord_message: "1563000000000000050", discord_channel: "1563000000000000012"}'
-  launched r0000004 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge on the standing word: run team-merge T7 for $url at $sha, agent-review success, checks green"
-}
-
-@test "a pass on a PR of the team's own project is the merge ask under a standing word on every project" {
-  event merge-standing '{project: "all", discord_message: "1563000000000000050", discord_channel: "1563000000000000012"}'
+@test "a pass on a PR of the team's own project is the merge ask, its guarded areas holding back no default word" {
   # proj's repo is the code checkout's origin, so proj is the team's own.
   code_checkout
   git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
@@ -1106,7 +1078,11 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   pr_on_github "$sha"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
-  [[ $output != *"standing word"* ]]
+  launched r0000003 brief-review '["browser"]' reviewer
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=guardrails"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: guardrails"
+  [[ $output != *"default word"* ]]
 }
 
 @test "a pass with no PR yet, a gated project's, tells the holding builder to go on" {
@@ -1262,7 +1238,7 @@ fix_line() {
     "$(churn_line 3 "$fix" "1 and 2" "$ask" "$(fix_line 3 .scratch/task/rereview-2.md)")"
   ask="the review found guarded areas secrets and permissions, so ask Daniel with team-ask T7 <an id> --file <the question>"
   run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- \
-    "T7 DONE findings .scratch/task/rereview-2.md ${counts/blocking:0/blocking:1} before=none guarded=secrets,settings,permissions widening=3"
+    "T7 DONE findings .scratch/task/rereview-2.md ${counts/blocking:0/blocking:1} before=none guarded=secrets,deploy,permissions widening=3"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "$(churn_line 3 "$fix" "1 and 2" "$ask" "$(fix_line 3 .scratch/task/rereview-2.md)")"
   run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- \
