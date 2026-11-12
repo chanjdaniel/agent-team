@@ -13,8 +13,9 @@
 # item as "<id> <its line without "- ">". check prints each line that add would refuse, as
 # "tasks/current.md:<n>: <reasons>", and every line that is neither the title, blank nor an item,
 # exiting 1 when there is any; it never writes.
-# add refuses: a kind other than ask, owe, next, queued or watch; a task that is not T<n> or -;
-# text holding " | " or a newline; a line over 300 characters; a line already in the file; and a
+# add refuses: a kind other than ask, owe, next or watch (queued work is a file in tasks/queued/,
+# with front matter, which team-queue index lists, and a queued line is refused saying so); a task
+# that is not T<n> or -; text holding " | " or a newline; a line over 300 characters; a line already in the file; and a
 # where that is none of these: an http(s) URL (a Discord link is one), a Discord id (optionally
 # "Discord <id>"), "ledger <UTC time>" (as 2026-11-01T07:08:11Z), or a file in the team home,
 # named relative to it, in full or under ~/. A where under /tmp/, /var/tmp/, /var/folders/,
@@ -22,7 +23,10 @@
 # add and done change the file under the ledger's lock and commit it alone (commit_records), as
 # "chore: current <kind> <task>" and "chore: current done <id>", then push the team home's
 # branch. A commit the team home's hooks refuse undoes the change and exits 1; a push that fails
-# keeps the commit for the next checkpoint to push, saying so on stderr, and exits 0.
+# keeps the commit for the next checkpoint to push, saying so on stderr, and exits 0. An ask or owe
+# item added or done then brings the team home's waiting.md up to date, which lists them
+# (refresh_inbox in bin/lib/team.sh: team-inbox; a failure is one line on stderr, and the exit
+# stays 0).
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -83,7 +87,11 @@ where_problem() {
 item_problems() {
   local kind=$1 task=$2 text=$3 where=$4 line=$5 at=$7 i length
   local -n others=$6
-  [[ $kind =~ ^(ask|owe|next|queued|watch)$ ]] || echo "kind '$kind' is not ask, owe, next, queued or watch"
+  if [[ $kind == queued ]]; then
+    echo "queued work is a file in tasks/queued/ with front matter, which team-queue index lists, never a current item"
+  elif [[ ! $kind =~ ^(ask|owe|next|watch)$ ]]; then
+    echo "kind '$kind' is not ask, owe, next or watch"
+  fi
   [[ $task =~ ^(T[0-9]+|-)$ ]] || echo "task '$task' is not T<n> or -"
   [[ -n $text ]] || echo "the line has no text"
   [[ $text != *' | '* ]] || echo "the text holds ' | '"
@@ -224,6 +232,7 @@ case $command in
     # shellcheck disable=SC2034 # read by commit_records
     records_edit=edit_add
     commit_change "chore: current $kind $task"
+    [[ ! $kind =~ ^(ask|owe)$ ]] || refresh_inbox
     ;;
   done)
     (($# == 1)) || usage_error "$usage"
@@ -238,6 +247,7 @@ case $command in
     # shellcheck disable=SC2034 # read by commit_records
     records_edit=edit_done
     commit_change "chore: current done $id"
+    [[ ! $removed =~ ^-\ (ask|owe)\  ]] || refresh_inbox
     ;;
   list)
     (($# == 0)) || usage_error "$usage"

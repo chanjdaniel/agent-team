@@ -27,7 +27,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `guarded`: the short list, one extended regular expression per line with its area, `@<project>` or `@own` for one project's line, any changed path of which brings a merge on the default word, the approved plan, back to Daniel for the per-head word, read by `team-merge` from its own checkout.
     - `health.jq`: the health module, the one place that says what unhealthy means: the fold of each heartbeat run into the health record, the ledger's one-pass scan, every health threshold, and the view `team-timers health` prints, its problems and its line in markup and plain text.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
-    - `lifecycle.json`: the task lifecycle's table, its statuses, phases, start states, what each kind may follow and does, the park causes and what ends each, and the `lifecycle_from` cutover, which `ledger.jq` imports.
+    - `lifecycle.json`: the task lifecycle's table, its statuses, phases, start states, what each kind may follow and does, the park causes and what ends each, and the `lifecycle_from` and `asked_parks_from` cutovers, which `ledger.jq` imports.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
     - `notice.jq`: the notice module, the one lifecycle of every notice of a standing problem the heartbeat posts in `#coordinator`: the notice record `notices.json`, the table of each source's rules, the judging, its outcomes and the move from the old records.
     - `notices.sh`: the notice record's reads and locked writes, and the move of each old record into it, sourced after `team.sh` by `team-timers` and `team-uptime`.
@@ -113,8 +113,8 @@ It holds:
 | `ledger.jsonl` | The append-only record of every task's events |
 | `level.jsonl` | The team's resource level and mode, one line per change (`team-level`), committed with the ledger so a level holds across restarts and handoffs |
 | `drills.jsonl` | Each run of a drill, one line per run (`team-drill`): what ran, on which machine, code commit and Claude Code version, and its verdict, appended and never rewritten |
-| `waiting.md` | What waits on Daniel, every open ask, PR ready to merge and interview, numbered, as `team-inbox` last wrote it from the ledger |
-| `waiting.json` | The same list with each item's number and key and the latest post, which `team-inbox` reads to keep each number while its item stands |
+| `waiting.md` | What waits on Daniel, every open ask, PR ready to merge and interview, and the asks and owed replies of `tasks/current.md`, numbered and ranked by what each answer unblocks, as `team-inbox` last wrote it from the ledger and that file |
+| `waiting.json` | The same list with each item's number, key and count and the latest post, which `team-inbox` reads to keep each number while its item stands |
 | `projects.toml` | The project registry, read only through `bin/team-project`, whose `--help` documents every key |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `projects/` | Each project's planning (Conventioner's backlog) |

@@ -10,7 +10,8 @@
 # directory, where every write of the session would prompt): team/ is a copy of
 # tests/fixtures/compaction-drill/team, a team home with one project, drill, whose GitHub is never
 # reached; four open tasks, T91 on an unanswered ask, T92 waiting on Daniel, T93 blocked on T92
-# and T94 with its builder at work; and tasks/current.md with an owe, a next and a queued item.
+# and T94 with its builder at work; tasks/current.md with an owe and a next item; and one piece of
+# queued work in tasks/queued/, with its front matter and index.
 # stubs/ goes first on the session's PATH, as TEAM_PATH_FIRST, which keeps it ahead of the tool
 # directories the hooks' library puts first (the machine's own claude among them), so its hooks
 # see the fixture's live sessions (claude agents --json) and no open PRs (gh pr list), never this
@@ -169,7 +170,6 @@ check "T93 is blocked on T92" waits T93 'T92'
 check "T94 has its builder at work" waits_not T94 'builder' 'no(t| longer)? live|unattended|dead|gone|stopped'
 check "the owe item: the weekly status report (message 1300000000000000001)" item '1300000000000000001'
 check "the next item: the licence file task once q1 is answered" item 'licen[cs]e file'
-check "the queued item: the lint cleanup (tasks/queued/lint-cleanup.md)" item 'lint'
 check "the new promise: a task to pin Node 22, in the answer" item 'node ?22'
 check "the new promise: a next item to pin Node 22, in tasks/current.md" \
   grep -Eiq '^- next .*node ?22' "$team/tasks/current.md"

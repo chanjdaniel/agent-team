@@ -77,7 +77,9 @@ $(id_of "$second") ${second#- }"
     assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
     assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
   }
-  check_refusal "kind 'todo' is not ask, owe, next, queued or watch" todo - a thing --where tasks/queued/node-pin.md
+  check_refusal "kind 'todo' is not ask, owe, next or watch" todo - a thing --where tasks/queued/node-pin.md
+  check_refusal "queued work is a file in tasks/queued/ with front matter, which team-queue index lists, never a current item" \
+    queued - the Node pin --where tasks/queued/node-pin.md
   check_refusal "task 'T4a' is not T<n> or -" next T4a a thing --where tasks/queued/node-pin.md
   check_refusal "task '-:' is not T<n> or -" next -: a thing --where tasks/queued/node-pin.md
   check_refusal "the text holds ' | '" next - "a | b" --where tasks/queued/node-pin.md
@@ -140,7 +142,7 @@ b" --where tasks/queued/node-pin.md
 # Current items
 
 - next T4 open the Node pin task | tasks/queued/node-pin.md
-- queued -: branch cleanup | tasks/queued/node-pin.md
+- next -: branch cleanup | tasks/queued/node-pin.md
 - next T4 a progress line | ledger
 - todo - something | tasks/queued/node-pin.md
 - ask - two wheres | tasks/queued/node-pin.md | ledger 2026-11-01T07:08:11Z
@@ -153,7 +155,7 @@ EOF
   run_bin -1 team-current check
   assert_equal "$output" "tasks/current.md:4: task '-:' is not T<n> or -
 tasks/current.md:5: the where 'ledger' is not a file in the team home
-tasks/current.md:6: kind 'todo' is not ask, owe, next, queued or watch
+tasks/current.md:6: kind 'todo' is not ask, owe, next or watch
 tasks/current.md:7: the line holds ' | ' more than once
 tasks/current.md:8: the line has no ' | <where>'
 tasks/current.md:9: the where '/tmp/watch.log' is a temp path
@@ -243,8 +245,10 @@ TOML
   run_bin -0 team-current add owe - the T4 summary --where 1563000000000000045
   run_bin -0 team-current add next T4 open the Node pin task --where tasks/queued/node-pin.md
   run_bin -0 team-snapshot
-  assert_contains "$output" "Current items (2):
-  - owe - the T4 summary | 1563000000000000045
+  # The owed reply is the waiting list's, which team-current brought up to date.
+  assert_contains "$output" "Waiting on Daniel: nothing
+  Owed you: the T4 summary
+Current items (1):
   - next T4 open the Node pin task | tasks/queued/node-pin.md"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c .items <<<"$output")" '["owe - the T4 summary | 1563000000000000045","next T4 open the Node pin task | tasks/queued/node-pin.md"]'
@@ -261,4 +265,16 @@ TOML
   run_bin -2 team-current "done" 123456 7890
   run_bin -2 team-current list extra
   run_bin -2 team-current check extra
+}
+
+@test "an ask or owe item added or done brings waiting.md up to date, and a next or watch item leaves it" {
+  run_bin -0 team-current add next T4 open the Node pin task --where tasks/queued/node-pin.md
+  [[ ! -e $TEAM_HOME/waiting.md ]]
+  run_bin -0 --separate-stderr team-current add ask - which domain for the docs site --where https://discord.com/channels/1/2/3
+  local id=${lines[0]}
+  assert_equal "$stderr" ""
+  assert_contains "$(cat "$TEAM_HOME/waiting.md")" "- **1** which domain for the docs site <https://discord.com/channels/1/2/3> - unblocks 0"
+  run_bin -0 team-current "done" "$id"
+  assert_equal "$(cat "$TEAM_HOME/waiting.md")" "**Waiting on you**
+Nothing waits on you."
 }
