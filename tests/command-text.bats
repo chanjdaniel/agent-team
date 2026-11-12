@@ -138,6 +138,7 @@ walks() {
   # text, or requoted), so a shell is made to run the text itself.
   run --separate-stderr python3 -I -c '
 import sys
+sys.dont_write_bytecode = True
 sys.path.insert(0, sys.argv[1])
 import command_text
 command_text._shell_string = lambda args: "bash -c x"
