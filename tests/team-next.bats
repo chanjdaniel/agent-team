@@ -1481,7 +1481,7 @@ launched T7-builder c0000001"
   assert_contains "$output" "or a ci of outcome failed (--ci's round on a pass's checks) was"
   assert_contains "$output" "with infrastructure and roll-up failures alone: reruns each never-started,"
   assert_contains "$output" "so once a check and head until Daniel's word re-arms it after the blocked"
-  assert_contains "$output" "reruns are its only writes to GitHub."
+  assert_contains "$output" "writes to GitHub are the reviewer App's check at a verdict and --ci's reruns."
 }
 
 @test "--ci after a pass while the default word holds says to merge on it, unless the review found guarded areas or the default is withdrawn" {
@@ -1617,7 +1617,7 @@ SH
   assert_equal "$output" "logged review verdict=pass head=$sha findings={\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0} before=[] guarded=[]
 logged done role=reviewer session=r0000002
 posted agent-review success on ${sha:0:8} as the reviewer App's check run 4242
-merge ask: $url at $sha, agent-review success, checks green"
+$(arm_line "$sha")"
   assert_equal "$(stub_calls team-review-check)" "$(jq -cn --arg url "$url" --arg sha "$sha" '[$url, $sha, "success", "T7'"'"'s review of \($sha[:8]) passed"]')"
   assert_equal "$(cat "$STUB_FIXTURES/reviews-at-post")" "$((reviews + 1))"
   assert_equal "$(outside_calls)" ""
@@ -1684,7 +1684,7 @@ exit 1
 SH
   run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_contains "$output" "posted agent-review success on ${sha:0:8} as the reviewer App's check run 4242, but revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour"
-  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
+  assert_equal "$(tail -n 1 <<<"$output")" "$(arm_line "$sha")"
 }
 
 @test "a findings verdict on a head the PR moved past posts no check with the reviewer App on, and says so" {

@@ -39,13 +39,14 @@ said() {
 }
 
 # Feed the case to every reader and check what each says: readers <holds> <ledger reasons as a JSON
-# list> <merge>, team-next's line naming agent-review success (with the reviewer App on, the check
-# team-next posts, team-review-check the stub, whatever GitHub's stub then shows), <merge> being
+# list> <merge>, team-next --ci's line naming agent-review as GitHub's stub shows it once the checks
+# passed (success, or a case's own review_shown: with the reviewer App on, the check team-next
+# posts at the pass, team-review-check the stub, is read back from GitHub's stub), <merge> being
 # "default" or "head" (team-merge merges on that word) or "refused" (it refuses, naming each
 # ledger reason, then any further reason given after it): readers <holds> <reasons> <merge>
 # [<team-merge's reason>...]
 readers() {
-  local holds=$1 reasons=$2 merge=$3
+  local holds=$1 reasons=$2 merge=$3 shown=${review_shown:-success}
   stub_reply claude '[]'
 
   # team-next takes the reviewer's pass, which arms the checks wait, and the wait, once the checks
@@ -56,9 +57,9 @@ readers() {
   run_bin -0 --separate-stderr team-next T14 --ci
   if [[ $holds == true ]]; then
     assert_equal "${lines[-1]}" \
-      "merge on the default word: run team-merge T14 for https://github.com/owner/proj/pull/5 at $head, agent-review success, checks green"
+      "merge on the default word: run team-merge T14 for https://github.com/owner/proj/pull/5 at $head, agent-review $shown, checks green"
   else
-    assert_equal "${lines[-1]#merge ask: }" "https://github.com/owner/proj/pull/5 at $head, agent-review success, checks green"
+    assert_equal "${lines[-1]#merge ask: }" "https://github.com/owner/proj/pull/5 at $head, agent-review $shown, checks green"
   fi
 
   # team-sweep sends the coordinator to the merge only on a default word that holds.
@@ -231,5 +232,8 @@ readers() {
   default_word Daniel
   event T14 answered '{id: "plan-T14", answer: "yes", discord_message: "1562661774950400000"}'
   launches
+  # The check team-next posts at the pass is not on GitHub's stub, so the checks wait's line names it
+  # missing, as team-merge does.
+  local review_shown=missing
   readers true '[]' refused "the reviewer App's agent-review check is missing on the head ${head:0:7}"
 }
