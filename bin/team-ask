@@ -11,9 +11,9 @@
 # line>", the question's first line cut to 200 characters. Once both are posted it logs, in
 # order: question role=<role> text=<the question> when --from names the worker role that asked
 # it; asked id=<id> text=<the question's first line> discord_message=<the question's first
-# message>; waiting on=Daniel cause=ask ask=<id> reason="ask <id>", the wait on the ask, typed so
-# its cause is read from the line, never its words. Then team-inbox lists the ask, numbered, in the
-# team home's waiting.md; when that fails, a line on stderr says so, and the ask stands.
+# message>, which parks the task by itself until the ask is answered (the lifecycle fold in
+# bin/lib/ledger.jq adds its wait). Then team-inbox lists the ask, numbered, in the team home's
+# waiting.md; when that fails, a line on stderr says so, and the ask stands.
 # --from ops, an ops session's question, which may hold production data, is posted whole in the
 # thread, but its first line is the fixed line "An ops question of <n> characters, in T<n>'s
 # thread." in the ping and the asked's text, n its length in characters, and its question is
@@ -103,8 +103,7 @@ mapfile -t lines < <(jq -nc --arg ts "$now" --arg task "$task" --arg id "$id" --
   | (if $role == "ops" then $e + {event: "question", role: $role, chars: ($question | length)}
      elif $role != "" then $e + {event: "question", role: $role, text: $question} else empty end),
     $e + {event: "asked", id: $id, text: $line}
-      + (if $script != "" then {script: $script, sha256: $sha256} else {} end),
-    $e + {event: "waiting", on: "Daniel", cause: "ask", ask: $id, reason: "ask \($id)"}')
+      + (if $script != "" then {script: $script, sha256: $sha256} else {} end)')
 for event in "${lines[@]}"; do
   problems=$(ledger_jq '[append_problems($contract; "team-ask")] | join("; ")' -r <<<"$event")
   [[ -z $problems ]] || die "refusing a ledger event: $problems"

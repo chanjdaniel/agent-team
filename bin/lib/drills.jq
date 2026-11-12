@@ -1,5 +1,5 @@
 # The drills module: the one place that says what a drill record is, when a drill is due and how
-# team-drill status shows it (sops/drills.md). jq 1.7, no includes. Included as:
+# team-drill status shows it (sops/drills.md). No includes. Included as:
 # jq -L bin/lib 'include "drills"; ...'
 #
 # The registry is bin/lib/drills.json: {max_age_days, drills: [{name, what, by, proves,

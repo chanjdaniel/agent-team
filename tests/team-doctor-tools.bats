@@ -154,7 +154,7 @@ lock_has_its_shape() {
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: $(lock_pin claude)"
-  assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.7.1 (minimum 1.7.1)"
+  assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.8.1 (minimum 1.8.1)"
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
   assert_equal "$(line_of 'claude login')" "PASS claude login: signed in with a claude.ai account"
@@ -365,7 +365,7 @@ lock_has_its_shape() {
   answer "jq --version" "jq-1.6"
   # The whole doctor, since the assertion reads every line.
   TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
-  assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL tool jq: 1.6, below the minimum 1.7.1; fix: sudo pacman -S --needed jq"
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL tool jq: 1.6, below the minimum 1.8.1; fix: sudo pacman -S --needed jq"
 
   answer "tmux -V" "tmux next-3.9"
   run_bin -1 team-doctor

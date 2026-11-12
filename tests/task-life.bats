@@ -13,6 +13,10 @@ load helpers/treehouse
 
 setup() {
   sandbox
+  # #coordinator's guild, as team-inbox keeps it after its first read, so team-log's refresh of the
+  # waiting list calls Discord for nothing.
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"channel":"1562486564871995482","guild":"1560000000000000000"}' >"$HOME/.local/state/agent-team/inbox.json"
   home=$(make_repo home dev)
   conv=$(make_repo conv dev)
   ignore_scratch "$home"

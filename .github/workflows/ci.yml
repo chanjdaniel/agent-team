@@ -47,10 +47,22 @@ jobs:
       matrix: {shard: [1, 2, 3]}
     env:
       SHARD: ${{ matrix.shard }}
+      JQ_VERSION: 1.8.1
+      JQ_SHA256: 020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The runner's own jq is 1.7.1, older than any team machine's; bin/lib/tools.lock's floor is
+      # the version installed here, which tests/repo.bats holds.
+      - name: Install jq ${{ env.JQ_VERSION }}
+        run: |
+          mkdir jq-bin
+          curl -fsSLo jq-bin/jq "https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION/jq-linux-amd64"
+          echo "$JQ_SHA256  jq-bin/jq" | sha256sum -c -
+          chmod +x jq-bin/jq
+          echo "$PWD/jq-bin" >>"$GITHUB_PATH"
+      - run: jq --version
       - run: tests/run bats --shard "$SHARD/3"
 
   test:
@@ -109,6 +121,9 @@ jobs:
   # The toolkits' servers over stdio, against a throwaway MongoDB in Docker.
   toolkits:
     runs-on: ubuntu-24.04
+    env:
+      JQ_VERSION: 1.8.1
+      JQ_SHA256: 020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -116,6 +131,16 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
+      # The runner's own jq is 1.7.1, older than any team machine's; the toolkits' hooks and the
+      # ui-check skill run jq filters, so this job installs the jq test-shards does.
+      - name: Install jq ${{ env.JQ_VERSION }}
+        run: |
+          mkdir jq-bin
+          curl -fsSLo jq-bin/jq "https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION/jq-linux-amd64"
+          echo "$JQ_SHA256  jq-bin/jq" | sha256sum -c -
+          chmod +x jq-bin/jq
+          echo "$PWD/jq-bin" >>"$GITHUB_PATH"
+      - run: jq --version
       # MongoDB 8.0 starts or exits by the kernel's version (tests/toolkits/helpers/mongo.mjs).
       - name: Show the kernel
         run: uname -r

@@ -1,3 +1,7 @@
+---
+summary: the drill project's lint cleanup, approved by Daniel, mine to open
+task: -
+---
 # Queued: the drill project's lint cleanup
 
 Daniel approved this on 2026-10-26: turn on the linter's recommended rules in the drill project and fix what they find.

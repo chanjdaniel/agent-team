@@ -1,7 +1,7 @@
 # The health module: the one place that says what unhealthy means. team-timers run folds each
 # run's results into the health record (health_fold) and reads the ledger with ledger_scan;
 # team-timers health turns the record, the lease record and now into the view (health_view).
-# jq 1.7, no includes. Included as: jq -L bin/lib 'include "health"; ...'
+# No includes. Included as: jq -L bin/lib 'include "health"; ...'
 #
 # The record, ~/.local/state/agent-team/health.json, is team-health/1:
 #   {schema, machine, written (when it was last written),

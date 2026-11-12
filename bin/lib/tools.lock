@@ -244,7 +244,7 @@
       "name": "jq",
       "version_cmd": "jq --version",
       "version_pattern": "jq-([0-9]+\\.[0-9]+(\\.[0-9]+)?)",
-      "min": "1.7.1",
+      "min": "1.8.1",
       "source": {
         "arch": "sudo pacman -S --needed jq",
         "macos": "brew install jq"
@@ -264,7 +264,7 @@
       "name": "gh",
       "version_cmd": "gh --version",
       "version_pattern": "gh version ([0-9]+\\.[0-9]+\\.[0-9]+)",
-      "min": "2.40.0",
+      "min": "2.99.0",
       "source": {
         "arch": "sudo pacman -S --needed github-cli",
         "macos": "brew install gh"

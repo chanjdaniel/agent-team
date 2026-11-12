@@ -12,8 +12,8 @@ setup() {
 # on <kind> [<jq object of more fields>]: add an event of T1 to the events, a minute after the one
 # before it, from 2026-11-01T00:00:00Z.
 on() {
-  events+=("$(jq -cn --arg e "$1" --argjson n "${#events[@]}" \
-    '{ts: ("2026-11-01T00:00:00Z" | fromdate + $n * 60 | todate), task: "T1", event: $e} + ('"${2:-{\}}"')')")
+  events+=("$(jq -cn --arg e "$1" --argjson n "${#events[@]}" --arg from "${ON_FROM:-2026-11-01T00:00:00Z}" \
+    '{ts: ($from | fromdate + $n * 60 | todate), task: "T1", event: $e} + ('"${2:-{\}}"')')")
 }
 
 # fold_read <filter>: the filter's output over the events so far, with ledger.jq's definitions (from
@@ -232,7 +232,8 @@ builder_launch() {
   on asked '{id: "merge", text: "merge https://github.com/owner/proj/pull/5 at 1111111?"}'
   on paused '{reason: "stowed, handoff written"}'
   on stowed '{machine: "m1", worktrees: [], roles: ["builder"], cause: "handoff"}'
-  # An old line's cause is legacy_cause's, and typed false.
+  # An old line's cause is legacy_cause's, and typed false; an asked before asked_parks_from parks
+  # nothing by itself.
   assert_equal "$(fold_read 'lifecycle | [.parks[] | [.id, .kind, .cause, .typed, .on, .since, .i, .passed]]')" \
     '[["waiting-1","waiting","daniel",false,"Daniel","2026-10-31T00:00:00Z",1,false],["paused-1","paused","stow",false,null,"2026-11-01T00:04:00Z",4,false]]'
   assert_equal "$(fold_read 'lifecycle | .asks | map(.id)')" '["door-data","merge"]'
@@ -537,6 +538,40 @@ LEDGER
   assert_equal "$(fold_read '[waiting.reason, (pending_asks | map(.id)), parked]')" '["ask door-data",["door-data"],true]'
   on answered '{id: "door-data", answer: "the old data"}'
   assert_equal "$(fold_read '[waiting, (pending_asks | map(.id)), parked]')" '[null,[],false]'
+}
+
+@test "an asked parks by itself from asked_parks_from: its wait stands through a launch, takes no resumed, and ends when the ask is answered" {
+  assert_equal "$(fold_read 'lifecycle_table.asked_parks_from')" "2026-11-12T12:00:00Z"
+  ON_FROM=2026-11-12T12:00:00Z
+  opened feature
+  on asked '{id: "door-data", text: "Which door data?"}'
+  assert_equal "$(fold_read '[waiting.reason, (lifecycle.parks | map([.id, .kind, .cause, .ask, .on, .since])), parked]')" \
+    '["ask door-data",[["asked-1","waiting","ask","door-data","Daniel","2026-11-12T12:01:00Z"]],true]'
+  assert_equal "$(problems resumed '{id: "asked-1"}')" \
+    "asked-1 is the wait on ask door-data, which ends when the ask is answered (team-answer), not with a resumed"
+  builder_launch b3
+  assert_equal "$(fold_read '[waiting.reason, parked]')" '["ask door-data",true]'
+  # A later wait's id counts the waitings alone, as before.
+  on waiting '{on: "CI", cause: "outside", reason: "the runner"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map(.id)')" '["asked-1","waiting-1"]'
+  on answered '{id: "door-data", answer: "the old data"}'
+  assert_equal "$(fold_read '[(lifecycle.parks | map(.id)), (pending_asks | map(.id))]')" '[["waiting-1"],[]]'
+  # A launch past the ask passes its wait too.
+  on asked '{id: "port", text: "Which port?"}'
+  on launch '{role: "builder", session: "b4", worktree: "/w/1", toolkits: [], past_ask: ["port"]}'
+  assert_equal "$(fold_read '[(lifecycle.parks | map([.id, .passed])), parked]')" '[[["asked-2",true]],false]'
+}
+
+@test "an old line's wait on an ask its asked parks already is that wait, keeping its id, and no second park" {
+  ON_FROM=2026-11-12T12:00:00Z
+  opened feature
+  on asked '{id: "door-data", text: "Which door data?"}'
+  on waiting '{on: "Daniel", cause: "ask", ask: "door-data", reason: "ask door-data"}'
+  on waiting '{on: "CI", cause: "outside", reason: "the runner"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map([.id, .ask, .since])')" \
+    '[["waiting-1","door-data","2026-11-12T12:02:00Z"],["waiting-2",null,"2026-11-12T12:03:00Z"]]'
+  on answered '{id: "door-data", answer: "the old data"}'
+  assert_equal "$(fold_read 'lifecycle.parks | map(.id)')" '["waiting-2"]'
 }
 
 @test "old untyped parks read as phase 1 did, and a resumed id= or all=true ends them too" {
