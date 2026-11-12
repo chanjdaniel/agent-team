@@ -486,6 +486,35 @@ toolkits/x/scripts/run:1: a needs b"
   done
 }
 
+# The reviewer App's key signs the agent-review check the team's own project merges behind, so no
+# session reads it: the worker and coordinator settings deny it to the Read and Edit tools and to a
+# Bash command naming its path by any of the usual spellings, a speed bump against a steered
+# session (sops/merging.md), while the scripts that read it, and text naming the committed
+# bin/lib/review-app or the key's bare file name, stay allowed.
+@test "the worker and coordinator settings deny reading the reviewer App's key" {
+  local file rule command
+  for file in settings/worker.json coordinator.settings.json; do
+    for rule in 'Read(~/.config/agent-team/review-app*)' 'Edit(~/.config/agent-team/review-app*)'; do
+      jq -e --arg r "$rule" '.permissions.deny | index($r) != null' "$REPO_ROOT/$file" >/dev/null ||
+        { echo "$file does not deny $rule" >&2; return 1; }
+    done
+    for command in 'cat ~/.config/agent-team/review-app.pem' 'head -c 64 ~/.config/agent-team/review-app.pem' \
+      'less ~/.config/agent-team/review-app.pem' 'tail $HOME/.config/agent-team/review-app.pem' \
+      'base64 < "$HOME/.config/agent-team/review-app.pem"' 'openssl rsa -in ~/.config/agent-team/review-app.pem -text' \
+      'cp ~/.config/agent-team/review-app.pem /tmp/k' 'cat ~/.config/agent-team/review-app.p*' \
+      'cat ~/.config/agent-team/*.pem' 'cd ~/.config && cat agent-team/review-app.pem' \
+      'cd ~/.config/agent-team && cat review-app.pem' 'pushd ~/.config/agent-team' \
+      'cat /home/someone/.config/agent-team/review-app.pem | base64'; do
+      denied_in "$REPO_ROOT/$file" "$command" || { echo "$file allows: $command" >&2; return 1; }
+    done
+    for command in 'team-review-check https://github.com/o/r/pull/1 0123 success ok' 'team-secrets check' \
+      'cat bin/lib/review-app' 'cat ~/.config/agent-team/home' 'grep -rn review-app.pem bin sops' \
+      'team-doctor'; do
+      if denied_in "$REPO_ROOT/$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
+    done
+  done
+}
+
 # Role <role>'s deny list from the source files, settings/worker.json's rules then the role file's,
 # as team-worker generates it (tests/team-worker.bats proves the generated list is exactly this);
 # prints the file it writes: role_deny <role>
