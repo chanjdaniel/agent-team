@@ -238,6 +238,21 @@ esac
 SH
 }
 
+# during_wait <event> <its fields as a jq object>: the team-ci-wait stub that ci_ends set logs that
+# event of T7, as event does, at its first call, before it answers, as a hold, an ask or a review
+# logged while --ci waits.
+during_wait() {
+  mv "$STUB_FIXTURES/team-ci-wait.sh" "$STUB_FIXTURES/ci-ends.sh"
+  jq -cn --arg event "$1" "{ts: \"2026-11-01T10:00:00Z\", task: \"T7\", event: \$event} + $2" >"$STUB_FIXTURES/during-wait"
+  stub_script team-ci-wait <<'SH'
+if [[ -f $STUB_FIXTURES/during-wait ]]; then
+  print_file "$STUB_FIXTURES/during-wait" >>"$TEAM_HOME/ledger.jsonl"
+  rm "$STUB_FIXTURES/during-wait"
+fi
+source "$STUB_FIXTURES/ci-ends.sh"
+SH
+}
+
 # The gh calls that rerun a check.
 rerun_calls() {
   stub_calls gh | jq -c 'select(.[0] == "run")'
@@ -1461,6 +1476,69 @@ launched T7-builder c0000001"
   refused "T7 is closed" T7 --ci
   assert_equal "$(stub_calls team-ci-wait)" ""
   worker_refused team-next "runs no team-next" T7 --ci
+}
+
+@test "--ci reads the ledger again when a wait ends: a hold, an ask, a findings review or a catch-up logged meanwhile stops it, with no ci logged, no rerun and no hand-off; a new pass's facts are taken" {
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  reruns_on_github "$sha"
+  # Daniel's hold logged while the checks went green: no ci, no merge line.
+  ci_ends passed
+  during_wait held '{reason: "Daniel: not now", cause: "daniel-hold", discord_message: "1563000000000000044"}'
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" ""
+  assert_contains "$stderr" "T7 is on Daniel's hold since 2026-11-01T10:00:00Z (held-1): Daniel: not now"
+  assert_equal "$(ci_logged)" ""
+  event resumed '{id: "held-1", discord_message: "1563000000000000046"}'
+  # An ask logged while the checks failed as infrastructure: nothing is rerun.
+  ci_ends "$(infra "test-shards (1)" never-started 8 20)" passed
+  during_wait asked '{id: "scope", text: "Which scope?"}'
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" ""
+  assert_contains "$stderr" "T7 has an unanswered ask, scope, since 2026-11-01T10:00:00Z"
+  assert_equal "$(rerun_calls)" ""
+  assert_equal "$(reruns_logged)" ""
+  event answered '{id: "scope", text: "This one.", discord_message: "1563000000000000045"}'
+  # A findings review of the head logged while the checks failed as the PR's own: no round.
+  ci_ends "$(jq -cn '{name: "lint", class: "pr", kind: "failed", state: "FAILURE", link: null, run: null, job: null, step: "Lint", rerun: null}')"
+  during_wait review "{verdict: \"findings\", head: \"$sha\", sent_back: [1], findings: {blocking: 1}}"
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" ""
+  assert_contains "$stderr" "T7's latest review is not a pass on an open PR, so no checks wait for a merge"
+  assert_equal "$(ci_logged)" ""
+  [[ ! -e $TEAM_HOME/tasks/T7/ci-${sha:0:8}.md ]]
+  # A new pass of the head logged meanwhile: the merge line takes its before notes.
+  review_logged pass "$sha" '[]'
+  ci_ends passed
+  during_wait review "{verdict: \"pass\", head: \"$sha\", findings: {blocking: 0, \"note-before\": 1}, before: [3], guarded: []}"
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$(tail -n 1 <<<"$output")" "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green; queue before notes 3 as follow-ups and say where each went"
+  # A catch-up logged meanwhile moves the wait to its merge: arm it again.
+  review_logged pass "$sha" '[]'
+  ci_ends passed
+  during_wait caught-up "{url: \"$url\", from: \"$sha\", head: \"f00ba47a00000000000000000000000000000000\", base: \"0e0e0e0e\"}"
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_contains "$stderr" "the checks wait of T7 moved to $url at f00ba47a while it waited on ${sha:0:8}: arm team-next T7 --ci again"
+}
+
+@test "a second --ci while one waits on the task's checks says so and ends, waiting on nothing" {
+  local lock=$HOME/.local/state/agent-team/ci/T7.lock fd
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  ci_wait_ends passed "$sha"
+  mkdir -p "${lock%/*}"
+  exec {fd}>>"$lock"
+  flock -n "$fd"
+  run_bin -0 --separate-stderr team-next T7 --ci
+  exec {fd}>&-
+  assert_equal "$output" "the checks wait of T7 is already running ($lock): its end prints the next step"
+  assert_equal "$(stub_calls team-ci-wait)" ""
+  assert_equal "$(ci_logged)" ""
+  # Once that one ended, the next one waits.
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$(tail -n 1 <<<"$output")" "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
 }
 
 @test "--ci takes no message and no other option, and --help documents it, the pass's arm line and the round on failed checks" {

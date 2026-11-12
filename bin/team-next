@@ -150,9 +150,9 @@
 # a PR of a project the App posts for (own_bar in bin/lib/team.sh), once the review and its done
 # are logged it runs team-review-check on the reviewed head, success for a pass and failure for
 # findings, its summary "T<n>'s review of <head> passed" or "... found findings", and prints
-# "posted agent-review <conclusion> on <head> as the reviewer App's check run <id>", which the
-# merge line then names; findings on a head the PR moved past, and a review naming its head by a
-# prefix, not in full, post nothing and say so; a post that fails exits 1 after naming the
+# "posted agent-review <conclusion> on <head> as the reviewer App's check run <id>", which --ci's
+# merge line then names as GitHub shows it; findings on a head the PR moved past, and a review
+# naming its head by a prefix, not in full, post nothing and say so; a post that fails exits 1 after naming the
 # team-review-check command, the review staying logged, and a rerun posts it again, but one whose
 # check run was posted and whose token alone was not revoked is said as posted, with why. Once
 # the review and its done are logged, the last line is what is left for the coordinator, the
@@ -182,12 +182,19 @@
 # <short> could not be read (<its text>)" at the end of the line, nothing logged. With no PR (a
 # gated project's before its gate, a Disclosure task's before its first push), no look.
 # team-next T<n> --ci is that checks wait, run with Bash run_in_background; it always ends, since
-# team-ci-wait does. Refused, exit 1, logging nothing and before it waits: launch_refusal's texts
-# for a launch of no role (closed, Daniel's hold, an ask open), "T<n>'s latest review is not a
-# pass on an open PR, so no checks wait for a merge" when checks_wait in bin/lib/ledger.jq is
-# null, and "the checks of <short> failed and went back as a round on <ts>" when its state is
-# failed. Else it runs team-ci-wait --no-agent-review --json <url> <head> on checks_wait's url and
-# head (the passed head, or the merge the latest team-catch-up made from it), and on its end:
+# team-ci-wait does. One runs a task at a time, under the lock
+# ~/.local/state/agent-team/ci/T<n>.lock (a no-wait flock): a second one prints "the checks wait of
+# T<n> is already running (<lock>): its end prints the next step", exit 0, waiting on nothing.
+# Refused, exit 1, logging nothing, before it waits and again, the ledger read anew, once each
+# wait ends (so a hold, an ask, a close or a review logged while it waited stops that end, before
+# any rerun, log or hand-off, and the end takes a new pass's facts): launch_refusal's texts for a
+# launch of no role (closed, Daniel's hold, an ask open), "T<n>'s latest review is not a pass on
+# an open PR, so no checks wait for a merge" when checks_wait in bin/lib/ledger.jq is null, "the
+# checks of <short> failed and went back as a round on <ts>" when its state is failed, and, once a
+# wait ended, "the checks wait of T<n> moved to <url> at <short> while it waited on <short>: arm
+# team-next T<n> --ci again" when a catch-up moved it. Else it runs
+# team-ci-wait --no-agent-review --json <url> <head> on checks_wait's url and head (the passed
+# head, or the merge the latest team-catch-up made from it), and on its end:
 #   passed or none   once team-state shows the PR open at that head (a later head is the moved
 #                    line below, nothing logged; exit 75 when GitHub cannot be read; "<url> is
 #                    merged: its checks no longer matter", exit 0, when it shows it merged), logs
@@ -530,26 +537,42 @@ events=$(task_event_array "$task")
 
 # --ci: the checks wait of a pass (see the header).
 if [[ -n $ci ]]; then
-  refusal=''
-  json_vars --ledger refusal='[launch_refusal($task; ""; [])] | join("; ")' -- --arg task "$task" <<<"$events"
-  [[ -z $refusal ]] || die "$refusal"
-  # What waits on the checks, and after a catch-up the reviewed head the merge was made from.
-  wait_url='' wait_head='' wait_state='' wait_since='' wait_from=''
-  json_vars --ledger wait_url='checks_wait | .url' wait_head='checks_wait | .head' wait_state='checks_wait | .state' \
-    wait_since='checks_wait | .since' \
-    wait_from='checks_wait as $w | select($w != null and (same_head($w.head; $w.reviewed) | not))
-      | [.[] | select(.event == "caught-up" and same_head(.head; $w.head))] | last | .from' <<<"$events"
-  [[ -n $wait_url ]] || die "$task's latest review is not a pass on an open PR, so no checks wait for a merge"
-  wait_short=${wait_head:0:8}
-  [[ $wait_state != failed ]] || die "the checks of $wait_short failed and went back as a round on $wait_since"
-  # The checks already rerun on the waited head: each ci-rerun of it logged since its latest ci of
-  # outcome infrastructure (a blocked line, after which a re-arm on Daniel's word reruns them once
-  # more), so the cap of one rerun a check holds across a restart.
-  rerun_names=$(ledger_jq 'checks_wait as $w | if $w == null then [] else
-      (($w.url | rtrimstr("/")) as $url | def ours: (.url | rtrimstr("/")) == $url and same_head(.head; $w.head);
-       (to_entries | map(select(.value.event == "ci" and .value.outcome == "infrastructure" and (.value | ours)))
-         | last | .key // -1) as $k
-       | [.[$k + 1:][] | select(.event == "ci-rerun" and ours) | .check] | unique) end' -c <<<"$events")
+  # ci_read: the task's events as the ledger has them now, refused as the header says (a launch of
+  # no role, no pass on an open PR, its checks failed), and what waits on the checks, after a
+  # catch-up with the reviewed head the merge was made from; run before the first wait and again
+  # after each wait ends, so a hold, an ask, a close or a review logged meanwhile stops the end.
+  ci_read() {
+    local refusal=''
+    events=$(task_event_array "$task")
+    json_vars --ledger refusal='[launch_refusal($task; ""; [])] | join("; ")' -- --arg task "$task" <<<"$events"
+    [[ -z $refusal ]] || die "$refusal"
+    wait_url='' wait_head='' wait_state='' wait_since='' wait_from=''
+    json_vars --ledger wait_url='checks_wait | .url' wait_head='checks_wait | .head' wait_state='checks_wait | .state' \
+      wait_since='checks_wait | .since' \
+      wait_from='checks_wait as $w | select($w != null and (same_head($w.head; $w.reviewed) | not))
+        | [.[] | select(.event == "caught-up" and same_head(.head; $w.head))] | last | .from' <<<"$events"
+    [[ -n $wait_url ]] || die "$task's latest review is not a pass on an open PR, so no checks wait for a merge"
+    wait_short=${wait_head:0:8}
+    [[ $wait_state != failed ]] || die "the checks of $wait_short failed and went back as a round on $wait_since"
+    # The checks already rerun on the waited head: each ci-rerun of it logged since its latest ci of
+    # outcome infrastructure (a blocked line, after which a re-arm on Daniel's word reruns them once
+    # more), so the cap of one rerun a check holds across a restart.
+    rerun_names=$(ledger_jq 'checks_wait as $w | if $w == null then [] else
+        (($w.url | rtrimstr("/")) as $url | def ours: (.url | rtrimstr("/")) == $url and same_head(.head; $w.head);
+         (to_entries | map(select(.value.event == "ci" and .value.outcome == "infrastructure" and (.value | ours)))
+           | last | .key // -1) as $k
+         | [.[$k + 1:][] | select(.event == "ci-rerun" and ours) | .check] | unique) end' -c <<<"$events")
+  }
+  # One checks wait a task: a second one armed beside it says so and ends, waiting on nothing; the
+  # ledger is read under the lock, so a wait that just ended has logged its end.
+  ci_lock=$HOME/.local/state/agent-team/ci/$task.lock
+  mkdir -p "${ci_lock%/*}"
+  exec {ci_lock_fd}>>"$ci_lock"
+  if ! flock -n "$ci_lock_fd"; then
+    echo "the checks wait of $task is already running ($ci_lock): its end prints the next step"
+    exit 0
+  fi
+  ci_read
   repo=${wait_url#https://github.com/}
   repo=${repo%%/pull/*}
 
@@ -650,6 +673,14 @@ if [[ -n $ci ]]; then
       [[ -z $ended ]] || echo "$ended"
       exit $((rc ? rc : 1))
     fi
+    # The ledger again: what was logged while it waited stops the end, and a catch-up moves the
+    # wait to its merge, which a new run waits on.
+    waited_url=$wait_url waited_head=$wait_head
+    ci_read
+    if [[ ${wait_url%/} != "${waited_url%/}" ]] || ! same_commit "$wait_head" "$waited_head"; then
+      die "the checks wait of $task moved to $wait_url at $wait_short while it waited on ${waited_head:0:8}: arm team-next $task --ci again"
+    fi
+    wait_head=$waited_head wait_short=${waited_head:0:8}
     # The head a ci names: the waited head, in full when the wait read it so.
     ci_head=$wait_head
     if same_commit "$end_head" "$wait_head"; then ci_head=$end_head; fi
