@@ -388,6 +388,53 @@ logged_at() {
     '04:00 merged {pr: 30, merge: "m", head: "h", by: "team-merge"}')" '{"building":1,"merging":1,"wait:daniel":2}'
 }
 
+# The lines of a task whose builder opened PR 30 at 01:00, reviewed from 01:00 and passed at 02:00
+# with no ask logged.
+merge_ready_rounds() {
+  printf '%s\n' '01:00 pr {url: "https://github.com/chanjdaniel/agent-team/pull/30", head: "aaaaaaa"}' \
+    '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "pass", head: "aaaaaaa"}' \
+    '02:00 done {role: "reviewer", session: "s2"}'
+}
+
+@test "a PR ready to merge with no ask logged waits on Daniel from its passing review, as team-inbox lists it" {
+  local rounds
+  mapfile -t rounds < <(merge_ready_rounds)
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}")" '{"building":1,"review":1,"wait:daniel":4}'
+
+  # Daniel's word on its head ends the wait: merging to the merged, the coordinator's turn after.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}" \
+    '04:00 merge-approved {url: "https://github.com/chanjdaniel/agent-team/pull/30/", head: "aaaaaaa", discord_message: "1"}' \
+    '05:00 merged {pr: 30, merge: "m", head: "aaaaaaa", by: "team-merge"}')" '{"building":1,"review":1,"merging":1,"unattributed":1,"wait:daniel":2}'
+  # The word at another head leaves the PR waiting on a word for the head it is at; a legacy word,
+  # with no head, ends it.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}" \
+    '04:00 merge-approved {url: "https://github.com/chanjdaniel/agent-team/pull/30", head: "bbbbbbb", discord_message: "1"}' \
+    '04:30 done {role: "builder", session: "s1"}')" '{"building":1,"review":1,"merging":0.5,"wait:daniel":3.5}'
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}" \
+    '04:00 merge-approved {url: "https://github.com/chanjdaniel/agent-team/pull/30", discord_message: "1"}' \
+    '04:30 done {role: "builder", session: "s1"}')" '{"building":1,"review":1,"merging":0.5,"unattributed":1.5,"wait:daniel":2}'
+  # A legacy word with no url names no PR, as team-inbox reads it: the PR still waits.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}" \
+    '04:00 merge-approved {head: "aaaaaaa", discord_message: "1"}' \
+    '04:30 done {role: "builder", session: "s1"}')" '{"building":1,"review":1,"merging":0.5,"wait:daniel":3.5}'
+  # Merged, nothing waits.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}" '03:00 merged {pr: 30, merge: "m", head: "aaaaaaa", by: "team-merge"}')" \
+    '{"building":1,"review":1,"unattributed":3,"wait:daniel":1}'
+}
+
+@test "a PR ready to merge while the default word stands is merging, and one sent back is building" {
+  local rounds
+  mapfile -t rounds < <(merge_ready_rounds)
+  assert_equal "$(t90_hours 06:00 '00:00 plan-approved {by: "coordinator", plan: {"tasks/T90/plan.md": "0000"}}' "${rounds[@]}" \
+    '05:00 merged {pr: 30, merge: "m", head: "aaaaaaa", by: "team-merge", approval: "default"}')" \
+    '{"building":1,"review":1,"merging":3,"unattributed":1}'
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:3}" \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:00 done {role: "reviewer", session: "s2"}')" '{"building":5,"review":1}'
+}
+
 @test "a wait logged before the wait on Daniel that a merge-approved ends still stands, as the lifecycle fold keeps every park" {
   # Before the fold, the later wait replaced the earlier one, and the hour after the word was merging.
   assert_equal "$(t90_hours 04:00 '01:00 waiting {on: "reviewer", reason: "the rereview"}' \

@@ -1,5 +1,5 @@
 # The definitions team-stack reads Docker's answers with: the labels contract's owner classes
-# (sops/docker.md), Docker's sizes and memory, and the plain tables. jq 1.7.
+# (sops/docker.md), Docker's sizes and memory, and the plain tables.
 # Included as: jq -L bin/lib 'include "stack"; ...'
 
 # The labels contract's prefix.

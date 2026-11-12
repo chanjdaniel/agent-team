@@ -1695,16 +1695,26 @@ def retro_opened: .event == "opened" and .path == "retro";
 # The retro tasks' opened events in ledger order, each with its place in the ledger as i.
 def retros: [to_entries[] | select(.value | retro_opened) | .value + {i: .key}];
 
+# Whether the retro task of one of retros' opened events ran, over every ledger event $events: it
+# has a launch, or no closed yet (one still open may be running). A retro closed with no launch was
+# opened by mistake, so it is no window's previous retro and no due time's last retro.
+def retro_ran($events):
+  .task as $task
+  | [$events[] | select(.task == $task) | .event] | IN(.[]; "launch") or (IN(.[]; "closed") | not);
+
+# The retros (retros') that ran (retro_ran), in ledger order.
+def retros_ran: . as $events | [retros[] | select(retro_ran($events))];
+
 # team-retro status's JSON. The schedule is the latest retro-schedule, on while every_hours is
-# above 0; the next retro is due every_hours after the later of its time and the latest retro
-# task's opening, unless a retro task is still open.
+# above 0; the next retro is due every_hours after the later of its time and the opening of the
+# latest retro task that ran (retro_ran), unless a retro task is still open.
 def retro_status:
   . as $events
   | retros as $retros
   | ($events | map(select(.event == "retro-schedule")) | last
      | if . != null and (.every_hours | type) == "number" and .every_hours > 0 then {every_hours, since: .ts, discord_message, task}
        else null end) as $schedule
-  | ($retros | last) as $last
+  | (retros_ran | last) as $last
   | ([$retros[] | .task as $task | select($events | map(select(.task == $task)) | task_status == "open")] | last | .task) as $running
   | (if $schedule == null then null
      else ([$schedule.since, ($last.ts // empty)] | max | fromdate) + $schedule.every_hours * 3600 | floor | todate end) as $next
@@ -1971,9 +1981,15 @@ def interview_under_way:
   latest_index("interview-thread") as $i
   | $i >= 0 and all(.[$i + 1:][]; ((.event == "done" and .role == "planner") or .event == "plan-approved") | not);
 
+# Whether the event is a merge-approved naming the PR $pr (one of task_prs) at its head: its url is
+# the PR's, a trailing slash aside, and its head the PR's, or none, as a legacy line.
+def approves_pr($pr):
+  .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
+  and (.head == null or same_head(.head; $pr.head));
+
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
-# awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
-# head, or at no head, as a legacy line, and whose default word does not hold on the ledger
+# awaiting-merge, then each not merged that no merge-approved names at its head (approves_pr), and
+# whose default word does not hold on the ledger
 # (default_holds over $withdrawals, default_events', and $own, own_projects' {projects, app}, the
 # team's own and the reviewer App; with $own null, as when the registry cannot be read, none holds).
 def merge_ready_prs($withdrawals; $own):
@@ -1981,8 +1997,7 @@ def merge_ready_prs($withdrawals; $own):
   | task_prs as $prs
   | if phase != "awaiting-merge" then []
     else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
-      | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
-          and (.head == null or same_head(.head; $pr.head))) | not)
+      | select(any($events[]; approves_pr($pr)) | not)
       | select($own != null and ($events | default_holds($pr; $withdrawals; $own)) | not)] end;
 
 # What waits on Daniel, over every ledger event, each open task's in task number order: {items,
@@ -2125,15 +2140,16 @@ def retro_status_text:
     end;
 
 # A retro's window as {task, previous, since, until, start, end}, start and end being places in
-# the ledger (end exclusive). For the retro task $task: after the opening of the retro opened
-# before it, or from the first event, up to and including its own opening. For a dry run ($task
-# null): after the latest retro's opening, up to now.
+# the ledger (end exclusive). For the retro task $task: after the opening of the last retro opened
+# before it that ran (retro_ran), or from the first event, up to and including its own opening.
+# For a dry run ($task null): after the opening of the latest retro that ran, up to now.
 def retro_window($task):
   . as $events
   | retros as $retros
-  | (if $task == null then {this: null, previous: ($retros | last)}
+  | (if $task == null then {this: null, previous: (retros_ran | last)}
      else ($retros | map(.task == $task) | index(true)) as $k
-       | {this: $retros[$k], previous: (if $k > 0 then $retros[$k - 1] else null end)} end) as $w
+       | $retros[$k] as $this
+       | {this: $this, previous: ([retros_ran[] | select(.i < $this.i)] | last)} end) as $w
   | {task: $task, previous: $w.previous.task,
      since: ($w.previous.ts // $events[0].ts), until: ($w.this.ts // (now | todate)),
      start: (if $w.previous == null then 0 else $w.previous.i + 1 end),

@@ -5,7 +5,7 @@
 # the production outages (through bin/lib/uptime.jq), both through bin/lib/notices.sh. These are
 # pure functions of the record, a source's standing problems, the lease record's taken_at and now;
 # nothing here knows a source's texts or thresholds.
-# jq 1.7, no includes. Included as: jq -L bin/lib 'include "notice"; ...'
+# No includes. Included as: jq -L bin/lib 'include "notice"; ...'
 #
 # The record, ~/.local/state/agent-team/notices.json, is team-notices/1, one per machine:
 #   {schema, written (when it was last written),
