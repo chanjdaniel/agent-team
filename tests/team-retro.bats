@@ -28,6 +28,11 @@ closed() {
   event "$1" "$2" closed '{archive: [], returned: [], kept: []}'
 }
 
+# launched <ts> <task>: the task's planner launch, which a retro that ran has.
+launched() {
+  event "$1" "$2" launch "{role: \"planner\", session: \"0000000${2#T}\", worktree: \"/w/1\", toolkits: []}"
+}
+
 # schedule <ts> <every_hours>
 schedule() {
   event "$1" T26 retro-schedule "{every_hours: $2, discord_message: \"1563171945980370967\"}"
@@ -67,6 +72,7 @@ at() {
   opened=$(ago 100)
   schedule "$(ago 200)" 48
   opened "$opened" T2 retro
+  launched "$(ago 99)" T2
   closed "$(ago 99)" T2
   schedule "$(ago 50)" 0
   run_bin -0 team-retro status
@@ -95,6 +101,7 @@ at() {
   opened=$(ago 30)
   schedule "$(ago 100)" 48
   opened "$opened" T2 retro
+  launched "$(ago 29)" T2
   closed "$(ago 29)" T2
   run_bin -0 team-retro status
   assert_contains "$output" "Last: T2, opened $opened, closed. Next due $(plus "$opened" 48)."
@@ -111,6 +118,7 @@ at() {
   opened=$(ago 60)
   schedule "$(ago 100)" 48
   opened "$opened" T2 retro
+  launched "$(ago 59)" T2
   closed "$(ago 59)" T2
   run_bin -0 team-retro status
   assert_contains "$output" "Last: T2, opened $opened, closed. Due since $(plus "$opened" 48)."
@@ -123,6 +131,31 @@ at() {
   assert_contains "$output" "Last: T3, opened $opened, open. Running T3."
   run_bin -0 team-retro status --json
   assert_equal "$(jq -c '[.last.status, .running, .next, .due]' <<<"$output")" "[\"open\",\"T3\",\"$(plus "$opened" 48)\",false]"
+}
+
+@test "status: a retro closed with no launch is not the last retro, so the next is due from the one before it" {
+  local first
+  first=$(ago 60)
+  schedule "$(ago 100)" 48
+  opened "$first" T1 retro
+  launched "$(ago 59)" T1
+  closed "$(ago 58)" T1
+  opened "$(ago 2)" T2 retro
+  closed "$(ago 2)" T2
+  run_bin -0 team-retro status
+  assert_contains "$output" "Last: T1, opened $first, closed. Due since $(plus "$first" 48)."
+  run_bin -0 team-retro status --json
+  assert_equal "$(jq -c '[.last.task, .running, .next, .due]' <<<"$output")" "[\"T1\",null,\"$(plus "$first" 48)\",true]"
+
+  # One launched before it closed ran, so it is the last retro, as is one still open.
+  opened "$(ago 1)" T3 retro
+  launched "$(ago 1)" T3
+  closed "$(ago 1)" T3
+  run_bin -0 team-retro status --json
+  assert_equal "$(jq -r .last.task <<<"$output")" T3
+  opened "$(ago 0)" T4 retro
+  run_bin -0 team-retro status --json
+  assert_equal "$(jq -c '[.last.task, .running]' <<<"$output")" '["T4","T4"]'
 }
 
 @test "status: tasks of other paths are not retros, and legacy and non-JSON lines are read past" {
@@ -168,6 +201,47 @@ JSON
   local until
   until=$(jq -r .window.until <<<"$output")
   [[ ! $until < $before && ! $until > $after ]]
+}
+
+@test "digest: a retro closed with no launch is no window's previous retro, and its own events are in the next window" {
+  opened "$(at 00:00)" T1 retro
+  launched "$(at 00:10)" T1
+  closed "$(at 01:00)" T1
+  event "$(at 02:00)" T5 blocked '{reason: "one"}'
+  opened "$(at 03:00)" T2 retro
+  closed "$(at 03:01)" T2
+  event "$(at 04:00)" T5 blocked '{reason: "two"}'
+  opened "$(at 05:00)" T3 retro
+
+  run_bin -0 team-retro digest T3 --json
+  assert_equal "$(jq -c '.window | del(.kinds)' <<<"$output")" \
+    '{"task":"T3","previous":"T1","since":"2026-10-20T00:00:00Z","until":"2026-10-20T05:00:00Z","events":7}'
+  assert_equal "$(jq -c '[.blocks[].reason], .window.kinds' <<<"$output")" \
+    $'["one","two"]\n{"blocked":2,"closed":2,"launch":1,"opened":2}'
+  run_bin -0 team-retro digest T3
+  assert_contains "$output" "retro T3, previous retro T1"
+  # The skipped retro's own digest still reads, from the retro before it.
+  run_bin -0 team-retro digest T2 --json
+  assert_equal "$(jq -c '.window | [.previous, .since, .until]' <<<"$output")" \
+    '["T1","2026-10-20T00:00:00Z","2026-10-20T03:00:00Z"]'
+  # A dry run starts at the last retro that ran: T3, still open.
+  run_bin -0 team-retro digest --json
+  assert_equal "$(jq -c '.window | [.previous, .since]' <<<"$output")" '["T3","2026-10-20T05:00:00Z"]'
+  closed "$(at 05:01)" T3
+  run_bin -0 team-retro digest --json
+  assert_equal "$(jq -c '.window | [.previous, .since]' <<<"$output")" '["T1","2026-10-20T00:00:00Z"]'
+}
+
+@test "digest: a retro launched before it closed is the next window's previous retro, as before" {
+  opened "$(at 00:00)" T1 retro
+  launched "$(at 00:10)" T1
+  closed "$(at 01:00)" T1
+  opened "$(at 03:00)" T2 retro
+  launched "$(at 03:01)" T2
+  closed "$(at 03:02)" T2
+  opened "$(at 05:00)" T3 retro
+  run_bin -0 team-retro digest T3 --json
+  assert_equal "$(jq -c '.window | [.previous, .since, .events]' <<<"$output")" '["T2","2026-10-20T03:00:00Z",3]'
 }
 
 @test "digest: with no retro yet, a dry run reads the whole ledger" {
