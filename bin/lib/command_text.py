@@ -47,15 +47,15 @@ separator inside quotes too: a walk of the text sees more commands there, never 
 
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
-too): the assignments before its name, env's among them; its words from the name of what runs on,
-past the wrappers env, command, exec, nohup, time, nice, ionice, stdbuf, timeout, setsid, sudo,
-doas, xargs, parallel, watch and flock with their options (env's lone - among them), numbers and
-flock's file, parallel's inputs after its ::: or :::: left out but for those with a scheme
-(https://host/u), read as URLs; the wrappers it ran behind, each its own words, the outermost
-first, with the command that ran its string, its find, or the shell or source that ran its file;
-and how it was reached: directly,
-in a string a tool runs, by find -exec, in a string watch or parallel join, as a shell's script
-file or by source.
+too): the assignments before its name, env's and an array element's (X[0]=1) among them, since Bash
+runs the command after one it refuses; its words from the name of what runs on, past the wrappers
+env, command, exec, nohup, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs,
+parallel, watch and flock with their options (env's lone - among them), numbers and flock's file,
+parallel's inputs after its ::: or :::: left out but for those with a scheme (https://host/u), read
+as URLs; the wrappers it ran behind, each its own words, the outermost first, with the command that
+ran its string, its find, or the shell or source that ran its file; and how it was reached:
+directly, in a string a tool runs, by find -exec, in a string watch or parallel join, as a shell's
+script file or by source.
 A command string is walked in turn, its commands yielded after the command that runs it, where
 the tool itself takes one: what watch and parallel join of their command's words (from the first
 word that is no option, and the next too when an option may take that one), env's -S or
@@ -724,8 +724,9 @@ def simple_commands(command):
             yield from _segment_commands(command, start, end, bodies)
 
 
-# An assignment, as a command's word.
-ASSIGNMENT = re.compile(r"[A-Za-z_]\w*\+?=")
+# An assignment, as a command's word, of a variable or of an array's element (X[0]=1), which
+# Bash refuses before a command as no identifier and runs the command all the same.
+ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(?:\[[^]]*\])?\+?=")
 # A wrapper's number, its value with no option before it (timeout 10s).
 NUMBER = re.compile(r"[0-9][0-9.]*[smhd]?")
 # The commands that run the command after them, past their options.

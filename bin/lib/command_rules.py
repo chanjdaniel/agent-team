@@ -81,9 +81,6 @@ from command_text import (  # noqa: E402
 import outbound  # noqa: E402
 
 ROLE_VARIABLES = ("AGENT_TEAM_ROLE", "AGENT_TEAM_TASK")
-# An assignment, of a variable or of an array's element, as a command's word: the walk takes an
-# element's one (X[0]=1) as the command's name.
-ANY_ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(?:\[[^]]*\])?\+?=")
 DECLARERS = frozenset("export declare typeset local readonly let read mapfile readarray".split())
 # What runs a script by its path, with its options before it.
 INTERPRETERS = frozenset(("node", "deno", "bun", "npx", "source", "."))
@@ -228,22 +225,12 @@ def _role_word(word, ends):
     return False
 
 
-def _leading(words):
-    """The assignments a command's words start with, an element's among them."""
-    for word in words:
-        if not ANY_ASSIGNMENT.match(word):
-            return
-        yield word
-
-
 def _assigned(command, context):
-    if any(_role_word(word, "=+") and ASSIGNMENT.match(word) for word in command.assignments):
+    if any(_role_word(word, "=+[") and ASSIGNMENT.match(word) for word in command.assignments):
         return True
     for words in _heads(command):
         if not words:
             continue
-        if any(_role_word(word, "[") for word in _leading(words)):
-            return True
         name, args = _name(words[0]), list(words[1:])
         if name in DECLARERS and any(_role_word(word, "=+[<) \t\n'\";&|") for word in args):
             return True
