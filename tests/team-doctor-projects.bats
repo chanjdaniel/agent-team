@@ -159,6 +159,14 @@ ledger_opened() {
   fix="cd ~/projects/Conventioner && ~/projects/Conventioner/scripts/th-return.sh"
   assert_equal "$(line_of 'leases conventioner')" "WARN leases conventioner: ~/$pool/1/Conventioner is leased to T1, which is closed; ~/$pool/3/Conventioner is leased to T2, whose worktree in conventioner is not there; ~/$pool/4/Conventioner is leased to agent, no task of the ledger; fix: once nothing in it is needed, Daniel returns each in their own terminal, which asks before discarding changes: $fix ~/$pool/1/Conventioner; $fix ~/$pool/3/Conventioner; $fix ~/$pool/4/Conventioner"
 
+  # A ticket worktree's lease is held as T<n>--NN, the open worktree of that ticket.
+  jq -cn --arg wt "$HOME/$pool/6/Conventioner" '{ts: "2026-10-24T11:30:00Z", task: "T2", event: "worktree-added",
+    project: "conventioner", branch: "feat/T2-work--03", base: "feat/T2-work", base_sha: "0000000", worktree: $wt,
+    ticket: "03"}' >>"$TEAM_HOME/ledger.jsonl"
+  leased_slots "$pool/2/Conventioner" T2 "$pool/6/Conventioner" T2--03 "$pool/7/Conventioner" T2--04
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "WARN leases conventioner: ~/$pool/7/Conventioner is leased to T2--04, whose worktree in conventioner is not there; fix: once nothing in it is needed, Daniel returns each in their own terminal, which asks before discarding changes: $fix ~/$pool/7/Conventioner"
+
   # A worktree-moved to the leased slot makes it the task's again.
   jq -cn --arg from "$HOME/$pool/2/Conventioner" --arg wt "$HOME/$pool/3/Conventioner" '{ts: "2026-10-24T12:00:00Z",
     task: "T2", event: "worktree-moved", project: "conventioner", branch: "feat/T2-work", from: $from, worktree: $wt,
@@ -321,6 +329,32 @@ $SITE"
   run_bin -0 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "WARN branches site: feat/ahead (2 commits), wip (1 commit) on no origin branch; fix: push each (git -C ~/projects/site push -u origin <branch>) or delete it
 WARN changes site: changes to tracked files: README.md; untracked files: notes.txt; fix: commit, stash or remove them in ~/projects/site"
+}
+
+@test "an open ticket worktree's branch, never pushed, is no unpushed branch; a returned one's still is" {
+  only_checks 200-projects.sh
+  tools_at arch
+  local task_wt=$HOME/site-wt/1 ticket_wt=$HOME/site-wt/2
+  git -C "$SITE" worktree add -q -b feat/T7-x "$task_wt" origin/main
+  git -C "$SITE" update-ref refs/remotes/origin/feat/T7-x feat/T7-x
+  git -C "$SITE" worktree add -q -b feat/T7-x--02 "$ticket_wt" feat/T7-x
+  git -C "$ticket_wt" commit -q --allow-empty -m "feat: ticket 02's"
+  # Another task's branch with the same suffix and no ticket worktree still warns.
+  git -C "$SITE" branch feat/T8-y--02 feat/T7-x--02
+  jq -cn --arg wt "$task_wt" '{ts: "2026-10-23T09:00:00Z", task: "T7", event: "opened", project: "site",
+    path: "small", type: "feat", title: "x", branch: "feat/T7-x", base: "main", base_sha: "0000000", worktree: $wt}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  jq -cn --arg wt "$ticket_wt" '{ts: "2026-10-23T09:30:00Z", task: "T7", event: "worktree-added", project: "site",
+    branch: "feat/T7-x--02", base: "feat/T7-x", base_sha: "0000000", worktree: $wt, ticket: "02"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'branches site')" "WARN branches site: feat/T8-y--02 (1 commit) on no origin branch; fix: push each (git -C ~/projects/site push -u origin <branch>) or delete it"
+
+  # Once the ticket worktree is returned, its branch, left unintegrated, warns.
+  jq -cn --arg wt "$ticket_wt" '{ts: "2026-10-23T10:00:00Z", task: "T7", event: "worktree-returned", project: "site",
+    worktree: $wt, ticket: "02"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'branches site')" "WARN branches site: feat/T7-x--02 (1 commit), feat/T8-y--02 (1 commit) on no origin branch; fix: push each (git -C ~/projects/site push -u origin <branch>) or delete it"
 }
 
 @test "without a registry, or with a broken one, the projects line fails with team-project's reason" {

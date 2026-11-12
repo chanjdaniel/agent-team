@@ -21,8 +21,9 @@
     },
     "worktree-added": {
       "writer": "team-open",
-      "about": "team-open --add",
-      "required": {"project": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"}
+      "about": "team-open --add, or team-open --ticket with ticket, the two-digit number of the ticket the worktree is given to, branch its ticket branch <task branch>--NN, base the task branch and base_sha the task branch's tip it was cut from",
+      "required": {"project": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"},
+      "optional": {"ticket": "string"}
     },
     "thread": {
       "writer": "team-thread",
@@ -35,15 +36,16 @@
     },
     "launch": {
       "writer": "team-worker",
-      "about": "request is the link to Daniel's Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on (team-worker refuses one that did), which only an ops launch carries; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there; template is the template team-brief rendered that brief from, as its record brief-<name>.json beside it names it (verify for a verify, whose brief is named rereview-<k>), absent with no brief, with no record or one naming none, and on a launch from before 2026-11-12; admission is the id of the capacity admission the launch was made on (team-capacity admit's first line), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past (team-worker --past-ask), which then park nothing, absent when it names none",
+      "about": "request is the link to Daniel's Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on (team-worker refuses one that did), which only an ops launch carries; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there; template is the template team-brief rendered that brief from, as its record brief-<name>.json beside it names it (verify for a verify, whose brief is named rereview-<k>), absent with no brief, with no record or one naming none, and on a launch from before 2026-11-12; admission is the id of the capacity admission the launch was made on (team-capacity admit's first line), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past (team-worker --past-ask), which then park nothing, absent when it names none; ticket is the two-digit number of the ticket whose ticket worktree a builder launched in (team-open --ticket's), its session named T<n>-builder-NN and its branch the ticket branch, absent in a task worktree",
       "required": {"role": "string", "session": "string", "worktree": "string", "toolkits": "array"},
-      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "discord_message": "id", "brief": "string", "template": "string", "admission": "string", "past_ask": "array"},
-      "field_when": {"discord_message": {"role": ["ops"]}}
+      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "discord_message": "id", "brief": "string", "template": "string", "admission": "string", "past_ask": "array", "ticket": "string"},
+      "field_when": {"discord_message": {"role": ["ops"]}, "ticket": {"role": ["builder"]}}
     },
     "worktree-returned": {
       "writer": "team-close",
+      "about": "ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
       "required": {"project": "string", "worktree": "string"},
-      "optional": {"branch": "string"}
+      "optional": {"branch": "string", "ticket": "string"}
     },
     "closed": {
       "writer": "team-close",
@@ -83,8 +85,9 @@
     },
     "ticket-done": {
       "writer": "team-log",
+      "about": "head is the task branch's tip a ticket landed as, which team-next logs through team-log only when it integrated the ticket from its ticket worktree, absent for a ticket built in the task worktree",
       "required": {"ticket": "string", "commits": "array"},
-      "optional": {"repo": "string"}
+      "optional": {"repo": "string", "head": "string"}
     },
     "question": {
       "writer": ["team-log", "team-ask"],
@@ -118,9 +121,9 @@
     "plan-approved": {
       "writer": "team-log",
       "push": true,
-      "about": "the task's plan approved by Daniel, with ask the asked it answers and discord_message their message, which team-log requires of every new line of theirs, or by the coordinator, with neither; plan each file approved, the team home's tasks/T<n>/plan.md and the task directory's spec.md and scope.txt (plan_files in bin/lib/team.sh), to its sha256, and scope scope.txt's lines, both written by team-log itself; a line with no plan is from before T276, read as the coordinator's whatever its by (plan_approval in bin/lib/ledger.jq); it stands until a later plan-approval-withdrawn",
+      "about": "the task's plan approved by Daniel, with ask the asked it answers and discord_message their message, which team-log requires of every new line of theirs, or by the coordinator, with neither; plan each file approved, the team home's tasks/T<n>/plan.md and the task directory's spec.md and scope.txt (plan_files in bin/lib/team.sh), to its sha256, and scope scope.txt's lines, both written by team-log itself; a line with no plan is from before T276, read as the coordinator's whatever its by (plan_approval in bin/lib/ledger.jq); it stands until a later plan-approval-withdrawn; parallel the approved cap on the tickets of each phase that build at once, one from 1 to 3 per phase in phase order joined by commas (2, 2,1), the last holding for any later phase, and with none every phase builds one ticket at a time",
       "required": {"by": ["Daniel", "coordinator"]},
-      "optional": {"ask": "string", "discord_message": "id", "plan": "object", "scope": "array"},
+      "optional": {"ask": "string", "discord_message": "id", "plan": "object", "scope": "array", "parallel": "string"},
       "field_when": {"ask": {"by": ["Daniel"]}, "discord_message": {"by": ["Daniel"]}}
     },
     "plan-approval-withdrawn": {
@@ -255,7 +258,7 @@
     },
     "stowed": {
       "writer": "team-stow",
-      "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",
+      "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin, and ticket, the two-digit number of a ticket worktree's ticket; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",
       "required": {"machine": "string", "worktrees": "array", "roles": "array"},
       "optional": {"sessions": "array", "cause": ["level", "handoff"]}
     },
@@ -266,8 +269,9 @@
     },
     "worktree-moved": {
       "writer": "team-open",
-      "about": "team-open --resume, when this machine's worktree for the task in project is not the recorded one",
-      "required": {"project": "string", "branch": "string", "from": "string", "worktree": "string", "machine": "string"}
+      "about": "team-open --resume, when this machine's worktree for the task in project is not the recorded one; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "from": "string", "worktree": "string", "machine": "string"},
+      "optional": {"ticket": "string"}
     },
     "injection": {
       "writer": "team-log",
@@ -276,13 +280,15 @@
     },
     "rehome-failed": {
       "writer": "team-resume",
-      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project",
-      "required": {"project": "string", "branch": "string", "machine": "string", "reason": "string"}
+      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "machine": "string", "reason": "string"},
+      "optional": {"ticket": "string"}
     },
     "rehomed": {
       "writer": "team-open",
-      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it",
-      "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"}
+      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"},
+      "optional": {"ticket": "string"}
     },
     "walk": {
       "writer": "team-ui",

@@ -115,6 +115,16 @@ after_opened() {
   assert_contains "$output" "a launch's discord_message is only for role ops, not \"reviewer\""
 }
 
+@test "a builder's launch may name its ticket; no other role's launch may" {
+  local launch='{"ts":"2026-11-11T02:00:00Z","task":"T7","event":"launch","session":"4f2a9c1e","worktree":"/w","toolkits":[],"branch":"feat/T7-x--03"'
+  append_as team-worker "$launch,\"role\":\"builder\",\"ticket\":\"03\"}"
+  assert_equal "$status" "0"
+  append_as team-worker "$launch,\"role\":\"reviewer\",\"ticket\":\"03\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" 'team-worker: refusing a ledger event: a launch'"'"'s ticket is only for role builder, not "reviewer"'
+  assert_equal "$(jq -c '[.role, .ticket]' "$TEAM_HOME/ledger.jsonl")" '["builder","03"]'
+}
+
 @test "an ops done may carry its report's length and its relay, and a question its text or its length, one of them" {
   opened_task T7
   local at='"ts":"2026-11-09T02:00:00Z","task":"T7"'
@@ -258,20 +268,22 @@ approval_of() {
   local launch='{"event": "launch", "role": "builder", "session": "b1"}'
   assert_equal "$(approval_of </dev/null)" '[null,"planning"]'
   assert_equal "$(approval_of <<<"$daniel")" \
-    '[{"state":"approved","by":"Daniel","ask":"plan","discord_message":"1563","plan":{"tasks/T1/plan.md":"ab12"},"scope":["src/"],"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
+    '[{"state":"approved","by":"Daniel","ask":"plan","discord_message":"1563","plan":{"tasks/T1/plan.md":"ab12"},"scope":["src/"],"parallel":null,"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
   assert_equal "$(approval_of <<<"$coordinator")" \
-    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":null,"plan":{"tasks/T1/plan.md":"cd34"},"scope":null,"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
+    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":null,"plan":{"tasks/T1/plan.md":"cd34"},"scope":null,"parallel":null,"ts":"2026-11-01T00:01:00Z","legacy":false},"building"]'
   # A line from before T276 has no plan: never Daniel's read-back word, whatever its by.
   assert_equal "$(approval_of <<<"$legacy")" \
-    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":"1565","plan":null,"scope":null,"ts":"2026-11-01T00:01:00Z","legacy":true},"building"]'
+    '[{"state":"approved","by":"coordinator","ask":null,"discord_message":"1565","plan":null,"scope":null,"parallel":null,"ts":"2026-11-01T00:01:00Z","legacy":true},"building"]'
   # A withdrawal takes the building task back to planning, where no builder launch or ticket-done
   # moves it, until the plan is approved again.
   assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" | approval_of)" \
-    '[{"state":"withdrawn","by":null,"ask":null,"discord_message":"1564","plan":null,"scope":null,"ts":"2026-11-01T00:02:00Z","legacy":false},"planning"]'
+    '[{"state":"withdrawn","by":null,"ask":null,"discord_message":"1564","plan":null,"scope":null,"parallel":null,"ts":"2026-11-01T00:02:00Z","legacy":false},"planning"]'
   assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" "$launch" '{"event": "ticket-done", "ticket": "01", "commits": ["a1b2c3d"]}' | approval_of | jq -c '[.[0].state, .[1]]')" \
     '["withdrawn","planning"]'
   assert_equal "$(printf '%s\n' "$daniel" "$withdrawn" "$coordinator" | approval_of | jq -c '[.[0].state, .[0].by, .[1]]')" \
     '["approved","coordinator","building"]'
+  # The phases' caps are the approval's, and a withdrawal names none.
+  assert_equal "$(jq -c '. + {parallel: "2,1"}' <<<"$coordinator" | approval_of | jq -c '.[0].parallel')" '"2,1"'
   # A withdrawal once the PR is up leaves the review phase as it is.
   assert_equal "$(printf '%s\n' "$daniel" "$launch" '{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d"}' "$withdrawn" \
     | approval_of | jq -c '[.[0].state, .[1]]')" '["withdrawn","in-review"]'
@@ -514,6 +526,69 @@ EVENTS
 )" '["builder"]'
 }
 
+# The library's handed_on_launches over a task's events, given one JSON event per line, each as
+# [session, handed_on]: handed_on <role of the new launch, or "" for none>
+handed_on() {
+  jq -L "$REPO_ROOT/bin/lib" -sc --arg role "$1" \
+    'include "ledger"; map({ts: "2026-10-24T12:00:00Z", task: "T1"} + .) | handed_on_launches($role; "/home/x") | map([.session, .handed_on])'
+}
+
+@test "a ticket builder ends only by its own done or its ticket's ticket-done, and a task worktree's builder as before" {
+  local two='{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
+{"event": "launch", "role": "builder", "session": "b4", "worktree": "/w/1--04", "ticket": "04"}'
+  # Ticket 03's ticket-done leaves 04's builder unfinished, and builder is named once.
+  assert_equal "$(unfinished_roles <<<"$two")" '["builder"]'
+  assert_equal "$(unfinished_roles <<EVENTS
+$two
+{"event": "ticket-done", "ticket": "03", "commits": ["abc1234"]}
+{"event": "done", "role": "builder", "session": "b3"}
+EVENTS
+)" '["builder"]'
+  assert_equal "$(unfinished_roles <<EVENTS
+$two
+{"event": "ticket-done", "ticket": "03", "commits": ["abc1234"]}
+{"event": "ticket-done", "ticket": "04", "commits": ["abc1235"]}
+EVENTS
+)" '[]'
+  # A done of its own session ends a ticket builder; a pr or another builder's done does not.
+  assert_equal "$(unfinished_roles <<EVENTS
+$two
+{"event": "done", "role": "builder", "session": "b4"}
+{"event": "pr", "url": "https://github.com/o/r/pull/3", "head": "abc1234"}
+EVENTS
+)" '["builder"]'
+  # A builder of the task worktree ends by any ticket-done, as before, a ticket builder's too.
+  assert_equal "$(unfinished_roles <<'EVENTS'
+{"event": "launch", "role": "builder", "session": "b0", "worktree": "/w/1"}
+{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
+{"event": "ticket-done", "ticket": "03", "commits": ["abc1234"]}
+EVENTS
+)" '[]'
+}
+
+@test "a ticket's ticket-done hands on only its own ticket's builder, with a new launch or none" {
+  local two='{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
+{"event": "launch", "role": "builder", "session": "b4", "worktree": "/w/1--04", "ticket": "04"}
+{"event": "ticket-done", "ticket": "03", "commits": ["abc1234"]}'
+  # With no new launch (the heartbeat's finished step), ticket 03's builder is a candidate once its
+  # ticket-done follows it, with or without its done; 04's is none.
+  assert_equal "$(handed_on '' <<<"$two")" '[["b3",true]]'
+  assert_equal "$(handed_on '' <<EVENTS
+$two
+{"event": "done", "role": "builder", "session": "b3"}
+EVENTS
+)" '[["b3",true]]'
+  # A new builder's launch sees both, and only 03's is handed on.
+  assert_equal "$(handed_on builder <<<"$two")" '[["b3",true],["b4",false]]'
+  # A pr hands on no ticket builder, but a task worktree's builder as before.
+  assert_equal "$(handed_on builder <<'EVENTS'
+{"event": "launch", "role": "builder", "session": "b0", "worktree": "/w/1"}
+{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
+{"event": "pr", "url": "https://github.com/o/r/pull/3", "head": "abc1234"}
+EVENTS
+)" '[["b0",true],["b3",false]]'
+}
+
 @test "a stowed may give its cause, level or handoff, and team-stow alone writes it" {
   local stowed='{"ts":"2026-11-01T14:05:00Z","task":"T7","event":"stowed","machine":"home-pc","worktrees":[],"roles":[],"sessions":[]'
   append_as team-stow "$stowed,\"cause\":\"level\"}"
@@ -568,6 +643,61 @@ awaiting() {
     '[["proj","feat/T1-x-fresh"],["lib","feat/T1-lib"]]'
   assert_equal "$("${lib[@]}" 'include "ledger"; [worktree_list[] | [.project, .branch]]' <<<"$events")" \
     '[["proj","feat/T1-x-fresh"],["lib","feat/T1-lib"]]'
+}
+
+@test "ticket worktrees: each is keyed by project and ticket, so a move, rename or return touches only its own" {
+  local events='{"event": "opened", "project": "proj", "branch": "feat/T1-x", "worktree": "/w/1", "path": "feature"}
+{"event": "worktree-added", "project": "lib", "branch": "feat/T1-lib", "worktree": "/w/2"}
+{"event": "worktree-added", "project": "proj", "branch": "feat/T1-x--02", "base": "feat/T1-x", "worktree": "/w/3", "ticket": "02"}
+{"event": "worktree-added", "project": "proj", "branch": "feat/T1-x--03", "base": "feat/T1-x", "worktree": "/w/4", "ticket": "03"}'
+  local lib=(jq -L "$REPO_ROOT/bin/lib" -sc)
+  open() { "${lib[@]}" 'include "ledger"; map({task: "T1"} + .) | [open_worktrees(.[]; "/home/x") | [.project, .ticket, .branch, .worktree]]'; }
+  listed() { "${lib[@]}" 'include "ledger"; [worktree_list[] | [.project, .ticket, .branch, .worktree, .returned]]'; }
+  archived() { "${lib[@]}" 'include "ledger"; map({task: "T1"} + .) | [archived_worktrees("/home/x") | [.ticket, .archive]]'; }
+  assert_equal "$(open <<<"$events")" \
+    '[["proj",null,"feat/T1-x","/w/1"],["lib",null,"feat/T1-lib","/w/2"],["proj","02","feat/T1-x--02","/w/3"],["proj","03","feat/T1-x--03","/w/4"]]'
+  assert_equal "$(archived <<<"$events")" '[[null,"scratch"],[null,"scratch-lib"],["02","scratch--02"],["03","scratch--03"]]'
+  # The task's branch is never a ticket branch, though a ticket worktree-added is the latest.
+  assert_equal "$("${lib[@]}" 'include "ledger"; [task_branch("proj"), task_branch("lib")]' <<<"$events")" '["feat/T1-x","feat/T1-lib"]'
+
+  # A rename names no ticket: only the task's own worktree in proj takes it.
+  events+=$'\n''{"event": "branch-renamed", "project": "proj", "branch": "feat/T1-x-fresh"}'
+  # A move of ticket 03's worktree moves only it, and a move with no ticket only the task's.
+  events+=$'\n''{"event": "worktree-moved", "project": "proj", "branch": "feat/T1-x--03", "from": "/w/4", "worktree": "/w/5", "ticket": "03"}'
+  events+=$'\n''{"event": "worktree-moved", "project": "proj", "branch": "feat/T1-x-fresh", "from": "/w/1", "worktree": "/w/6"}'
+  assert_equal "$(open <<<"$events")" \
+    '[["proj",null,"feat/T1-x-fresh","/w/6"],["lib",null,"feat/T1-lib","/w/2"],["proj","02","feat/T1-x--02","/w/3"],["proj","03","feat/T1-x--03","/w/5"]]'
+  assert_equal "$(listed <<<"$events")" \
+    '[["proj",null,"feat/T1-x-fresh","/w/6",false],["lib",null,"feat/T1-lib","/w/2",false],["proj","02","feat/T1-x--02","/w/3",false],["proj","03","feat/T1-x--03","/w/5",false]]'
+  assert_equal "$("${lib[@]}" 'include "ledger"; task_branch("proj")' <<<"$events")" '"feat/T1-x-fresh"'
+
+  # A return of ticket 02's worktree returns only it; one that names its path with no ticket
+  # returns nothing, since the task's own worktree in proj is elsewhere.
+  events+=$'\n''{"event": "worktree-returned", "project": "proj", "worktree": "/w/3"}'
+  assert_equal "$(open <<<"$events" | jq -c 'map(.[1])')" '[null,null,"02","03"]'
+  events+=$'\n''{"event": "worktree-returned", "project": "proj", "worktree": "/w/3", "ticket": "02"}'
+  assert_equal "$(open <<<"$events" | jq -c 'map(.[1])')" '[null,null,"03"]'
+  assert_equal "$(listed <<<"$events" | jq -c 'map([.[1], .[4]])')" '[[null,false],[null,false],["02",true],["03",false]]'
+  assert_equal "$(archived <<<"$events")" '[[null,"scratch"],[null,"scratch-lib"],["03","scratch--03"]]'
+}
+
+@test "a ticket on worktree-added, worktree-returned, worktree-moved, rehomed and rehome-failed meets the contract" {
+  opened_task T7
+  local at='"ts":"2026-10-31T02:00:00Z","task":"T7"'
+  append_as team-open "{$at,\"event\":\"worktree-added\",\"project\":\"proj\",\"branch\":\"feat/T7-x--02\",\"base\":\"feat/T7-x\",\"base_sha\":\"abc1234\",\"worktree\":\"/w/2\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-close "{$at,\"event\":\"worktree-returned\",\"project\":\"proj\",\"worktree\":\"/w/2\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-open "{$at,\"event\":\"worktree-moved\",\"project\":\"proj\",\"branch\":\"feat/T7-x--02\",\"from\":\"/w/2\",\"worktree\":\"/w/3\",\"machine\":\"m\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-open "{$at,\"event\":\"rehomed\",\"project\":\"proj\",\"branch\":\"feat/T7-x--02\",\"worktree\":\"/w/3\",\"machine\":\"m\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-resume "{$at,\"event\":\"rehome-failed\",\"project\":\"proj\",\"branch\":\"feat/T7-x--02\",\"machine\":\"m\",\"reason\":\"r\",\"ticket\":\"02\"}"
+  assert_equal "$status" "0"
+  append_as team-open "{$at,\"event\":\"worktree-added\",\"project\":\"proj\",\"branch\":\"b\",\"base\":\"b\",\"base_sha\":\"abc1234\",\"worktree\":\"/w/4\",\"ticket\":2}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "ticket must be a string"
+  run_bin -0 team-log --check
 }
 
 @test "a branch-renamed meets the contract, written by team-log" {

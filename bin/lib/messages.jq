@@ -42,38 +42,46 @@ def message_pairs($what):
 # The task's launches, each with its index in the events: $events | message_launches
 def message_launches: [to_entries[] | select(.value.event == "launch") | .value + {i: .key}];
 
+# A launch's session name, as team-worker names it: "T7-builder", "T7-builder-03" for a builder in
+# ticket 03's worktree.
+def message_session_name($task): "\($task)-\(.role)" + if .ticket != null then "-\(.ticket)" else "" end;
+
 # A launch's session name and id, as a refusal names it: "T7-builder (b0000001)".
-def message_launch_name($task): "\($task)-\(.role) (\(.session))";
+def message_launch_name($task): "\(message_session_name($task)) (\(.session))";
 
-# The latest launch of each role with no event since that ends it (ends_worker): the workers
-# whose message has not been reported yet.
+# The latest launch of each role and ticket (none, or a ticket builder's) with no event since that
+# ends it (ends_launch): the workers whose message has not been reported yet.
 def message_unreported($events):
-  $events | message_launches | group_by(.role) | map(max_by(.i))
-  | map(. as $l | select(all($events[$l.i + 1:][]; ends_worker($l.role) | not))) | sort_by(.i);
+  $events | message_launches | group_by([.role, .ticket]) | map(max_by(.i))
+  | map(. as $l | select(all($events[$l.i + 1:][]; ends_launch($l) | not))) | sort_by(.i);
 
-# The message's sender: {role, session, brief} of the latest launch of the role the kind implies
-# ($implied, or null), else of --from's role ($from, a session name T<n>-<role> or a launch's
-# session id, or ""), else of the only launch with no report since; or a refusal.
-def message_sender($task; $events; $from; $implied):
+# The message's sender: {role, session, brief...} of --from's launch ($from, a session name
+# T<n>-<role> or T<n>-<role>-<NN>, or a launch's session id, or "": the latest launch it names),
+# its role checked against the one the kind implies ($implied, or null); else of the latest launch
+# of $implied, for a builder's DONE <NN> ($ticket, else null) the latest builder launch of ticket
+# NN when there is one; else of the only launch with no report since; or a refusal.
+def message_sender($task; $events; $from; $implied; $ticket):
   ($events | message_launches) as $launches
   | def latest($role): $launches | map(select(.role == $role)) | last;
-    def from_role:
+    def from_launch:
       if $from == "" then null
-      else ($launches | map(select("\($task)-\(.role)" == $from or .session == $from)) | last) as $l
-        | if $l != null then $l.role
+      else ($launches | map(select(message_session_name($task) == $from or .session == $from)) | last) as $l
+        | if $l != null then $l
           else {problems: ["--from \($from) names no launch of \($task)"
             + if $launches == [] then ": it has none"
-              else ": its sessions are " + ($launches | group_by(.role) | map(max_by(.i)) | sort_by(.i)
+              else ": its sessions are " + ($launches | group_by([.role, .ticket]) | map(max_by(.i)) | sort_by(.i)
                 | map(message_launch_name($task)) | join(", ")) end]} end end;
-    from_role as $from_role
-    | if ($from_role | type) == "object" then $from_role
+    from_launch as $named
+    | if $named.problems then $named
       elif $implied != null then
-        if $from_role != null and $from_role != $implied then
-          message_refused("the message is a \($implied)'s, but --from names \($task)-\($from_role)")
-        else latest($implied) as $l
+        if $named != null and $named.role != $implied then
+          message_refused("the message is a \($implied)'s, but --from names \($named | message_session_name($task))")
+        elif $named != null then {sender: $named}
+        else ((if $ticket != null then $launches | map(select(.role == $implied and .ticket == $ticket)) | last else null end)
+              // latest($implied)) as $l
           | if $l == null then message_refused("the message is a \($implied)'s, but \($task) has no \($implied) launch")
             else {sender: $l} end end
-      elif $from_role != null then {sender: latest($from_role)}
+      elif $named != null then {sender: $named}
       else message_unreported($events) as $open
         | if ($open | length) == 1 then {sender: $open[0]}
           elif $launches == [] then
@@ -84,11 +92,14 @@ def message_sender($task; $events; $from; $implied):
             + ($open | map(message_launch_name($task)) | .[:-1] | join(", ")) + " and "
             + ($open | last | message_launch_name($task)) + " have no report since their launch; name it with --from <session>")
           end end;
+def message_sender($task; $events; $from; $implied): message_sender($task; $events; $from; $implied; null);
 
-# Runs f on the sender's {sender} when it is known, passing a refusal through.
-def with_sender($task; $events; $from; $implied; f):
-  message_sender($task; $events; $from; $implied) as $s
+# Runs f on the sender's {sender} when it is known, passing a refusal through; $ticket is
+# message_sender's.
+def with_sender($task; $events; $from; $implied; $ticket; f):
+  message_sender($task; $events; $from; $implied; $ticket) as $s
   | if $s.problems then $s else $s.sender | f end;
+def with_sender($task; $events; $from; $implied; f): with_sender($task; $events; $from; $implied; null; f);
 
 # One event: {event, fields: [[key, raw value]...]}.
 def message_event($event; $fields): {event: $event, fields: $fields};
@@ -148,14 +159,15 @@ def message_review($task; $events; $records; $from; $sent_back; $verdict; $rest)
         end
     end;
 
-# A builder's DONE <NN> <sha>... <line>: the ticket-done and the builder's done.
+# A builder's DONE <NN> <sha>... <line>: the ticket-done and the done of ticket NN's builder
+# (message_sender).
 def message_ticket($task; $events; $from; $ticket; $rest):
   ($rest | [splits("\\s+")]) as $words
   | ([$words | to_entries[] | select(.value | message_sha | not) | .key] | first // ($words | length)) as $n
   | if $n == 0 then
       message_refused("DONE \($ticket) takes one or more shas of 7 to 40 hex digits after the ticket, then a line, got '\($words[0] // "")'")
     else ($rest | sub("^\\s*(\\S+\\s*){\($n)}"; "")) as $line
-      | with_sender($task; $events; $from; "builder";
+      | with_sender($task; $events; $from; "builder"; $ticket;
           {events: [
             message_event("ticket-done"; [["ticket", $ticket], ["commits", ($words[:$n] | join(","))]]
               + if $line == "" then [] else [["note", $line]] end),

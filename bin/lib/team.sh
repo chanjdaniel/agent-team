@@ -394,7 +394,8 @@ machine_level() {
 }
 
 # A task's open worktrees (opened and added, minus returned), one compact
-# {task, project, branch, worktree} per line, each worktree a path on this machine (local_path):
+# {task, project, branch, worktree, ticket} per line, ticket null but for a ticket worktree
+# (open_worktrees in bin/lib/ledger.jq), each worktree a path on this machine (local_path):
 # task_worktrees T<n>
 task_worktrees() {
   [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||

@@ -4,6 +4,7 @@
 # Usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <path> <type> <slug> <title...>
 #        team-open --task T<n> --add <project> <type> <slug>
 #        team-open --task T<n> --resume <project>
+#        team-open --task T<n> --ticket <NN>
 #   project  a project in projects.toml (team-project --list)
 #   path     feature | bug | small | research | retro (retro marks a retro task for team-retro)
 #   type     the branch prefix: feat | fix | docs | chore | build | ci | test | refactor | perf | research
@@ -77,6 +78,22 @@
 # resume from one.
 # Needs this machine's name; refused for a task that is not open or has no open worktree in
 # <project>; re-running after a failure finishes it.
+# With --ticket, gives ticket NN of the open task T<n> a ticket worktree of its own, in the project
+# of the task directory team-tickets T<n> --json reads the ticket from, for a phase whose tickets
+# build in parallel: refused for a task with no opened event or with a closed one, for an NN that
+# is none of the task's tickets, and for a ticket whose project has no open worktree of the task
+# here (the task worktree, whose branch is the task branch). An open ticket worktree of NN already
+# is printed as below, and said on stderr ("T<n>'s ticket NN already has its worktree <path>"),
+# exit 0. Else the pool steps above, a treehouse lease's holder T<n>--NN, with the start the task
+# branch's local tip (refs/heads/<task branch>) and the branch the ticket branch <task branch>--NN,
+# never pushed; it fetches nothing and the primary checkout does not follow the base, so it runs
+# offline. A ticket branch that exists already (an unintegrated ticket worktree returned at a
+# close) is moved to the task branch's tip when the tip holds its head, said on stderr, and
+# refused when it has commits the task branch lacks. Then the task directory, refused as above
+# when git does not ignore it, takes a copy of the task worktree's spec.md, scope.txt, tickets/
+# and build-notes/ (each that exists), and worktree-added is appended with ticket, base the task
+# branch and base_sha the tip the branch was cut from. Prints {task, project, branch, base,
+# base_sha, worktree, task_dir, ticket} as JSON; a half-open run is finished by running it again.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
@@ -89,14 +106,21 @@ ledger=$TEAM_HOME/ledger.jsonl
 usage="usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <path> <type> <slug> <title...>"
 add_usage="usage: team-open --task T<n> --add <project> <type> <slug>"
 resume_usage="usage: team-open --task T<n> --resume <project>"
+ticket_usage="usage: team-open --task T<n> --ticket <NN>"
 
-task='' add='' resume='' story=''
-while [[ ${1:-} == --task || ${1:-} == --story || ${1:-} == --add || ${1:-} == --resume ]]; do
+task='' add='' resume='' story='' ticket=''
+while [[ ${1:-} == --task || ${1:-} == --story || ${1:-} == --add || ${1:-} == --resume || ${1:-} == --ticket ]]; do
   case $1 in
     --add) add=1 && shift && continue ;;
     --resume) resume=1 && shift && continue ;;
   esac
   [[ $# -ge 2 ]] || usage_error "$usage"
+  if [[ $1 == --ticket ]]; then
+    ticket=$2
+    shift 2
+    [[ $ticket =~ ^[0-9]{2}$ ]] || usage_error "ticket must be a two-digit number like 03, got '$ticket'"
+    continue
+  fi
   if [[ $1 == --story ]]; then
     story=$2
     shift 2
@@ -109,7 +133,17 @@ while [[ ${1:-} == --task || ${1:-} == --story || ${1:-} == --add || ${1:-} == -
 done
 [[ -z $add || -z $resume ]] || usage_error "--add and --resume do not go together"
 [[ -z $story || (-z $add && -z $resume) ]] || usage_error "--story goes only with a new task, not with --add or --resume"
-if [[ -n $resume ]]; then
+[[ -z $ticket || (-z $add && -z $resume && -z $story) ]] || usage_error "--ticket goes only with --task, not with --add, --resume or --story"
+if [[ -n $ticket ]]; then
+  [[ -n $task ]] || usage_error "--ticket needs --task T<n>, the open task whose ticket to give a worktree"
+  [[ $# -eq 0 ]] || usage_error "$ticket_usage"
+  path='' type='' slug='' title=''
+  # The task must be open, and NN one of its tickets, whose project is the ticket's.
+  events=$(open_task_events "$task")
+  tickets=$(TEAM_HOME=$TEAM_HOME "$bin/team-tickets" "$task" --json) || exit 1
+  project=$(jq -r --arg n "$ticket" 'map(select(.ticket == $n)) | first | .project // empty' <<<"$tickets")
+  [[ -n $project ]] || die "$task has no ticket $ticket; its tickets: $(jq -r 'map(.ticket) | join(", ") | if . == "" then "none" else . end' <<<"$tickets")"
+elif [[ -n $resume ]]; then
   [[ -n $task ]] || usage_error "--resume needs --task T<n>, the open task whose worktree to make here"
   [[ $# -eq 1 ]] || usage_error "$resume_usage"
   project=$1 path='' type='' slug='' title=''
@@ -126,7 +160,7 @@ else
     usage_error "path must be feature, bug, small, research or retro, got '$path'"
   [[ $title =~ [^[:space:]] ]] || usage_error "$usage"
 fi
-if [[ -z $resume ]]; then
+if [[ -z $resume && -z $ticket ]]; then
   [[ $type =~ ^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)$ ]] ||
     usage_error "type must be feat, fix, docs, chore, build, ci, test, refactor, perf or research, got '$type'"
   [[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -le 40 ]] ||
@@ -163,16 +197,36 @@ mkdir -p "$TEAM_HOME/tasks"
 claimed=
 if [[ -n $resume ]]; then
   events=$(open_task_events "$task")
-  open=$(ledger_jq 'archived_worktrees($home) | select(.project == $project)' -c --arg project "$project" <<<"$events")
+  open=$(ledger_jq 'archived_worktrees($home) | select(.project == $project and .ticket == null)' -c --arg project "$project" <<<"$events")
   [[ -n $open ]] || die "$task has no open worktree in $project"
   snapshot_due=$(ledger_jq 'snapshot_due($project; $machine)' --arg project "$project" --arg machine "$machine" <<<"$events")
   rehome_failed=$(ledger_jq 'any(rehome_failures[]; .project == $project)' --arg project "$project" <<<"$events")
   branch=$(jq -r .branch <<<"$open")
   recorded=$(jq -r .worktree <<<"$open")
   archive=tasks/$task/$(jq -r .archive <<<"$open")
+elif [[ -n $ticket ]]; then
+  own=$(ledger_jq 'archived_worktrees($home) | select(.project == $project and .ticket == null)' -c \
+    --arg project "$project" <<<"$events")
+  [[ -n $own ]] || die "$task has no open worktree in $project, so ticket $ticket has no task branch to start from"
+  task_branch=$(jq -r .branch <<<"$own")
+  task_worktree=$(jq -r .worktree <<<"$own")
+  # An open ticket worktree of NN already: its facts again, so a fill after a refused launch
+  # reuses it.
+  mine=$(ledger_jq '(map(select(.event == "worktree-added" and .ticket == $n)) | last) as $added
+    | [open_worktrees(.[]; $home) | select(.ticket == $n)] | last | select(. != null)
+    | {task, project, branch, base: $added.base, base_sha: $added.base_sha, worktree,
+       task_dir: "\(.worktree)/\($dir)", ticket}' -c --arg n "$ticket" --arg dir "$task_dir" <<<"$events")
+  if [[ -n $mine ]]; then
+    echo "team-open: $task's ticket $ticket already has its worktree $(jq -r .worktree <<<"$mine")" >&2
+    jq . <<<"$mine"
+    exit 0
+  fi
+  [[ -d $task_worktree ]] || die "$task's worktree in $project, $task_worktree, is not on this machine"
+  tip=$(git -C "$primary" rev-parse -q --verify "refs/heads/$task_branch^{commit}") ||
+    die "the task branch $task_branch is not a branch of $primary"
 elif [[ -n $add ]]; then
   open_task_events "$task" >/dev/null
-  held=$(task_worktrees "$task" | jq -r --arg p "$project" 'select(.project == $p) | "\(.worktree) (\(.branch))"')
+  held=$(task_worktrees "$task" | jq -r --arg p "$project" 'select(.project == $p and .ticket == null) | "\(.worktree) (\(.branch))"')
   [[ -z $held ]] || die "$task already has an open worktree in $project: $held"
 elif [[ -n $task ]]; then
   ! task_events "$task" | jq -se 'any(.[]; .event == "opened")' >/dev/null ||
@@ -190,29 +244,36 @@ else
   done
   task=T$n claimed=1
 fi
-[[ -n $resume ]] || branch=$type/$task-$slug
+if [[ -n $ticket ]]; then
+  branch=$task_branch--$ticket
+elif [[ -z $resume ]]; then
+  branch=$type/$task-$slug
+fi
+# Who a treehouse lease is held by: the task, or for a ticket worktree T<n>--NN (resume_slot has a
+# holder of its own).
+lease_holder=$task${ticket:+--$ticket}
 
 # On failure, a slot this run took and has not yet put on the branch is returned (forced when
 # force_return is set: see the header), and a number this run claimed is given back while nothing
 # holds it yet; once a slot holds the task's branch, the task is half open and re-running with
 # --task finishes it.
-worktree='' leased='' force_return='' lease_log=''
+worktree='' leased='' force_return='' lease_log='' new_branch=''
 on_exit() {
   local status=$?
   [[ -z $lease_log ]] || rm -f "$lease_log"
   ((status != 0)) || return 0
   if [[ -n $leased && -n $force_return ]]; then
-    if (cd "$primary" && "$return_cmd" "$leased" --force --if-lease-holder "$task") </dev/null >&2; then
+    if (cd "$primary" && "$return_cmd" "$leased" --force --if-lease-holder "$lease_holder") </dev/null >&2; then
       echo "team-open: handed $leased back to $return_cmd, discarding what its lease changed" >&2
     else
-      echo "team-open: could not return $leased through $return_cmd; it stays leased to $task, and the next" \
+      echo "team-open: could not return $leased through $return_cmd; it stays leased to $lease_holder, and the next" \
         "run takes it again" >&2
     fi
   elif [[ -n $leased ]]; then
     if (cd "$primary" && "$return_cmd" "$leased") </dev/null >&2; then
       echo "team-open: handed $leased back to $return_cmd" >&2
     else
-      echo "team-open: $leased stays leased to $task, which is Daniel's word: once nothing in it is needed," \
+      echo "team-open: $leased stays leased to $lease_holder, which is Daniel's word: once nothing in it is needed," \
         "return it in a terminal, which asks before discarding: cd $primary && $return_cmd $leased" >&2
     fi
   fi
@@ -223,6 +284,9 @@ on_exit() {
   if [[ -n $resume ]]; then
     echo "team-open: $task's worktree in $project is $worktree, not yet finished; finish it with:" \
       "team-open --task $task --resume $project" >&2
+  elif [[ -n $ticket ]]; then
+    echo "team-open: $task's ticket $ticket is half open in $worktree; finish it with:" \
+      "team-open --task $task --ticket $ticket" >&2
   elif [[ -n $add ]]; then
     echo "team-open: $task is half open in $worktree; finish it with:" \
       "team-open --task $task --add $project $type $slug" >&2
@@ -273,9 +337,16 @@ if [[ -n $resume ]]; then
     die "$branch is neither on origin nor here, so $task's worktree in $project cannot be made here"
   start=''
   [[ -n $here ]] || start=$target
+elif [[ -n $ticket ]]; then
+  # The ticket branch starts at the task branch's local tip, with nothing fetched. One left by an
+  # earlier ticket worktree of NN is moved there when the tip holds it.
+  start=$tip new_branch=1
+  if old=$(git -C "$primary" rev-parse -q --verify "refs/heads/$branch^{commit}"); then
+    start='' new_branch=''
+  fi
 else
   git -C "$primary" fetch -q origin "$base" || die "cannot fetch $base from origin in $primary"
-  start=origin/$base
+  start=origin/$base new_branch=1
 fi
 
 # The primary checkout's registered worktrees: real path -> checked-out branch ("" when detached),
@@ -377,12 +448,12 @@ take_treehouse_slot() {
   # Never one on a branch: that is a worktree, not a lease a failed run left.
   while IFS= read -r slot; do
     if [[ -z $leased && -z $(branch_at "$slot") ]]; then leased=$slot; fi
-  done < <(jq -r --arg task "$task" 'select(.holder == $task) | .path' <<<"$pool")
+  done < <(jq -r --arg holder "$lease_holder" 'select(.holder == $holder) | .path' <<<"$pool")
   if [[ -n $leased ]]; then
-    echo "team-open: $leased is already leased to $task, by an earlier run; it is taken again" >&2
+    echo "team-open: $leased is already leased to $lease_holder, by an earlier run; it is taken again" >&2
   else
     lease_log=$(mktemp)
-    if ! leased=$(cd "$primary" && "$lease" "$task" 2>"$lease_log"); then
+    if ! leased=$(cd "$primary" && "$lease" "$lease_holder" 2>"$lease_log"); then
       leased=
       echo "team-open: $project's lease command found no free slot:" >&2
       cat "$lease_log" >&2
@@ -432,7 +503,7 @@ release_slot() {
       leased=$worktree
       ;;
   esac
-  [[ -n $resume ]] || git -C "$primary" branch -q -D "$branch"
+  [[ -z $new_branch ]] || git -C "$primary" branch -q -D "$branch"
   worktree=
 }
 
@@ -545,7 +616,10 @@ apply_snapshot() {
 
 # The primary checkout follows the base, so the pool's lease and return commands it holds, run from
 # it, are the merged ones: brought level with origin's when it can be, else left as it is.
-if same_path "$primary" "$TEAM_HOME"; then
+# A ticket worktree needs no network, so it leaves the primary checkout as it is.
+if [[ -n $ticket ]]; then
+  :
+elif same_path "$primary" "$TEAM_HOME"; then
   echo "team-open: the primary checkout $primary is the team home, so the next records push (team-checkpoint, team-handoff) brings it level with origin's $base" >&2
 else
   NET_ERR=$(mktemp)
@@ -570,15 +644,28 @@ if [[ -z $worktree ]]; then
   for wt in "${!holds[@]}"; do
     [[ ${holds[$wt]} != "$branch" ]] || die "$branch is checked out in $wt, which is not one of $project's slots"
   done
-  ! git -C "$primary" show-ref -q --verify "refs/heads/$branch" ||
-    die "branch $branch already exists in $primary but no slot holds it"
+  if [[ -n $ticket && -z $new_branch ]]; then
+    git -C "$primary" merge-base --is-ancestor "$old" "$tip" ||
+      die "the branch $branch exists at ${old:0:8} with commits the task branch lacks; integrate or remove it first"
+    if [[ $old != "$tip" ]]; then
+      git -C "$primary" update-ref "refs/heads/$branch" "$tip" "$old"
+      echo "team-open: moved $branch from ${old:0:8} to the task branch's tip ${tip:0:8}" >&2
+    fi
+  else
+    ! git -C "$primary" show-ref -q --verify "refs/heads/$branch" ||
+      die "branch $branch already exists in $primary but no slot holds it"
+  fi
   case $provider in
     git) take_git_slot ;;
     treehouse) take_treehouse_slot ;;
     *) die "team-open does not take worktrees from a $provider pool" ;;
   esac
 fi
-[[ -n $resume ]] || base_sha=$(git -C "$worktree" merge-base HEAD "origin/$base")
+if [[ -n $ticket ]]; then
+  base_sha=$(git -C "$worktree" merge-base HEAD "$tip")
+elif [[ -z $resume ]]; then
+  base_sha=$(git -C "$worktree" merge-base HEAD "origin/$base")
+fi
 
 # The task directory must never be committed: refuse a project whose git does not ignore it.
 mkdir -p "$worktree/$task_dir"
@@ -626,6 +713,29 @@ if [[ -n $resume ]]; then
       from: $from, moved: $moved, archive: $archive, snapshot: $snapshot}'
   # The overlap with other tasks was judged when this one opened.
   exit 0
+elif [[ -n $ticket ]]; then
+  # The ticket's builder starts from what the task knows: the spec, the scope, the tickets and the
+  # build notes of every ticket integrated so far.
+  from=$task_worktree/$task_dir
+  for name in spec.md scope.txt; do
+    [[ ! -f $from/$name ]] || cp -p -- "$from/$name" "$worktree/$task_dir/$name" ||
+      die "cannot copy $from/$name into $worktree/$task_dir"
+  done
+  for name in tickets build-notes; do
+    [[ ! -d $from/$name ]] || rsync -a --delete -- "$from/$name/" "$worktree/$task_dir/$name/" ||
+      die "cannot copy $from/$name into $worktree/$task_dir"
+  done
+  ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" --arg base "$task_branch" \
+    --arg base_sha "$base_sha" --arg worktree "$worktree" --arg ticket "$ticket" \
+    '{ts: (now | todate), task: $task, event: "worktree-added", project: $project, branch: $branch,
+      base: $base, base_sha: $base_sha, worktree: $worktree, ticket: $ticket}')"
+
+  jq -n --arg task "$task" --arg project "$project" --arg branch "$branch" --arg base "$task_branch" \
+    --arg base_sha "$base_sha" --arg worktree "$worktree" --arg task_dir "$worktree/$task_dir" --arg ticket "$ticket" \
+    '{task: $task, project: $project, branch: $branch, base: $base, base_sha: $base_sha,
+      worktree: $worktree, task_dir: $task_dir, ticket: $ticket}'
+  # The other open tasks were shown when this one opened.
+  exit 0
 elif [[ -n $add ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" --arg base "$base" \
     --arg base_sha "$base_sha" --arg worktree "$worktree" \
@@ -670,7 +780,7 @@ while IFS= read -r -d '' line && IFS= read -r -d '' other_branch; do
 done < <(ledger_jq 'ledger_events as $events
   | ($events | by_task | with_entries(select(.value | is_open))) as $open
   | open_worktrees($events[] | select($open[.task]); $home)
-  | select(.project == $project and .task != $task)
+  | select(.project == $project and .task != $task and .ticket == null)
   | ($open[.task] | map(select(.event == "opened")) | first | .title) as $title
   | "  \(.task) \(.branch) in \(.worktree)\(if $title then ": \($title)" else "" end)\u0000\(.branch)\u0000"' \
   -nRj --arg project "$project" --arg task "$task" "$ledger")

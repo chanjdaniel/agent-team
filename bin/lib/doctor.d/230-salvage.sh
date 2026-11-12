@@ -18,6 +18,8 @@
 #               home's origin (never the project's, which may be public) as
 #               salvage/<project>/T<n>-<machine> (after committing, for uncommitted changes),
 #               for Daniel to run; a clean worktree whose head that branch holds is salvaged.
+#               A ticket worktree (team-open --ticket's) has its own line, "salvage T<n>
+#               <project>--NN", and branch, salvage/<project>/T<n>--NN-<machine>.
 #               Passes when there is none.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # machine, from the machine check
@@ -76,7 +78,8 @@ if [[ -n $fenced ]]; then
 
   salvage=0
   if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
-    while IFS=$'\t' read -r task project wt; do
+    while IFS=$'\t' read -r task project ticket wt; do
+      [[ $ticket != - ]] || ticket=''
       top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || continue
       same_path "$top" "$wt" || continue
       # Commits on no origin branch: a checkpoint's wip/<project>/T<n> is not one, since the next
@@ -84,7 +87,9 @@ if [[ -n $fenced ]]; then
       count=$(git -C "$wt" rev-list --count HEAD --not --exclude='origin/wip/*' --remotes=origin)
       mapfile -t found < <(worktree_changes "$wt")
       ((count > 0 || ${#found[@]} > 0)) || continue
-      ref=salvage/$project/$task-$machine
+      # A ticket worktree's work is its own: salvage/<project>/T<n>--NN-<machine>, its line
+      # "salvage T<n> <project>--NN", so it never shares the task worktree's branch.
+      ref=salvage/$project/$task${ticket:+--$ticket}-$machine
       kept=$(awk -v ref="refs/heads/$ref" '$2 == ref { print $1 }' <<<"$salvaged")
       if ((${#found[@]} == 0)) && [[ -n $kept ]] && git -C "$wt" merge-base --is-ancestor HEAD "$kept" 2>/dev/null; then
         continue
@@ -97,10 +102,10 @@ if [[ -n $fenced ]]; then
       push="git -C $shown push $salvage_url HEAD:refs/heads/$ref"
       ((${#found[@]} == 0)) ||
         push="git -C $shown add -A && git -C $shown commit -m \"wip: salvage from $machine\", then $push"
-      report "salvage $task $project" FAIL "$shown has $(printf '%s and ' "${what[@]}" | sed 's/ and $//')" "$push"
+      report "salvage $task $project${ticket:+--$ticket}" FAIL "$shown has $(printf '%s and ' "${what[@]}" | sed 's/ and $//')" "$push"
     done < <(ledger_jq 'ledger_events | by_task | to_entries | sort_by(.key[1:] | tonumber) | .[]
       | select(.value | task_status == "open") | .key as $task | open_worktrees(.value[]; $home)
-      | [$task, .project, .worktree] | @tsv' -nRr "$TEAM_HOME/ledger.jsonl")
+      | [$task, .project, (.ticket // "-"), .worktree] | @tsv' -nRr "$TEAM_HOME/ledger.jsonl")
   fi
   ((salvage)) || report salvage PASS "no task worktree here holds work that neither origin nor a salvage branch keeps"
 fi
