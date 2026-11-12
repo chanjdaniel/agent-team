@@ -436,6 +436,27 @@ TABLE
   assert_equal "$(logged_since)" ""
 }
 
+@test "a walk's number is refused, naming the thread its notes go to, with nothing read or logged" {
+  cat >>"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
+{"ts":"2026-10-01T10:00:00Z","task":"T11","event":"opened","project":"agent-team","path":"feature","type":"feat","title":"Eleven","branch":"feat/T11-v","base":"dev","base_sha":"0123456","worktree":"/w/11"}
+{"ts":"2026-10-01T10:00:01Z","task":"T11","event":"thread","discord_thread":"1111"}
+{"ts":"2026-10-01T10:00:02Z","task":"T11","event":"walk","state":"on"}
+{"ts":"2026-10-01T10:00:00Z","task":"T12","event":"opened","project":"agent-team","path":"feature","type":"feat","title":"Twelve","branch":"feat/T12-u","base":"dev","base_sha":"0123456","worktree":"/w/12"}
+{"ts":"2026-10-01T10:00:02Z","task":"T12","event":"walk","state":"on"}
+LEDGER
+  TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-inbox" >/dev/null
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger"
+  rm -f "$STUB_CALLS/curl.log"
+  # T7's ask is item 1, and the walks follow it.
+  message "$COORDINATOR" 1564000000000000010 757 "2 yes, 3 yes"
+  run_bin -1 --separate-stderr team-answer --item 2 1564000000000000010
+  assert_equal "$stderr" "team-answer: item 2 is T11's walk, whose notes Daniel posts in <#1111>; nothing is logged"
+  run_bin -1 --separate-stderr team-answer --item 3 1564000000000000010
+  assert_equal "$stderr" "team-answer: item 3 is T12's walk, whose notes Daniel posts in its task's thread; nothing is logged"
+  assert_equal "$(reads)" ""
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$(cat "$BATS_TEST_TMPDIR/ledger")"
+}
+
 @test "a number team-inbox --item refuses is refused with its reason, with nothing read or logged" {
   message "$COORDINATOR" 1564000000000000010 757 "3 yes"
   run_bin -1 --separate-stderr team-answer --item 3 1564000000000000010
