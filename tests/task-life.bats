@@ -567,8 +567,12 @@ launched T1-reviewer 6c7d8e9f"
   agent_review_passes owner/home 7
   session_is "$rereviewer" idle working
 
-  # The pass: the default word's merge line, the plan being approved, and nothing posted or merged.
+  # The pass arms the checks wait, which on green prints the default word's merge line, the plan
+  # being approved, and nothing posted or merged.
   ok team-next T1 -- "T1 DONE pass $url findings=$zero before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" "checks: arm team-next T1 --ci with Bash run_in_background unless it is already running: it waits on the checks of $url at ${fix:0:8}, then prints the merge ask or hands a red check back as a round"
+  ci_wait_ends passed "$fix"
+  ok team-next T1 --ci
   assert_equal "$(tail -n 1 <<<"$output")" "merge on the default word: run team-merge T1 for $url at $fix, agent-review success, checks green"
   # The sweep sends the coordinator to that merge.
   step awaiting-merge merge-due:-
@@ -595,7 +599,8 @@ done reviewer $reviewer
 pr
 launch reviewer brief-rereview-2
 review pass
-done reviewer $rereviewer"
+done reviewer $rereviewer
+ci"
   assert_equal "$(jq -c 'select(.event == "ticket-done") | [.ticket, .commits, .note]' "$TEAM_HOME/ledger.jsonl")" \
     "$(jq -cn --arg one "${one:0:8}" --arg two "${two:0:8}" '["01", [$one], "the first thing"], ["02", [$two], "the second thing"]' | jq -c .)"
   assert_equal "$(jq -c 'select(.event == "review") | [.verdict, .head, .sent_back, .findings.blocking]' "$TEAM_HOME/ledger.jsonl")" \

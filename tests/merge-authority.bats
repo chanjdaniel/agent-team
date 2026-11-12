@@ -44,8 +44,12 @@ readers() {
   local holds=$1 reasons=$2 merge=$3
   stub_reply claude '[]'
 
-  # team-next takes the reviewer's pass and says what to do with it.
+  # team-next takes the reviewer's pass, which arms the checks wait, and the wait, once the checks
+  # passed, says what to do with it.
   run_bin -0 --separate-stderr team-next T14 -- "T14 DONE pass $head $counts before=none guarded=none"
+  assert_equal "${lines[-1]%%:*}" "checks"
+  ci_wait_ends passed "$head"
+  run_bin -0 --separate-stderr team-next T14 --ci
   if [[ $holds == true ]]; then
     assert_equal "${lines[-1]}" \
       "merge on the default word: run team-merge T14 for https://github.com/owner/proj/pull/5 at $head, agent-review success, checks green"

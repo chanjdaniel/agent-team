@@ -3,7 +3,8 @@
 # changed; it logs the message's events through team-log once, and a builder's DONE <NN> launches
 # the next ready ticket's builder, or the deliverer once every ticket is done, through team-brief
 # and team-worker. T7 runs in proj, its worktree a real git worktree; claude is a stub whose
-# launches print a fresh session id each.
+# launches print a fresh session id each. A pass's checks wait, team-next T7 --ci, runs from a
+# copy of bin/ whose team-ci-wait is a stub answering with a --json end (ci_wait_ends).
 
 load helpers/common
 
@@ -106,6 +107,26 @@ refused() {
 # The claude calls that started a session.
 bg_calls() {
   stub_calls claude | jq -c 'select(.[0] == "--bg")'
+}
+
+# arm_line <head>: the line a pass on PR 9 ($url, below) ends on, arming the checks wait on <head>.
+arm_line() {
+  echo "checks: arm team-next T7 --ci with Bash run_in_background unless it is already running: it waits on the checks of $url at ${1:0:8}, then prints the merge ask or hands a red check back as a round"
+}
+
+# passed <team-next arguments>...: team-next takes the reviewer's pass, which ends on the arm line
+# for the PR's head on GitHub ($GH_HEAD, pr_on_github's), and then team-next T7 --ci, whose wait
+# says the checks of that head passed; $output is --ci's.
+passed() {
+  ci_wait_ends passed "$GH_HEAD"
+  run_bin -0 --separate-stderr team-next T7 "$@"
+  assert_equal "$(tail -n 1 <<<"$output")" "$(arm_line "$GH_HEAD")"
+  run_bin -0 --separate-stderr team-next T7 --ci
+}
+
+# The ci events logged, each as its url, head and outcome.
+ci_logged() {
+  jq -c 'select(.event == "ci") | [.url, .head, .outcome]' "$TEAM_HOME/ledger.jsonl"
 }
 
 @test "a builder's DONE logs the ticket and the done, renders the next ready ticket's brief and launches its builder" {
@@ -865,15 +886,15 @@ outside_calls() {
     T7 -- "T7 DONE pass $url $counts before=none guarded=none"
 }
 
-@test "a pass logs the review at the reviewed head and prints the merge ask's facts, never posting or merging" {
+@test "a pass on a PR logs the review and ends on the arm line, with no merge line, even on pending checks" {
   local count
   reviewing "$sha"
-  pr_on_github "$sha"
+  pr_on_github "$sha" 0 '[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}, {"name": "test", "bucket": "pending", "state": "PENDING"}]'
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci"
   assert_equal "$output" "logged review verdict=pass head=$sha findings={\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0} before=[] guarded=[\"ci\"]
 logged done role=reviewer session=r0000002
-merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, so the default word does not hold"
+$(arm_line "$sha")"
   assert_equal "$(logged_from $((count + 1)) | jq -c '{event, verdict, head, guarded, role, session}')" \
     "$(jq -cn --arg h "$sha" '{event: "review", verdict: "pass", head: $h, guarded: ["ci"], role: null, session: null},
       {event: "done", verdict: null, head: null, guarded: null, role: "reviewer", session: "r0000002"}' | jq -c .)"
@@ -881,16 +902,45 @@ merge ask: $url at $sha, agent-review success, checks green; the review found gu
   assert_equal "$(bg_calls)" ""
 }
 
-@test "a pass with before notes and pending checks names them, and a rerun logs nothing twice" {
+@test "--ci on checks that passed logs ci passed of the waited head and prints the merge ask's facts, never posting or merging" {
+  local count
+  reviewing "$sha"
+  pr_on_github "$sha"
+  ci_wait_ends passed "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "logged ci url=$url head=$sha outcome=passed
+merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, so the default word does not hold"
+  assert_equal "$(stub_calls team-ci-wait)" "[\"--no-agent-review\",\"--json\",\"$url\",\"$sha\"]"
+  assert_equal "$(logged_from $((count + 1)) | jq -c 'del(.task)')" \
+    "$(jq -cn --arg url "$url" --arg h "$sha" '{event: "ci", url: $url, head: $h, outcome: "passed"}')"
+  assert_equal "$(outside_calls)" ""
+  assert_equal "$(bg_calls)" ""
+}
+
+@test "a pass with before notes and pending checks names them, a rerun logs nothing twice, and a rerun of --ci logs only a new end" {
   reviewing "$sha"
   pr_on_github "$sha" 0 '[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}, {"name": "test", "bucket": "pending", "state": "PENDING"}]'
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts%:0}:2 before=4,5 guarded=none"
+  passed -- "T7 DONE pass $url ${counts%:0}:2 before=4,5 guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks pending: test; queue before notes 4 and 5 as follow-ups and say where each went"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts%:0}:2 before=4,5 guarded=none"
   assert_contains "$output" "already logged review verdict=pass head=$sha"
   assert_contains "$output" "already logged done role=reviewer session=r0000002"
+  assert_equal "$(tail -n 1 <<<"$output")" "$(arm_line "$sha")"
   assert_equal "$(jq -c 'select(.event == "review")' "$TEAM_HOME/ledger.jsonl" | wc -l)" 1
+  # --ci again waits again; the same end is logged once, and the merge line printed again.
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$(head -n 1 <<<"$output")" "already logged ci url=$url head=$sha outcome=passed"
+  assert_contains "$(tail -n 1 <<<"$output")" "merge on the default word: run team-merge T7 for $url at $sha"
+  assert_equal "$(stub_calls team-ci-wait | wc -l)" 2
+  assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"passed\"]"
+  # A new end is logged.
+  ci_wait_ends deadline "$sha" 75 "team-ci-wait: 90 minutes, and checks still pending on ${sha:0:7}: test (in_progress, run 7 in_progress): run team-ci-wait again to wait on them, or report BLOCKED"
+  run_bin -75 --separate-stderr team-next T7 --ci
+  assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"passed\"]
+[\"$url\",\"$sha\",\"pending\"]"
 }
 
 # on_origin [<file> <text>]: the PR's branch pushed to origin, and origin's main moved on by a
@@ -905,13 +955,13 @@ on_origin() {
   git -C "$other" push -q origin main
 }
 
-@test "a pass on a PR behind its base that merges it cleanly prints team-catch-up, with no holder step" {
+@test "--ci on a PR behind its base that merges it cleanly prints team-catch-up, with no holder step" {
   on_origin
   reviewing "$sha"
   pr_on_github "$sha" 3
   live b0000001 120000
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_contains "$output" "logged review verdict=pass head=$sha"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "logged ci url=$url head=$sha outcome=passed"
   assert_equal "$(tail -n 2 <<<"$output")" \
     "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
 then, once the checks pass on its merge: merge on the default word: run team-merge T7 for $url at $sha"
@@ -921,74 +971,184 @@ then, once the checks pass on its merge: merge on the default word: run team-mer
   assert_equal "$(outside_calls)" ""
 }
 
-@test "a pass on a PR behind its base that merges it cleanly still says the review's before notes, guarded areas and words" {
+@test "--ci on a PR behind its base that merges it cleanly still says the review's before notes, guarded areas and words" {
   on_origin
   reviewing "$sha"
   pr_on_github "$sha" 3
   live b0000001 120000
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 2 <<<"$output")" \
     "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
 then, once the checks pass on its merge: merge on the default word: run team-merge T7 for $url at $sha"
   launched r0000003 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts/note-before:0/note-before:2} before=4,5 guarded=ci"
+  passed -- "T7 DONE pass $url ${counts/note-before:0/note-before:2} before=4,5 guarded=ci"
   assert_equal "$(tail -n 2 <<<"$output")" \
     "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
 then, once the checks pass on its merge: merge ask: $url at $sha; the review found guarded areas: ci, so the default word does not hold; queue before notes 4 and 5 as follow-ups and say where each went"
   assert_equal "$(outside_calls)" ""
 }
 
-@test "a pass on a PR behind its base that conflicts with it prints the builder-merge-base step naming the files" {
+@test "--ci on a PR behind its base that conflicts with it prints the builder-merge-base step naming the files" {
   on_origin one.txt "dev's own text"
   reviewing "$sha"
   pr_on_github "$sha" 3
   live b0000001 120000
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_contains "$output" "logged review verdict=pass head=$sha"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "logged ci url=$url head=$sha outcome=passed"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   # Past 250k, the holder stows and a fresh builder takes the brief.
   live b0000001 260000
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  run_bin -0 --separate-stderr team-next T7 --ci
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): send T7 STOW to T7-builder (b0000001, 260k), then launch a fresh builder on team-brief T7 builder-merge-base"
   # Gone, a fresh builder takes it.
   live
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  run_bin -0 --separate-stderr team-next T7 --ci
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): T7-builder b0000001 is gone, so launch a fresh builder on team-brief T7 builder-merge-base"
   assert_equal "$(outside_calls)" ""
 }
 
-@test "a pass on a PR behind its base whose merge cannot be read prints the builder-merge-base step with the reason" {
+@test "--ci on a PR behind its base whose merge cannot be read prints the builder-merge-base step with the reason" {
   # The branch is not on origin, so the fetch fails.
   reviewing "$sha"
   pr_on_github "$sha" 3
   live b0000001 120000
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  assert_contains "$output" "logged review verdict=pass head=$sha"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "logged ci url=$url head=$sha outcome=passed"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge base: $url is 3 behind main (whether the merge is clean is not known: the PR's branch feat/T7-toil and main cannot be fetched into $primary: fatal: couldn't find remote ref refs/heads/feat/T7-toil), so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   # A head git cannot read once fetched: base_merge's line is the reason.
   on_origin
   reviewing 0123456789abcdef0123456789abcdef01234567
   pr_on_github 0123456789abcdef0123456789abcdef01234567 3
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge base: $url is 3 behind main (whether the merge is clean is not known: merge-tree: 0123456789abcdef0123456789abcdef01234567 - not something we can merge), so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   assert_equal "$(outside_calls)" ""
 }
 
-@test "a pass while the default word holds says to merge on it, unless the review found guarded areas or the default is withdrawn" {
+@test "--ci after a team-catch-up waits on the merge's checks, and its merge line names the reviewed head" {
+  local merge=fedcba9876543210fedcba9876543210fedcba98
+  reviewing "$sha"
+  pr_on_github "$sha"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
+  # team-catch-up made the merge from the reviewed head, and GitHub shows it as the PR's head.
+  event caught-up "$(jq -cn --arg url "$url" --arg h "$sha" --arg m "$merge" '{url: $url, from: $h, head: $m,
+    base: "1111111111111111111111111111111111111111"}')"
+  pr_on_github "$merge"
+  ci_wait_ends passed "$merge"
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "logged ci url=$url head=$merge outcome=passed
+merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
+  assert_equal "$(stub_calls team-ci-wait | tail -n 1)" "[\"--no-agent-review\",\"--json\",\"$url\",\"$merge\"]"
+  assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"passed\"]
+[\"$url\",\"$merge\",\"passed\"]"
+}
+
+@test "--ci's other ends: a failure prints the wait's text, the deadline re-arms, a moved head stops, an unreadable GitHub re-arms, a closed PR ends" {
+  local count other=fedcba9876543210fedcba9876543210fedcba98 text
   reviewing "$sha"
   pr_on_github "$sha"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  # A failure of the PR's own, and one of infrastructure alone: the wait's text, exit 1, nothing
+  # logged yet.
+  text="team-ci-wait: the checks on ${sha:0:7} did not pass:
+  the PR's: test-shards (2) failed: https://github.com/owner/proj/actions/runs/7/job/8
+  roll-up: test, of test-shards (2), left out"
+  ci_wait_ends failed "$sha" 1 "$text" '[{"name": "test-shards (2)", "class": "pr", "kind": "failed", "state": "FAILURE",
+    "link": "https://github.com/owner/proj/actions/runs/7/job/8", "run": 7, "job": 8, "step": "Run the tests", "rerun": null},
+    {"name": "test", "class": "rollup", "kind": "rollup", "state": "FAILURE", "link": "https://github.com/owner/proj/actions/runs/7/job/9",
+    "run": 7, "job": 9, "step": null, "rerun": null}]'
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "$text"
+  text="team-ci-wait: the checks on ${sha:0:7} did not pass:
+  infrastructure: macos-shards (1) never started: no runner took it (https://github.com/owner/proj/actions/runs/7/job/8); rerun it with gh run rerun 7 --job 8 --repo owner/proj, then run team-ci-wait again"
+  ci_wait_ends failed "$sha" 1 "$text" '[{"name": "macos-shards (1)", "class": "infrastructure", "kind": "never-started",
+    "state": "CANCELLED", "link": "https://github.com/owner/proj/actions/runs/7/job/8", "run": 7, "job": 8, "step": null,
+    "rerun": "gh run rerun 7 --job 8 --repo owner/proj"}]'
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "$text"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$count"
+  # The deadline logs ci pending and re-arms, exit 75.
+  text="team-ci-wait: 90 minutes, and checks still pending on ${sha:0:7}: test (in_progress, run 7 in_progress): run team-ci-wait again to wait on them, or report BLOCKED"
+  ci_wait_ends deadline "$sha" 75 "$text"
+  run_bin -75 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "logged ci url=$url head=$sha outcome=pending
+re-arm: the checks of ${sha:0:8} are still pending after 90 minutes ($text): run team-next T7 --ci again with Bash run_in_background"
+  assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"pending\"]"
+  # A head no round made, whether it moved during the wait or was another from the start: exit 1,
+  # nothing logged.
+  for end in moved other-head; do
+    ci_wait_ends "$end" "$other" 1 "team-ci-wait: the head of owner/proj#9 is another"
+    run_bin -1 --separate-stderr team-next T7 --ci
+    assert_equal "$output" \
+      "the head of $url is ${other:0:8}, not the passed ${sha:0:8}: a commit no round made; read it with team-state T7 before anything else"
+  done
+  # GitHub unreadable, or the team offline: the wait's line, exit 75, nothing logged.
+  for end in unreadable offline; do
+    ci_wait_ends "$end" "$sha" 75 "team-ci-wait: $end for now"
+    run_bin -75 --separate-stderr team-next T7 --ci
+    assert_equal "$output" "team-ci-wait: $end for now"
+  done
+  # A merged or closed PR: the wait's line, exit 0.
+  ci_wait_ends closed "$sha" 1 "team-ci-wait: owner/proj#9 is merged: its checks no longer matter"
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "team-ci-wait: owner/proj#9 is merged: its checks no longer matter"
+  assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"pending\"]"
+  assert_equal "$(outside_calls)" ""
+  assert_equal "$(bg_calls)" ""
+}
+
+@test "--ci is refused, logging nothing and waiting on nothing: no pass on an open PR, checks that failed, a closed or held task, an ask, a worker" {
+  ci_wait_ends passed "$sha"
+  local none="team-next: T7's latest review is not a pass on an open PR, so no checks wait for a merge"
+  refused "$none" T7 --ci
+  reviewing "$sha"
+  review_logged findings "$sha" '[1]'
+  refused "$none" T7 --ci
+  review_logged pass "$sha" '[]'
+  event ci "$(jq -cn --arg url "$url" --arg h "$sha" '{url: $url, head: $h, outcome: "failed", failed: []}')"
+  refused "team-next: the checks of ${sha:0:8} failed and went back as a round on 2026-11-01T10:00:00Z" T7 --ci
+  event ci "$(jq -cn --arg url "$url" --arg h "$sha" '{url: $url, head: $h, outcome: "passed"}')"
+  event held '{reason: "Daniel: not now", cause: "daniel-hold", discord_message: "1563000000000000044"}'
+  refused "T7 is on Daniel's hold since 2026-11-01T10:00:00Z (held-1): Daniel: not now" T7 --ci
+  event resumed '{id: "held-1", discord_message: "1563000000000000046"}'
+  event asked '{id: "scope", text: "Which scope?"}'
+  refused "T7 has an unanswered ask, scope, since 2026-11-01T10:00:00Z" T7 --ci
+  event answered '{id: "scope", text: "This one.", discord_message: "1563000000000000045"}'
+  event closed '{archive: [], returned: [], kept: []}'
+  refused "T7 is closed" T7 --ci
+  assert_equal "$(stub_calls team-ci-wait)" ""
+  worker_refused team-next "runs no team-next" T7 --ci
+}
+
+@test "--ci takes no message and no other option, and --help documents it and the pass's arm line" {
+  run_bin -2 team-next T7 --ci -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "--ci takes no message and no other option: team-next T<n> --ci"
+  run_bin -2 team-next T7 --from r0000002 --ci
+  assert_contains "$output" "--ci takes no message and no other option"
+  run_bin -2 team-next T7 --ci --sent-back 1
+  assert_contains "$output" "--ci takes no message and no other option"
+  run_bin -2 team-next T7 --ci --ci
+  assert_contains "$output" "--ci is given twice"
+  run_bin -0 team-next --help
+  assert_contains "$output" "       team-next T<n> --ci"
+  assert_contains "$output" "checks: arm team-next T<n> --ci with Bash run_in_background"
+  assert_contains "$output" "team-ci-wait --no-agent-review --json <url> <head>"
+}
+
+@test "--ci after a pass while the default word holds says to merge on it, unless the review found guarded areas or the default is withdrawn" {
+  reviewing "$sha"
+  pr_on_github "$sha"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
   # A later review that found a guarded area brings the merge back to Daniel.
   launched r0000003 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci,secrets"
-  assert_contains "$output" "logged review verdict=pass head=$sha"
+  passed -- "T7 DONE pass $url $counts before=none guarded=ci,secrets"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, secrets, so the default word does not hold"
   # A withdrawal of the default word for the task's project, logged under another task, holds it
@@ -996,18 +1156,18 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   launched r0000004 brief-review '["browser"]' reviewer
   jq -cn '{ts: "2026-11-01T10:00:00Z", task: "T6", event: "merge-default-withdrawn", scope: "proj",
     discord_message: "1563000000000000046", discord_channel: "1563000000000000012"}' >>"$TEAM_HOME/ledger.jsonl"
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
   launched r0000005 brief-review '["browser"]' reviewer
   event merge-default-restored '{scope: "all", discord_message: "1563000000000000047", discord_channel: "1563000000000000012"}'
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
   # A guarded area a review names only from the areas retired since (T276) holds nothing back.
   launched r0000006 brief-review '["browser"]' reviewer
   event review "$(jq -cn --arg h "$sha" '{verdict: "pass", head: $h, guarded: ["settings"],
     findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}}')"
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
   assert_equal "$(outside_calls)" ""
@@ -1052,34 +1212,34 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   assert_equal "$(record round-1 | jq -r .values.findings_file)" .scratch/task/rereview-2.md
 }
 
-@test "a security or real-data count on any review of the task, or a review with no counts, keeps the merge Daniel's" {
+@test "--ci after a pass: a security or real-data count on any review of the task, or a review with no counts, keeps the merge Daniel's" {
   review_logged findings 0123456 '[1]' '{"security": 1}'
   launched b0000002 brief-round-1 '["browser"]'
   reviewing "$sha"
   pr_on_github "$sha"
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge ask: $url at $sha, agent-review success, checks green; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, so the default word does not hold"
   # A review that logged no counts, and a real-data one, are named too.
   event review '{verdict: "findings", head: "89abcde", sent_back: [2], guarded: []}'
   review_logged findings fedcba9 '[1]' '{"real-data": 2}'
   launched r0000003 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci"
+  passed -- "T7 DONE pass $url $counts before=none guarded=ci"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, so the default word does not hold; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, the review of 89abcde at 2026-11-01T10:00:00Z logged no counts and the review of fedcba9 at 2026-11-01T10:00:00Z counted 2 real-data findings, so the default word does not hold"
   assert_equal "$(outside_calls)" ""
 }
 
-@test "a pass on a PR of the team's own project is the merge ask, its guarded areas holding back no default word" {
+@test "--ci after a pass on a PR of the team's own project prints the merge ask, its guarded areas holding back no default word" {
   # proj's repo is the code checkout's origin, so proj is the team's own.
   code_checkout
   git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
   reviewing "$sha"
   pr_on_github "$sha"
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  passed -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
   launched r0000003 brief-review '["browser"]' reviewer
-  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=guardrails"
+  passed -- "T7 DONE pass $url $counts before=none guarded=guardrails"
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: guardrails"
   [[ $output != *"default word"* ]]
