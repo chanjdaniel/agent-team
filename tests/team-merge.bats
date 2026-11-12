@@ -909,6 +909,7 @@ app_case() {
 }
 
 @test "with the reviewer App off, an agent-team PR merges on the per-head word on the status, as before, reading no check run" {
+  review_app_off
   as_project agent-team
   run_bin -0 team-merge T14
   assert_equal "$(merged_events | jq -c '[.approval, .check_run]')" '["head",null]'
