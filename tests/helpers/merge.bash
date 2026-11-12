@@ -105,7 +105,8 @@ checks() {
 }
 
 # gh answers from the files under $GH_DIR (the second read of the PR from pr-again.json when a
-# test wrote one). pr merge marks the PR merged (or runs merge.sh when
+# test wrote one; the head's agent-review check runs from check-runs.json and its commit statuses
+# from status.json, which app_on writes). pr merge marks the PR merged (or runs merge.sh when
 # a test wrote one); anything unplanned fails.
 stub_gh() {
   stub_script gh <<'EOF'
@@ -117,6 +118,8 @@ case "$*" in
   "api repos/owner/proj/branches/dev") cat "$GH_DIR/branch.json" ;;
   "api repos/owner/proj/pulls/5/commits --paginate") cat "$GH_DIR/commits.json" ;;
   "api repos/owner/proj/pulls/5/files --paginate") cat "$GH_DIR/files.json" ;;
+  "api repos/owner/proj/commits/"*"/check-runs?check_name=agent-review&filter=latest&per_page=100") cat "$GH_DIR/check-runs.json" ;;
+  "api repos/owner/proj/commits/"*"/status") cat "$GH_DIR/status.json" ;;
   "pr merge 5 --repo owner/proj "*)
     if [[ -f $GH_DIR/merge.sh ]]; then source "$GH_DIR/merge.sh"; exit; fi
     jq --arg m "$MERGE_SHA" '.state = "MERGED" | .mergeCommit = {oid: $m}' "$GH_DIR/pr.json" >"$GH_DIR/pr.next"
@@ -466,4 +469,50 @@ both_words() {
   default_word
   event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"${1:-1562661774950400000}\"}
     + if \"${2:-}\" == \"\" then {} else {head: \"${2:-}\"} end"
+}
+
+# The reviewer App on, App 123456 (team-reviewer): a copy of bin/ holding bin/lib/review-app, run
+# in place of this checkout's (CODE_CHECKOUT), with the App's successful agent-review check run
+# 4242 on the head, no commit status of that name, and dev's protection pinning agent-review to
+# the App, enforced for everyone: app_on
+app_on() {
+  export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  copy_bin "$CODE_CHECKOUT/bin"
+  rm -f "$CODE_CHECKOUT/bin/lib/review-app"
+  printf 'id=123456\nslug=team-reviewer\n' >"$CODE_CHECKOUT/bin/lib/review-app"
+  app_runs "$(app_run 4242 success)"
+  echo '{"state": "pending", "statuses": []}' >"$gh_dir/status.json"
+  pinned 123456 everyone
+}
+
+# One agent-review check run as GitHub lists it, completed with <conclusion> by App <app> (default
+# the reviewer App, 123456) on <sha> (default the head): app_run <id> <conclusion> [<app>] [<sha>]
+app_run() {
+  local slug=team-reviewer
+  if [[ ${3:-123456} != 123456 ]]; then slug=github-actions; fi
+  jq -cn --argjson id "$1" --arg conclusion "$2" --argjson app "${3:-123456}" --arg slug "$slug" --arg sha "${4:-$head}" \
+    '{id: $id, name: "agent-review", head_sha: $sha, status: "completed", conclusion: $conclusion, app: {id: $app, slug: $slug}}'
+}
+
+# The head's agent-review check runs, as GitHub's check-runs list answers: app_runs [<app_run>...]
+app_runs() {
+  printf '%s\n' "$@" | jq -s 'map(select(. != null)) | {total_count: length, check_runs: .}' >"$gh_dir/check-runs.json"
+}
+
+# The head's commit statuses, an agent-review <state> by <login> (default chanjdaniel), as
+# GitHub's combined status answers: agent_review_status <state> [<login>]
+agent_review_status() {
+  jq -n --arg state "$1" --arg login "${2:-chanjdaniel}" \
+    '{state: $state, statuses: [{context: "agent-review", state: $state, creator: {login: $login}}]}' >"$gh_dir/status.json"
+}
+
+# dev's protection requires its contexts, agent-review pinned to App <app> (none: agent-review
+# left out of the checks with an app) and the others to GitHub Actions, enforced for <level>:
+# pinned <app or none> <level>
+pinned() {
+  jq --arg app "$1" --arg level "$2" '.protection.required_status_checks += {enforcement_level: $level,
+      checks: [.protection.required_status_checks.contexts[] | {context: ., app_id: (if . != "agent-review" then 15368
+        elif $app == "none" then null else ($app | tonumber) end)}]}' "$gh_dir/branch.json" >"$gh_dir/branch.next"
+  mv "$gh_dir/branch.next" "$gh_dir/branch.json"
 }

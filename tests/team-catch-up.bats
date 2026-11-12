@@ -457,3 +457,13 @@ EOF
   assert_contains "$stderr" "agent-review success on owner/proj@"
   [[ -s $GH_DIR/statuses ]]
 }
+
+@test "a check the base's protection pins to an App is required as its contexts are, so one missing on the head is refused" {
+  base_moves >/dev/null
+  echo '{"name": "dev", "protection": {"required_status_checks": {"contexts": ["lint"],
+    "checks": [{"context": "lint", "app_id": 15368}, {"context": "agent-review", "app_id": 123456}]}}}' >"$GH_DIR/branch.json"
+  echo '[{"name": "test", "bucket": "pass", "state": "SUCCESS"}, {"name": "lint", "bucket": "pass", "state": "SUCCESS"}]' \
+    >"$GH_DIR/checks.json"
+  refused "team-catch-up: T14 cannot catch up PR #5, so nothing changed:" \
+    "  required check agent-review is missing on the head"
+}

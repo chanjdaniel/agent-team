@@ -36,10 +36,11 @@ said() {
   event "$2" "$1" "{scope: \"$3\", discord_message: \"$4\", discord_channel: \"${5:-1563}\"}"
 }
 
-# Feed the case to every reader and check what each says: readers <holds> <ledger reasons as a
-# JSON list> <merge>, <merge> being "default" or "head" (team-merge merges on that word) or
-# "refused" (it refuses, naming each ledger reason, then any further reason given after it):
-# readers <holds> <reasons> <merge> [<team-merge's reason>...]
+# Feed the case to every reader and check what each says: readers <holds> <ledger reasons as a JSON
+# list> <merge>, team-next's line naming agent-review as $REVIEW_STATE (default success), <merge>
+# being "default" or "head" (team-merge merges on that word) or "refused" (it refuses, naming each
+# ledger reason, then any further reason given after it): readers <holds> <reasons> <merge>
+# [<team-merge's reason>...]
 readers() {
   local holds=$1 reasons=$2 merge=$3
   stub_reply claude '[]'
@@ -48,9 +49,9 @@ readers() {
   run_bin -0 --separate-stderr team-next T14 -- "T14 DONE pass $head $counts before=none guarded=none"
   if [[ $holds == true ]]; then
     assert_equal "${lines[-1]}" \
-      "merge on the default word: run team-merge T14 for https://github.com/owner/proj/pull/5 at $head, agent-review success, checks green"
+      "merge on the default word: run team-merge T14 for https://github.com/owner/proj/pull/5 at $head, agent-review ${REVIEW_STATE:-success}, checks green"
   else
-    assert_equal "${lines[-1]#merge ask: }" "https://github.com/owner/proj/pull/5 at $head, agent-review success, checks green"
+    assert_equal "${lines[-1]#merge ask: }" "https://github.com/owner/proj/pull/5 at $head, agent-review ${REVIEW_STATE:-success}, checks green"
   fi
 
   # team-sweep sends the coordinator to the merge only on a default word that holds.
@@ -176,4 +177,46 @@ readers() {
   echo "# T14 spec, edited" >"$BATS_TEST_TMPDIR/wt/.scratch/task/spec.md"
   readers true '[]' refused \
     "the plan changed since its approval at 2026-10-22T02:00:00Z (.scratch/task/spec.md): approve it again" "$(ask_per_head)"
+}
+
+@test "Daniel's approval on the team's own project, with the reviewer App on: the default word holds for every reader, and merges behind the App's check" {
+  as_project agent-team
+  app_on
+  default_word Daniel
+  event T14 answered '{id: "plan-T14", answer: "yes", discord_message: "1562661774950400000"}'
+  launches
+  readers true '[]' default
+  assert_equal "$(merged_events | jq -r .check_run)" 4242
+}
+
+@test "the coordinator's or a legacy approval on the team's own project, with the reviewer App on: no reader says the default word holds" {
+  local by reason
+  for by in coordinator legacy; do
+    : >"$TEAM_HOME/ledger.jsonl"
+    rm -f "$STUB_CALLS"/*.log
+    open_task
+    as_project agent-team
+    app_on
+    default_word coordinator
+    if [[ $by == legacy ]]; then
+      jq -c 'if .event == "plan-approved" then {ts, task, event, by: "Daniel"} else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+      mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+      reason="T14's approval at 2026-10-22T02:00:00Z is a legacy one, logged with no plan"
+    else
+      reason="the coordinator approved T14's at 2026-10-22T02:00:00Z"
+    fi
+    launches
+    readers false "$(jq -cn --arg r "the team's own project merges unattended only on a plan Daniel approved, and $reason: ask Daniel to approve it" '[$r]')" \
+      refused "$(ask_per_head)"
+  done
+}
+
+@test "Daniel's approval on the team's own project, the App's check missing: it holds on the ledger for every reader, and team-merge refuses it" {
+  as_project agent-team
+  app_on
+  app_runs
+  default_word Daniel
+  event T14 answered '{id: "plan-T14", answer: "yes", discord_message: "1562661774950400000"}'
+  launches
+  REVIEW_STATE=missing readers true '[]' refused "the reviewer App's agent-review check is missing on the head ${head:0:7}"
 }

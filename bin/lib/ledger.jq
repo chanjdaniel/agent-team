@@ -1040,9 +1040,11 @@ def default_events:
          .task as $t | .thread = ([$all[] | select(.task == $t and .event == "thread") | .discord_thread | tostring] | last)
        else . end];
 
-# Whether $project is the team's own, given $own, the registered projects own_project in team.sh
-# says are: agent-team by name always is.
-def own_in($own; $project): $project == "agent-team" or ($project | IN($own[]));
+# The bar merge_authority holds $project to, its $own, given $own, own_projects' {projects, app}
+# in team.sh: {app} when $project is the team's own (one of projects; agent-team by name always
+# is), else false.
+def own_in($own; $project):
+  if $project == "agent-team" or ($project | IN($own.projects[])) then {app: $own.app} else false end;
 
 # The project of the task's PR $url (a trailing slash aside), over the task's events: its latest
 # pr event's project, else the task's opened one's, else null.
@@ -1107,20 +1109,24 @@ def unattended_review_reasons($head):
 # The words PR $url of $project at the head $head may merge on, from the task's events (as an
 # array) alone, every reader's one derivation of them: {words, word}, words the per-head word and
 # then the default word, in the order team-merge tries them, each {word: "head" or "default",
-# applies, holds, reasons, facts}, and word the first that holds on the ledger, or null. $own says
-# $project is the team's own (own_project); $withdrawals is the ledger's merge-default-withdrawn
-# and merge-default-restored events, every task's, in ledger order, each giving back with thread,
-# the latest thread of the task it was logged under, when team-merge adds it.
+# applies, holds, reasons, facts}, and word the first that holds on the ledger, or null. $own is
+# the bar $project is held to (own_bar in bin/lib/team.sh): false for a project not the team's
+# own, else {app}, the reviewer App's id, or null while it is off; $withdrawals is the ledger's
+# merge-default-withdrawn and merge-default-restored events, every task's, in ledger order, each
+# giving back with thread, the latest thread of the task it was logged under, when team-merge adds
+# it.
 # The per-head word applies when a merge-approved names $url (the latest counts, a trailing slash
 # aside); its one reason is that none does, or that no pr event of $url, nor a review since,
 # logged the head it names; facts: approval (the event, with i its index), head (the head it
 # names, or null for a legacy one) and logged ({ts, event} of the event its message is timed
 # against: head_logged's, or a legacy one's latest pr event of $url, or null).
 # The default word, the approved plan, applies while plan_approval is approved; its reasons: no
-# approval, or one withdrawn; on the team's own project, the one reason that it merges unattended
-# only behind the reviewer App's check, which is not set up; else that the default is withdrawn
-# for the task, $project or every project (the latest of $withdrawals covering the PR,
-# default_cover, is a withdrawal), that the task logged no branch for $project, and
+# approval, or one withdrawn; on the team's own project with the App off, the one reason that it
+# merges unattended only behind the reviewer App's check, which is not set up; else, on the team's
+# own project, that the approval is not Daniel's (the coordinator's, or a legacy one), and on
+# every project that the default is withdrawn for the task, $project or every project (the latest
+# of $withdrawals covering the PR, default_cover, is a withdrawal), that the task logged no branch
+# for $project, and
 # unattended_review_reasons($head). Its facts, null unless it applies: the approval's by, ts,
 # legacy, plan and scope, branch (task_branch), restored (that latest event when it is a giving
 # back, whose message team-merge reads back, else null), withdrawn (that latest event when it is a
@@ -1149,8 +1155,13 @@ def merge_authority($url; $head; $project; $own; $withdrawals):
      reasons: (if $plan == null then ["\($task) has no approved plan: no plan-approved is logged"]
                elif $plan.state == "withdrawn" then
                  ["\($task)'s plan approval was withdrawn at \($plan.ts) in Discord message \($plan.discord_message): approve the plan again"]
-               elif $own then ["the team's own project merges unattended only behind the reviewer App's check, which is not set up"]
-               else [($cover | select(.event == "merge-default-withdrawn")
+               elif $own and $own.app == null then
+                 ["the team's own project merges unattended only behind the reviewer App's check, which is not set up"]
+               else [(select($own) | "the team's own project merges unattended only on a plan Daniel approved, and "
+                       + if $plan.legacy then "\($task)'s approval at \($plan.ts) is a legacy one, logged with no plan: ask Daniel to approve it"
+                         elif $plan.by != "Daniel" then "the coordinator approved \($task)'s at \($plan.ts): ask Daniel to approve it"
+                         else empty end),
+                     ($cover | select(.event == "merge-default-withdrawn")
                        | "the default word was withdrawn for \(default_scope_text) at \(.ts) in Discord message \(.discord_message), and not given back since"),
                      (task_branch($project) | select(. == null)
                        | "\($task) logged no branch for \($project): no opened, worktree-added or branch-renamed event of it"),
@@ -1245,7 +1256,9 @@ def state_line:
            + (if .caught_up then " (caught up cleanly with \(.base))" elif .head_moved then " (head moved)" else "" end)
            + (if (.behind_by | type) == "number" and .behind_by > 0 then " \(.behind_by) behind \(.base)" else "" end)
            + " checks \(.checks.passed | length)/\(.checks | map(length) | add)"
-           + " agent-review \(.agent_review)"
+           + if .review_check == null then " agent-review \(.agent_review)"
+             elif .review_check == "foreign" then " agent-review foreign (\(.review_check_by), not the reviewer App's check)"
+             else " agent-review \(.review_check) (the reviewer App's check)" end
          end
      end)
   + (if (.rehome_failures // []) == [] then ""
@@ -1293,7 +1306,7 @@ def merge_base_round($sessions):
 # Whether the default word, the approved plan, holds on the ledger for the task's PR $pr (one of
 # task_prs) at the latest head the task logged for it (pr_heads, since no pr event logs a fix), as
 # merge_authority says it over the task's events (the input), $withdrawals (default_events') and
-# $own (the registered projects that are the team's own, own_in), the PR's project its latest pr
+# $own (own_projects' {projects, app}, read through own_in), the PR's project its latest pr
 # event's, else the task's opened one's.
 def default_holds($pr; $withdrawals; $own):
   pr_project($pr.url) as $project
@@ -1305,13 +1318,14 @@ def default_holds($pr; $withdrawals; $own):
 # team-sweep's merge-due finding, over a task's events and the session list, or nothing: the task
 # awaits merge, nothing else parks it (no ask nothing settled, pause or wait), no merge-base round
 # is in flight, and a PR not merged has the default word holding on the ledger (default_holds,
-# merge_authority's word: the plan approved, on a project not the team's own, not withdrawn for the
-# task, its project or all, the task's branch logged, and no review-side reason, as team-state and
-# team-merge read them: the sweep reads no GitHub, so a guarded path a reviewer did not name, a plan
-# changed since its approval or Daniel's message not reading back is team-merge's to find, and of
-# two open PRs the later review stands for both); only such PRs are named. $withdrawals is
-# default_events' and $own the registered projects that are the team's own (own_in), or null when
-# the registry cannot be read, which raises none.
+# merge_authority's word: the plan approved, the team's own project's by Daniel with the reviewer
+# App on and never with it off, not withdrawn for the task, its project or all, the task's branch
+# logged, and no review-side reason, as team-state and team-merge read them: the sweep reads no
+# GitHub, so a guarded path a reviewer did not name, a plan changed since its approval, Daniel's
+# message not reading back or the App's check is team-merge's to find, and of two open PRs the
+# later review stands for both); only such PRs are named. $withdrawals is default_events' and $own
+# own_projects' {projects, app} (own_in), or null when the registry cannot be read, which raises
+# none.
 def merge_due_finding($withdrawals; $sessions; $own):
   .[0].task as $task
   | . as $events
@@ -1754,8 +1768,8 @@ def interview_under_way:
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
 # awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
 # head, or at no head, as a legacy line, and whose default word does not hold on the ledger
-# (default_holds over $withdrawals, default_events', and $own, the registered projects that are the
-# team's own; with $own null, as when the registry cannot be read, none holds).
+# (default_holds over $withdrawals, default_events', and $own, own_projects' {projects, app}, the
+# team's own and the reviewer App; with $own null, as when the registry cannot be read, none holds).
 def merge_ready_prs($withdrawals; $own):
   . as $events
   | task_prs as $prs
@@ -1770,7 +1784,7 @@ def merge_ready_prs($withdrawals; $own):
 # <the asked's ts>", kind: "ask", task, title, id, text (its first line), thread (the task's
 # thread when it was asked), message (the question's discord_message)}), then the PRs ready to
 # merge ({key: "pr <url, its trailing slash dropped>", kind: "pr", task, title, url}), as
-# merge_ready_prs has them over $own (the registered projects that are the team's own, or null),
+# merge_ready_prs has them over $own (own_projects' {projects, app}, or null),
 # then the interviews under way ({key: "interview <task> <thread>", kind: "interview", task, title,
 # thread}); withdrawn: the withdrawals of the default merge word that stand (default_withdrawals),
 # in ledger order.

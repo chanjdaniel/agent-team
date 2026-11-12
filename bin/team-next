@@ -80,17 +80,19 @@
 # cannot be read). Once the review and its done are logged, the last line is what is
 # left for the coordinator, the holder being the task's latest builder launch, under 250k while
 # team-state reads its context under 250,000 tokens or none, and gone when its session is not
-# live. For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks
-# green" (or the failing, pending and missing checks), or "merge on the default word: run
-# team-merge T<n> for ..." instead while the default word, the approved plan, holds on the ledger
-# for the PR at the reviewed head, read once the review is logged (merge_authority in
+# live. For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks green"
+# (or the failing, pending and missing checks; the state the reviewer App's check's, review_check in
+# bin/lib/team.sh's pr_part, on the team's own project with the App on), or "merge on the default
+# word: run team-merge T<n> for ..." instead while the default word, the approved plan, holds on the
+# ledger for the PR at the reviewed head, read once the review is logged (merge_authority in
 # bin/lib/ledger.jq, the derivation team-merge, team-state and team-sweep read: the plan approved
-# and not withdrawn, the PR's project not the team's own by own_project in bin/lib/team.sh, the
-# default not withdrawn for the task, its project or every project, the task's branch logged, the
-# review found no guarded area and no review of the task counted a security or real-data finding
-# or logged no counts); on a merge ask, each guarded area of the six bin/lib/guarded names and
-# each such review named, with ", so the default word does not hold" while the plan stands
-# approved on a project not the team's own, and the before notes to queue as follow-ups; for a PR
+# and not withdrawn, the PR's project not the team's own by own_project in bin/lib/team.sh, or the
+# team's own on a plan Daniel approved with the reviewer App on, the default not withdrawn for the
+# task, its project or every project, the task's branch logged, the review found no guarded area and
+# no review of the task counted a security or real-data finding or logged no counts); on a merge
+# ask, each guarded area of the six bin/lib/guarded names and each such review named, with ", so the
+# default word does not hold" while the plan stands approved on a project not the team's own, or the
+# team's own with the reviewer App on, and the before notes to queue as follow-ups; for a PR
 # behind its base, "merge base: ..." instead, read with base_merge in the project's primary checkout
 # once the PR's branch and the base are fetched there: "run team-catch-up T<n>, which needs no
 # rereview" when the reviewed head merges the base cleanly, then "then, once the checks pass on its
@@ -546,8 +548,7 @@ if [[ $handoff == verdict ]]; then
   # registered project.
   default=null
   if [[ -n $pr_project ]]; then
-    own=false
-    if (own_project "$pr_project"); then own=true; fi
+    own=$(own_bar "$pr_project") || exit 1
     withdrawals=$(default_events_json) || exit 1
     default=$(task_event_array "$task" | ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)
       | .words[] | select(.word == "default") | .own = $own' -c --arg url "${url%/}" --arg head "$reviewed" \
@@ -557,12 +558,12 @@ if [[ $handoff == verdict ]]; then
   # once the merge's checks pass, with no checks of the head it was made from.
   ledger_jq '
     (.pr | if $caught != "" then "\(.url) at \(.head)"
-      else "\(.url) at \(.head), agent-review \(.agent_review), "
+      else "\(.url) at \(.head), agent-review \(.review_check // .agent_review), "
         + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
             (.checks.pending | select(. != []) | "pending: \(join(", "))"),
             (.required_missing | select(. != []) | "missing: \(join(", "))")]
           | if . == [] then "checks green" else "checks \(join("; "))" end) end) as $facts
-    | ($default != null and $default.applies and ($default.own | not)) as $applies
+    | ($default != null and $default.applies and ($default.own == false or $default.own.app != null)) as $applies
     | (if $applies then ", so the default word does not hold" else "" end) as $held
     | [($review.guarded // [])[] | select(IN(guarded_areas[]))] as $guarded
     | (if $caught != "" then "then, once the checks pass on its merge: " else "" end)

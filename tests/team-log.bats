@@ -250,7 +250,7 @@ TABLE
   done
   grep -Eq '^  merge-default-withdrawn +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel withdrew the default merge word.*task, the task the line is logged under.*the latest of the two whose scope covers it .*decides.*\)$' <<<"$output"
   grep -Eq '^  merge-default-restored +team-log +scope, discord_message \(id\), discord_channel \(id\); pushed at once  \(Daniel gave the default merge word back.*team-merge holds it only when Discord shows the message .*from an allowFrom author.*\)$' <<<"$output"
-  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|default\|plan\|standing\), phases_left \(list of whole numbers\); pushed at once  \(approval: .*\)$' <<<"$output"
+  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|default\|plan\|standing\), phases_left \(list of whole numbers\), check_run \(number\); pushed at once  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\), approved \(list\)  \(.*approved the ids of the parks the builder approved itself.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\); pushed at once  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  walk +team-ui +state \(on\|off\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"

@@ -278,7 +278,8 @@ approval_of() {
 }
 
 # merge_authority over the events read from stdin, as approval_of reads them, for PR 5 of proj at
-# the head a1b2c3d4e5, the project the team's own when <own> is true, with the ledger's
+# the head a1b2c3d4e5, held to the bar <own> (merge_authority's $own: false, or the team's own
+# project as {"app": <the reviewer App's id or null>}), with the ledger's
 # merge-default-withdrawn and merge-default-restored events <withdrawals> (a JSON array, default
 # none), a string printed raw: authority_of [<own>] [<filter>] [<withdrawals>]
 authority_of() {
@@ -325,9 +326,19 @@ merge-approved names the head 0fedcba, which no pr event of https://github.com/o
   assert_equal "$(printf '%s\n' "$coordinator" | authority_of false '.words[1].reasons[]')" \
     "no review of the head a1b2c3d is logged, so no reviewer has passed it"
   # The team's own project: the one reason, whoever approved.
-  assert_equal "$(printf '%s\n' "$asked" "$daniel" "$pass" | authority_of true '.word, .words[1].reasons')" \
+  assert_equal "$(printf '%s\n' "$asked" "$daniel" "$pass" | authority_of '{"app": null}' '.word, .words[1].reasons')" \
     'null
 ["the team'"'"'s own project merges unattended only behind the reviewer App'"'"'s check, which is not set up"]'
+  # With the reviewer App on: Daniel's approval holds, the coordinator's and a legacy one do not,
+  # and the other reasons are given as for any project.
+  assert_equal "$(printf '%s\n' "$asked" "$daniel" "$pass" | authority_of '{"app": 123456}' '.word, .words[1].reasons')" \
+    'default
+[]'
+  assert_equal "$(printf '%s\n' "$coordinator" | authority_of '{"app": 123456}' '.words[1].reasons[]')" \
+    "the team's own project merges unattended only on a plan Daniel approved, and the coordinator approved T1's at 2026-11-01T00:02:00Z: ask Daniel to approve it
+no review of the head a1b2c3d is logged, so no reviewer has passed it"
+  assert_equal "$(printf '%s\n' '{"event": "plan-approved", "by": "Daniel"}' "$pass" | authority_of '{"app": 123456}' '.words[1].reasons[]')" \
+    "the team's own project merges unattended only on a plan Daniel approved, and T1's approval at 2026-11-01T00:02:00Z is a legacy one, logged with no plan: ask Daniel to approve it"
 }
 
 @test "merge_authority's default word is withdrawn when the latest withdrawal or giving back covering the PR is a withdrawal" {
@@ -367,7 +378,7 @@ null'
   assert_equal "$({ said withdrawn T5 all 9; said restored T5 conv 10; } | covered | sed -n 2p)" \
     '["the default word was withdrawn for every project at 2026-11-01T00:09:00Z in Discord message 159, and not given back since"]'
   # The team's own project gives its one reason alone, withdrawn or not.
-  assert_equal "$(printf '%s\n' "$coordinator" "$pass" | authority_of true '.words[1].reasons' "$(said withdrawn T1 all 9 | jq -sc .)")" \
+  assert_equal "$(printf '%s\n' "$coordinator" "$pass" | authority_of '{"app": null}' '.words[1].reasons' "$(said withdrawn T1 all 9 | jq -sc .)")" \
     '["the team'"'"'s own project merges unattended only behind the reviewer App'"'"'s check, which is not set up"]'
 }
 
