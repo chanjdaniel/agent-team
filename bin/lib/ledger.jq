@@ -2007,9 +2007,12 @@ def merge_ready_prs($withdrawals; $own):
 # merge ({key: "pr <url, its trailing slash dropped>", kind: "pr", task, title, url}), as
 # merge_ready_prs has them over $own (own_projects' {projects, app}, or null),
 # then the interviews under way ({key: "interview <task> <thread>", kind: "interview", task, title,
-# thread}); withdrawn: the withdrawals of the default merge word that stand (default_withdrawals),
-# in ledger order.
-def inbox_items($own):
+# thread}), then the asks of tasks/current.md, $notes' of kind ask ({key: "note <id>", kind: "note",
+# task (T<n> or -), title: null, id (team-current's), text, where}), in its order; withdrawn: the
+# withdrawals of the default merge word that stand (default_withdrawals), in ledger order; owed:
+# the replies owed to Daniel, $notes' of kind owe, as {task, text, where}. $notes is current.md's
+# ask and owe lines as team-inbox reads them, [{kind, task, text, where, id}].
+def inbox_items($own; $notes):
   default_events as $withdrawals
   | ($withdrawals | default_withdrawals(task_projects)) as $withdrawn
   | [by_task | to_entries[] | select(.value | is_open)
@@ -2024,8 +2027,10 @@ def inbox_items($own):
         | {key: "pr \(rtrimstr("/"))", kind: "pr", task: $t.task, title: $t.title, url: .}]
       + [.[] | select(.events | interview_under_way)
         | (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring) as $thread
-        | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread}]),
-     withdrawn: [$withdrawn[] | {task, scope, ts, discord_message, discord_channel}]};
+        | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread}]
+      + [$notes[] | select(.kind == "ask") | {key: "note \(.id)", kind: "note", task, title: null, id, text, where}]),
+     withdrawn: [$withdrawn[] | {task, scope, ts, discord_message, discord_channel}],
+     owed: [$notes[] | select(.kind == "owe") | {task, text, where}]};
 
 # The items of inbox_items, in its order, each given its number n, from the previous waiting.json
 # $previous (null when there is none or it cannot be read): an item whose key $previous's items
@@ -2050,7 +2055,11 @@ def waiting_numbered($previous):
 # which Discord and GitHub both renumber, and every URL in <>, which keeps Discord from showing a
 # preview card for it: an ask linked to the question's message in guild $guild (null when unknown),
 # to the task's thread when either is unknown, and to nothing with no thread; a PR with its URL; an
-# interview with its thread.
+# interview with its thread; an ask of current.md with its task unless -, and its where when that
+# is a URL (note_text).
+def note_text:
+  (if .task == "-" then "" else "\(.task) " end) + (.text | clip(150))
+  + if (.where // "") | test("^https?://\\S+$") then " <\(.where)>" else "" end;
 def waiting_line($guild):
   def named: .task + if .title == null then "" else " \(.title | clip(80))" end;
   "- **\(.n)** "
@@ -2059,33 +2068,37 @@ def waiting_line($guild):
         elif .message != null and $guild != null then " <https://discord.com/channels/\($guild)/\(.thread)/\(.message)>"
         else " <#\(.thread)>" end
     elif .kind == "pr" then "\(named): <\(.url)>"
+    elif .kind == "note" then note_text
     else "\(named): <#\(.thread)>" end;
 
 # waiting.json from inbox_items' answer: the items numbered (waiting_numbered, from $previous), in
-# the order waiting.md shows them (the asks, the PRs, the interviews, each in number order), each
-# with its line (waiting_line, in guild $guild), the withdrawals as inbox_items has them, and
-# $previous's post, null until team-inbox --post records one.
+# the order waiting.md shows them (the asks, the PRs, the interviews, current.md's asks, each in
+# number order), each with its line (waiting_line, in guild $guild), the withdrawals and the owed
+# replies as inbox_items has them, and $previous's post, null until team-inbox --post records one.
 def waiting_list($previous; $guild):
   {schema: "team-waiting/1",
    items: (.items | waiting_numbered($previous)
-     | sort_by(.kind as $kind | [(["ask", "pr", "interview"] | index($kind)), .n])
+     | sort_by(.kind as $kind | [(["ask", "pr", "interview", "note"] | index($kind)), .n])
      | map({n} + . + {line: waiting_line($guild)})),
    withdrawn: .withdrawn,
+   owed: .owed,
    posted: ($previous.posted // null)};
 
 # waiting.md from waiting_list's answer, with a final newline: its title; "Nothing waits on you."
-# or each section with items, its heading then its items' lines; and one line per withdrawal of the
-# default merge word that stands,
+# or each section with items, its heading then its items' lines; one line per reply owed to Daniel,
+# "-# Owed you: <note_text>"; and one line per withdrawal of the default merge word that stands,
 # linked to Daniel's message in its channel in guild $guild (named by its id and channel when the
 # guild is unknown).
 def waiting_text($guild):
   .items as $items
   | ["**Waiting on you**"]
   + if $items == [] then ["Nothing waits on you."]
-    else [[["ask", "**Asks**"], ["pr", "**PRs ready to merge**"], ["interview", "**Interviews under way**"]][]
+    else [[["ask", "**Asks**"], ["pr", "**PRs ready to merge**"], ["interview", "**Interviews under way**"],
+        ["note", "**Other asks**"]][]
       as [$kind, $heading]
       | [$items[] | select(.kind == $kind) | .line] | select(. != []) | $heading, .[]]
     end
+  + [.owed[]? | "-# Owed you: \(note_text)"]
   + [.withdrawn[] | "-# Default merge word withdrawn for \(default_scope_text) since "
       + if $guild != null then "<https://discord.com/channels/\($guild)/\(.discord_channel)/\(.discord_message)>"
         else "message \(.discord_message) in <#\(.discord_channel)>" end]
@@ -2105,8 +2118,8 @@ def waiting_posted($at; $ids; $sent):
   | .posted = {at: $at, messages: $ids, items: [.items[] | select(.line | IN($lines[]))]};
 
 # team-inbox --item's answer for the number $n, over waiting.json read whole (jq -s): {item} for
-# the standing item numbered $n, the line naming it ("ask <task> <id>", "pr <task> <url>" or
-# "interview <task> <thread>"), else {refusal}: the item the latest post showed as $n, which no
+# the standing item numbered $n, the line naming it ("ask <task> <id>", "pr <task> <url>",
+# "interview <task> <thread>" or "note <task or -> <id>"), else {refusal}: the item the latest post showed as $n, which no
 # longer waits, or the numbers that do; or a waiting.json of another schema.
 def waiting_item($n):
   if length != 1 or (.[0] | type != "object" or .schema != "team-waiting/1") then
@@ -2117,6 +2130,7 @@ def waiting_item($n):
     | if $item != null then
         {item: (if $item.kind == "ask" then "ask \($item.task) \($item.id)"
           elif $item.kind == "pr" then "pr \($item.task) \($item.url)"
+          elif $item.kind == "note" then "note \($item.task) \($item.id)"
           else "\($item.kind) \($item.task) \($item.thread)" end)}
       elif $shown != null then {refusal: "item \($n) no longer waits: the list posted \(.posted.at) showed it as \($shown.line)"}
       else {refusal: ("no item \($n) waits; "

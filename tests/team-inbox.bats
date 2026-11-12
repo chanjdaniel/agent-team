@@ -83,7 +83,7 @@ posted_as() {
 Nothing waits on you."
   # The file ends with its newline.
   [[ -z $(tail -c 1 "$TEAM_HOME/waiting.md") ]]
-  assert_equal "$(jq -c . "$TEAM_HOME/waiting.json")" '{"schema":"team-waiting/1","items":[],"withdrawn":[],"posted":null}'
+  assert_equal "$(jq -c . "$TEAM_HOME/waiting.json")" '{"schema":"team-waiting/1","items":[],"withdrawn":[],"owed":[],"posted":null}'
   assert_equal "$(jq -c . "$state")" "{\"channel\":\"1562486564871995482\",\"guild\":\"$INBOX_GUILD\"}"
 
   # The guild is kept, so the next run calls Discord for nothing.
@@ -119,6 +119,45 @@ Nothing waits on you."
     '{"task":"T9","event":"closed","archive":[],"returned":[],"kept":[]}'
   run_bin -0 team-inbox
   assert_equal "$output" "wrote waiting.md: 1 item"
+}
+
+# The id team-current gives an item line: the first 6 hex digits of the sha256 of the line without
+# its "- ".
+item_id() {
+  printf '%s' "${1#- }" | sha256sum | cut -c1-6
+}
+
+@test "current.md's ask lines are numbered items of the list, its owe lines are named after it, and --item names a note by its id" {
+  opened T3 "Three" >>"$TEAM_HOME/ledger.jsonl"
+  log_events '{"task":"T3","event":"asked","id":"a","text":"A?"}'
+  mkdir -p "$TEAM_HOME/tasks"
+  local research="- ask - open a research task on Fable one-shots? | https://discord.com/channels/1/2/3"
+  local domain="- ask T4 which domain for the docs site | ledger 2026-11-01T07:08:11Z"
+  printf '%s\n' "# Current items" "$research" "- owe T4 the weekly report, mine to send | 1563000000000000045" \
+    "- next T4 open the Node pin task | ledger 2026-11-01T07:08:11Z" "$domain" \
+    "- owe - a reply on the docs budget | https://discord.com/channels/1/2/4" >"$TEAM_HOME/tasks/current.md"
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$output" "wrote waiting.md: 3 items"
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T3 a: A?
+**Other asks**
+- **2** open a research task on Fable one-shots? <https://discord.com/channels/1/2/3>
+- **3** T4 which domain for the docs site
+-# Owed you: T4 the weekly report, mine to send
+-# Owed you: a reply on the docs budget <https://discord.com/channels/1/2/4>"
+  assert_equal "$(jq -c '.items[1] | del(.line)' "$TEAM_HOME/waiting.json")" \
+    "{\"n\":2,\"key\":\"note $(item_id "$research")\",\"kind\":\"note\",\"task\":\"-\",\"title\":null,\"id\":\"$(item_id "$research")\",\"text\":\"open a research task on Fable one-shots?\",\"where\":\"https://discord.com/channels/1/2/3\"}"
+  run_bin -0 team-inbox --item 3
+  assert_equal "$output" "note T4 $(item_id "$domain")"
+
+  # A current.md that cannot be read leaves its lines out, saying why.
+  rm "$TEAM_HOME/tasks/current.md"
+  mkdir "$TEAM_HOME/tasks/current.md"
+  run_bin -0 --separate-stderr team-inbox
+  assert_contains "$stderr" "team-inbox: leaves out the asks and owed replies of tasks/current.md, since it cannot be read: "
+  assert_equal "$(waiting_items_shown)" "**Asks**
+- **1** T3 a: A?"
 }
 
 @test "a section with nothing in it is left out, and an ask settled by merge-approved goes with it" {
