@@ -12,10 +12,11 @@
 # ", sent back <findings>" when the latest review sent any back (nothing before the first review),
 # and in the PR part "<n> behind <base>" when the base has commits the head lacks.
 # With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
-# worktrees (returned or not), thread, workers (every launch, live when claude agents --json
-# lists its session, with that session's status, state and context, the tokens its latest
-# main-conversation reply read, from its transcript, or null, and the brief its launch logged, or
-# null), last_event, pending_asks, waiting, parks, stowing, walk, rehome_failures, merge_preapproval, pr, and progress;
+# worktrees (returned or not, ticket the number of a ticket worktree, else null), thread,
+# workers (every launch, live when claude agents --json lists its session, with that session's
+# status, state and context, the tokens its latest main-conversation reply read, from its
+# transcript, or null, and the brief its launch logged, or null), last_event, pending_asks,
+# waiting, parks, stowing, walk, rehome_failures, checks_wait, pr, and progress;
 # pending_asks are the asks no later event settles, an answered or a
 # merge-preapproved with the ask's id or a merge-approved whose url its text names.
 # progress is where the task is: tickets (done, the ticket numbers with a ticket-done, each once,
@@ -34,15 +35,17 @@
 # causes; team-log's header says what each resumed ends),
 # else the work phase the task's events moved it to: planning, building, in-review, awaiting-merge,
 # merged-part or merged. An opened starts a small or bug task in building and any other in planning;
-# a plan-approved moves planning to building; a builder's launch or a ticket-done moves planning,
-# merged-part or merged to building; a builder's done reporting review-ready or merged moves
-# building to in-review; a pr, and while building, in review or awaiting merge a review or (with a
-# PR logged) a history-rewritten, makes it awaiting-merge when it has a PR not merged and each such
-# PR's latest review on its head is a pass, else in-review; a merged that leaves no PR open makes it
-# merged-part when it names phases_left (phases with a ticket not done), else merged. A task's PRs
-# are the latest pr event in each repo; a PR's head is that event's, moved by each later
-# history-rewritten from it (or from a head no PR has); a PR is merged by a merged event naming its
-# URL (legacy: its number). Heads compare by the shorter one's prefix, at least 7 characters.
+# a plan-approved moves planning to building, and a plan-approval-withdrawn building back to
+# planning; a builder's launch or a ticket-done moves planning, merged-part or merged to building,
+# except while the plan approval is withdrawn; a builder's done reporting review-ready or merged
+# moves building to in-review; a pr, and while building, in review or awaiting merge a review or
+# (with a PR logged) a history-rewritten, makes it awaiting-merge when it has a PR not merged and
+# each such PR's latest review on its head is a pass, else in-review; a merged that leaves no PR
+# open makes it merged-part when it names phases_left (phases with a ticket not done), else merged.
+# A task's PRs are the latest pr event in each repo; a PR's head is that event's, moved by each
+# later history-rewritten from it (or from a head no PR has); a PR is merged by a merged event
+# naming its URL (legacy: its number). Heads compare by the shorter one's prefix, at least 7
+# characters.
 # pr is null without a pr event; otherwise it joins the latest pr event with GitHub (gh pr view,
 # gh pr checks, gh pr checks --required): number, repo and project (from the event's project in
 # projects.toml, else from the URL), state, base, branch (the PR's head branch), the live head, the
@@ -52,25 +55,32 @@
 # moved head), checks passed, failing and pending by name (a skipped check counts as passed, a
 # cancelled one as failing), required (server-required plus the project's required_checks) and
 # required_missing, agent_review (the agent-review check's state on the head, or missing),
+# review_app, review_check, review_check_run and review_check_by (the reviewer App's id and its
+# agent-review check run on the head, read from GitHub's check runs and commit status of the head
+# for the team's own project with the App on, else null: pr_part in bin/lib/team.sh; the text then
+# says "agent-review <success, failure or missing> (the reviewer App's check)", or "agent-review
+# foreign (<what it is>, not the reviewer App's check)", in place of the agent_review state),
 # merge_approved (a merge-approved event naming this PR's URL), behind_by (the commits of the base
 # the head lacks, from gh api's compare of the two for an open PR; null for a PR not open or when
-# the compare cannot be read, which fails nothing else), and standing_word. When GitHub cannot be
+# the compare cannot be read, which fails nothing else), and merge_authority. When GitHub cannot be
 # read, pr carries error instead of GitHub's facts, the text says "GitHub unavailable", and the exit
 # is still 0.
-# standing_word is Daniel's standing merge word on the PR's project, read from every task's events
-# in the ledger: null when no merge-standing or merge-standing-withdrawn names that project or all,
-# or the project is the team's own (own_project in bin/lib/team.sh), whose PRs merge only on the
-# per-head word, so no standing word covers them; else {word, withdrawn, covers, reasons}, word the
-# latest merge-standing that applies and withdrawn the latest event when it is a withdrawal, each
-# as {project (as logged), task, ts, discord_message, discord_channel}, else null. Only while the
-# phase is awaiting-merge, reasons are why team-merge would not merge the PR on the word (the word
-# withdrawn, the PR from a branch not the task's, the review-side reasons and the changed-file
-# reasons it holds the word to, or GitHub unreadable), read from GitHub's list of the PR's files,
-# and covers is whether there are none; Daniel's message is not read back and the checks are not
-# judged. Otherwise covers is null, reasons empty and no file list is read. While awaiting merge,
-# the text form says the first that holds of "standing word withdrawn", "standing word covers it"
-# and "standing word does not cover it: <the first reason>" (with " (and <n> more)" for more),
-# before the parks.
+# merge_authority is the words the PR may merge on, as merge_authority in bin/lib/ledger.jq
+# derives them for team-merge, team-sweep, team-next and team-inbox alike: null for a PR of no
+# registered project, else {words, word}, words the per-head word and then the default word, each
+# {word: "head" or "default", applies, holds, reasons, facts}, and word the first that holds, or
+# null. It is read from the task's events, every task's merge-default-withdrawn and
+# merge-default-restored, and the bar the PR's project is held to (own_bar in bin/lib/team.sh: the
+# team's own, and whether the reviewer App is on), on the head GitHub shows. Only while the phase is
+# awaiting-merge and the default word holds on the ledger, the reasons team-merge would find in
+# GitHub's view are added to it (GitHub unreadable, the PR from a branch not the task's, GitHub's
+# list of the PR's files not read in full, a guarded path of bin/lib/guarded, a path outside the
+# approved plan's scope), and its holds and the word follow them; Daniel's messages are not read
+# back, the plan's files are not hashed and the checks are not judged. While awaiting merge with the
+# plan approved (the default word applies), the text form says the first
+# that holds of "default word covers it", "default word withdrawn" (the default withdrawn for the
+# task, its project or every project) and "default word does not cover it: <the first reason>"
+# (with " (and <n> more)" for more), before the walk and the parks.
 # waiting is the task's latest standing waiting (on, reason, since), or null. parks are the task's standing parks (held, blocked, waiting, paused) in the order logged,
 # each {id, kind, cause, on, reason, since, passed}: id <kind>-<n>, the park's ordinal among the
 # task's events of its kind; cause the line's own, else for an old line the one bin/lib/ledger.jq's
@@ -88,14 +98,11 @@
 # project's latest rehome-failed, as {project, branch, machine, reason, since}, until a later
 # opened, worktree-added, worktree-moved, rehomed or worktree-returned in that project; the text
 # form says "not re-homed: <project> on <machine>: <reason>", before the parks.
-# merge_preapproval is Daniel's plan-time merge word: null when the task logged no
-# merge-preapproved, else its latest one's project, ask, discord_message, scope and ts, with
-# withdrawn (the first merge-preapproval-withdrawn of that project after it, as {ts,
-# discord_message}, or null while it stands), opted_in (the project's merge_with_plan in
-# projects.toml now, false for a project it no longer has) and own (the team's own project, as
-# own_project in bin/lib/team.sh reads it). The text form says the first that holds of "merge
-# pre-approval withdrawn", "merge pre-approved, but <project> is the team's own project", "merge
-# pre-approved, but <project> does not opt in" and "merge pre-approved", before the parks.
+# checks_wait is what the task's latest pass waits on, as checks_wait in bin/lib/ledger.jq reads it
+# from the ledger alone: null unless the latest review is a pass on a PR not merged, else {url,
+# reviewed, head, since, state, reruns}, state the outcome of the latest ci team-next T<n> --ci
+# logged of head (passed, failed, infrastructure or pending), or waiting with none; the text form
+# says "checks <state>" while one stands, after the PR part.
 # Exit 1 for a task with no events, or when the live session list or the registry cannot be read.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"

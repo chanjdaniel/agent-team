@@ -27,8 +27,9 @@
 #          it. Each file written, the reload and each restart is one line; with nothing to do it
 #          says so. Idempotent. Exit 1 when the user manager does not answer the reload.
 # place    On Linux, adopts each live team session (claude agents --json: every session named
-#          T<n>-<role> whose process runs, never the coordinator, an unnamed one or a load
-#          check's T0; with ids, only those, each an 8-hex session id) into the
+#          T<n>-<role>, or T<n>-<role>-<NN> as a ticket's builder is, whose process runs, never
+#          the coordinator, an unnamed one or a load check's T0; with ids, only those, each an
+#          8-hex session id) into the
 #          transient scope agent-team-T<n>-<id>.scope in the slice agent-team-T<n>.slice, which
 #          systemd nests under agent-team.slice by its name: the session's process, its parent
 #          when that is the claude daemon's bg-pty-host, and every descendant, but those already
@@ -628,11 +629,11 @@ place_one() {
 # team session: team_sessions [<id>...]
 team_sessions() {
   jq -r --args '[.[] | {id: (.id // (.sessionId // "" | .[:8])), name: (.name // ""), pid: (.pid // "" | tostring)}] as $live
-    | def team: .name | test("^T[1-9][0-9]*-[a-z]+$");
+    | def team: .name | test("^T[1-9][0-9]*-[a-z]+(-[0-9]{2})?$");
     if $ARGS.positional == [] then $live[] | select(team) | [.id, .name, .pid] | @tsv
     else $ARGS.positional[] as $id | ($live | map(select(.id == $id)) | first) as $s
       | if $s == null then ["?", "\($id): no live session has that id"]
-        elif ($s | team | not) then ["-", "\($id): it is no team session (named \(if $s.name == "" then "nothing" else $s.name end), not T<n>-<role>)"]
+        elif ($s | team | not) then ["-", "\($id): it is no team session (named \(if $s.name == "" then "nothing" else $s.name end), not T<n>-<role> or T<n>-<role>-<NN>)"]
         else [$s.id, $s.name, $s.pid] end | @tsv end' "$@" <<<"$LIVE_SESSIONS"
 }
 

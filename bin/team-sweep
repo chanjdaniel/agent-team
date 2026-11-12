@@ -6,7 +6,9 @@
 # Reads only ledger.jsonl, claude agents --json, team-capacity plan --json (from the stored
 # readings), team-timers health --json (the health view, from the heartbeat's health record, the
 # lease record and the fence file, asked for at most 10 s, and only on a machine with a team
-# name), the registry once the ledger holds a merge-standing (merge-due, below) and, through
+# name), the registry and bin/lib/review-app while an open task awaits merge with its plan approved
+# (which projects are the team's own and whether the reviewer App is on, for merge-due, below)
+# and, through
 # bin/lib/session-activity, the live sessions' transcripts: their modification times, and from a
 # session's quiet past the default limit only its times, tool names, tool call ids, commands and
 # background task marks (never GitHub, never a tool's output or a message's text, and never a new
@@ -16,7 +18,9 @@
 # id, no merge-approved whose url its text names), or when a park (held, blocked, waiting, paused)
 # stands in the ledger's lifecycle fold; an ask a launch went past (team-worker --past-ask) and its
 # wait park nothing, so that launch's worker is watched; an awaiting-merge task that nothing else parks is merge-due instead
-# while Daniel's plan-time or standing merge word stands. Findings, one line each with the task,
+# while the default merge word, the approved plan, holds for one of its PRs and the checks of its
+# pass have passed, and ci-due while no wait of those checks has ended, and none of them was
+# rerun, for 100 minutes. Findings, one line each with the task,
 # the session and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
@@ -45,32 +49,41 @@
 #                  run, logged it) has stood 30 minutes with no stowed or stow-failed, whatever
 #                  parks it, with session null: "stowing since <its time> (<cause>), with no
 #                  stowed; next: run team-stow T<n>, which finishes the stow or logs stow-failed"
-#   merge-due      an open task in awaiting-merge with a plan-time merge approval not withdrawn (its
-#                  latest merge-preapproved of a project with no later merge-preapproval-withdrawn
-#                  of it) or a standing word of Daniel's on one of its projects (those of its
-#                  opened and worktree-added events: the latest merge-standing or
-#                  merge-standing-withdrawn of the project or all, logged under any task, is a
-#                  merge-standing) that a standing word may cover (standing_projects in
-#                  bin/lib/team.sh: every registered project but the team's own, whose PRs merge
-#                  only on the per-head word), no ask nothing settled, no paused or waiting
-#                  standing, no merge-base round in flight (its latest builder launch or resumed
-#                  naming a merge-base brief, with no review, caught-up or merged since and a
-#                  worker on it live with no done since) and a PR not merged with no review-side
-#                  reason against the word (team-state's: the latest review of the latest head
-#                  the task logged for it a pass that found no guarded area, and no review of the
-#                  task that counted a security or real-data finding or left its counts out),
-#                  with session null:
-#                  "awaiting the merge of
-#                  <those PRs' URLs> on Daniel's plan-time word on
-#                  <projects>, with no ask open; next: run team-merge T<n>; on a refusal, ask
-#                  Daniel for the per-head word with team-ask", with "standing word on
-#                  <projects>" for the standing word, or "plan-time word on <projects> and
-#                  standing word on <projects>" for both, and no other finding of the task's; the
-#                  ledger names no PR's project, so any word on one of the task's projects counts,
-#                  and GitHub is not read: team-merge says when a project no longer opts in, a
-#                  PR's own project has no word or a changed path is guarded. The registry is read
-#                  only once the ledger holds a merge-standing; when it cannot be read, no
-#                  standing word counts and a line on stderr says why
+#   merge-due      an open task in awaiting-merge, with no ask nothing settled, no paused or
+#                  waiting standing, the checks of its latest pass passed (checks_wait in
+#                  bin/lib/ledger.jq, read from the ledger alone: team-next T<n> --ci logged a ci
+#                  of outcome passed for the head the pass waits on), no merge-base round in flight (its latest builder launch or
+#                  resumed naming a merge-base brief, with no review, caught-up or merged since and
+#                  a worker on it live with no done since) and a PR not merged whose default word
+#                  holds on the ledger (merge_authority in bin/lib/ledger.jq, the derivation
+#                  team-merge and team-state read too: the plan approved and not withdrawn, the
+#                  PR's project, its latest pr event's or else the task's opened one's, not the
+#                  team's own, by own_project in bin/lib/team.sh, or the team's own on a plan
+#                  Daniel approved with the reviewer App on, the default not withdrawn for the
+#                  task, its project or every project by the latest merge-default-withdrawn or
+#                  merge-default-restored of any task covering it, the task's branch logged, and
+#                  the latest review of the latest head the task logged for the PR a pass that
+#                  found no guarded area, with no review of the task that counted a security or
+#                  real-data finding or left its counts out), with session null:
+#                  "awaiting the merge of <those PRs' URLs> on the default word, the approved
+#                  plan, with no ask open; next: run team-merge T<n>; on a refusal, ask Daniel for
+#                  the per-head word with team-ask", and no other finding of the task's. GitHub,
+#                  Discord and the plan's files are not read: team-merge says when a changed path
+#                  is guarded or outside the plan's scope, the plan changed since its approval, or
+#                  a message does not read back. When the registry cannot be read, no task is
+#                  merge-due and a line on stderr says why
+#   ci-due         after the task's other findings, an open task in awaiting-merge, with no ask
+#                  nothing settled and no park standing, whose latest pass's checks_wait is waiting
+#                  (no ci logged for the head it waits on) or pending (its latest ci ended at
+#                  team-ci-wait's deadline) since 100 minutes or more, counted from the pass,
+#                  its catch-up, or the latest ci or ci-rerun of that head, since a rerun starts the
+#                  wait again (ci_due_seconds: the deadline's 90, its 2-minute settle, then room),
+#                  with session null: "the checks of <url> at <short>
+#                  have had no wait end for <h>h<mm>m; next: arm team-next T<n> --ci with Bash
+#                  run_in_background unless it is running". It is read from the ledger alone, no
+#                  GitHub and no process, so a wait still running past it is the coordinator's to
+#                  see in its background commands, and a second one armed beside it says so and
+#                  ends (team-next's lock)
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   coordinator-twin  after every task finding, with task null: one for each session named
@@ -235,18 +248,19 @@ health_view() {
   rm -f "$out" "$err"
 }
 
-# The projects a standing word may cover (standing_projects in bin/lib/team.sh: every registered
-# one but the team's own) as one JSON array, read only once the ledger holds a merge-standing,
-# else []; with a registry it cannot read, [], saying why on stderr.
-standing_covered() {
+# The registered projects that are the team's own and the reviewer App's id, own_projects' JSON in
+# bin/lib/team.sh, read only while an open task awaits merge with its plan approved
+# (default_may_hold), else no project and no App; null with a registry it cannot read, saying why
+# on stderr.
+own_covered() {
   local found err
-  if ! grep -qF merge-standing "$ledger"; then echo '[]'; return; fi
+  if ! ledger_jq 'ledger_events | default_may_hold' -nRe "$ledger" >/dev/null; then echo '{"projects": [], "app": null}'; return; fi
   err=$(mktemp)
-  if found=$(standing_projects 2>"$err"); then
-    jq -cR '[., inputs | select(. != "")]' <<<"$found"
+  if found=$(own_projects 2>"$err"); then
+    printf '%s\n' "$found"
   else
-    echo "team-sweep: counts no standing word of Daniel's, since the registry cannot be read: $(grep -m 1 . "$err" || echo "team-project failed")" >&2
-    echo '[]'
+    echo "team-sweep: finds no task merge-due, since the registry cannot be read: $(grep -m 1 . "$err" || echo "team-project failed")" >&2
+    echo null
   fi
   rm -f "$err"
 }
@@ -255,7 +269,7 @@ standing_covered() {
 # stow plan and the live sessions' transcripts; fails with the reason on stderr when the session
 # list cannot be read.
 look() {
-  local sessions plan activity plan_file covered health plan_pid health_pid
+  local sessions plan activity plan_file own health plan_pid health_pid
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
   plan_file=$(mktemp)
   printf '%s\n' "$sessions" >"$plan_file.sessions"
@@ -271,9 +285,9 @@ look() {
   rm -f "$plan_file" "$plan_file.sessions" "$plan_file.health"
   [[ -n $plan ]] || plan='{"error": "team-capacity plan printed nothing"}'
   [[ -n $health ]] || health='{"error": "team-timers health printed nothing"}'
-  covered=$(standing_covered)
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $covered; $health; $self)' -nRc \
-    --argjson sessions "$sessions" --argjson plan "$plan" --argjson activity "$activity" --argjson covered "$covered" \
+  own=$(own_covered)
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $own; $health; $self)' -nRc \
+    --argjson sessions "$sessions" --argjson plan "$plan" --argjson activity "$activity" --argjson own "$own" \
     --argjson health "$health" --arg self "${CLAUDE_CODE_SESSION_ID:-}" "$ledger")
 }
 

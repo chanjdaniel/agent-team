@@ -176,7 +176,7 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","standing_words","production","sessions","strays","prs","pending_asks","items"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","default_withdrawn","production","sessions","strays","prs","pending_asks","items"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
@@ -185,7 +185,7 @@ section() {
   assert_equal "$(jq -c '.tasks[1]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
 }
 
-@test "the standing merge word and then the live team sessions follow the resources line, with no slots line or key, and no reading taken" {
+@test "the live team sessions follow the resources line, with no withdrawal standing, no slots line or key, and no reading taken" {
   reserve_agent_team
   mkdir -p "$HOME/.config/agent-team"
   echo home-pc >"$HOME/.config/agent-team/machine"
@@ -194,15 +194,58 @@ section() {
   opened T3
   opened T4 conv
   run_bin -0 team-snapshot
-  assert_equal "$(head -n 6 <<<"$output")" "Open tasks (2):
+  assert_equal "$(head -n 5 <<<"$output")" "Open tasks (2):
   T3 proj feature planning | no live worker
   T4 conv feature planning | no live worker
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
-Standing merge word: none
 Live team sessions: none"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c 'has("slots")' <<<"$output")" false
   [[ ! -e $HOME/.local/state/agent-team ]]
+}
+
+# passed <task> <number>: the task's PR <number> in owner/proj reviewed and passed at $head.
+passed() {
+  pr_event "$1" "$2"
+  event "$1" review "{verdict: \"pass\", head: \"$head\", findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: []}"
+}
+
+# ci <task> <number> <outcome>: team-next <task> --ci's end on PR <number> at $head, at 03:00.
+ci() {
+  ledger_line --arg t "$1" --arg url "https://github.com/owner/proj/pull/$2" --arg head "$head" --arg o "$3" \
+    '{ts: "2026-10-22T03:00:00Z", task: $t, event: "ci", url: $url, head: $head, outcome: $o}'
+}
+
+@test "each pass whose checks no wait has ended is a checks wait to arm, after the open tasks; none is no line" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  # No pass, and a pass whose checks passed or failed: nothing to arm.
+  opened T3
+  opened T5
+  passed T5 7
+  ci T5 7 passed
+  opened T6
+  passed T6 8
+  ci T6 8 failed
+  run_bin -0 team-snapshot
+  [[ $output != *"Checks waits"* ]]
+  assert_equal "$(sed -n 4p <<<"$output")" "  T6 proj feature awaiting-merge | no live worker | review 1 pass | PR #8 a1b2c3d checks 0/0 agent-review missing | checks failed"
+  assert_contains "$(sed -n 5p <<<"$output")" "Resources: "
+
+  # T3's pass waits with no wait ended, and T4's wait ended at its deadline: both are to arm, in
+  # task number order, after the open tasks and before the resources line.
+  passed T3 5
+  opened T4
+  passed T4 6
+  ci T4 6 pending
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n '6,7p' <<<"$output")" \
+    "Checks waits to arm unless running: team-next T3 --ci (https://github.com/owner/proj/pull/5 at a1b2c3d4, since 2026-10-22T02:00:00Z)
+Checks waits to arm unless running: team-next T4 --ci (https://github.com/owner/proj/pull/6 at a1b2c3d4, since 2026-10-22T03:00:00Z)"
+  assert_contains "$(sed -n 8p <<<"$output")" "Resources: "
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c '[.tasks[] | [.task, .checks_wait.state]]' <<<"$output")" \
+    '[["T3","waiting"],["T4","pending"],["T5","passed"],["T6","failed"]]'
 }
 
 @test "the resources line follows the open tasks, naming the tasks stowed, waiting to resume, and --json carries it" {
@@ -377,7 +420,6 @@ Live team sessions: none"
   run_bin -0 team-snapshot
   assert_equal "$output" "Open tasks: none
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
-Standing merge word: none
 Live team sessions: none
 Stray sessions: none
 Open PRs:
@@ -388,46 +430,53 @@ Pending asks: none
 Current items: none"
   rm "$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-snapshot --json
-  assert_equal "$(jq -c '[.tasks, .standing_words, .sessions, .strays, .pending_asks, .items]' <<<"$output")" '[[],[],[],[],[],[]]'
+  assert_equal "$(jq -c '[.tasks, .default_withdrawn, .sessions, .strays, .pending_asks, .items]' <<<"$output")" '[[],[],[],[],[],[]]'
 }
 
-# standing <task> <kind> <project> <message> <ts>: Daniel's standing word on <project>
-# (merge-standing) or its withdrawal (merge-standing-withdrawn), in #coordinator, logged under <task>.
-standing() {
-  event "$1" "$2" "{ts: \"$5\", project: \"$3\", discord_message: \"$4\", discord_channel: \"1562486564871995482\"}"
+# said <task> <kind> <scope> <message> <ts>: Daniel's withdrawal of the default merge word
+# (merge-default-withdrawn) or its giving back (merge-default-restored) for <scope> (task, a
+# project or all), in #coordinator, logged under <task>.
+said() {
+  event "$1" "$2" "{ts: \"$5\", scope: \"$3\", discord_message: \"$4\", discord_channel: \"1562486564871995482\"}"
 }
 
-@test "the standing merge words follow the resources line, one per word with the projects it stands for but the team's own, and --json lists them by project" {
+# The line of a withdrawal of the default word for <whom>, in <message> at <ts>, logged under <task>:
+# withdrawn_line <whom> <message> <ts> <task>
+withdrawn_line() {
+  echo "Default merge word withdrawn for $1 since $3 (Discord message $2, $4)"
+}
+
+@test "each withdrawal of the default word that stands follows the resources line, and --json lists them" {
   reserve_agent_team
   open_prs owner/proj '[]'
   open_prs owner/conv '[]'
   opened T3
   opened T4
-  standing T3 merge-standing all 1564100000000000001 2026-10-22T03:00:00Z
+  said T3 merge-default-withdrawn task 1564100000000000001 2026-10-22T03:00:00Z
+  said T4 merge-default-withdrawn conv 1564100000000000002 2026-10-22T04:00:00Z
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 5p <<<"$output")" "Standing merge word: proj, conv (Discord message 1564100000000000001, 2026-10-22T03:00:00Z, T3)"
-
-  # A word on the team's own project, as an old ledger may hold, names it nowhere.
-  standing T3 merge-standing-withdrawn conv 1564100000000000002 2026-10-22T04:00:00Z
-  standing T4 merge-standing proj 1564100000000000003 2026-10-22T05:00:00Z
-  standing T4 merge-standing agent-team 1564100000000000006 2026-10-22T05:30:00Z
-  run_bin -0 team-snapshot
-  assert_equal "$(sed -n 4p <<<"$output")" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
-  assert_equal "$(sed -n 5,6p <<<"$output")" "Standing merge word: proj (Discord message 1564100000000000003, 2026-10-22T05:00:00Z, T4)
+  assert_equal "$(sed -n 4,7p <<<"$output")" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget
+$(withdrawn_line T3 1564100000000000001 2026-10-22T03:00:00Z T3)
+$(withdrawn_line "project conv" 1564100000000000002 2026-10-22T04:00:00Z T4)
 Live team sessions: none"
   run_bin -0 team-snapshot --json
-  assert_equal "$(jq -c .standing_words <<<"$output")" '[{"project":"proj","word":{"project":"proj","task":"T4","ts":"2026-10-22T05:00:00Z","discord_message":"1564100000000000003","discord_channel":"1562486564871995482"}}]'
+  assert_equal "$(jq -c '.default_withdrawn | map([.task, .scope, .discord_message])' <<<"$output")" \
+    '[["T3","task","1564100000000000001"],["T4","conv","1564100000000000002"]]'
 
-  # One word standing for many projects is one line naming them, and a withdrawal of all ends them.
-  standing T4 merge-standing all 1564100000000000004 2026-10-22T06:00:00Z
+  # A withdrawal of every project decides for every PR, so it stands alone; its giving back ends it.
+  said T4 merge-default-withdrawn all 1564100000000000003 2026-10-22T05:00:00Z
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 5p <<<"$output")" "Standing merge word: proj, conv (Discord message 1564100000000000004, 2026-10-22T06:00:00Z, T4)"
-  standing T4 merge-standing-withdrawn all 1564100000000000005 2026-10-22T07:00:00Z
-  run_bin -0 team-snapshot
-  assert_equal "$(sed -n 5,6p <<<"$output")" "Standing merge word: none
+  assert_equal "$(sed -n 5,6p <<<"$output")" "$(withdrawn_line "every project" 1564100000000000003 2026-10-22T05:00:00Z T4)
 Live team sessions: none"
+  said T4 merge-default-restored all 1564100000000000004 2026-10-22T06:00:00Z
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 5p <<<"$output")" "Live team sessions: none"
   run_bin -0 team-snapshot --json
-  assert_equal "$(jq -c .standing_words <<<"$output")" '[]'
+  assert_equal "$(jq -c .default_withdrawn <<<"$output")" '[]'
+  # The retired standing word's events are history: no line names them.
+  event T4 merge-standing '{project: "all", discord_message: "1564100000000000005", discord_channel: "1562486564871995482"}'
+  run_bin -0 team-snapshot
+  [[ $output != *"merge word"* ]]
 }
 
 # production_check <project> <name>: an [[<project>.uptime]] check of the registry, on the loopback
@@ -460,18 +509,17 @@ down_check() {
   open_prs owner/proj '[]'
   open_prs owner/conv '[]'
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 3,4p <<<"$output")" "Standing merge word: none
-Live team sessions: none"
+  assert_equal "$(sed -n 3p <<<"$output")" "Live team sessions: none"
   [[ $output != *Production* ]]
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c .production <<<"$output")" '{"schema":"team-uptime/1","written":null,"line":null,"checks":[]}'
 }
 
-@test "the Production line follows the standing merge words, all up or a check down, and --json carries team-uptime status --json's object" {
+@test "the Production line follows the default word's withdrawals, all up or a check down, and --json carries team-uptime status --json's object" {
   open_prs owner/proj '[]'
   open_prs owner/conv '[]'
   opened T3
-  standing T3 merge-standing conv 1564100000000000001 2026-10-22T03:00:00Z
+  said T3 merge-default-withdrawn conv 1564100000000000001 2026-10-22T03:00:00Z
   production_check proj api
   production_check conv front-end
   local at since
@@ -479,7 +527,7 @@ Live team sessions: none"
   since=$(date -u -d '-40 minutes' +%FT%TZ)
   production_state "$at" "$(up_check proj api "$at") + $(up_check conv front-end "$at")"
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 4,6p <<<"$output")" "Standing merge word: conv (Discord message 1564100000000000001, 2026-10-22T03:00:00Z, T3)
+  assert_equal "$(sed -n 4,6p <<<"$output")" "$(withdrawn_line "project conv" 1564100000000000001 2026-10-22T03:00:00Z T3)
 Production: all 2 checks up, last checked $(date -d "$at" +%H:%M)
 Live team sessions: none"
 
@@ -505,7 +553,7 @@ Live team sessions: none"
   production_state "$at" "$entries"
   run_bin -0 team-snapshot
   local line
-  line=$(sed -n 4p <<<"$output")
+  line=$(sed -n 3p <<<"$output")
   assert_equal "${#line}" 200
   [[ $line == "Production: proj check-1 down since "*... ]] || { echo "line: $line" >&2; return 1; }
 }
@@ -522,8 +570,7 @@ Live team sessions: none"
   assert_equal "$(jq -c .production <<<"$output")" '{"error":"~/.local/state/agent-team/uptime.json is not a team-uptime/1 state"}'
   assert_equal "$(jq -c '.tasks | length' <<<"$output")" 1
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 4,6p <<<"$output")" "Standing merge word: none
-Production unreadable: ~/.local/state/agent-team/uptime.json is not a team-uptime/1 state
+  assert_equal "$(sed -n 4,5p <<<"$output")" "Production unreadable: ~/.local/state/agent-team/uptime.json is not a team-uptime/1 state
 Live team sessions: none"
 }
 
@@ -619,8 +666,8 @@ EOF
   sessions "${all[@]}"
   run_bin -0 team-snapshot
   echo "$output"
-  # 50 lines, and the standing merge word's one line.
-  [[ ${#lines[@]} -le 51 ]]
+  # 50 lines at most.
+  [[ ${#lines[@]} -le 50 ]]
   # An open task's line is cut at 200 columns, any other at 120.
   local line
   for line in $(section "Open tasks" | sed 1d | awk '{ print length($0) }'); do [[ $line -le 200 ]]; done

@@ -23,7 +23,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `drills.json`: the drill registry, each drill's name, what it is, who runs it (`coordinator`, or `daniel` when it needs them present) and the code it proves, with the one age past which a drill is due.
     - `gate-claude-settings.json`: the settings the gate's Claude takes with `--settings`, its commit attribution off, since it loads no user settings.
     - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode), and reads `agent_args_override`'s list for one agent.
-    - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time or standing merge back to Daniel, read by `team-merge`.
+    - `guarded`: the short list, one extended regular expression per line with its area, `@<project>` or `@own` for one project's line, any changed path of which brings a merge on the default word, the approved plan, back to Daniel for the per-head word, read by `team-merge` from its own checkout.
     - `health.jq`: the health module, the one place that says what unhealthy means: the fold of each heartbeat run into the health record, the ledger's one-pass scan, every health threshold, and the view `team-timers health` prints, its problems and its line in markup and plain text.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
     - `lifecycle.json`: the task lifecycle's table, its statuses, phases, start states, what each kind may follow and does, the park causes and what ends each, and the `lifecycle_from` cutover, which `ledger.jq` imports.
@@ -37,6 +37,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `reading.sh`: one reading of the machine's load (its memory, its processes by directory and descent, the team's stacks), which `team-capacity sample` takes.
     - `records`: the team home's paths, which no tracked path matches.
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.
+    - `review-app`: the reviewer App's id and slug, one `id=<n>` and one `slug=<s>` line, a committed constant; with no such file the App is off and agent-team merges on the per-head word alone.
     - `session-activity`: how long each live session's transcripts have gone unwritten, and the tool calls still running in a quiet one, for `team-sweep`'s stalled finding.
     - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings, with the keys no longer read since the level's budget admits a stack.
     - `stow.sh`: `team-stow`'s steps, which `team-handoff` takes through `team-stow`: each task's branches checked and pushed, its `stowing` logged, its sessions stopped, its ops session ended, its `stowed` logged, or its `stow-failed` when a later step refuses it or the run stops.
@@ -75,7 +76,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `frontend-patterns.md`: rules that hold beyond one project for a UI's dev-only component library, combobox, large list, dialog, realistic fixture and bundle growth, each with its why.
   - `knowledge-graph.md`: a project's knowledge graph.
   - `machine-setup.md`: a new machine, driven by `SETUP.md`.
-  - `merging.md`: merging on Daniel's word: the per-head, plan-time and standing words, their events, the order `team-merge` tries them, what each holds a PR to, what never merges, and the coordinator's steps on a merge and a refusal.
+  - `merging.md`: merging on the per-head word and the default word, the approved plan: their events, the order `team-merge` tries them, what each holds a PR to, the plan approval, the short list, the withdrawals, what never merges, the coordinator's steps and the retired words.
   - `model-trials.md`: trialling a cheaper model on one role of one project, or a setup change that claims to save tokens: the registry's `models`, the effort check, the paired reviews, a toolkit's arm, the measures and their sources, the baseline by PR size and the note to Daniel.
   - `platform-gotchas.md`: general rules about the tools the team runs on, which every brief but the ops one points at in the code checkout, never the team home; the retro proposes keeping it short, and each change Daniel approves lands through a PR on this repository.
   - `portability.md`: moving the team between machines.
@@ -130,6 +131,7 @@ It holds:
 
 - The code repository changes only through pull requests to `dev`, and nothing is committed on `main`, which a release fast-forwards from `dev`.
 - GitHub holds the rule: `dev`'s protection requires a pull request, refuses force pushes and deletion, and applies to administrators.
+- Once `dev`'s protection pins it, `dev` also requires `agent-review` as the reviewer App's check run, which `team-review-check` posts, signed with the App's key `~/.config/agent-team/review-app.pem` (mode 600, restored by `team-secrets`, denied to the workers' and the coordinator's `Read` and Bash), and which `team-merge` requires on the head of every agent-team PR while `bin/lib/review-app` names the App; `team-doctor`'s `review app` line holds the key, the id and the pin together, and `sops/merging.md` says what the App proves and Daniel's steps to set it up.
 - Records never come here: every tracked path is code, listed in `bin/lib/code`, and none matches `bin/lib/records`; `tests/repo.bats` checks both, so a new path is listed as code in its PR.
 - Git runs `bin/hooks/git/` as the code checkout's hooks once it has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks; they are the local guard, and need no team home.
   Its `pre-commit` (and `pre-merge-commit`) refuses every commit on `dev` and on `main`, and on any other branch a commit that adds or changes a records path, naming each.
@@ -186,7 +188,7 @@ It holds:
 - The ledger changes only through the library's `ledger_append`, which checks each event against `bin/lib/ledger-contract.json` and that the script is its kind's writer, or one of them, and, under the ledger's lock, a `refusing_writers` script's event against the task's state by `bin/lib/lifecycle.json`; a new kind or field goes in the contract first.
   A kind the contract marks `"push": true` (Daniel's word or an outside fact) is committed and pushed the moment it is logged by the library's `ledger_push`, which each of its writers calls once after its last event, as `tests/repo.bats` holds.
 - The registry is read only through `team-project`; a new key goes in its key lists and in its header, which documents every key.
-- A script reaches Discord's API only through `discord_api` and GitHub through `gh`, and never prints a secret.
+- A script reaches Discord's API only through `discord_api` and GitHub through `gh`, but for the reviewer App's calls, which go through `review_app_api` and `curl`, since `gh` takes a token only from its environment or its login; and it never prints a secret.
 
 ## Markdown
 

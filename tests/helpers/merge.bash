@@ -105,7 +105,8 @@ checks() {
 }
 
 # gh answers from the files under $GH_DIR (the second read of the PR from pr-again.json when a
-# test wrote one). pr merge marks the PR merged (or runs merge.sh when
+# test wrote one; the head's agent-review check runs from check-runs.json and its commit statuses
+# from status.json, which app_on writes). pr merge marks the PR merged (or runs merge.sh when
 # a test wrote one); anything unplanned fails.
 stub_gh() {
   stub_script gh <<'EOF'
@@ -117,6 +118,8 @@ case "$*" in
   "api repos/owner/proj/branches/dev") cat "$GH_DIR/branch.json" ;;
   "api repos/owner/proj/pulls/5/commits --paginate") cat "$GH_DIR/commits.json" ;;
   "api repos/owner/proj/pulls/5/files --paginate") cat "$GH_DIR/files.json" ;;
+  "api repos/owner/proj/commits/"*"/check-runs?check_name=agent-review&filter=latest&per_page=100") cat "$GH_DIR/check-runs.json" ;;
+  "api repos/owner/proj/commits/"*"/status") cat "$GH_DIR/status.json" ;;
   "pr merge 5 --repo owner/proj "*)
     if [[ -f $GH_DIR/merge.sh ]]; then source "$GH_DIR/merge.sh"; exit; fi
     jq --arg m "$MERGE_SHA" '.state = "MERGED" | .mergeCommit = {oid: $m}' "$GH_DIR/pr.json" >"$GH_DIR/pr.next"
@@ -175,18 +178,11 @@ posts() {
   jq -r '"\(.channel) \(.content | @json)"' "$discord/posts" 2>/dev/null || true
 }
 
-# The post after a plan-time merge, Daniel's message in <channel> and <revert> the revert on dev:
-# merge_post <channel> <revert>
-merge_post() {
-  printf '%s\n' "T14 The tooling: merged https://github.com/owner/proj/pull/5 on your plan-time word, https://discord.com/channels/$INBOX_GUILD/$1/1562661774950400000" \
-    "Merge commit: $MERGE_SHA on dev." \
-    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, $2."
-}
-
-# Undo a merge for the test's next run: the merged event and the posts gone, PR #5 open and green again.
+# Undo a merge for the test's next run: the merged event, the posts and gh's calls gone, PR #5
+# open and green again.
 merge_again() {
   jq -c 'select(.event != "merged")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  rm -f "$discord/posts"
+  rm -f "$discord/posts" "$STUB_CALLS/gh.log"
   green_pr
 }
 
@@ -365,28 +361,52 @@ mv "$GH_DIR/pr.next" "$GH_DIR/pr.json"
 SH
 }
 
-# Daniel's plan-time word in place of the per-head one: proj opts in, the merge-approved is gone,
-# and T14 logs the plan ask plan-T14 at 02:00, Daniel's merge-preapproved of proj answering it in
-# message 1562661774950400000 (03:00), and a passing review of the head, its findings counted and
-# no guarded area.
-plan_word() {
-  sed -i 's|^toolkits = \[\]$|toolkits = []\nmerge_with_plan = true|' "$TEAM_HOME/projects.toml"
-  jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+# The default word in place of the per-head one: the merge-approved gone, T14's worktree a real
+# directory ($BATS_TEST_TMPDIR/wt, its task directory .scratch/task holding spec.md and a scope.txt
+# of src/), its plan.md in the team home, the plan approved by <by> (coordinator, or Daniel
+# answering the ask plan-T14 in message 1562661774950400000, 03:00) with the plan's files and
+# scope as team-log records them, and a passing review of the head, its findings counted and no
+# guarded area: default_word [coordinator|Daniel]
+default_word() {
+  jq -c --arg wt "$BATS_TEST_TMPDIR/wt" 'select(.event != "merge-approved")
+    | if .event == "opened" then .worktree = $wt else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  event T14 asked '{id: "plan-T14", text: "Approve the plan, and the merge with it?"}'
-  preapproved
+  mkdir -p "$BATS_TEST_TMPDIR/wt/.scratch/task"
+  echo "# T14 spec" >"$BATS_TEST_TMPDIR/wt/.scratch/task/spec.md"
+  plan_md T14
+  if [[ ${1:-coordinator} == Daniel ]]; then
+    event T14 asked '{id: "plan-T14", text: "Approve the plan?"}'
+  fi
+  echo src/ >"$BATS_TEST_TMPDIR/wt/.scratch/task/scope.txt"
+  plan_approved "${1:-coordinator}"
   passed
 }
 
-# Daniel's plan-time word on proj: preapproved [<message>] [<ask>] [<scope as JSON>]
-preapproved() {
-  event T14 merge-preapproved "{project: \"proj\", ask: \"${2:-plan-T14}\",
-    discord_message: \"${1:-1562661774950400000}\", scope: ${3:-[\"src/\"]}}"
+# The approved plan's scope.txt, one entry per argument (none: no scope.txt), and the plan
+# approved again over it, by whoever approved it last: scope [<entry>...]
+scope() {
+  local file=$BATS_TEST_TMPDIR/wt/.scratch/task/scope.txt
+  if (($#)); then printf '%s\n' "$@" >"$file"; else rm -f "$file"; fi
+  plan_approved "$(jq -r 'select(.event == "plan-approved") | .by' "$TEAM_HOME/ledger.jsonl" | tail -n 1)"
 }
 
-# Daniel's withdrawal in message 1562676874444800000, sent at 04:00.
-withdrawn() {
-  event T14 merge-preapproval-withdrawn '{project: "proj", discord_message: "1562676874444800000"}'
+# A plan-approved of T14 by <by> (coordinator, or Daniel in <message>, default
+# 1562661774950400000, answering plan-T14), its plan the files' sha256 now and its scope
+# scope.txt's lines, as team-log writes it: plan_approved <by> [<message>]
+plan_approved() {
+  local task_dir=$BATS_TEST_TMPDIR/wt/.scratch/task by=${1:-coordinator} plan
+  plan=$(jq -cn --arg p "$(sha256sum "$TEAM_HOME/tasks/T14/plan.md" | cut -d' ' -f1)" '{"tasks/T14/plan.md": $p}')
+  if [[ -f $task_dir/spec.md ]]; then
+    plan=$(jq -c --arg s "$(sha256sum "$task_dir/spec.md" | cut -d' ' -f1)" '. + {".scratch/task/spec.md": $s}' <<<"$plan")
+  fi
+  if [[ -f $task_dir/scope.txt ]]; then
+    plan=$(jq -c --arg s "$(sha256sum "$task_dir/scope.txt" | cut -d' ' -f1)" '. + {".scratch/task/scope.txt": $s}' <<<"$plan")
+  fi
+  ledger_line --arg by "$by" --arg m "${2:-1562661774950400000}" --argjson plan "$plan" \
+    --argjson scope "$(if [[ -f $task_dir/scope.txt ]]; then jq -Rsc 'split("\n") | map(select(. != ""))' "$task_dir/scope.txt"; else echo null; fi)" \
+    '{ts: "2026-10-22T02:00:00Z", task: "T14", event: "plan-approved", by: $by, plan: $plan}
+      + if $by == "Daniel" then {ask: "plan-T14", discord_message: $m} else {} end
+      + if $scope == null then {} else {scope: $scope} end'
 }
 
 # A passing review of <head> (the PR's by default), its findings counted, logged now: passed [<head>]
@@ -395,18 +415,103 @@ passed() {
     findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: []}"
 }
 
-# The line a refusal on the plan-time word ends with.
+# The line a refusal on the default word ends with.
 ask_per_head() {
-  echo "(Daniel's plan-time word does not hold: ask them for the per-head word on the head ${head:0:7} with team-ask, naming https://github.com/owner/proj/pull/5)"
+  echo "(Daniel's default word does not hold: ask them for the per-head word on the head ${head:0:7} with team-ask, naming https://github.com/owner/proj/pull/5)"
 }
 
-# Run team-merge expecting the registry's refusal of merge_with_plan on the team's own project:
-# exit 1 naming it, gh pr merge never called and nothing appended to the ledger.
-registry_refused() {
-  local before
-  before=$(cat "$TEAM_HOME/ledger.jsonl")
+# The post after a default merge on the plan <on> ("the coordinator approved at <ts>", or for
+# Daniel's "you approved, <link>"), and <revert> the revert on dev: merge_post <on> <revert>
+merge_post() {
+  printf '%s\n' "T14 The tooling: merged https://github.com/owner/proj/pull/5 on the plan $1" \
+    "Merge commit: $MERGE_SHA on dev." \
+    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, $2."
+}
+
+# The coordinator's approval, as the posts and the merged event's by name it.
+# shellcheck disable=SC2034 # the tests read it
+COORDINATOR_PLAN="the coordinator approved at 2026-10-22T02:00:00Z"
+
+# Rename proj to <name> in the registry and the ledger, its repo and PR left as they are, so a
+# test reads bin/lib/guarded's lines for that project: as_project <name>
+as_project() {
+  sed -i "s/^\[proj/[$1/" "$TEAM_HOME/projects.toml"
+  jq -c --arg p "$1" 'if .project == "proj" then .project = $p else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+}
+
+# Run team-merge on the default word with PR #5 changing <entry>..., each <path>:<areas> or a
+# plain <path>, its scope covering every path, and check each guarded path is named with its
+# areas, a plain one is not, and nothing else is a guarded path: guarded_case <entry>...
+guarded_case() {
+  local entry paths=() reasons=() plain=()
+  for entry in "$@"; do
+    paths+=("${entry%%:*}")
+    if [[ $entry == *:* ]]; then
+      reasons+=("${entry%%:*} is a guarded path (${entry#*:}): a change there comes back to Daniel")
+    else
+      plain+=("$entry")
+    fi
+  done
+  files "${paths[@]}"
+  scope "${paths[@]}"
   run_bin -1 --separate-stderr team-merge T14
-  assert_contains "$stderr" "$1"
+  for entry in "${reasons[@]}"; do assert_contains "$stderr" "  $entry"; done
+  for entry in "${plain[@]}"; do [[ $stderr != *"$entry is a guarded path"* ]]; done
+  assert_equal "$(grep -c 'is a guarded path' <<<"$stderr" || true)" "${#reasons[@]}"
   no_merge_call
-  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+}
+
+# The default word, the plan the coordinator approved, beside Daniel's per-head word: default_word,
+# then the merge-approved again, naming <head> (none: a legacy one) in <message> (Daniel's
+# 1562661774950400000 at 03:00): both_words [<message>] [<head>]
+both_words() {
+  default_word
+  event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"${1:-1562661774950400000}\"}
+    + if \"${2:-}\" == \"\" then {} else {head: \"${2:-}\"} end"
+}
+
+# The reviewer App on, App 123456 (team-reviewer): a copy of bin/ holding bin/lib/review-app and
+# the stub team-review-check (review_app_on), run in place of this checkout's (CODE_CHECKOUT), with
+# the App's successful agent-review check run 4242 on the head, no commit status of that name, and
+# dev's protection pinning agent-review to the App, enforced for everyone: app_on
+app_on() {
+  export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  copy_bin "$CODE_CHECKOUT/bin"
+  review_app_on
+  app_runs "$(app_run 4242 success)"
+  echo '{"state": "pending", "statuses": []}' >"$gh_dir/status.json"
+  pinned 123456 everyone
+}
+
+# One agent-review check run as GitHub lists it, completed with <conclusion> by App <app> (default
+# the reviewer App, 123456) on <sha> (default the head): app_run <id> <conclusion> [<app>] [<sha>]
+app_run() {
+  local slug=team-reviewer
+  if [[ ${3:-123456} != 123456 ]]; then slug=github-actions; fi
+  jq -cn --argjson id "$1" --arg conclusion "$2" --argjson app "${3:-123456}" --arg slug "$slug" --arg sha "${4:-$head}" \
+    '{id: $id, name: "agent-review", head_sha: $sha, status: "completed", conclusion: $conclusion, app: {id: $app, slug: $slug}}'
+}
+
+# The head's agent-review check runs, as GitHub's check-runs list answers: app_runs [<app_run>...]
+app_runs() {
+  printf '%s\n' "$@" | jq -s 'map(select(. != null)) | {total_count: length, check_runs: .}' >"$gh_dir/check-runs.json"
+}
+
+# The head's commit statuses, an agent-review <state> by <login> (default chanjdaniel), as
+# GitHub's combined status answers: agent_review_status <state> [<login>]
+agent_review_status() {
+  jq -n --arg state "$1" --arg login "${2:-chanjdaniel}" \
+    '{state: $state, statuses: [{context: "agent-review", state: $state, creator: {login: $login}}]}' >"$gh_dir/status.json"
+}
+
+# dev's protection requires its contexts, agent-review pinned to App <app> (none: agent-review
+# left out of the checks with an app) and the others to GitHub Actions, enforced for <level>:
+# pinned <app or none> <level>
+pinned() {
+  jq --arg app "$1" --arg level "$2" '.protection.required_status_checks += {enforcement_level: $level,
+      checks: [.protection.required_status_checks.contexts[] | {context: ., app_id: (if . != "agent-review" then 15368
+        elif $app == "none" then null else ($app | tonumber) end)}]}' "$gh_dir/branch.json" >"$gh_dir/branch.next"
+  mv "$gh_dir/branch.next" "$gh_dir/branch.json"
 }

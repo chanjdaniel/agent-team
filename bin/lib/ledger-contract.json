@@ -1,7 +1,7 @@
 {
   "about": [
     "The ledger contract: every event kind in ledger.jsonl, the script that writes it (or the list of scripts that do), and its fields.",
-    "Each field's type is string, number, array (a list), numbers (a list of whole numbers, 0 or more), object or id (a Discord id: a string of digits, which --check also takes as a whole number, the form team-log wrote before), or a list of the strings it may be.",
+    "Each field's type is string, number, array (a list), numbers (a list of whole numbers, 0 or more), object, boolean, id (a Discord id: a string of digits, which --check also takes as a whole number, the form team-log wrote before) or digits (any other whole number kept as a string of digits, as a GitHub run or job id is), or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
     "A kind's field_writers names the one script that may append a line holding each field it lists, among the kind's writers; the others append the kind without it.",
     "A kind with push true records Daniel's word or an outside fact, so the script that appends it commits the ledger and pushes it to the team home's origin at once (ledger_push), not at the next checkpoint.",
@@ -21,8 +21,9 @@
     },
     "worktree-added": {
       "writer": "team-open",
-      "about": "team-open --add",
-      "required": {"project": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"}
+      "about": "team-open --add, or team-open --ticket with ticket, the two-digit number of the ticket the worktree is given to, branch its ticket branch <task branch>--NN, base the task branch and base_sha the task branch's tip it was cut from",
+      "required": {"project": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"},
+      "optional": {"ticket": "string"}
     },
     "thread": {
       "writer": "team-thread",
@@ -35,15 +36,16 @@
     },
     "launch": {
       "writer": "team-worker",
-      "about": "request is the link to Daniel's Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on (team-worker refuses one that did), which only an ops launch carries; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there; admission is the id of the capacity admission the launch was made on (team-capacity admit's first line), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past (team-worker --past-ask), which then park nothing, absent when it names none",
+      "about": "request is the link to Daniel's Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on (team-worker refuses one that did), which only an ops launch carries; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there; template is the template team-brief rendered that brief from, as its record brief-<name>.json beside it names it (verify for a verify, whose brief is named rereview-<k>), absent with no brief, with no record or one naming none, and on a launch from before 2026-11-12; admission is the id of the capacity admission the launch was made on (team-capacity admit's first line), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past (team-worker --past-ask), which then park nothing, absent when it names none; ticket is the two-digit number of the ticket whose ticket worktree a builder launched in (team-open --ticket's), its session named T<n>-builder-NN and its branch the ticket branch, absent in a task worktree",
       "required": {"role": "string", "session": "string", "worktree": "string", "toolkits": "array"},
-      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "discord_message": "id", "brief": "string", "admission": "string", "past_ask": "array"},
-      "field_when": {"discord_message": {"role": ["ops"]}}
+      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "discord_message": "id", "brief": "string", "template": "string", "admission": "string", "past_ask": "array", "ticket": "string"},
+      "field_when": {"discord_message": {"role": ["ops"]}, "ticket": {"role": ["builder"]}}
     },
     "worktree-returned": {
       "writer": "team-close",
+      "about": "ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
       "required": {"project": "string", "worktree": "string"},
-      "optional": {"branch": "string"}
+      "optional": {"branch": "string", "ticket": "string"}
     },
     "closed": {
       "writer": "team-close",
@@ -54,9 +56,9 @@
     "merged": {
       "writer": "team-merge",
       "push": true,
-      "about": "approval: the word it merged on, head (a merge-approved of the PR at its head), plan (a merge-preapproved of its project not withdrawn) or standing (Daniel's merge-standing on its project or on all); by, discord_message and discord_channel name Daniel's Discord message whichever it is; phases_left: the phases of the task with a ticket not done when the PR merged, from team-tickets, [] when every ticket was done, absent for a task with no tickets or whose tickets could not be read; a non-empty list makes the task a merged part (bin/lib/lifecycle.json), whose next phase is still to build",
+      "about": "approval: the word it merged on, head (a merge-approved of the PR at its head) or default (the task's approved plan), and for history plan (a merge-preapproved of its project, retired) or standing (Daniel's merge-standing, retired); by, discord_message and discord_channel name Daniel's Discord message, or on a plan the coordinator approved, by says so with the approval's time and the two are left out; phases_left: the phases of the task with a ticket not done when the PR merged, from team-tickets, [] when every ticket was done, absent for a task with no tickets or whose tickets could not be read; a non-empty list makes the task a merged part (bin/lib/lifecycle.json), whose next phase is still to build; check_run: the id of the reviewer App's agent-review check run on the head, when the team's own project merged behind it",
       "required": {"pr": "number", "merge": "string", "head": "string", "by": "string"},
-      "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "plan", "standing"], "phases_left": "numbers"}
+      "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "default", "plan", "standing"], "phases_left": "numbers", "check_run": "number"}
     },
     "history-rewritten": {
       "writer": "team-clean-messages",
@@ -83,8 +85,9 @@
     },
     "ticket-done": {
       "writer": "team-log",
+      "about": "head is the task branch's tip a ticket landed as, which team-next logs through team-log only when it integrated the ticket from its ticket worktree, absent for a ticket built in the task worktree",
       "required": {"ticket": "string", "commits": "array"},
-      "optional": {"repo": "string"}
+      "optional": {"repo": "string", "head": "string"}
     },
     "question": {
       "writer": ["team-log", "team-ask"],
@@ -118,7 +121,16 @@
     "plan-approved": {
       "writer": "team-log",
       "push": true,
-      "required": {"by": "string"}
+      "about": "the task's plan approved by Daniel, with ask the asked it answers and discord_message their message, which team-log requires of every new line of theirs, or by the coordinator, with neither; plan each file approved, the team home's tasks/T<n>/plan.md and the task directory's spec.md and scope.txt (plan_files in bin/lib/team.sh), to its sha256, and scope scope.txt's lines, both written by team-log itself; a line with no plan is from before T276, read as the coordinator's whatever its by (plan_approval in bin/lib/ledger.jq); it stands until a later plan-approval-withdrawn; parallel the approved cap on the tickets of each phase that build at once, one from 1 to 3 per phase in phase order joined by commas (2, 2,1), the last holding for any later phase, and with none every phase builds one ticket at a time",
+      "required": {"by": ["Daniel", "coordinator"]},
+      "optional": {"ask": "string", "discord_message": "id", "plan": "object", "scope": "array", "parallel": "string"},
+      "field_when": {"ask": {"by": ["Daniel"]}, "discord_message": {"by": ["Daniel"]}}
+    },
+    "plan-approval-withdrawn": {
+      "writer": "team-log",
+      "push": true,
+      "about": "Daniel withdrew the task's standing plan approval in discord_message, which stops its build until the plan is approved again; team-log takes whatever message it names, since it only stops work",
+      "required": {"discord_message": "id"}
     },
     "paused": {
       "writer": ["team-log", "team-worker"],
@@ -162,7 +174,7 @@
     },
     "review": {
       "writer": "team-log",
-      "about": "verdict: findings whenever sent_back names a finding, whatever the reviewer's word, since a pass whose notes go back is not ready to merge (team-log logs it so); sent_back: the numbers of the findings sent back to the builder before the merge, each a blocking finding, a correctness, security or real-data note, or a plain note on a line the PR adds or changes, never one before lists; findings: the count of each kind, exactly blocking, correctness, security, real-data, note-change (plain notes on lines the PR adds or changes) and note-before (plain notes on code it did not change), each a whole number; before: the numbers of the plain notes on code the PR did not change, each queued as a follow-up; guarded: the guarded areas the reviewer found the change touching, each one of ci, dependencies, migrations, settings, permissions, secrets and guardrails (the team's own guards: bin/lib/guarded, team-merge, team-checks, the library code they run, team-heavy, the ledger contract, data-check, records, the hooks and the sessions' settings files), empty for none; widening: the numbers of the new findings that sit in what the last fix added for an earlier finding, so reverting that fix would end them, as a rereview marks them; empty for none; memory: the file in the task directory of the memories the reviewer added there for the coordinator to file in the project's memory at close, since the hook refuses a reviewer the memory directory",
+      "about": "verdict: findings whenever sent_back names a finding, whatever the reviewer's word, since a pass whose notes go back is not ready to merge (team-log logs it so); sent_back: the numbers of the findings sent back to the builder before the merge, each a blocking finding, a correctness, security or real-data note, or a plain note on a line the PR adds or changes, never one before lists; findings: the count of each kind, exactly blocking, correctness, security, real-data, note-change (plain notes on lines the PR adds or changes) and note-before (plain notes on code it did not change), each a whole number; before: the numbers of the plain notes on code the PR did not change, each queued as a follow-up; guarded: the guarded areas the reviewer found the change touching, each one of ci, migrations, deploy, permissions, secrets and guardrails (the team's own guards), the areas of bin/lib/guarded in its order, whose header says what each covers, empty for none; a review logged before T276 may name dependencies or settings, retired areas nothing holds a PR back for; widening: the numbers of the new findings that sit in what the last fix added for an earlier finding, so reverting that fix would end them, as a rereview marks them; empty for none; memory: the file in the task directory of the memories the reviewer added there for the coordinator to file in the project's memory at close, since the hook refuses a reviewer the memory directory",
       "required": {"verdict": ["pass", "findings"], "head": "string"},
       "optional": {"agent_review": "string", "sent_back": "numbers", "findings": "object", "before": "numbers", "guarded": "array", "widening": "numbers", "memory": "string"}
     },
@@ -171,6 +183,17 @@
       "about": "one per gate run, at its end: run is the gate's run id, head the commit it ran on, cause why it repeats an earlier run on the same PR, minutes each step's minutes as no-mistakes axi status --run prints them, approved the ids of the parks the builder approved itself in the run, each a kind its brief or the project's review rules name (team-time counts them), absent when it approved none",
       "required": {"run": "string", "head": "string", "outcome": ["pushed", "red", "aborted", "stopped-green"]},
       "optional": {"cause": ["review", "notes", "gate-finding", "load", "tooling", "base-merge", "other"], "minutes": "object", "approved": "array"}
+    },
+    "ci": {
+      "writer": "team-log",
+      "about": "one per end of a wait on a PR's checks after a pass, and per findings round's look at them: url is the PR's; head the full sha waited on; outcome passed (the checks passed), failed (a failure of the PR's own), infrastructure (infrastructure failures with no rerun left) or pending (team-ci-wait's 90-minute deadline); failed each failure's {name, class, kind, link, step}, as team-ci-wait --json gives them, the roll-ups among them; look true for the findings round's look (team-ci-wait --look) on the head the round replaces, absent for a wait; checks_wait in bin/lib/ledger.jq reads the latest one of the head a pass waits on",
+      "required": {"url": "string", "head": "string", "outcome": ["passed", "failed", "infrastructure", "pending"]},
+      "optional": {"failed": "array", "look": "boolean"}
+    },
+    "ci-rerun": {
+      "writer": "team-log",
+      "about": "one per rerun of a check that failed as infrastructure, made by the wait on a PR's checks after a pass: url is the PR's; head the full sha whose check it reran; check the check's name, by which checks_wait in bin/lib/ledger.jq lists the checks rerun on a head, since a rerun gives the job a new id; run the workflow run's id and job the job's, as GitHub gives them",
+      "required": {"url": "string", "head": "string", "check": "string", "run": "digits", "job": "digits"}
     },
     "merge-approved": {
       "writer": "team-log",
@@ -182,26 +205,42 @@
     "merge-preapproved": {
       "writer": "team-log",
       "push": true,
-      "about": "Daniel's plan-time word on the task's PR in project, its discord_message an answer to the task's latest asked of id ask, sent no earlier than it, which it settles; scope the repository paths the plan may change, each a file or a directory ending in /; it stands until a later merge-preapproval-withdrawn of project, and the latest of a project is the one read",
+      "retired": "T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn",
+      "about": "Retired (T276): Daniel's plan-time word on the task's PR in project, an answer to the task's asked of id ask, over scope, the paths the plan might change; team-log refuses a new one, and the lines logged before are read only for history: each still settles the ask of its id (settles in bin/lib/ledger.jq) and puts a passing review in merging in team-time",
       "required": {"project": "string", "ask": "string", "discord_message": "id", "scope": "array"}
     },
     "merge-preapproval-withdrawn": {
       "writer": "team-log",
       "push": true,
-      "about": "Daniel withdrew the task's latest merge-preapproved of project, in discord_message",
+      "retired": "T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn",
+      "about": "Retired (T276): Daniel withdrew the task's latest merge-preapproved of project, in discord_message; team-log refuses a new one, and only team-time reads the lines logged before, for history",
       "required": {"project": "string", "discord_message": "id"}
     },
     "merge-standing": {
       "writer": "team-log",
       "push": true,
-      "about": "Daniel's standing word that the team may merge a ready PR of project, never the team's own (own_project), which team-log refuses, or of every other project when project is all, with no ask, said in discord_message in discord_channel, #coordinator's channel or the task's thread; read across the whole ledger, the task only naming the thread: for a project, the latest merge-standing or merge-standing-withdrawn whose project is that project or all decides, and the word stands when that is a merge-standing",
+      "retired": "T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn",
+      "about": "Retired (T276): Daniel's standing word that the team might merge a ready PR of project, or of every project but the team's own when project is all, said in discord_message in discord_channel; team-log refuses a new one, and no script reads the lines logged before, which --check still passes",
       "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
     },
     "merge-standing-withdrawn": {
       "writer": "team-log",
       "push": true,
-      "about": "Daniel withdrew the standing word on project, or on every project but the team's own when project is all, in discord_message in discord_channel; read with merge-standing across the whole ledger, so a withdrawal of one project leaves a word on all standing for the others, and a later merge-standing stands again",
+      "retired": "T276: the approved plan is the merge word; withdraw it with merge-default-withdrawn",
+      "about": "Retired (T276): Daniel withdrew the standing word on project, or on every project when project is all, in discord_message in discord_channel; team-log refuses a new one, and no script reads the lines logged before, which --check still passes",
       "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
+    },
+    "merge-default-withdrawn": {
+      "writer": "team-log",
+      "push": true,
+      "about": "Daniel withdrew the default merge word, the approved plan, for scope: task, the task the line is logged under, a registered project's name, every task's PRs in it, or all, every project; said in discord_message in discord_channel, #coordinator's channel or the task's thread, a message team-merge never reads back, since a withdrawal only stops merges; read across the whole ledger with merge-default-restored: for a PR, the latest of the two whose scope covers it (its task's, its project's or all) decides, and the default stands unless that is a withdrawal (merge_authority in bin/lib/ledger.jq)",
+      "required": {"scope": "string", "discord_message": "id", "discord_channel": "id"}
+    },
+    "merge-default-restored": {
+      "writer": "team-log",
+      "push": true,
+      "about": "Daniel gave the default merge word back for scope (task, a registered project or all, as a merge-default-withdrawn's) in discord_message in discord_channel, #coordinator's channel or the thread of the task the line is logged under; team-log refuses one when no withdrawal stands that it covers, and team-merge holds it only when Discord shows the message there from an allowFrom author, so a giving back of all gives back a project or task withdrawn by name before it",
+      "required": {"scope": "string", "discord_message": "id", "discord_channel": "id"}
     },
     "branch-renamed": {
       "writer": "team-log",
@@ -230,7 +269,7 @@
     },
     "stowed": {
       "writer": "team-stow",
-      "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",
+      "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin, and ticket, the two-digit number of a ticket worktree's ticket; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",
       "required": {"machine": "string", "worktrees": "array", "roles": "array"},
       "optional": {"sessions": "array", "cause": ["level", "handoff"]}
     },
@@ -241,8 +280,9 @@
     },
     "worktree-moved": {
       "writer": "team-open",
-      "about": "team-open --resume, when this machine's worktree for the task in project is not the recorded one",
-      "required": {"project": "string", "branch": "string", "from": "string", "worktree": "string", "machine": "string"}
+      "about": "team-open --resume, when this machine's worktree for the task in project is not the recorded one; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "from": "string", "worktree": "string", "machine": "string"},
+      "optional": {"ticket": "string"}
     },
     "injection": {
       "writer": "team-log",
@@ -251,13 +291,15 @@
     },
     "rehome-failed": {
       "writer": "team-resume",
-      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project",
-      "required": {"project": "string", "branch": "string", "machine": "string", "reason": "string"}
+      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "machine": "string", "reason": "string"},
+      "optional": {"ticket": "string"}
     },
     "rehomed": {
       "writer": "team-open",
-      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it",
-      "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"}
+      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it; ticket, the two-digit number of a ticket worktree's ticket, absent for the task's own worktree in project",
+      "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"},
+      "optional": {"ticket": "string"}
     },
     "walk": {
       "writer": "team-ui",

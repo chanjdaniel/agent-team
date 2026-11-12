@@ -525,6 +525,32 @@ base_link() {
   assert_equal "$(launches | jq -c 'has("brief")')" "false"
 }
 
+@test "a launch logs the template its brief's record names, so a verify is counted as one; a brief with no record logs none" {
+  open_task T7
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  # team-brief writes each brief's record beside it; a verify's brief is named rereview-<k>.
+  echo "the brief" >"$TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  echo '{"template":"verify","project":"proj","values":{"head":"abc"}}' >"$TEAM_HOME/tasks/T7/brief-rereview-3.json"
+  run_bin -0 team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  assert_equal "$(launches | jq -c '{brief, template}')" '{"brief":"brief-rereview-3","template":"verify"}'
+  # A brief written by hand has no record, and one whose record cannot be read names no
+  # template: each launches as before, logging none, the second with a warning.
+  local record
+  for record in none '{"template":' '{"project":"proj"}'; do
+    : >"$TEAM_HOME/ledger.jsonl"
+    open_task T7
+    rm -f "$TEAM_HOME/tasks/T7/brief-rereview-3.json"
+    [[ $record == none ]] || printf '%s\n' "$record" >"$TEAM_HOME/tasks/T7/brief-rereview-3.json"
+    run_bin -0 --separate-stderr team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
+    assert_equal "$(launches | jq -c '{brief, has: has("template")}')" '{"brief":"brief-rereview-3","has":false}'
+    if [[ $record == '{"template":' ]]; then
+      assert_contains "$stderr" "team-worker: warning: $TEAM_HOME/tasks/T7/brief-rereview-3.json is no brief record team-brief writes, so the launch logs no template"
+    else
+      [[ $stderr != *"brief record"* ]]
+    fi
+  done
+}
+
 @test "a brief named with ~/, \$HOME or trailing punctuation is found; another task's brief launches with no brief logged" {
   open_task T7
   mkdir -p "$TEAM_HOME/tasks/T7" "$TEAM_HOME/tasks/T8"
@@ -2524,4 +2550,96 @@ LINES
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-worker")"
   AGENT_TEAM_ROLE=coordinator run_bin -2 team-worker T7 builder
   assert_contains "$output" "usage: team-worker <task> <role> <worktree>"
+}
+
+# ticket_worktree <NN>: T7 opened in wt1 on feat/T7-one, with ticket NN's worktree
+# slots/proj/<NN> on feat/T7-one--NN, logged as team-open --ticket logs it. Sets $twt.
+ticket_worktree() {
+  twt=$HOME/slots/proj/$1
+  git -C "$primary" worktree add -q -b "feat/T7-one--$1" "$twt" feat/T7-one
+  ledger_line --arg wt "$twt" --arg n "$1" '{ts: (now | todate), task: "T7", event: "worktree-added",
+    project: "proj", branch: "feat/T7-one--\($n)", base: "feat/T7-one", base_sha: "0123456", worktree: $wt, ticket: $n}'
+}
+
+# A brief of T7's for ticket <NN>, as team-brief --name build-<NN> writes it; prints its path.
+build_brief() {
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "# T7 brief (builder): ticket $1" >"$TEAM_HOME/tasks/T7/brief-build-$1.md"
+  echo "$TEAM_HOME/tasks/T7/brief-build-$1.md"
+}
+
+@test "a builder in ticket NN's worktree is T<n>-builder-NN, logs ticket and the ticket branch, and has files of its own" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ticket_worktree 03
+  # On Linux team-capacity place places the session by its name, saying nothing.
+  run_bin -0 --separate-stderr team-worker T7 builder "$twt" -- "Read your brief at $(build_brief 03)"
+  assert_equal "$stderr" ""
+  local call t=$TEAM_HOME/tasks/T7
+  call=$(bg_calls | tail -n 1)
+  files() { jq -r --arg flag "$1" '.[index($flag) + 1]' <<<"$2"; }
+  assert_equal "$(files --name "$call")" T7-builder-03
+  assert_equal "$(launches)" "$(jq -cn --arg wt "$twt" --arg a "$(admitted_id)" '{task: "T7", event: "launch", role: "builder",
+    session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one--03", machine: "home-pc",
+    admission: $a, brief: "brief-build-03", ticket: "03"}')"
+  assert_equal "$(files --settings "$call")" "$t/settings.builder.proj--03.json"
+  assert_equal "$(files --mcp-config "$call")" "$t/mcp.builder.proj--03.json"
+  assert_equal "$(files --append-system-prompt-file "$call")" "$HOME/.local/state/agent-team/prompts/T7/builder.proj--03.md"
+  assert_equal "$(jq -r .autoMemoryDirectory "$t/settings.builder.proj--03.json")" "$TEAM_HOME/memory/proj"
+  assert_contains "$(cat "$HOME/.local/state/agent-team/prompts/T7/builder.proj--03.md")" "# Role: builder"
+  run_bin -0 team-log --check
+
+  # The task worktree's builder keeps its own name and files, and logs no ticket.
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  call=$(bg_calls | tail -n 1)
+  assert_equal "$(files --name "$call")" T7-builder
+  assert_equal "$(files --settings "$call")" "$t/settings.builder.proj.json"
+  assert_equal "$(launches | tail -n 1 | jq -c '[.branch, .ticket]')" '["feat/T7-one",null]'
+}
+
+@test "a reviewer or planner in a ticket worktree, and another ticket's brief there, are refused with nothing started or logged" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ticket_worktree 03
+  local role
+  for role in reviewer planner; do
+    run_bin -1 team-worker T7 "$role" "$twt" -- go
+    assert_equal "$output" "team-worker: $twt is ticket 03's worktree of T7, which takes only that ticket's builder"
+  done
+  run_bin -1 team-worker T7 builder "$twt" -- "Read your brief at $(build_brief 04)"
+  assert_equal "$output" "team-worker: $twt is ticket 03's worktree, but the brief is ticket 04's"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
+  [[ ! -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
+  # Ticket 04's brief launches in the task worktree as before, and a brief of another kind in the
+  # ticket worktree.
+  run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief at $(build_brief 04)"
+  echo "# resume" >"$TEAM_HOME/tasks/T7/brief-resume.md"
+  run_bin -0 team-worker T7 builder "$twt" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-resume.md"
+  assert_equal "$(launches | jq -c '[.worktree == $wt1, .brief, .ticket]' --arg wt1 "$wt1")" '[true,"brief-build-04",null]
+[false,"brief-resume","03"]'
+}
+
+@test "a ticket builder's launch stops only an earlier builder of its own ticket worktree, never one of another worktree" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ticket_worktree 03
+  ticket_worktree 04
+  stop_stub
+  log_lines <<LINES
+launch T7 builder 11111111 $wt1
+launch T7 builder 33333333 $twt
+launch T7 builder 30303030 $HOME/slots/proj/03
+T7 {event: "ticket-done", ticket: "03", commits: ["abc1234"]}
+LINES
+  cat >"$STUB_FIXTURES/agents.json" <<'JSON'
+[{"id": "11111111", "name": "T7-builder", "status": "idle"},
+ {"id": "33333333", "name": "T7-builder-04", "status": "idle"},
+ {"id": "30303030", "name": "T7-builder-03", "status": "idle"}]
+JSON
+  run_bin -0 --separate-stderr team-worker T7 builder "$HOME/slots/proj/03" -- go
+  assert_equal "$(stops)" 30303030
+  assert_contains "$stderr" "team-worker: stopped T7-builder 30303030: its work is handed on"
+  [[ $stderr != *11111111* && $stderr != *33333333* ]]
+  assert_equal "$(launches | tail -n 1 | jq -c '[.ticket, .branch]')" '["03","feat/T7-one--03"]'
 }

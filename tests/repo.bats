@@ -354,7 +354,7 @@ probe_denies() {
 @test "every writer of a push kind calls ledger_push" {
   local contract=$REPO_ROOT/bin/lib/ledger-contract.json writer missing=()
   assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.push == true) | .key] | sort | join(" ")' "$contract")" \
-    "answered closed merge-approved merge-preapproval-withdrawn merge-preapproved merge-standing merge-standing-withdrawn merged plan-approved ran retro-schedule"
+    "answered closed merge-approved merge-default-restored merge-default-withdrawn merge-preapproval-withdrawn merge-preapproved merge-standing merge-standing-withdrawn merged plan-approval-withdrawn plan-approved ran retro-schedule"
   for writer in $(jq -r '[.kinds[] | select(.push == true) | .writer] | flatten | unique[]' "$contract"); do
     grep -qE '^[[:space:]]*ledger_push$' "$REPO_ROOT/bin/$writer" || missing+=("$writer")
   done
@@ -483,6 +483,35 @@ toolkits/x/scripts/run:1: a needs b"
     denied_in "$REPO_ROOT/$file" 'cat /proc/1/environ | tr "\0" "\n"'
     ! denied_in "$REPO_ROOT/$file" 'team-secrets check'
     ! denied_in "$REPO_ROOT/$file" "team-log T41 blocked 'a read of /proc/1/environ; op read is Daniel's'"
+  done
+}
+
+# The reviewer App's key signs the agent-review check the team's own project merges behind, so no
+# session reads it: the worker and coordinator settings deny it to the Read and Edit tools and to a
+# Bash command naming its path by any of the usual spellings, a speed bump against a steered
+# session (sops/merging.md), while the scripts that read it, and text naming the committed
+# bin/lib/review-app or the key's bare file name, stay allowed.
+@test "the worker and coordinator settings deny reading the reviewer App's key" {
+  local file rule command
+  for file in settings/worker.json coordinator.settings.json; do
+    for rule in 'Read(~/.config/agent-team/review-app*)' 'Edit(~/.config/agent-team/review-app*)'; do
+      jq -e --arg r "$rule" '.permissions.deny | index($r) != null' "$REPO_ROOT/$file" >/dev/null ||
+        { echo "$file does not deny $rule" >&2; return 1; }
+    done
+    for command in 'cat ~/.config/agent-team/review-app.pem' 'head -c 64 ~/.config/agent-team/review-app.pem' \
+      'less ~/.config/agent-team/review-app.pem' 'tail $HOME/.config/agent-team/review-app.pem' \
+      'base64 < "$HOME/.config/agent-team/review-app.pem"' 'openssl rsa -in ~/.config/agent-team/review-app.pem -text' \
+      'cp ~/.config/agent-team/review-app.pem /tmp/k' 'cat ~/.config/agent-team/review-app.p*' \
+      'cat ~/.config/agent-team/*.pem' 'cd ~/.config && cat agent-team/review-app.pem' \
+      'cd ~/.config/agent-team && cat review-app.pem' 'pushd ~/.config/agent-team' \
+      'cat /home/someone/.config/agent-team/review-app.pem | base64'; do
+      denied_in "$REPO_ROOT/$file" "$command" || { echo "$file allows: $command" >&2; return 1; }
+    done
+    for command in 'team-review-check https://github.com/o/r/pull/1 0123 success ok' 'team-secrets check' \
+      'cat bin/lib/review-app' 'cat ~/.config/agent-team/home' 'grep -rn review-app.pem bin sops' \
+      'team-doctor'; do
+      if denied_in "$REPO_ROOT/$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
+    done
   done
 }
 
@@ -1747,7 +1776,7 @@ Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   if denied settings/reviewer.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
 }
 
-@test "the builder's allow rules are the local checks, the CI wait scripts, as the briefs give them, and marking a PR ready" {
+@test "the builder's allow rules are the local checks, as the briefs give them, the CI wait a worker may run by hand, and marking a PR ready" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-checks *)
 Bash(@TEAM_CODE@/bin/team-ci-wait *)
 Bash(gh pr ready *)
@@ -1759,9 +1788,9 @@ Bash(gh-axi pr ready *)'
   for brief in reviewer rereview verify before-pr/rereview before-pr/verify; do
     grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview verify wait/direct-pr; do
-    grep -qF '`{{team_bin}}/team-ci-wait ' "$REPO_ROOT/templates/briefs/$brief.md"
-  done
+  # No brief starts a wait on CI, which the coordinator's checks wait takes after a pass; the rule
+  # stays for a worker's wait by hand.
+  if git -C "$REPO_ROOT" grep -n team-ci-wait -- templates; then return 1; fi
   allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
   allows builder "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
   allows builder "$REPO_ROOT/bin/team-ci-wait --no-agent-review https://github.com/me/shop/pull/5"
@@ -2440,4 +2469,42 @@ briefs_without_gotchas() {
   run grep -nE '\{\{(team_home|team_code|team_bin|plan)\}\}|platform-gotchas' "$REPO_ROOT/templates/briefs/ops.md"
   assert_equal "$status" 1
   assert_equal "$output" ""
+}
+
+@test "bin/lib/guarded's areas are the ledger's guarded areas in their order, each @ naming own or a registered project" {
+  local lines fields names
+  lines=$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/guarded")
+  fields=$(cut -d ' ' -f 1 <<<"$lines")
+  assert_equal "$(cut -d @ -f 1 <<<"$fields" | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    '["ci","migrations","deploy","permissions","secrets","guardrails"]'
+  assert_equal "$(cut -d @ -f 1 <<<"$fields" | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    "$(jq -L "$REPO_ROOT/bin/lib" -nc 'include "ledger"; guarded_areas')"
+  # Every line is its area, an optional @<project>, one space and a pattern.
+  assert_equal "$(grep -Evc '^[a-z]+(@[a-z0-9-]+)? [^ ]' <<<"$lines" || true)" 0
+  names=$(sed -n 's/^\[\([a-z0-9-]*\)\]$/\1/p' "$REPO_ROOT/tests/fixtures/projects.toml")
+  [[ -n $names ]]
+  while IFS= read -r field; do
+    [[ $field == *@* ]] || continue
+    [[ ${field#*@} == own ]] || grep -Fxq -- "${field#*@}" <<<"$names" ||
+      { echo "bin/lib/guarded's $field names no project of the registry fixture" >&2; return 1; }
+  done <<<"$fields"
+  # The team's own lines are its guardrails, and Conventioner's its permissions.
+  assert_equal "$(grep -o '@[a-z0-9-]*' <<<"$fields" | sort -u | jq -Rsc 'split("\n")[:-1]')" '["@conventioner","@own"]'
+  assert_equal "$(grep '@own$' <<<"$fields" | sort -u)" guardrails@own
+  assert_equal "$(grep '@conventioner$' <<<"$fields" | sort -u)" permissions@conventioner
+}
+
+# The reviewer App's constant (review_app in bin/lib/team.sh) is committed code, never a record:
+# when present, one id=<n> line and one slug=<s> line; present or not, the short list holds its
+# path and team-review-check's as the team's own guardrails.
+@test "bin/lib/review-app, when present, is one id and one slug, and it and team-review-check are guardrails" {
+  local file=$REPO_ROOT/bin/lib/review-app path patterns form=$'^id=[1-9][0-9]*\nslug=[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+  if [[ -e $file ]]; then
+    [[ $(cat "$file") =~ $form ]] ||
+      { echo "bin/lib/review-app is not one id=<n> line and one slug=<s> line" >&2; return 1; }
+  fi
+  patterns=$(sed -n 's/^guardrails@own //p' "$REPO_ROOT/bin/lib/guarded")
+  for path in bin/lib/review-app bin/team-review-check; do
+    grep -Eiqx -f <(printf '%s\n' "$patterns") <<<"$path" || { echo "bin/lib/guarded holds no guardrails@own line for $path" >&2; return 1; }
+  done
 }

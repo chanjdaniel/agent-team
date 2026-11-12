@@ -200,6 +200,46 @@
       "family": "channels"
     },
     {
+      "id": "review-app-key",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Read",
+      "input": "@HOME@/.config/agent-team/review-app.load-check-probe-absent",
+      "expect": "rule",
+      "family": "review-app-key"
+    },
+    {
+      "id": "review-app-key-cat",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Bash",
+      "input": "cat ~/.config/agent-team/review-app.load-check-probe-absent",
+      "expect": "rule",
+      "family": "review-app-key"
+    },
+    {
+      "id": "review-app-key-glob",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Bash",
+      "input": "cat ~/.config/agent-team/load-check-probe-absent.pem",
+      "expect": "rule",
+      "family": "review-app-key"
+    },
+    {
+      "id": "review-app-key-cd",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Bash",
+      "input": "cd ~/.config/agent-team && cd -",
+      "expect": "rule",
+      "family": "review-app-key"
+    },
+    {
+      "id": "review-app-key-pushd",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Bash",
+      "input": "pushd ~/.config/agent-team && popd",
+      "expect": "rule",
+      "family": "review-app-key"
+    },
+    {
       "id": "devtools-port",
       "roles": ["planner", "builder", "reviewer"],
       "tool": "Bash",
@@ -352,6 +392,10 @@
     {
       "family": "reset",
       "rules": "^Bash\\(git (reset|clean|branch -D)"
+    },
+    {
+      "family": "review-app-key",
+      "rules": "^(Read|Bash)\\(.*(agent-team/review-app|\\.config/agent-team)"
     },
     {
       "family": "sessions",

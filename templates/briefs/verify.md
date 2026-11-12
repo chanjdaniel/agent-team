@@ -13,20 +13,20 @@ Sent back: the notes numbered {{findings}} in `{{task_dir}}/review.md`, each a p
 
 ## Check
 
-1. First start the wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait {{pr}} {{head}}`, run with Bash `run_in_background`, so the run and your reading overlap (a pass delivers only once it has ended; a verify that sends any finding back delivers as soon as `{{task_dir}}/rereview.md` is written, naming in its CI section the checks still running, and a wait that ends after it delivered needs nothing more), and run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `{{task_dir}}/rereview.md` says which local checks passed (they set no GitHub status).
-   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding, while a stuck check or a head other than `{{head}}` goes to `coordinator` as `{{task}} BLOCKED <its message>`; exit 75, run it again, or report as its message says.
+1. Run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `{{task_dir}}/rereview.md` says which local checks passed (they set no GitHub status).
+   Start no wait on the PR's GitHub checks: deliver on `{{head}}`, the head you read, since the coordinator's script waits on the checks of a pass, and the merge needs every one green.
 {{> rereview}}
    Read nothing else: not the rest of the PR, the spec's or the story's acceptance list, or the knowledge graph; run the UI check only when that diff touches a UI file and your session lists `ui-check`, on the states it touched and their siblings.
    A round with no new commit (`{{reviewed}}` is `{{head}}`) edited only the PR body: read the body against the notes.
-3. Every note sent back ({{findings}}) is fixed at `{{head}}`, and the diff holds nothing but those fixes, their tests and, on a gated project, the gate's own commits.
-   When it changes more than the notes asked, this brief does not fit: send `{{task}} BLOCKED not a notes-only fix: <what else changed>` to `coordinator`, and write nothing to GitHub.
+3. Every note sent back ({{findings}}) is fixed at `{{head}}`, and the builder's commits in that diff hold nothing but those fixes and their tests.
+   When they change more than the notes asked, this brief does not fit: send `{{task}} BLOCKED not a notes-only fix: <what else changed>` to `coordinator`, and write nothing to GitHub.
    Raise a new finding only on a line this diff adds or changes, so each new one's scope is `change`.
 {{> review-rules}}
 
 ## Deliver
 
 - Add the result to `{{task_dir}}/review.md` under a heading naming `{{head}}`, its new findings numbered on from the last, each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and its scope, `change`; then write the same result alone to `{{task_dir}}/rereview.md`.
-  Give in it the count of each kind among the findings that stand at `{{head}}`, its new ones and any note sent back and not fixed, the plain notes as `note-change` and `note-before` (0 for none), and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets` and `guardrails`, by the paths `{{team_code}}/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
+  Give in it the count of each kind among the findings that stand at `{{head}}`, its new ones and any note sent back and not fixed, the plain notes as `note-change` and `note-before` (0 for none), and the guarded areas the change touches, of `ci`, `migrations`, `deploy`, `permissions`, `secrets` and `guardrails`, by the paths `{{team_code}}/bin/lib/guarded` lists for the project or by what the code does in a file of any name (CI or the checks a PR must pass, a migration of production data, the deploy, auth or permission checks, secrets handling and, on agent-team, the team's guards), or none.
   Post that as one PR comment with this exact command, the only comment your settings allow: `{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/rereview.md`.
 - The status on the head you reviewed, with this exact command, the only status your settings allow: `{{team_bin}}/team-review-status {{pr}} {{head}} <success|failure> "<one line, at most 140 characters>"`.
   It sets the status on `{{head}}`, the head you reviewed, and refuses when the PR has moved past it: then set nothing and tell the coordinator.
