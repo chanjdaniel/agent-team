@@ -22,22 +22,20 @@
 # no item of the latest post showed (waiting.json's posted, null until a post records one). A
 # waiting.json that is missing numbers the list afresh; one that cannot be read, or is of another
 # schema than team-waiting/1, does too, with a line on stderr saying why.
-# A PR ready to merge is left out while it waits on no word of Daniel's: the task's latest
-# merge-preapproved of the PR's project (the registered one whose repo is the URL's) stands, and
-# that project opts in now (team-project --find merge_with_plan true) and is not the team's own
-# (own_project in bin/lib/team.sh), so team-merge merges it on that plan-time word. One it
-# refuses comes back as the coordinator's ask, its text naming the PR's URL, listed with the asks.
-# A PR ready to merge is left out too while a standing word of Daniel's stands for its project (the
-# latest merge-standing or merge-standing-withdrawn naming the project or all is a merge-standing)
-# and that project is not the team's own (standing_projects in bin/lib/team.sh), so team-merge
-# merges it on that word; one it refuses comes back as the coordinator's ask too. The team's own
-# project's ready PRs are listed whatever word stands, since they merge only on the per-head word.
-# While a standing word stands, one line per word after the items names the registered projects it
-# stands for, never the team's own, and links Daniel's message: "-# Standing merge word on
-# <projects> since <link>" ("since message <id> in <#channel>" with no guild known).
-# The registry is read only once the ledger holds a merge-preapproved or a merge-standing; when it
-# cannot be read, every PR ready to merge is listed, the standing word lines name the projects as
-# the words were logged (all as "every project"), and a line on stderr says why.
+# A PR ready to merge is left out while it waits on no word of Daniel's: its default word, the
+# approved plan, holds on the ledger (merge_authority in bin/lib/ledger.jq, as team-sweep's
+# merge-due reads it: the plan approved and not withdrawn, the PR's project not the team's own by
+# own_project in bin/lib/team.sh, the default not withdrawn for it, the task's branch logged and
+# its reviews letting it merge unasked), so team-merge merges it on that word; one it refuses
+# comes back as the coordinator's ask, its text naming the PR's URL, listed with the asks. The
+# team's own project's ready PRs are listed, since they merge only on the per-head word.
+# While a withdrawal of the default word stands (the latest merge-default-withdrawn or
+# merge-default-restored of any task covering some PR is that withdrawal), one line per withdrawal
+# after the items names what it is for and links Daniel's message: "-# Default merge word
+# withdrawn for <the task, project <name> or every project> since <link>" ("since message <id> in
+# <#channel>" with no guild known).
+# The registry is read only while an open task awaits merge with its plan approved; when it cannot
+# be read, every PR ready to merge is listed, and a line on stderr says why.
 # --post: the post is waiting.md's lines, then the team's resource level, from team-level status
 # --stored --json (it takes no reading): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for
 # the team; 6.1 GiB reserved; T171 stowed, waiting to resume", naming each open task whose latest
@@ -74,7 +72,7 @@
 # "nothing waits"); and a waiting.json that is missing or cannot be read.
 # Files: the team home's waiting.md, the list as Daniel reads it, with its final newline, and
 # waiting.json beside it ({schema: "team-waiting/1", items: [{n, key, kind, task, title, ...,
-# line}], standing, posted}), which the scripts read; both are records, which the checkpoint
+# line}], withdrawn, posted}), which the scripts read; both are records, which the checkpoint
 # commits, and neither holds the time of a run, so a run that changes nothing makes no commit. A
 # steal after a crash loses only what no push took: the numbers plain runs gave new items since the
 # last checkpoint, and a post's reservation whose push failed.
@@ -212,43 +210,15 @@ fi
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 
-# The repos, lowercased, of the projects whose PRs may merge on Daniel's plan-time word, each to
-# its project: those that opt in now and are not the team's own; and, for the standing word, the
-# registered projects it may cover (standing_projects: every one but the team's own) and every
-# one's repo. The registry is read only once the ledger holds such a
-# word, and one that cannot be read lists every PR, the standing word lines naming the projects as
-# the words were logged.
-words=$(ledger_jq 'ledger_events | {plan: any(.[]; .event == "merge-preapproved"),
-  standing: [.[] | select(.event == "merge-standing") | .project | strings] | unique}' -nRc "$ledger")
-plan_repos='{}' repos='{}' projects='[]' unreadable=''
-if jq -e .plan <<<"$words" >/dev/null; then
-  if found=$(team_project --find merge_with_plan true 2>"$scratch/registry"); then
-    while IFS= read -r project; do
-      if [[ -z $project ]] || own_project "$project"; then continue; fi
-      repo=$(team_project "$project" repo) || exit 1
-      plan_repos=$(jq -c --arg repo "$repo" --arg project "$project" '.[$repo | ascii_downcase] = $project' <<<"$plan_repos")
-    done <<<"$found"
-  else
-    unreadable=1
+# The registered projects that are the team's own, for the default word, read only while an open
+# task awaits merge with its plan approved; null, listing every PR ready to merge, when the
+# registry cannot be read.
+own='[]'
+if ledger_jq 'ledger_events | default_may_hold' -nRe "$ledger" >/dev/null; then
+  if ! own=$(own_projects 2>"$scratch/registry"); then
+    own=null
+    echo "team-inbox: lists every PR ready to merge, the default word aside, since the registry cannot be read: $(grep -m 1 . "$scratch/registry" || echo "team-project failed")" >&2
   fi
-fi
-if [[ -z $unreadable ]] && jq -e '.standing != []' <<<"$words" >/dev/null; then
-  if found=$(standing_projects 2>"$scratch/registry"); then
-    while IFS= read -r project; do
-      [[ -n $project ]] || continue
-      repo=$(team_project "$project" repo) || exit 1
-      repos=$(jq -c --arg repo "$repo" --arg project "$project" '.[$repo | ascii_downcase] = $project' <<<"$repos")
-      projects=$(jq -c --arg project "$project" '. + [$project]' <<<"$projects")
-    done <<<"$found"
-  else
-    unreadable=1
-  fi
-fi
-if [[ -n $unreadable ]]; then
-  plan_repos='{}' repos='{}' projects=$(jq -c .standing <<<"$words")
-  aside=$(jq -r '[if .plan then "plan-time" else empty end, if .standing != [] then "standing" else empty end]
-    | "\(join(" and ")) word\(if length > 1 then "s" else "" end)"' <<<"$words")
-  echo "team-inbox: lists every PR ready to merge, Daniel's $aside aside, since the registry cannot be read: $(grep -m 1 . "$scratch/registry" || echo "team-project failed")" >&2
 fi
 
 # For a post, the team's resource level, for the line after the list; left out, saying why, when
@@ -301,10 +271,10 @@ if [[ -e $waiting ]]; then
   fi
 fi
 
-ledger_jq 'ledger_events | (by_task | awaiting_resume) as $stowed | inbox_items($plan_repos; $repos; $projects)
+ledger_jq 'ledger_events | (by_task | awaiting_resume) as $stowed | inbox_items($own)
   | ($guild | if . == "" then null else . end) as $guild
   | waiting_list($previous; $guild) | ., waiting_text($guild), [resources_line($level; $stowed), $health | select(. != null)]' \
-  -nRc --argjson plan_repos "$plan_repos" --argjson repos "$repos" --argjson projects "$projects" \
+  -nRc --argjson own "$own" \
   --argjson level "$level" --argjson health "$health" --argjson previous "$previous" \
   --arg guild "$guild" "$ledger" >"$scratch/list"
 

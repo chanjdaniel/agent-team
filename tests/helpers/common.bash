@@ -281,6 +281,13 @@ with_lifecycle_from() {
   mv -f "$table.new" "$table"
 }
 
+# plan_md T<n> [<text>]: write the task's plan, tasks/T<n>/plan.md in the sandbox's team home,
+# which team-log takes a plan-approved of only when it exists.
+plan_md() {
+  mkdir -p "$TEAM_HOME/tasks/$1"
+  printf '%s\n' "${2:-# $1 plan}" >"$TEAM_HOME/tasks/$1/plan.md"
+}
+
 # opened_task T<n> [<path>]: append the task's thread and opened (project proj, path <path>,
 # default feature) to the sandbox's ledger, as team-open logs them, so a test whose events a
 # refusing writer (bin/lib/lifecycle.json's refusing_writers) appends has the open task the

@@ -1045,7 +1045,7 @@ STUB
   chmod +x "$BATS_TEST_TMPDIR/stubs/git"
   theirs=$(team_tip)
 
-  run_bin -0 --separate-stderr team-log T1 plan-approved by=Daniel
+  run_bin -0 --separate-stderr team-log T1 plan-approved by=coordinator
   assert_equal "$stderr" "team-log: the ledger is not on origin yet (origin's dev has moved and the commits not on it cannot be replayed onto it (the branch moved meanwhile; the next push replays it); they stay unpushed); the next checkpoint pushes it"
   [[ -e $BATS_TEST_TMPDIR/moved ]]
   # The branch is the other script's commit on the ledger's, and the working tree has none of origin's.

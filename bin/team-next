@@ -25,7 +25,10 @@
 # hold ("T<n> is on Daniel's hold since <since> (<id>): <reason>; only Daniel's word lifts it:
 # ..."), and has no ask to Daniel that nothing settled and no launch went past ("T<n> has an
 # unanswered ask, <id>, since <ts>"); it takes no --past-ask, so a message refused for an ask is
-# logged with team-log --from-message, as the manual says.
+# logged with team-log --from-message, as the manual says. Before that guard, and for every
+# hand-off below, a task whose plan approval stands withdrawn (plan_approval in bin/lib/ledger.jq)
+# is refused naming it ("T<n>'s plan approval was withdrawn at <ts> in Discord message <id>, so no
+# <hand-off> hand-off; approve the plan again first (step 3 of the manual)").
 # Then it logs, through team-log, each of the message's events that the ledger does not already
 # hold since the sending worker's launch (the session its events name, else the task's latest
 # launch): a ticket-done of the same ticket, a done of the same session and report (an ops
@@ -78,30 +81,31 @@
 # left for the coordinator, the holder being the task's latest builder launch, under 250k while
 # team-state reads its context under 250,000 tokens or none, and gone when its session is not
 # live. For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks
-# green" (or the failing, pending and missing checks), "merge pre-approved: run team-merge T<n> for
-# ..." instead while team-state's plan-time approval stands, or "merge on the standing word: run
-# team-merge T<n> for ..." while it does not and a standing word of Daniel's stands for the PR's
-# project (team-state's pr.standing_word, null for the team's own project), the review found no
-# guarded area and no review of the task counted a security or real-data finding or logged no
-# counts (which team-merge refuses both words for), each guarded area and such review named with
-# the word it holds back, and the before notes to queue as follow-ups; for a PR behind its base,
-# "merge base: ..." instead, read with base_merge in the project's primary checkout once the PR's
-# branch and the base are fetched there:
-# "run team-catch-up T<n>, which needs no rereview" when the reviewed head merges the base cleanly,
-# then "then, once the checks pass on its merge: " and the merge line above for the reviewed head
-# with no checks (its guarded areas, risky reviews and before notes as they are), else the
-# builder-merge-base brief for the holder under 250k, else a fresh builder, after the
-# holder's STOW when it is live, with "conflicts on <files>" after the behind count for a conflict,
-# or "(whether the merge is clean is not known: <why>)" when the fetch or git fails. For a pass
-# with no PR (a review-ready, a gated or Disclosure task's, or a later phase's whose earlier PR
-# GitHub says is merged), the message telling the holder to go on with its delivery. For findings,
-# or a pass that sent some
-# back (which team-log logs as findings): the message for the holder under 250k (its name, the
-# findings sent back and the findings file the message names, for a pass the newest of review.md
-# and rereview*.md in the holder's task directory, as team-brief derives a round's, and that
-# each is fixed as narrowly as it asks, a fix reaching shapes it does not name a T<n> QUESTION
-# first), else the T<n> STOW to send it (after recovering it when gone), or no hand-off when
-# nothing was sent back.
+# green" (or the failing, pending and missing checks), or "merge on the default word: run
+# team-merge T<n> for ..." instead while the default word, the approved plan, holds on the ledger
+# for the PR at the reviewed head, read once the review is logged (merge_authority in
+# bin/lib/ledger.jq, the derivation team-merge, team-state and team-sweep read: the plan approved
+# and not withdrawn, the PR's project not the team's own by own_project in bin/lib/team.sh, the
+# default not withdrawn for the task, its project or every project, the task's branch logged, the
+# review found no guarded area and no review of the task counted a security or real-data finding
+# or logged no counts); on a merge ask, each guarded area of the six bin/lib/guarded names and
+# each such review named, with ", so the default word does not hold" while the plan stands
+# approved on a project not the team's own, and the before notes to queue as follow-ups; for a PR
+# behind its base, "merge base: ..." instead, read with base_merge in the project's primary checkout
+# once the PR's branch and the base are fetched there: "run team-catch-up T<n>, which needs no
+# rereview" when the reviewed head merges the base cleanly, then "then, once the checks pass on its
+# merge: " and the merge line above for the reviewed head with no checks (its guarded areas, risky
+# reviews and before notes as they are), else the builder-merge-base brief for the holder under
+# 250k, else a fresh builder, after the holder's STOW when it is live, with "conflicts on <files>"
+# after the behind count for a conflict, or "(whether the merge is clean is not known: <why>)" when
+# the fetch or git fails. For a pass with no PR (a review-ready, a gated or Disclosure task's, or a
+# later phase's whose earlier PR GitHub says is merged), the message telling the holder to go on
+# with its delivery. For findings, or a pass that sent some back (which team-log logs as findings):
+# the message for the holder under 250k (its name, the findings sent back and the findings file the
+# message names, for a pass the newest of review.md and rereview*.md in the holder's task directory,
+# as team-brief derives a round's, and that each is fixed as narrowly as it asks, a fix reaching
+# shapes it does not name a T<n> QUESTION first), else the T<n> STOW to send it (after recovering it
+# when gone), or no hand-off when nothing was sent back.
 # The churn rule: when this review sent back a finding its widening= marks (one in what the last
 # fix added), the task's previous review (the latest before this one, on a rerun the latest
 # before the line that holds it) sent back one of its own, and every finding this one sent back
@@ -285,6 +289,16 @@ case $handoff in
   verdict) if [[ $kind == "DONE findings" ]]; then launch_role=builder; else launch_role=''; fi ;;
   *) launch_role='' ;;
 esac
+# A withdrawn plan approval stops the build until the plan is approved again, named as a hand-off
+# before the launch guard, which refuses a builder's or reviewer's launch for it too:
+# plan_withdrawn_refusal
+plan_withdrawn_refusal() {
+  local withdrawn
+  withdrawn=$(ledger_jq 'plan_approval | select(.state == "withdrawn") | "\(.ts) in Discord message \(.discord_message)"' -r <<<"$events")
+  [[ -z $withdrawn ]] ||
+    die "$task's plan approval was withdrawn at $withdrawn, so no $handoff hand-off; approve the plan again first (step 3 of the manual)"
+}
+[[ -z $launch_role ]] || plan_withdrawn_refusal
 refusal=''
 json_vars --ledger refusal='[launch_refusal($task; $role; [])] | join("; ")' -- --arg task "$task" --arg role "$launch_role" <<<"$events"
 [[ -z $refusal ]] || die "$refusal"
@@ -369,7 +383,8 @@ if [[ $handoff == none ]]; then
   exit 0
 fi
 
-jq -e 'any(.[]; .event == "plan-approved")' <<<"$events" >/dev/null ||
+plan_withdrawn_refusal
+ledger_jq 'plan_approval != null' -e <<<"$events" >/dev/null ||
   die "$task has no plan-approved, so no $handoff hand-off; approve the plan first (step 3 of the manual)"
 
 # "3, 5 and 6" from a JSON list.
@@ -516,8 +531,8 @@ if [[ $handoff == verdict ]]; then
     fi
   fi
   # The task's reviews, this one too once (a rerun finds it logged), each one that counted a
-  # security or real-data finding or logged no counts named: team-merge refuses the plan-time
-  # and standing words for such a task.
+  # security or real-data finding or logged no counts named: team-merge refuses the default word
+  # for such a task.
   risky=$(jq -c --argjson review "$review" --argjson held "$held" '
     map(select(.event == "review"))
     + (if any($held.events[]; .event.event == "review" and .at == null) then [$review] else [] end)
@@ -526,34 +541,39 @@ if [[ $handoff == verdict ]]; then
         else [.findings | ("security", "real-data") as $k | .[$k] // 0 | select(. > 0) | "\(.) \($k)"]
           | select(. != []) | (map(split(" ")[0] | tonumber) | add) as $n
           | "\($r)counted \(join(" and ")) finding\(if $n == 1 then "" else "s" end)" end]' <<<"$events")
-  # The merge ask's facts, or the plan-time or standing word's merge; after a clean catch-up's line,
-  # the same for once the merge's checks pass, with no checks of the head it was made from.
-  jq -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg caught "$caught" \
-    --arg before "$before" '
+  # The default word on the reviewed head, from the task's events now this review is logged
+  # (merge_authority, as team-merge, team-state and team-sweep read it): null for a PR of no
+  # registered project.
+  default=null
+  if [[ -n $pr_project ]]; then
+    own=false
+    if (own_project "$pr_project"); then own=true; fi
+    withdrawals=$(default_events_json) || exit 1
+    default=$(task_event_array "$task" | ledger_jq 'merge_authority($url; $head; $project; $own; $withdrawals)
+      | .words[] | select(.word == "default") | .own = $own' -c --arg url "${url%/}" --arg head "$reviewed" \
+      --arg project "$pr_project" --argjson own "$own" --argjson withdrawals "$withdrawals") || exit 1
+  fi
+  # The merge ask's facts, or the default word's merge; after a clean catch-up's line, the same for
+  # once the merge's checks pass, with no checks of the head it was made from.
+  ledger_jq '
     (.pr | if $caught != "" then "\(.url) at \(.head)"
       else "\(.url) at \(.head), agent-review \(.agent_review), "
         + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
             (.checks.pending | select(. != []) | "pending: \(join(", "))"),
             (.required_missing | select(. != []) | "missing: \(join(", "))")]
           | if . == [] then "checks green" else "checks \(join("; "))" end) end) as $facts
-    | (.merge_preapproval | . != null and .withdrawn == null and .opted_in == true and .own != true) as $planned
-    | (.pr.standing_word | . != null and .word != null and .withdrawn == null) as $standing
-    | ([if $planned then "plan-time" else empty end, if $standing then "standing" else empty end]
-       | if . == [] then ""
-         elif length == 1 then ", so the \(.[0]) word does not hold"
-         else ", so the \(join(" and ")) words do not hold" end) as $held
-    | ($review.guarded // []) as $guarded
+    | ($default != null and $default.applies and ($default.own | not)) as $applies
+    | (if $applies then ", so the default word does not hold" else "" end) as $held
+    | [($review.guarded // [])[] | select(IN(guarded_areas[]))] as $guarded
     | (if $caught != "" then "then, once the checks pass on its merge: " else "" end)
-    + if $guarded != [] or $risky != [] then "merge ask: \($facts)"
-      elif $planned then "merge pre-approved: run team-merge \($task) for \($facts)"
-      elif $standing then "merge on the standing word: run team-merge \($task) for \($facts)"
+    + if $default.holds == true then "merge on the default word: run team-merge \($task) for \($facts)"
       else "merge ask: \($facts)" end
     + (if $guarded == [] then ""
        else "; the review found guarded areas: \($guarded | join(", "))\($held)" end)
-    + (if $held != "" and $risky != [] then
-         "; \($risky | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end)\($held)"
-       else "" end)
-    + (if $before == "" then "" else "; queue before notes \($before) as follow-ups and say where each went" end)' <<<"$state"
+    + (if $held != "" and $risky != [] then "; \($risky | and_text)\($held)" else "" end)
+    + (if $before == "" then "" else "; queue before notes \($before) as follow-ups and say where each went" end)' \
+    -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg caught "$caught" \
+    --arg before "$before" --argjson default "$default" <<<"$state"
   exit 0
 fi
 
