@@ -1402,12 +1402,12 @@ allowed_in() {
 
 # Daniel's decision: a walk's planner captures through team-ui, and its walk gives it no MCP server.
 @test "a planner launched while its interview walk is on gets no frontend server, and is still refused the toolkit" {
-  thread T7
+  open_task T7
   jq -cn '{ts: "2026-10-25T10:02:00Z", task: "T7", event: "walk", state: "on", thread: "interview"}' >>"$TEAM_HOME/ledger.jsonl"
   run_bin -2 team-worker T7 planner "$wt1" --toolkit frontend -- go
   assert_contains "$output" "toolkit 'frontend' is Daniel's own"
   run_bin -0 team-worker T7 planner "$wt1" -- go
-  assert_equal "$(jq -c '.mcpServers | has("frontend")' "$TEAM_HOME/tasks/T7/mcp.planner.json")" false
+  assert_equal "$(jq -c '.mcpServers | has("frontend")' "$TEAM_HOME/tasks/T7/mcp.planner.proj.json")" false
 }
 
 # T177's builder was refused gh pr ready on its own draft PR, which no rule allowed.

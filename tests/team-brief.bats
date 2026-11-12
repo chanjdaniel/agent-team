@@ -2625,7 +2625,7 @@ If the coordinator answers that the task branch moved, merge it again, run the c
   mkdir -p "$TEAM_HOME/tasks/T14/ui"
   echo shot >"$TEAM_HOME/tasks/T14/ui/a.png"
   run_bin -0 team-brief T14 builder-ticket --ticket 03 --name build-03 --force
-  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-build-03.md")" 'never in the Agent Chrome, which is Daniel'"'"'s own window.
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-build-03.md")" 'never in the Agent Chrome, which is Daniel'"'"'s own window; only a walk'"'"'s planner reads it, by `team-ui --capture`, as its brief says.
 You build in a ticket worktree of your own'
 }
 
