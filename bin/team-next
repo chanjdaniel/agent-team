@@ -115,8 +115,23 @@
 #                    kind, link and step>, reruns nothing, and prints the round's hand-off as a
 #                    findings round's: the message to fix "the failed checks <the PR's names> of
 #                    <short> in <the report>" for the holder under 250k, else its STOW, after
-#                    recovering it when gone, exit 0; with none of the PR's own, team-ci-wait's
-#                    text, exit 1, nothing logged
+#                    recovering it when gone, exit 0
+#                    with infrastructure and roll-up failures alone: reruns each never-started,
+#                    setup or stuck check (never a queued one, a roll-up or one of the PR's own)
+#                    that no ci-rerun of the head names since its latest ci outcome=infrastructure,
+#                    so once a check and head until Daniel's word re-arms it after the blocked
+#                    line: lease_refusal first, then one gh run rerun a run (<run> --job <job>
+#                    for one job, <run> --failed for more, <run> alone for a stuck one), seen to
+#                    start by gh api repos/<repo>/actions/runs/<run> every 10 s for 2 minutes (a
+#                    higher run_attempt or a status not completed), then logs ci-rerun of each
+#                    check and waits again; with none left to rerun, logs ci
+#                    outcome=infrastructure failed=<every failure> and prints "blocked: the
+#                    checks <names> of <url> at <short> failed as infrastructure again after a
+#                    rerun" (or "with no runner for 20 minutes" for queued ones) ": <each link>;
+#                    tell Daniel, and run team-next T<n> --ci again once they say the runners are
+#                    back", exit 1; a lease refusal, a run it cannot read, a rerun GitHub refuses
+#                    or a run that does not start: "blocked: <the reason>: <each link>", exit 1,
+#                    nothing logged for that check
 #   deadline         logs ci outcome=pending, then "re-arm: the checks of <short> are still
 #                    pending after 90 minutes (<team-ci-wait's text>): run team-next T<n> --ci
 #                    again with Bash run_in_background", exit 75
@@ -184,7 +199,8 @@
 # Any other message is logged, and the last line says it has no hand-off: an ops session's DONE
 # among them, whatever its first word, which team-log logs as its length and never its text, as
 # it does the ops session's QUESTION.
-# It never posts to Discord, sends a message, merges, approves a plan or answers a question.
+# It never posts to Discord, sends a message, merges, approves a plan or answers a question; --ci's
+# reruns are its only writes to GitHub.
 # Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
 # coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 # Exit codes: 0 done, 1 refused, 2 a malformed command line; when a script it runs fails, that
@@ -400,22 +416,21 @@ if [[ -n $ci ]]; then
   [[ -n $wait_url ]] || die "$task's latest review is not a pass on an open PR, so no checks wait for a merge"
   wait_short=${wait_head:0:8}
   [[ $wait_state != failed ]] || die "the checks of $wait_short failed and went back as a round on $wait_since"
+  # The checks already rerun on the waited head: each ci-rerun of it logged since its latest ci of
+  # outcome infrastructure (a blocked line, after which a re-arm on Daniel's word reruns them once
+  # more), so the cap of one rerun a check holds across a restart.
+  rerun_names=$(ledger_jq 'checks_wait as $w | if $w == null then [] else
+      (($w.url | rtrimstr("/")) as $url | def ours: (.url | rtrimstr("/")) == $url and same_head(.head; $w.head);
+       (to_entries | map(select(.value.event == "ci" and .value.outcome == "infrastructure" and (.value | ours)))
+         | last | .key // -1) as $k
+       | [.[$k + 1:][] | select(.event == "ci-rerun" and ours) | .check] | unique) end' -c <<<"$events")
+  repo=${wait_url#https://github.com/}
+  repo=${repo%%/pull/*}
 
-  rc=0
-  ended=$(sibling team-ci-wait --no-agent-review --json "$wait_url" "$wait_head") || rc=$?
-  outcome='' end_head='' end_text=''
-  if ! json_vars outcome='select(.schema == "team-ci-wait/1") | .outcome' end_head='.head' end_text='.text' \
-    <<<"$ended" 2>/dev/null || [[ -z $outcome ]]; then
-    [[ -z $ended ]] || echo "$ended"
-    exit $((rc ? rc : 1))
-  fi
   # Whether two heads are the same commit, either one a prefix of the other.
   same_commit() {
     [[ -n $1 && -n $2 && ($1 == "$2"* || $2 == "$1"*) ]]
   }
-  # The head a ci names: the waited head, in full when the wait read it so.
-  ci_head=$wait_head
-  if same_commit "$end_head" "$wait_head"; then ci_head=$end_head; fi
   # log_ci <outcome> [<field>=<value>]...: logs the ci of ci_head, but a passed one checks_wait
   # already holds.
   log_ci() {
@@ -431,69 +446,155 @@ if [[ -n $ci ]]; then
     echo "the head of $wait_url is ${1:0:8}, not the passed $wait_short: a commit no round made; read it with team-state $task before anything else"
     exit 1
   }
-  case $outcome in
-    passed | none)
-      review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
-      read_state
-      if [[ $pr_error == true ]]; then
-        echo "${0##*/}: GitHub cannot be read for $pr_url ($pr_reason); run the same command again" >&2
-        exit 75
+  # The run <run>'s attempt and status as "<attempt> <status>", or its first error line, failing.
+  run_now() {
+    local out
+    if out=$(bounded 30 gh api "repos/$repo/actions/runs/$1" 2>&1) &&
+      out=$(jq -er '"\(.run_attempt | numbers) \(.status | strings)"' <<<"$out" 2>/dev/null); then
+      echo "$out"
+    else
+      grep -m1 . <<<"$out" || echo "gh api failed"
+      return 1
+    fi
+  }
+  # infrastructure_end: a failed end with infrastructure and roll-up failures alone. Each
+  # never-started, setup or stuck check not rerun on this head yet is rerun, one gh run rerun a
+  # run, and once its run starts logged as ci-rerun, then the loop waits again; with none left to
+  # rerun, the ci of outcome infrastructure and the blocked line for Daniel; a rerun that cannot be
+  # made or seen to start, the blocked line with nothing logged for it.
+  infrastructure_end() {
+    local infra rerun links runs run members names job before now args out n why
+    infra=$(jq -c '[.failures[] | select(.class == "infrastructure")]' <<<"$ended")
+    rerun=$(jq -c --argjson reran "$rerun_names" '[.[] | select((.kind | IN("never-started", "setup", "stuck"))
+      and (.run | numbers) and (.name | IN($reran[]) | not))]' <<<"$infra")
+    links=$(jq -r 'map(.link // "no link") | join(", ")' <<<"$infra")
+    blocked() {
+      echo "blocked: $1: $links"
+      exit 1
+    }
+    if [[ $rerun == '[]' ]]; then
+      log_ci infrastructure "failed=$(jq -c '.failures | map({name, class, kind, link, step})' <<<"$ended")"
+      jq -r --arg url "$wait_url" --arg short "$wait_short" --arg task "$task" --arg links "$links" '
+        (map(.kind == "queued") | unique) as $q
+        | "blocked: the checks \(map(.name) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end) of \($url) at \($short) failed as infrastructure "
+          + (if $q == [true] then "with no runner for 20 minutes" elif $q == [false] then "again after a rerun"
+             else "again after a rerun and with no runner for 20 minutes" end)
+          + ": \($links); tell Daniel, and run team-next \($task) --ci again once they say the runners are back"' <<<"$infra"
+      exit 1
+    fi
+    runs=$(jq -r 'map(.run) | unique[]' <<<"$rerun")
+    for run in $runs; do
+      members=$(jq -c --argjson run "$run" 'map(select(.run == $run))' <<<"$rerun")
+      # GitHub reruns no job of a run that is running again, so one rerun a run: a lost status
+      # reruns the whole run (team-ci-wait's command), two jobs or more the run's failed jobs, one
+      # job by its id.
+      if jq -e 'any(.[]; .kind == "stuck")' <<<"$members" >/dev/null; then
+        args=(run rerun "$run" --repo "$repo")
+      elif jq -e 'length > 1' <<<"$members" >/dev/null; then
+        args=(run rerun "$run" --failed --repo "$repo")
+      else
+        args=(run rerun "$run" --job "$(jq -r '.[0].job' <<<"$members")" --repo "$repo")
       fi
-      if [[ $pr == null ]]; then
-        echo "${0##*/}: $wait_url is merged: its checks no longer matter"
+      if why=$(lease_refusal "reruns no check"); then blocked "$why"; fi
+      now=$(run_now "$run") || blocked "run $run cannot be read before its rerun ($now)"
+      before=${now%% *}
+      out=$(bounded 60 gh "${args[@]}" 2>&1) || blocked "GitHub refused gh ${args[*]} ($(grep -m1 . <<<"$out" || echo "gh failed"))"
+      # Seen to start: a later attempt, or a status not completed, within 2 minutes of looks.
+      for ((n = 0; ; n++)); do
+        if now=$(run_now "$run"); then
+          if ((${now%% *} > before)) || [[ ${now#* } != completed ]]; then break; fi
+        fi
+        ((n * RERUN_LOOK_SECONDS < RERUN_START_SECONDS)) || blocked "run $run did not start again within $((RERUN_START_SECONDS / 60)) minutes of gh ${args[*]}"
+        sleep "$RERUN_LOOK_SECONDS"
+      done
+      while IFS=$'\t' read -r names job; do
+        sibling team-log "$task" ci-rerun "url=$wait_url" "head=$ci_head" "check=$names" "run=$run" "job=$job" || exit
+        echo "logged ci-rerun url=$wait_url head=$ci_head check=$names run=$run job=$job"
+      done < <(jq -r '.[] | [.name, .job] | @tsv' <<<"$members")
+      rerun_names=$(jq -c --argjson m "$members" '. + ($m | map(.name)) | unique' <<<"$rerun_names")
+    done
+  }
+  # The look between reads of a rerun's run, and how long it may take to start.
+  RERUN_LOOK_SECONDS=10
+  RERUN_START_SECONDS=120
+
+  # The wait, again after each rerun, until an end hands on.
+  while :; do
+    rc=0
+    ended=$(sibling team-ci-wait --no-agent-review --json "$wait_url" "$wait_head") || rc=$?
+    outcome='' end_head='' end_text=''
+    if ! json_vars outcome='select(.schema == "team-ci-wait/1") | .outcome' end_head='.head' end_text='.text' \
+      <<<"$ended" 2>/dev/null || [[ -z $outcome ]]; then
+      [[ -z $ended ]] || echo "$ended"
+      exit $((rc ? rc : 1))
+    fi
+    # The head a ci names: the waited head, in full when the wait read it so.
+    ci_head=$wait_head
+    if same_commit "$end_head" "$wait_head"; then ci_head=$end_head; fi
+    case $outcome in
+      passed | none)
+        review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
+        read_state
+        if [[ $pr_error == true ]]; then
+          echo "${0##*/}: GitHub cannot be read for $pr_url ($pr_reason); run the same command again" >&2
+          exit 75
+        fi
+        if [[ $pr == null ]]; then
+          echo "${0##*/}: $wait_url is merged: its checks no longer matter"
+          exit 0
+        fi
+        same_commit "$live_head" "$wait_head" || moved_line "$live_head"
+        log_ci passed
+        # The facts name the reviewed head: the PR's own, or the one a catch-up made the merge from.
+        reviewed=${wait_from:-$live_head}
+        merge_line
         exit 0
-      fi
-      same_commit "$live_head" "$wait_head" || moved_line "$live_head"
-      log_ci passed
-      # The facts name the reviewed head: the PR's own, or the one a catch-up made the merge from.
-      reviewed=${wait_from:-$live_head}
-      merge_line
-      exit 0
-      ;;
-    failed)
-      # A failure of the PR's own goes back to the builder as a round, with every failure in the
-      # report; infrastructure alone is not the PR's to fix.
-      names=$(jq -c '[.failures[]? | select(.class == "pr") | .name]' <<<"$ended")
-      if [[ $names == '[]' ]]; then
+        ;;
+      failed)
+        # A failure of the PR's own goes back to the builder as a round, with every failure in the
+        # report; infrastructure alone is not the PR's to fix.
+        names=$(jq -c '[.failures[]? | select(.class == "pr") | .name]' <<<"$ended")
+        if [[ $names == '[]' ]]; then
+          infrastructure_end
+          continue
+        fi
+        review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
+        read_state
+        report=$TEAM_HOME/tasks/$task/ci-${wait_head:0:8}.md
+        # The report: a heading, one line per failure in class order, and the closing line.
+        jq -r --arg url "$wait_url" --arg head "$ci_head" --arg q "'" '
+          {pr: "the PR\($q)s", infrastructure: "infrastructure", rollup: "roll-up"} as $words
+          | (.failures | sort_by({pr: 0, infrastructure: 1, rollup: 2}[.class] // 3)) as $failures
+          | [$failures[] | select(.class == "pr") | "`\(.name)`"] as $own
+          | "# The failed checks of \($url) at \($head)", "",
+            "The checks wait after the pass ended on these failures, one a line, the PR\($q)s first: each one\($q)s class, check, kind, failing step, link and rerun command.",
+            "",
+            ($failures[] | "- \($words[.class] // .class): `\(.name)`, \(.kind), at \(if .step then "the step \"\(.step)\"" else "no step" end), \(.link // "no link"), \(if .rerun then "rerun with `\(.rerun)`" else "no rerun" end)"),
+            "",
+            "The PR\($q)s failures, \($own | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end), are this round\($q)s `blocking` findings; the others are not, since an infrastructure failure or a roll-up is no defect of the PR, and the round\($q)s new head runs every check again."' \
+          <<<"$ended" >"$report"
+        echo "report $report"
+        log_ci failed "failed=$(jq -c '.failures | map({name, class, kind, link, step})' <<<"$ended")"
+        round_line "the failed checks $(and_list "$names") of $wait_short in $report"
+        exit 0
+        ;;
+      deadline)
+        log_ci pending
+        echo "re-arm: the checks of $wait_short are still pending after 90 minutes ($end_text): run team-next $task --ci again with Bash run_in_background"
+        exit 75
+        ;;
+      other-head | moved) moved_line "$end_head" ;;
+      closed)
         echo "$end_text"
-        exit 1
-      fi
-      review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
-      read_state
-      report=$TEAM_HOME/tasks/$task/ci-${wait_head:0:8}.md
-      # The report: a heading, one line per failure in class order, and the closing line.
-      jq -r --arg url "$wait_url" --arg head "$ci_head" --arg q "'" '
-        {pr: "the PR\($q)s", infrastructure: "infrastructure", rollup: "roll-up"} as $words
-        | (.failures | sort_by({pr: 0, infrastructure: 1, rollup: 2}[.class] // 3)) as $failures
-        | [$failures[] | select(.class == "pr") | "`\(.name)`"] as $own
-        | "# The failed checks of \($url) at \($head)", "",
-          "The checks wait after the pass ended on these failures, one a line, the PR\($q)s first: each one\($q)s class, check, kind, failing step, link and rerun command.",
-          "",
-          ($failures[] | "- \($words[.class] // .class): `\(.name)`, \(.kind), at \(if .step then "the step \"\(.step)\"" else "no step" end), \(.link // "no link"), \(if .rerun then "rerun with `\(.rerun)`" else "no rerun" end)"),
-          "",
-          "The PR\($q)s failures, \($own | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end), are this round\($q)s `blocking` findings; the others are not, since an infrastructure failure or a roll-up is no defect of the PR, and the round\($q)s new head runs every check again."' \
-        <<<"$ended" >"$report"
-      echo "report $report"
-      log_ci failed "failed=$(jq -c '.failures | map({name, class, kind, link, step})' <<<"$ended")"
-      round_line "the failed checks $(and_list "$names") of $wait_short in $report"
-      exit 0
-      ;;
-    deadline)
-      log_ci pending
-      echo "re-arm: the checks of $wait_short are still pending after 90 minutes ($end_text): run team-next $task --ci again with Bash run_in_background"
-      exit 75
-      ;;
-    other-head | moved) moved_line "$end_head" ;;
-    closed)
-      echo "$end_text"
-      exit 0
-      ;;
-    unreadable | offline)
-      echo "$end_text"
-      exit 75
-      ;;
-    *) die "team-ci-wait ended as '$outcome', which team-next does not know" ;;
-  esac
+        exit 0
+        ;;
+      unreadable | offline)
+        echo "$end_text"
+        exit 75
+        ;;
+      *) die "team-ci-wait ended as '$outcome', which team-next does not know" ;;
+    esac
+  done
 fi
 
 # The message's events, as team-log reads them, nothing logged yet: one compact object a line,

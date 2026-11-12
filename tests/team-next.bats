@@ -154,6 +154,92 @@ ci_fix() {
   echo "send to $1: T7 fix the failed checks test-shards (2), build and lint of ${2:0:8} in $TEAM_HOME/tasks/T7/ci-${2:0:8}.md on the same branch, each as narrowly as it asks (a fix that would reach shapes it does not name is a T7 QUESTION first), then deliver again as your brief says"
 }
 
+# infra <name> <kind> <run> <job> [<step>]: one infrastructure failure of PR 9's checks, as
+# team-ci-wait --json gives it; rollup <name> <run> <job> the roll-up of a run's failed shards.
+infra() {
+  jq -cn --arg n "$1" --arg k "$2" --argjson r "$3" --argjson j "$4" --arg s "${5:-}" '{name: $n, class: "infrastructure",
+    kind: $k, state: (if $k == "never-started" then "CANCELLED" elif $k == "queued" then "QUEUED" elif $k == "stuck" then "IN_PROGRESS" else "FAILURE" end),
+    link: "https://github.com/owner/proj/actions/runs/\($r)/job/\($j)", run: $r, job: $j,
+    step: (if $s == "" then null else $s end),
+    rerun: (if $k == "stuck" then "gh run rerun \($r) --repo owner/proj" else "gh run rerun \($r) --job \($j) --repo owner/proj" end)}'
+}
+rollup() {
+  jq -cn --arg n "$1" --argjson r "$2" --argjson j "$3" '{name: $n, class: "rollup", kind: "rollup", state: "FAILURE",
+    link: "https://github.com/owner/proj/actions/runs/\($r)/job/\($j)", run: $r, job: $j, step: null, rerun: null}'
+}
+
+# ci_ends <end>...: the team-ci-wait stub answers its calls with these ends of $sha in turn, the
+# last one again after them: passed, unreadable, or a failed end's failures, one JSON object per
+# line (infra, rollup); ci_waits counts its calls.
+ci_ends() {
+  local k=0 end
+  rm -f "$STUB_FIXTURES"/ci-end-*
+  for end; do
+    k=$((k + 1))
+    case $end in
+      passed) ci_wait_ends passed "$sha" ;;
+      unreadable) ci_wait_ends unreadable "$sha" 75 "team-ci-wait: GitHub not read for now" ;;
+      *) ci_wait_ends failed "$sha" 1 "team-ci-wait: the checks on ${sha:0:7} did not pass, end $k" "$(jq -sc . <<<"$end")" ;;
+    esac
+    mv "$STUB_FIXTURES/team-ci-wait.out" "$STUB_FIXTURES/ci-end-$k.out"
+    mv "$STUB_FIXTURES/team-ci-wait.status" "$STUB_FIXTURES/ci-end-$k.status"
+  done
+  stub_script team-ci-wait <<'SH'
+n=$(($(cat "$STUB_FIXTURES/ci-end-n" 2>/dev/null || echo 0) + 1))
+[[ -f $STUB_FIXTURES/ci-end-$n.out ]] || n=$((n - 1))
+echo "$n" >"$STUB_FIXTURES/ci-end-n"
+print_file "$STUB_FIXTURES/ci-end-$n.out"
+exit "$(<"$STUB_FIXTURES/ci-end-$n.status")"
+SH
+}
+ci_waits() {
+  stub_calls team-ci-wait | wc -l
+}
+
+# reruns_on_github <pr_on_github arguments>...: pr_on_github's gh, which also answers gh run rerun
+# and the reads of a run (gh api repos/owner/proj/actions/runs/<run>): a run is at attempt 1,
+# completed, until a rerun takes it to the next attempt, queued; with $STUB_FIXTURES/rerun-refused
+# a rerun prints its text and exits 1, and with $STUB_FIXTURES/rerun-stays a rerun moves nothing.
+reruns_on_github() {
+  pr_on_github "$@"
+  mv "$STUB_FIXTURES/gh.sh" "$STUB_FIXTURES/gh-pr.sh"
+  stub_script gh <<'SH'
+case "$*" in
+  "run rerun "*)
+    if [[ -f $STUB_FIXTURES/rerun-refused ]]; then print_file "$STUB_FIXTURES/rerun-refused" >&2; exit 1; fi
+    if [[ ! -f $STUB_FIXTURES/rerun-stays ]]; then
+      echo $(($(cat "$STUB_FIXTURES/attempt-$3" 2>/dev/null || echo 1) + 1)) >"$STUB_FIXTURES/attempt-$3"
+    fi ;;
+  "api repos/owner/proj/actions/runs/"*)
+    run=${2##*/}
+    jq -cn --argjson r "$run" --argjson a "$(cat "$STUB_FIXTURES/attempt-$run" 2>/dev/null || echo 1)" \
+      '{id: $r, run_attempt: $a, status: (if $a > 1 then "queued" else "completed" end)}' ;;
+  *) source "$STUB_FIXTURES/gh-pr.sh" ;;
+esac
+SH
+}
+
+# The gh calls that rerun a check.
+rerun_calls() {
+  stub_calls gh | jq -c 'select(.[0] == "run")'
+}
+
+# The ci-rerun events logged, each as its check, run and job.
+reruns_logged() {
+  jq -c 'select(.event == "ci-rerun") | [.check, .run, .job]' "$TEAM_HOME/ledger.jsonl"
+}
+
+# looks_counted: a stub sleep that counts its calls in $BATS_TEST_TMPDIR/looks, each one look on;
+# the uname stub keeps it ahead of Homebrew's GNU sleep on macOS.
+looks_counted() {
+  stub_command sleep uname
+  stub_reply uname Linux
+  echo 0 >"$BATS_TEST_TMPDIR/looks"
+  stub_script sleep <<EOF
+echo \$((\$(cat "$BATS_TEST_TMPDIR/looks") + 1)) >"$BATS_TEST_TMPDIR/looks"
+EOF
+}
+
 @test "a builder's DONE logs the ticket and the done, renders the next ready ticket's brief and launches its builder" {
   local count
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
@@ -1072,21 +1158,11 @@ merge on the default word: run team-merge T7 for $url at $sha, agent-review succ
 [\"$url\",\"$merge\",\"passed\"]"
 }
 
-@test "--ci's other ends: an infrastructure failure prints the wait's text, the deadline re-arms, a moved head stops, an unreadable GitHub re-arms, a closed PR ends" {
-  local count other=fedcba9876543210fedcba9876543210fedcba98 text
+@test "--ci's other ends: the deadline re-arms, a moved head stops, an unreadable GitHub re-arms, a closed PR ends" {
+  local other=fedcba9876543210fedcba9876543210fedcba98 text
   reviewing "$sha"
   pr_on_github "$sha"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
-  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
-  # A failure of infrastructure alone: the wait's text, exit 1, nothing logged yet.
-  text="team-ci-wait: the checks on ${sha:0:7} did not pass:
-  infrastructure: macos-shards (1) never started: no runner took it (https://github.com/owner/proj/actions/runs/7/job/8); rerun it with gh run rerun 7 --job 8 --repo owner/proj, then run team-ci-wait again"
-  ci_wait_ends failed "$sha" 1 "$text" '[{"name": "macos-shards (1)", "class": "infrastructure", "kind": "never-started",
-    "state": "CANCELLED", "link": "https://github.com/owner/proj/actions/runs/7/job/8", "run": 7, "job": 8, "step": null,
-    "rerun": "gh run rerun 7 --job 8 --repo owner/proj"}]'
-  run_bin -1 --separate-stderr team-next T7 --ci
-  assert_equal "$output" "$text"
-  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$count"
   # The deadline logs ci pending and re-arms, exit 75.
   text="team-ci-wait: 90 minutes, and checks still pending on ${sha:0:7}: test (in_progress, run 7 in_progress): run team-ci-wait again to wait on them, or report BLOCKED"
   ci_wait_ends deadline "$sha" 75 "$text"
@@ -1115,6 +1191,127 @@ re-arm: the checks of ${sha:0:8} are still pending after 90 minutes ($text): run
   assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"pending\"]"
   assert_equal "$(outside_calls)" ""
   assert_equal "$(bg_calls)" ""
+}
+
+@test "--ci on infrastructure alone reruns each never-started, setup or stuck check once, by its run, logs each ci-rerun once its run starts, and waits again; a roll-up is never rerun" {
+  local count
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  reruns_on_github "$sha"
+  # Two shards of run 7 that never started (and their roll-up), a checkout that failed in run 8's
+  # setup, and a check of run 9 whose status GitHub lost; then the checks pass.
+  ci_ends "$(infra "macos-shards (1)" never-started 7 10; infra "macos-shards (2)" never-started 7 11; rollup macos 7 12
+    infra "test-shards (1)" setup 8 20 "Run actions/checkout@v4"; infra e2e stuck 9 30)" passed
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=macos-shards (1) run=7 job=10
+logged ci-rerun url=$url head=$sha check=macos-shards (2) run=7 job=11
+logged ci-rerun url=$url head=$sha check=test-shards (1) run=8 job=20
+logged ci-rerun url=$url head=$sha check=e2e run=9 job=30
+logged ci url=$url head=$sha outcome=passed
+merge on the default word: run team-merge T7 for $url at $sha, agent-review success, checks green"
+  # One rerun a run: a run's one job by its id, two of one run as its failed jobs (GitHub reruns
+  # no job of a run already running again), a lost status as the whole run, as team-ci-wait says.
+  assert_equal "$(rerun_calls)" '["run","rerun","7","--failed","--repo","owner/proj"]
+["run","rerun","8","--job","20","--repo","owner/proj"]
+["run","rerun","9","--repo","owner/proj"]'
+  assert_equal "$(logged_from $((count + 1)) | jq -c 'del(.task)')" "$(jq -cn --arg url "$url" --arg h "$sha" '
+    ({check: "macos-shards (1)", run: "7", job: "10"}, {check: "macos-shards (2)", run: "7", job: "11"},
+     {check: "test-shards (1)", run: "8", job: "20"}, {check: "e2e", run: "9", job: "30"}
+     | {event: "ci-rerun", url: $url, head: $h} + .),
+    {event: "ci", url: $url, head: $h, outcome: "passed"}')"
+  assert_equal "$(ci_waits)" 2
+  assert_equal "$(stub_calls team-ci-wait | sort -u)" "[\"--no-agent-review\",\"--json\",\"$url\",\"$sha\"]"
+  assert_equal "$(bg_calls)" ""
+  assert_contains "$(stub_calls gh)" '["api","repos/owner/proj/actions/runs/7"]'
+}
+
+@test "a check rerun once on the head that fails as infrastructure again, after a restart too, logs ci infrastructure and the blocked line; a queued one at once; a re-arm after it reruns again" {
+  local link=https://github.com/owner/proj/actions/runs/7/job blocked
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  reruns_on_github "$sha"
+  # The rerun is logged, then the wait ends unreadable: the coordinator re-arms.
+  ci_ends "$(infra "macos-shards (1)" never-started 7 10; rollup macos 7 12)" unreadable
+  run_bin -75 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=macos-shards (1) run=7 job=10
+team-ci-wait: GitHub not read for now"
+  # The restart reads the rerun from the ledger: the check, under the new job id of its new
+  # attempt, failing so again is not rerun.
+  ci_ends "$(infra "macos-shards (1)" never-started 7 13; rollup macos 7 14)"
+  run_bin -1 --separate-stderr team-next T7 --ci
+  blocked="blocked: the checks macos-shards (1) of $url at ${sha:0:8} failed as infrastructure again after a rerun: $link/13; tell Daniel, and run team-next T7 --ci again once they say the runners are back"
+  assert_equal "$output" "logged ci url=$url head=$sha outcome=infrastructure failed=$(jq -c '.failures | map({name, class, kind, link, step})' "$STUB_FIXTURES/ci-end-1.out")
+$blocked"
+  assert_equal "$(rerun_calls)" '["run","rerun","7","--job","10","--repo","owner/proj"]'
+  assert_equal "$(reruns_logged)" '["macos-shards (1)","7","10"]'
+  assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"infrastructure\"]"
+  assert_equal "$(jq -c 'select(.event == "ci") | .failed | map(.name)' "$TEAM_HOME/ledger.jsonl")" '["macos-shards (1)","macos"]'
+  # Once Daniel says the runners are back, the re-armed wait reruns it once more.
+  ci_ends "$(infra "macos-shards (1)" never-started 7 13; rollup macos 7 14)" passed
+  run_bin -0 --separate-stderr team-next T7 --ci
+  assert_equal "$(head -n 2 <<<"$output")" "logged ci-rerun url=$url head=$sha check=macos-shards (1) run=7 job=13
+logged ci url=$url head=$sha outcome=passed"
+  assert_equal "$(rerun_calls | tail -n 1)" '["run","rerun","7","--job","13","--repo","owner/proj"]'
+  # A check queued with no runner is never rerun: the blocked line at once, beside a rerun of a
+  # check that never started, which is waited on first.
+  review_logged pass "$sha" '[]'
+  ci_ends "$(infra build queued 5 50; infra "macos-shards (2)" never-started 6 60)" "$(infra build queued 5 50)"
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=macos-shards (2) run=6 job=60
+logged ci url=$url head=$sha outcome=infrastructure failed=$(jq -c '.failures | map({name, class, kind, link, step})' "$STUB_FIXTURES/ci-end-2.out")
+blocked: the checks build of $url at ${sha:0:8} failed as infrastructure with no runner for 20 minutes: https://github.com/owner/proj/actions/runs/5/job/50; tell Daniel, and run team-next T7 --ci again once they say the runners are back"
+  assert_equal "$(rerun_calls | grep -c '"5"')" 0
+  assert_equal "$(bg_calls)" ""
+}
+
+@test "a rerun GitHub refuses, a run that does not start within 2 minutes of looks, a run that cannot be read and a lease refusal each log nothing and print the blocked line, exit 1" {
+  local count link=https://github.com/owner/proj/actions/runs/7/job/10
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  reruns_on_github "$sha"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  # GitHub refuses the rerun.
+  echo "run 7 cannot be rerun; This workflow is already running" >"$STUB_FIXTURES/rerun-refused"
+  ci_ends "$(infra "macos-shards (1)" never-started 7 10)" passed
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "blocked: GitHub refused gh run rerun 7 --job 10 --repo owner/proj (run 7 cannot be rerun; This workflow is already running): $link"
+  rm "$STUB_FIXTURES/rerun-refused"
+  # The run never moves: twelve looks 10 s apart, 2 minutes.
+  touch "$STUB_FIXTURES/rerun-stays"
+  looks_counted
+  ci_ends "$(infra "macos-shards (1)" never-started 7 10)" passed
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "blocked: run 7 did not start again within 2 minutes of gh run rerun 7 --job 10 --repo owner/proj: $link"
+  assert_equal "$(<"$BATS_TEST_TMPDIR/looks")" 12
+  assert_equal "$(stub_calls sleep | sort -u)" '["10"]'
+  rm "$STUB_FIXTURES/rerun-stays"
+  # The run cannot be read before its rerun, so its attempt is not known.
+  stub_script gh <<'SH'
+case "$*" in
+  "api repos/owner/proj/actions/runs/"*) echo "HTTP 404: Not Found" >&2; exit 1 ;;
+  "run rerun "*) exit 0 ;;
+  *) source "$STUB_FIXTURES/gh-pr.sh" ;;
+esac
+SH
+  ci_ends "$(infra "macos-shards (1)" never-started 7 10)" passed
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "blocked: run 7 cannot be read before its rerun (HTTP 404: Not Found): $link"
+  reruns_on_github "$sha"
+  # A fenced machine reruns nothing.
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  ci_ends "$(infra "macos-shards (1)" never-started 7 10)" passed
+  run_bin -1 --separate-stderr team-next T7 --ci
+  assert_equal "$output" "blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine reruns no check: $link"
+  # Nothing was logged, and only the refused rerun and the one that never started reached GitHub.
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$count"
+  assert_equal "$(rerun_calls)" '["run","rerun","7","--job","10","--repo","owner/proj"]
+["run","rerun","7","--job","10","--repo","owner/proj"]'
+  assert_equal "$(ci_waits)" 4
 }
 
 @test "--ci on a failure of the PR's own logs one ci failed holding every failure, writes their report in class order, reruns nothing and hands the round on as a findings round's" {
@@ -1247,6 +1444,9 @@ launched T7-builder c0000001"
   assert_contains "$output" "writes the report"
   assert_contains "$output" "tasks/T<n>/ci-<the head's first 8 characters>.md in the team home"
   assert_contains "$output" "or a ci of outcome failed (--ci's round on a pass's checks) was"
+  assert_contains "$output" "with infrastructure and roll-up failures alone: reruns each never-started,"
+  assert_contains "$output" "so once a check and head until Daniel's word re-arms it after the blocked"
+  assert_contains "$output" "reruns are its only writes to GitHub."
 }
 
 @test "--ci after a pass while the default word holds says to merge on it, unless the review found guarded areas or the default is withdrawn" {
