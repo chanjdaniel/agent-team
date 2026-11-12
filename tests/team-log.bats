@@ -1986,6 +1986,16 @@ assert_no_answer_logged() {
     --from-message 'T7 DONE 05 a1b2c3 too short'
 }
 
+@test "a value that starts with -- is logged as text, never read as an option of jq" {
+  open_t7
+  launched T7 builder b0000001 brief-build-02
+  # T288's DONE 02, whose note began with an option's name.
+  logs_events '{"task":"T7","event":"ticket-done","ticket":"02","commits":["a1b2c3d4"],"note":"--json gives each done ticket"}
+{"task":"T7","event":"done","role":"builder","session":"b0000001"}' \
+    --from-message "T7 DONE 02 a1b2c3d4 --json gives each done ticket"
+  logs_events '{"task":"T7","event":"failed","reason":"--"}' failed reason=--
+}
+
 @test "--from-message logs a DONE review-ready as the builder's done with its report" {
   open_t7
   launched T7 builder b0000002 brief-deliver
