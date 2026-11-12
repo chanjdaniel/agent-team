@@ -353,7 +353,7 @@ probe_denies() {
 @test "every writer of an inbox kind calls refresh_inbox" {
   local contract=$REPO_ROOT/bin/lib/ledger-contract.json writer missing=()
   assert_equal "$(jq -r '[.kinds | to_entries[] | select(.value.inbox == true) | .key] | sort | join(" ")' "$contract")" \
-    "answered asked blocked closed done merge-approved merge-default-restored merge-default-withdrawn merged plan-approval-withdrawn plan-approved pr resumed review ticket-done waiting"
+    "answered asked blocked closed done interview-thread merge-approved merge-default-restored merge-default-withdrawn merged plan-approval-withdrawn plan-approved pr resumed review ticket-done waiting"
   for writer in $(jq -r '[.kinds[] | select(.inbox == true) | .writer] | flatten | unique[]' "$contract"); do
     grep -qE '^[[:space:]]*refresh_inbox$' "$REPO_ROOT/bin/$writer" || missing+=("$writer")
   done

@@ -107,9 +107,10 @@
 # preview, then dropped from inbox.json; one Discord no longer has (404), or of another channel, is
 # dropped with no edit; any other failure keeps it for the next run, with a line on stderr. It
 # never edits anything else, and posts only on --post.
-# team-ask, team-answer, team-merge, team-close, and team-log after an event of a kind the contract
-# marks inbox, run it at their end (refresh_inbox in bin/lib/team.sh), going on with a line on
-# stderr when it fails; team-timers run runs it every five minutes on the lease holder. It refuses
+# team-ask, team-answer, team-merge, team-close, team-thread --interview on a new thread,
+# team-current on an ask or owe item, and team-log after an event of a kind the contract marks
+# inbox, run it at their end (refresh_inbox in bin/lib/team.sh), going on with a line on stderr
+# when it fails; team-timers run runs it every five minutes on the lease holder. It refuses
 # in a worker session (worker_refusal in bin/lib/team.sh), and, but on --item, on a machine that is
 # fenced or lost the lease (lease_refusal); one run at a time holds
 # ~/.local/state/agent-team/inbox.lock, waiting for it at most a minute (TEAM_INBOX_LOCK_SECONDS
