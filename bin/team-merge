@@ -422,12 +422,12 @@ if ! jq -e .applies <<<"$head_word" >/dev/null || ((${#head_reasons[@]})); then
       # GitHub holds the App's check only once the base's protection requires agent-review from the
       # App's id, for administrators too; the protection was read with the base branch above.
       if [[ -n $own_app ]]; then
-        add_reasons default_reasons --argjson app "$own_app" --arg base "$base" '.protection.required_status_checks
-          | (select(any((. // {}).checks[]?; .context == "agent-review" and .app_id == $app) | not)
-              | "\($base)'"'"'s protection does not require agent-review from the reviewer App \($app), so GitHub does not hold its check: the team'"'"'s own project merges unattended only once it does"),
-            (select(. != null and .enforcement_level != "everyone")
-              | "\($base)'"'"'s protection enforces its required checks for \(.enforcement_level // "no one"), not everyone, so an administrator could merge past them")' \
-          "$scratch/branch"
+        pin=$(ledger_jq 'review_app_pin_problems($app)
+          | if .kind == "pin" then
+              "\($base)'"'"'s protection does not require agent-review from the reviewer App \($app), so GitHub does not hold its check: the team'"'"'s own project merges unattended only once it does"
+            else "\($base)'"'"'s protection enforces its required checks for \(.level), not everyone, so an administrator could merge past them" end' \
+          -r --argjson app "$own_app" --arg base "$base" "$scratch/branch") || jq_failed $?
+        while IFS= read -r line; do if [[ -n $line ]]; then default_reasons+=("$line"); fi; done <<<"$pin"
       fi
       task_branch=$(jq -r '.facts.branch // empty' <<<"$default_word")
       if [[ -n $task_branch && $branch != "$task_branch" ]]; then

@@ -34,7 +34,8 @@
 # check run, on a project whose agent-review the App posts (own_bar in bin/lib/team.sh), which
 # reads the review the merge stands on through that caught-up, else through team-review-status.
 # A status or check that cannot be set is said on stderr with the command to set it; the merge is
-# pushed and logged all the same, exit 1.
+# pushed and logged all the same, exit 1. A check posted whose token alone was not revoked
+# (team-review-check printed its id) is said as posted, with why, and is no failure.
 # Prints what it merged, the merge's full sha, and last the next step: wait for the checks on the
 # merge, then ask Daniel to merge at the reviewed head, or run team-merge when team-state says
 # the default word covers it.
@@ -191,6 +192,10 @@ elif [[ $poster == team-review-check ]]; then
   if run=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-review-check" "$url" "$merge" success "$description" \
     2>"$scratch/status-error"); then
     echo "team-catch-up: posted agent-review success on ${merge:0:7} as the reviewer App's check run $run" >&2
+  elif [[ $run =~ ^[1-9][0-9]*$ ]]; then
+    # A check run's id on stdout: the check was posted, and only its token's revoke failed.
+    unrevoked=$(grep . "$scratch/status-error" | tail -n 1) || unrevoked=''
+    echo "team-catch-up: posted agent-review success on ${merge:0:7} as the reviewer App's check run $run, but ${unrevoked#team-review-check: }" >&2
   else
     unset_status=$(grep . "$scratch/status-error" | tail -n 1)
     unset_status=${unset_status:-team-review-check failed}
@@ -203,7 +208,7 @@ fi
 
 if [[ -n $unset_status ]]; then
   {
-    echo "team-catch-up: pushed ${merge:0:7} to $branch, but agent-review could not be set on it: $unset_status"
+    echo "team-catch-up: pushed ${merge:0:7} to $branch, but setting agent-review on it failed: $unset_status"
     echo "  run: $poster $url $merge success '$description'"
   } >&2
   exit 1

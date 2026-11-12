@@ -1730,15 +1730,17 @@ review_app_jwt() {
 # Call GitHub's REST API as the reviewer App with <bearer>, its JWT or an installation token, which
 # goes to curl only on stdin through --config -, from printf, a builtin, so it is in no process's
 # arguments and no child's environment; not through gh, which takes a token only from its
-# environment or its login. The answer's body goes to <out> and its HTTP status is printed; a call
-# curl cannot make fails with curl's exit, its error on stderr. <bearer> is refused unless it
-# is the characters a JWT or a token is made of, so no answer GitHub gives can add to curl's
-# config: review_app_api <method> <path> <bearer> <out> [<JSON body file>]
+# environment or its login. curl reads no config of the user's (-q, its first argument), so no
+# ~/.curlrc can trace, proxy or add to the call. The answer's body is printed, then its HTTP status
+# on a line of its own, for the caller to hold in memory, since a token GitHub mints is in the body
+# and no file is to hold it; a call curl cannot make fails with curl's exit, its error on stderr.
+# <bearer> is refused unless it is the characters a JWT or a token is made of, so no answer GitHub
+# gives can add to curl's config: review_app_api <method> <path> <bearer> [<JSON body file>]
 review_app_api() {
-  local args=(--silent --show-error --config - --request "$1" --output "$4" --write-out '%{http_code}' --max-time 30
+  local args=(-q --silent --show-error --config - --request "$1" --write-out '\n%{http_code}' --max-time 30
     --header 'Accept: application/vnd.github+json' --header 'X-GitHub-Api-Version: 2022-11-28')
   [[ $3 =~ ^[A-Za-z0-9._-]+$ ]] || { echo "the bearer is not a JWT or a token" >&2; return 1; }
-  [[ -z ${5:-} ]] || args+=(--header 'Content-Type: application/json' --data-binary "@$5")
+  [[ -z ${4:-} ]] || args+=(--header 'Content-Type: application/json' --data-binary "@$4")
   printf 'header = "Authorization: Bearer %s"\n' "$3" | curl "${args[@]}" "https://api.github.com/$2"
 }
 

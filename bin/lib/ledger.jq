@@ -304,6 +304,12 @@ def archived_worktrees($home):
   | open_worktrees(.[]; $home)
   | . + {archive: (if .project == $opened then "scratch" else "scratch-\(.project)" end)};
 
+# Whether $a is a full 40-hex SHA and $b the same one, the case aside: the match where a prefix
+# must not stand for a commit, as the reviewer App's check on a head.
+def exact_head($a; $b):
+  ($a | type) == "string" and ($b | type) == "string" and ($a | test("^[0-9a-fA-F]{40}$"))
+  and ($a | ascii_downcase) == ($b | ascii_downcase);
+
 # Whether two heads name the same commit: compared by the shorter one's prefix, which must be at
 # least 7 characters, since the ledger holds both short and full SHAs.
 def same_head($a; $b):
@@ -1066,15 +1072,29 @@ def scope_reasons($scope):
 # The head whose review stands for $head: $head itself when a review of it is logged, or, when a
 # caught-up event of the task names $head (by the shorter prefix) as the merge team-catch-up made,
 # the head it was made from, followed back the same way, the latest such event first, until a head
-# has a review of its own or no event names it.
-def reviewed_head($head):
+# has a review of its own or no event names it. reviewed_head_by($head; match) matches two heads
+# by match over [<a>, <b>] instead; exact_reviewed_head by exact_head, so no prefix leads back.
+def reviewed_head_by($head; match):
   [.[] | select(.event == "caught-up")] as $ups
   | [.[] | select(.event == "review") | .head] as $reviewed
   | def back($h; $n):
-      (first($ups | reverse[] | select(same_head(.head; $h))) // null) as $up
-      | if $up == null or $n <= 0 or any($reviewed[]; same_head(.; $h)) then $h
+      (first($ups | reverse[] | select([.head, $h] | match)) // null) as $up
+      | if $up == null or $n <= 0 or any($reviewed[]; [., $h] | match) then $h
         else back($up.from; $n - 1) end;
     back($head; $ups | length);
+def reviewed_head($head): reviewed_head_by($head; same_head(.[0]; .[1]));
+
+# How a base branch's protection, as GitHub's branches API answers it (the branch's JSON as
+# input), fails to hold the reviewer App $app's check, each one object, none when it holds:
+# {kind: "pin"} when no required check agent-review is pinned to the App's id (a context in
+# contexts alone is a commit status's, met by any token), and {kind: "admins", level} when its
+# required checks are enforced for less than everyone, so an administrator could merge past them.
+# team-merge's default word and team-doctor's review app line both read the pin through it.
+def review_app_pin_problems($app):
+  .protection.required_status_checks
+  | (select(any((. // {}).checks[]?; .context == "agent-review" and .app_id == $app) | not) | {kind: "pin"}),
+    (select(. != null and .enforcement_level != "everyone") | {kind: "admins", level: (.enforcement_level // "no one")});
+def exact_reviewed_head($head): reviewed_head_by($head; exact_head(.[0]; .[1]));
 
 # Why the task's reviews do not let the default word, given on no head, merge the PR's
 # head $head unasked, one string per reason, none when they do, judged on the latest review of

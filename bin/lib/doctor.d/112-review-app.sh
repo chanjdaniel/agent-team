@@ -57,12 +57,13 @@ review_app_check() {
         "the github login line's fix, then run team-doctor again"
       return
     fi
-    problem=$(jq -r --argjson app "$app_id" --arg base "$base" --arg repo "$repo" '.protection.required_status_checks
-      | if any((. // {}).checks[]?; .context == "agent-review" and .app_id == $app) | not then
+    problem=$(ledger_jq 'first(review_app_pin_problems($app))
+      | if .kind == "pin" then
           "pin\t\($base)'"'"'s protection on \($repo) does not require agent-review from the reviewer App \($app), so GitHub does not hold its check"
-        elif .enforcement_level != "everyone" then
-          "admins\t\($base)'"'"'s protection on \($repo) enforces its required checks for \(.enforcement_level // "no one"), not everyone, so an administrator could merge past them"
-        else empty end' <<<"$branch") || problem="pin	$base on $repo answered GitHub's branch read with no JSON"
+        else
+          "admins\t\($base)'"'"'s protection on \($repo) enforces its required checks for \(.level), not everyone, so an administrator could merge past them"
+        end' -r --argjson app "$app_id" --arg base "$base" --arg repo "$repo" <<<"$branch") ||
+      problem="pin	$base on $repo answered GitHub's branch read with no JSON"
     case ${problem%%$'\t'*} in
       pin)
         report "review app" FAIL "${problem#*$'\t'}" \

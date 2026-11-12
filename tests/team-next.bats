@@ -1148,10 +1148,44 @@ SH
   before=$(grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl")
   run_bin -1 --separate-stderr team-next T7 --from r0000003 --sent-back 3,5 -- "$findings"
   assert_equal "$(grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl")" "$((before + 1))"
-  assert_contains "$stderr" "team-next: T7's review of ${sha:0:8} is logged, but the reviewer App's check was not posted on it: team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)"
+  assert_contains "$stderr" "team-next: T7's review of ${sha:0:8} is logged, but posting the reviewer App's check on it failed: team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)"
   assert_contains "$stderr" "  run: team-review-check $url $sha failure 'T7'\''s review of ${sha:0:8} found findings'"
   assert_contains "$stderr" "  then team-next T7 again for the next step, which logs nothing twice"
   [[ $output != *"send to"* ]]
+}
+
+@test "with the reviewer App on, a verdict on the team's own PR needs the latest reviewer's session though that launch names no project" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  event launch "$(jq -cn --arg wt "$wt" '{role: "reviewer", session: "r0000003", worktree: $wt, toolkits: [],
+    branch: "feat/T7-toil", machine: "home-pc", brief: "brief-review"}')"
+  refused "team-log: the reviewer App posts agent-review on proj, so its verdict is taken only from T7's latest reviewer session, T7-reviewer (r0000003): run it again with --from r0000003 once the message came from that session" \
+    T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(stub_calls team-review-check)" ""
+}
+
+@test "with the reviewer App on, a review logged on a short head posts no check on the PR's full head" {
+  own_app
+  reviewing "${sha:0:7}"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(stub_calls team-review-check)" ""
+  assert_contains "$output" "posted no agent-review: T7's review names its head ${sha:0:7} by a prefix, not in full, so the reviewer App's check is not posted on the PR's head ${sha:0:8}; a review whose brief records the full head posts it"
+}
+
+@test "with the reviewer App on, a check posted whose token was not revoked is said as posted, and the step goes on" {
+  own_app
+  reviewing "$sha"
+  pr_on_github "$sha"
+  stub_script team-review-check <<'SH'
+echo 4242
+echo "team-review-check: revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour" >&2
+exit 1
+SH
+  run_bin -0 --separate-stderr team-next T7 --from r0000002 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "posted agent-review success on ${sha:0:8} as the reviewer App's check run 4242, but revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour"
+  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
 }
 
 @test "a findings verdict on a head the PR moved past posts no check with the reviewer App on, and says so" {

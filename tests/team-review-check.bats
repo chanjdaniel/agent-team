@@ -55,6 +55,10 @@ TOML
   # instead, or "exit <n>" for a call curl cannot make.
   stub_script curl <<'SH'
 method=GET url='' out='' body=''
+n=$(wc -l <"$STUB_CALLS/curl.log")
+printf '%s\n' "${1-}" >"$STUB_CALLS/curl.first.$n"
+# With TOKEN_WATCH set, every file under it that holds the minted token, at each call.
+if [[ -n ${TOKEN_WATCH:-} ]]; then grep -rlF -- "$(<"$STUB_FIXTURES/token")" "$TOKEN_WATCH" >>"$STUB_CALLS/curl.disk" || true; fi
 while (($#)); do
   case $1 in
     --request) method=$2; shift ;;
@@ -64,7 +68,6 @@ while (($#)); do
   esac
   shift
 done
-n=$(wc -l <"$STUB_CALLS/curl.log")
 config=''
 IFS= read -r -d '' config || true
 printf '%s' "$config" >"$STUB_CALLS/curl.config.$n"
@@ -75,7 +78,14 @@ printf '%s %s\n' "$method" "$path" >>"$STUB_CALLS/curl.calls"
 case "$method $path" in
   "GET repos/Owner/agent-team/installation") call=installation answer='200 {"id": 777}' ;;
   "POST app/installations/777/access_tokens") call=mint answer="201 {\"token\": \"$(<"$STUB_FIXTURES/token")\", \"expires_at\": \"2026-11-12T13:00:00Z\"}" ;;
-  "POST repos/Owner/agent-team/check-runs") call=check-run answer='201 {"id": 4242, "name": "agent-review"}' ;;
+  "POST repos/Owner/agent-team/check-runs")
+    call=check-run answer='201 {"id": 4242, "name": "agent-review"}'
+    # With CHECK_RUN_HOLD set, the post says it started and waits for the test's go, up to 10 s.
+    if [[ -n ${CHECK_RUN_HOLD:-} ]]; then
+      : >"$CHECK_RUN_HOLD.started"
+      for _ in $(seq 100); do [[ ! -e $CHECK_RUN_HOLD.go ]] || break; sleep 0.1; done
+    fi
+    ;;
   "DELETE installation/token") call=revoke answer='204 ' ;;
   *) echo "curl stub: no answer for $method $url" >&2; exit 99 ;;
 esac
@@ -84,8 +94,13 @@ if [[ $answer == exit\ * ]]; then
   echo "curl: (7) Failed to connect to api.github.com port 443: Connection refused" >&2
   exit "${answer#exit }"
 fi
-printf '%s' "${answer#* }" >"$out"
-printf '%s' "${answer%% *}"
+if [[ -n $out && $out != - ]]; then
+  printf '%s' "${answer#* }" >"$out"
+  printf '%s' "${answer%% *}"
+else
+  # The body to stdout, then the HTTP code on a line of its own, as --write-out '\n%{http_code}'.
+  printf '%s\n%s' "${answer#* }" "${answer%% *}"
+fi
 SH
   # The installation token GitHub mints, made at run time.
   TOKEN=fake-installation-token-$RANDOM$RANDOM
@@ -274,7 +289,7 @@ POST app/installations/777/access_tokens"
   rm "$STUB_FIXTURES/curl.check-run" "$STUB_CALLS/curl.calls"
   echo 'exit 28' >"$STUB_FIXTURES/curl.check-run"
   run_bin --separate-stderr -1 team-review-check "$URL" "$HEAD_SHA" success "no blocking findings"
-  assert_contains "$stderr" "posting the agent-review check run on Owner/agent-team@$HEAD_SHA failed: curl: (7)"
+  assert_equal "$stderr" "team-review-check: posting the agent-review check run on Owner/agent-team@$HEAD_SHA failed: curl: (7) Failed to connect to api.github.com port 443: Connection refused; whether GitHub took it is unknown: read the head's agent-review check runs before posting again"
   assert_equal "$(curl_calls | tail -n 1)" "DELETE installation/token"
 }
 
@@ -290,4 +305,40 @@ POST app/installations/777/access_tokens"
   run_bin --separate-stderr -1 team-review-check "$URL" "$HEAD_SHA" success "no blocking findings"
   assert_equal "$stderr" "team-review-check: minting the App's token for Owner/agent-team failed: GitHub's answer holds no token of the expected form; nothing posted"
   assert_equal "$(curl_calls | tail -n 1)" "POST app/installations/777/access_tokens"
+}
+
+@test "the minted token is written to no file while the script runs" {
+  export TOKEN_WATCH=$BATS_TEST_TMPDIR/tmp
+  mkdir "$TOKEN_WATCH"
+  TMPDIR=$TOKEN_WATCH run_bin -0 team-review-check "$URL" "$HEAD_SHA" success "no blocking findings"
+  assert_equal "$(curl_calls | wc -l)" 4
+  assert_equal "$(cat "$STUB_CALLS/curl.disk" 2>/dev/null)" ""
+}
+
+@test "curl reads no user config: -q is its first argument on every call" {
+  run_bin -0 team-review-check "$URL" "$HEAD_SHA" success "no blocking findings"
+  assert_equal "$(cat "$STUB_CALLS"/curl.first.* | sort -u)" "-q"
+}
+
+@test "a review logged on a short head does not stand for a full sha that shares its prefix" {
+  local ground=a1b2c3d999999999999999999999999999999999
+  ledger_line "{\"task\":\"T9\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"a1b2c3d\",\"ts\":\"2026-11-12T10:00:00Z\"}"
+  stub_reply gh "$ground"
+  run_bin -1 team-review-check "$URL" "$ground" success "no blocking findings"
+  assert_equal "$output" "team-review-check: T9's review of a1b2c3d, at 2026-11-12T10:00:00Z, names its head by a prefix, not in full, so it stands for no full sha; nothing posted"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "a TERM while the check run is posted still revokes the token" {
+  export CHECK_RUN_HOLD=$BATS_TEST_TMPDIR/hold
+  "$CODE_CHECKOUT/bin/team-review-check" "$URL" "$HEAD_SHA" success "no blocking findings" \
+    >"$BATS_TEST_TMPDIR/out" 2>"$BATS_TEST_TMPDIR/err" 3>&- &
+  local pid=$!
+  for _ in $(seq 100); do [[ ! -e $CHECK_RUN_HOLD.started ]] || break; sleep 0.1; done
+  [[ -e $CHECK_RUN_HOLD.started ]]
+  kill -TERM "$pid"
+  : >"$CHECK_RUN_HOLD.go"
+  wait "$pid" || true
+  assert_equal "$(curl_calls | tail -n 1)" "DELETE installation/token"
+  assert_equal "$(bearer "$(($(curl_calls | wc -l) - 1))")" "$TOKEN"
 }

@@ -208,7 +208,7 @@ library() {
   run_bin -1 --separate-stderr team-catch-up T14
   merge=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
   [[ $merge != "$head" ]]
-  assert_contains "$stderr" "team-catch-up: pushed ${merge:0:7} to $branch, but agent-review could not be set on it: team-review-status: GitHub refused the status on owner/proj@$merge"
+  assert_contains "$stderr" "team-catch-up: pushed ${merge:0:7} to $branch, but setting agent-review on it failed: team-review-status: GitHub refused the status on owner/proj@$merge"
   assert_contains "$stderr" "run: team-review-status $url $merge success 'clean merge of dev ${base:0:7} onto ${head:0:7}, reviewed'"
   assert_equal "$(jq -c 'select(.event == "caught-up") | .head' "$TEAM_HOME/ledger.jsonl")" "\"$merge\""
 
@@ -219,7 +219,7 @@ library() {
   echo 99 >"$GH_DIR/lag" && echo "$merge" >"$GH_DIR/first-head"
   export TEAM_CATCH_UP_WAIT=1
   run_bin -1 --separate-stderr team-catch-up T14
-  assert_contains "$stderr" "but agent-review could not be set on it: GitHub still shows ${merge:0:7} as the head of $url after 1s"
+  assert_contains "$stderr" "but setting agent-review on it failed: GitHub still shows ${merge:0:7} as the head of $url after 1s"
   assert_equal "$(jq -c 'select(.event == "caught-up")' "$TEAM_HOME/ledger.jsonl" | wc -l)" 2
 }
 
@@ -500,10 +500,26 @@ SH
   local next
   next=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
   [[ $next != "$merge" ]]
-  assert_contains "$stderr" "team-catch-up: pushed ${next:0:7} to $branch, but agent-review could not be set on it: team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)"
+  assert_contains "$stderr" "team-catch-up: pushed ${next:0:7} to $branch, but setting agent-review on it failed: team-review-check: GitHub refused POST /repos/owner/proj/check-runs (HTTP 422)"
   assert_contains "$stderr" "run: team-review-check $url $next success 'clean merge of dev ${base:0:7} onto ${merge:0:7}, reviewed'"
   assert_equal "$(jq -c 'select(.event == "caught-up")' "$TEAM_HOME/ledger.jsonl" | wc -l)" 2
   [[ ! -e $GH_DIR/statuses ]]
+}
+
+@test "with the reviewer App on, a check posted whose token was not revoked is said as posted, and the catch-up succeeds" {
+  local base merge
+  own_app
+  stub_script team-review-check <<'SH'
+echo 4243
+echo "team-review-check: revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour" >&2
+exit 1
+SH
+  base=$(base_moves)
+  run_bin -0 --separate-stderr team-catch-up T14
+  merge=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
+  assert_contains "$stderr" "team-catch-up: posted agent-review success on ${merge:0:7} as the reviewer App's check run 4243, but revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour"
+  [[ $stderr != *"run: team-review-check"* ]]
+  assert_equal "${lines[-2]}" "$merge"
 }
 
 @test "a check the base's protection pins to an App is required as its contexts are, so one missing on the head is refused" {
