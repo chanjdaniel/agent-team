@@ -21,10 +21,10 @@
 # parallel phase (one naming the session of a builder in a ticket worktree, T<n>-builder-NN, or
 # team-worker's room refusal of its brief-build-NN, or of a relaunch's brief-resume-build-NN,
 # while its ticket worktree is open) parks the task only while every running ticket's builder has
-# one or a stowed after its launch, so the tickets building beside it are still watched; an awaiting-merge task that nothing else parks is merge-due instead
-# while the default merge word, the approved plan, holds for one of its PRs. Findings, one line
-# each with the task,
-# the session and the next step:
+# one or a stowed after its launch, so the tickets building beside it are still watched; an
+# awaiting-merge task that nothing else parks is merge-due instead while the default merge word,
+# the approved plan, holds for one of its PRs. Findings, one line each with the task, the session
+# and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
 #                  ledger event since its launch, a denied aside, has handed the next step back;
