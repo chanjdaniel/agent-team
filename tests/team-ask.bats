@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # team-ask: a question put to Daniel in one call: posted, with any images, in the task's thread
-# with a ping in #coordinator, then question, asked and waiting logged, and nothing logged when a
-# post fails.
+# with a ping in #coordinator, then question and asked logged, the asked parking the task by
+# itself, and nothing logged when a post fails.
 
 load helpers/common
 load helpers/inbox
@@ -54,7 +54,7 @@ logged() {
   tail -n +7 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)'
 }
 
-@test "an ask posts the question in the thread and a ping in #coordinator, logs question, asked and waiting, and prints the ids" {
+@test "an ask posts the question in the thread and a ping in #coordinator, logs question and asked, which parks the task, and prints the ids" {
   run_bin -0 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md" --from planner
   assert_equal "$output" '{"task":"T7","id":"sign-in","question":["1564000000000000001"],"ping":"1564000000000000002"}'
   assert_equal "$stderr" ""
@@ -63,10 +63,12 @@ logged() {
   assert_equal "$(posted)" '"Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour."
 "<@757> T7 has a question for you in <#2222>: Which of the two sign-in limits stays?"'
   assert_equal "$(logged)" '{"task":"T7","event":"question","role":"planner","text":"Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour."}
-{"task":"T7","event":"asked","id":"sign-in","text":"Which of the two sign-in limits stays?","discord_message":"1564000000000000001"}
-{"task":"T7","event":"waiting","on":"Daniel","cause":"ask","ask":"sign-in","reason":"ask sign-in"}'
+{"task":"T7","event":"asked","id":"sign-in","text":"Which of the two sign-in limits stays?","discord_message":"1564000000000000001"}'
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
+  # The asked is the task's wait on Daniel, with no waiting line of its own.
+  assert_equal "$(jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map(select(.task == "T7")) | [waiting.reason, parked]' \
+    "$TEAM_HOME/ledger.jsonl")" '["ask sign-in",true]'
   # waiting.md lists it by the end of the command, linked to the question.
   assert_equal "$(waiting_items_shown)" "**Asks**
 - **1** T7 sign-in: Which of the two sign-in limits stays? <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001>"
@@ -91,8 +93,7 @@ It runs only on a reply in Discord with a line that starts with yes, or, by its 
       text: "Which of the two sign-in limits stays?", script: $path, sha256: $hash,
       discord_message: "1564000000000000001"}')"
   assert_equal "$(logged | jq -r .event)" "question
-asked
-waiting"
+asked"
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
 
@@ -117,8 +118,7 @@ waiting"
   assert_equal "$output" "team-ask: $TEAM_HOME/tasks/T8/fix.sh is not under T7's worktrees or its task directory, so team-run-approved would never run it: $places"
   assert_equal "$(stub_calls curl)" "$before"
   assert_equal "$(logged | jq -r .event)" "question
-asked
-waiting"
+asked"
 }
 
 @test "a waiting list team-inbox cannot write is a line on stderr, and the ask stands" {
@@ -126,14 +126,12 @@ waiting"
   run_bin -0 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
   assert_equal "$output" '{"task":"T7","id":"sign-in","question":["1564000000000000001"],"ping":"1564000000000000002"}'
   assert_equal "$stderr" "team-ask: waiting.md is not updated: cannot write $TEAM_HOME/waiting.md: it is a directory"
-  assert_equal "$(logged | jq -r .event)" "asked
-waiting"
+  assert_equal "$(logged | jq -r .event)" asked
 }
 
 @test "with no --from the ask is the coordinator's own, so no question is logged" {
   run_bin -0 team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
-  assert_equal "$(logged | jq -r .event)" "asked
-waiting"
+  assert_equal "$(logged | jq -r .event)" asked
 }
 
 @test "an ops session's question is posted whole, and logged and pinged only as its length and the thread it is in" {
@@ -147,8 +145,7 @@ waiting"
   assert_equal "$(posted)" "$(jq -cn --arg q "$question" '$q')
 \"<@757> T7 has a question for you in <#2222>: $line\""
   assert_equal "$(logged)" "{\"task\":\"T7\",\"event\":\"question\",\"role\":\"ops\",\"chars\":71,\"discord_message\":\"1564000000000000001\"}
-{\"task\":\"T7\",\"event\":\"asked\",\"id\":\"write-1\",\"text\":\"$line\",\"discord_message\":\"1564000000000000001\"}
-{\"task\":\"T7\",\"event\":\"waiting\",\"on\":\"Daniel\",\"cause\":\"ask\",\"ask\":\"write-1\",\"reason\":\"ask write-1\"}"
+{\"task\":\"T7\",\"event\":\"asked\",\"id\":\"write-1\",\"text\":\"$line\",\"discord_message\":\"1564000000000000001\"}"
   if grep -E 'Dupré|1187' "$TEAM_HOME/ledger.jsonl"; then
     echo "the ledger holds the ops question's text" >&2
     return 1
@@ -192,8 +189,7 @@ https://discord.com/api/v10/channels/1562486564871995482/messages"
   # The ping in #coordinator is text alone.
   assert_equal "$(posted)" '"<@757> T7 has a question for you in <#2222>: Which of the two sign-in limits stays?"'
   [[ $(tail -n 1 <<<"$posts") != *'"-F"'* ]]
-  assert_equal "$(logged | jq -c 'select(.event != "image-posted")')" '{"task":"T7","event":"asked","id":"plan","text":"Which of the two sign-in limits stays?","discord_message":"1564000000000000001"}
-{"task":"T7","event":"waiting","on":"Daniel","cause":"ask","ask":"plan","reason":"ask plan"}'
+  assert_equal "$(logged | jq -c 'select(.event != "image-posted")')" '{"task":"T7","event":"asked","id":"plan","text":"Which of the two sign-in limits stays?","discord_message":"1564000000000000001"}'
   assert_equal "$(logged | jq -c 'select(.event == "image-posted") | [.thread, .discord_thread, .discord_message, .file]')" \
     '["task","2222","1564000000000000001","tickets.png"]
 ["task","2222","1564000000000000001","second.png"]'

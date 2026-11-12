@@ -450,7 +450,12 @@ def park_ticket($state):
 #           id) in past_ask, so it parks nothing. A typed park ends by its cause's rules in the
 #           table's causes: a launch by lifecycle_launch_ends (a ticket's park only by a launch of
 #           that ticket), a resumed by lifecycle_resume_ends,
-#           and an ask's wait (lifecycle_ask_wait) only once no ask of the state is its ask. An old
+#           and an ask's wait (lifecycle_ask_wait) only once no ask of the state is its ask. An
+#           asked from the table's asked_parks_from on parks by itself (one before it parks
+#           nothing, as history read it): it adds its ask's wait, {id: asked-<n> (n its ordinal among the
+#           task's asked events), kind waiting, cause ask, typed, on Daniel, reason "ask <id>", ask
+#           <id>, asked true}, which an old line's typed wait on the same ask (team-ask logged one
+#           until T303) takes the place of, keeping that line's id and since. An old
 #           park (no cause on its line) ends as before: at a launch unless it is a held, and at a
 #           resumed with none of id, all and brief; a resumed's id naming it ends it too, and all
 #           true when its legacy_cause takes all. A brief alone (a merge-base round's holder brief)
@@ -465,7 +470,8 @@ def park_ticket($state):
 #   tickets each ticket launch's session (a builder's in a ticket worktree), as {<session>: NN}.
 #   ticket_worktrees the tickets whose ticket worktree is open (a worktree-added with ticket and
 #           no worktree-returned of that ticket since), in the order added.
-#   counts  each park kind's events so far, for the next park's id.
+#   counts  each park kind's events so far, and the asked events that parked (asked), for the
+#           next park's id.
 #   seen    the events folded so far, the next event's index.
 def lifecycle_start:
   {status: "unknown", path: null, opened_at: null, phase: "planning", since: null, approval: null, withdrawal: null, prs: [], reviews: [], parks: [],
@@ -604,6 +610,13 @@ def lifecycle_step($e):
         else lifecycle_review_phase($e.ts) end
     elif $effect == "ask" then
       .asks += [{id: $e.id, text: $e.text, ts: $e.ts, i: $i, passed: false}]
+      | if ($e.ts | tostring) < lifecycle_table.asked_parks_from then .
+        else
+          .counts.asked = ((.counts.asked // 0) + 1)
+          | .parks += [{id: "asked-\(.counts.asked)", kind: "waiting", cause: "ask", typed: true, on: "Daniel",
+              reason: "ask \($e.id)", role: null, session: null, ticket: null, ask: $e.id, since: $e.ts, ts: $e.ts,
+              i: $i, passed: false, asked: true}]
+        end
     elif $effect == "settle" then
       .asks |= map(. as $ask | select($e | settles($ask) | not))
       | if $e.event == "merge-approved" then .parks |= map(select(lifecycle_old_wait_on_daniel | not)) else . end
@@ -611,6 +624,8 @@ def lifecycle_step($e):
       | .parks |= map(select(lifecycle_ask_wait and (.ask as $ask | all($asks[]; .id != $ask)) | not))
     elif $effect == "park" then
       .counts[$e.event] = ((.counts[$e.event] // 0) + 1)
+      | if $e.event == "waiting" and $e.cause == "ask" and $e.ask != null
+        then .parks |= map(select(.asked == true and .ask == $e.ask | not)) else . end
       | . as $state
       | .parks += [{id: "\($e.event)-\(.counts[$e.event])", kind: $e.event, cause: ($e | park_cause),
           typed: ($e.cause != null), on: ($e.on // null), reason: ($e.reason // null), role: ($e | park_role),

@@ -99,7 +99,7 @@
     },
     "asked": {
       "writer": ["team-log", "team-ask"],
-      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs only once Daniel's latest answer to the ask, read back from Discord, has a line that starts with yes, or, when that answered names an item, a part with that number, every such part starting with yes, and only while the file hashes the same",
+      "about": "a decision put to Daniel, which parks the task by itself until it is answered (the fold adds its wait, cause ask); discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs only once Daniel's latest answer to the ask, read back from Discord, has a line that starts with yes, or, when that answered names an item, a part with that number, every such part starting with yes, and only while the file hashes the same",
       "required": {"id": "string", "text": "string"},
       "optional": {"discord_message": "id", "script": "string", "sha256": "string"},
       "field_writers": {"script": "team-ask", "sha256": "team-ask"}
@@ -157,8 +157,8 @@
       "optional": {"cause": ["daniel-hold"], "discord_message": "id", "head": "string", "since": "string"}
     },
     "waiting": {
-      "writer": ["team-log", "team-ask"],
-      "about": "a task parked on Daniel or something outside the team; it stands until a launch or a resumed id= or all=true ends it, but team-ask's wait on its ask, which only that ask's answered ends, an old line with no cause as before; cause: why, a cause bin/lib/lifecycle.json gives waiting, daniel when on is Daniel (any case), else outside unless given, and ask for team-ask's wait on its ask, whose id ask names; since: when the park began, when it is logged after the fact",
+      "writer": ["team-log"],
+      "about": "a task parked on Daniel or something outside the team; it stands until a launch or a resumed id= or all=true ends it, but a wait on an ask, which only that ask's answered ends, an old line with no cause as before; cause: why, a cause bin/lib/lifecycle.json gives waiting, daniel when on is Daniel (any case), else outside unless given, and ask for a wait on an ask, whose id ask names, which an asked now parks by itself, so only old lines (team-ask's until T303) carry it; since: when the park began, when it is logged after the fact",
       "required": {"on": "string", "reason": "string"},
       "optional": {"cause": ["ask", "daniel", "outside"], "ask": "string", "since": "string"}
     },

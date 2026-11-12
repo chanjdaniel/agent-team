@@ -18,9 +18,10 @@
 # edited, so the text logged is the text Daniel sent (answer_message in bin/lib/team.sh, which
 # team-run-approved holds the answer it runs on to as well); and it must have text. Then it logs
 # answered id=<id> answer=<the message's text, verbatim> discord_message=<its id>, which ends the
-# ask's wait as team-ask logs it (waiting cause=ask ask=<id>), with no resumed; for each old wait
-# on it still standing (a waiting reason="ask <id>" with no cause, from before team-ask typed it)
-# it logs resumed id=<that wait's id>, ending it alone; then it commits the ledger and pushes it to the team home's origin at once (ledger_push in bin/lib/team.sh, which
+# ask's wait (the one its asked parks, or an old waiting cause=ask ask=<id>), with no resumed;
+# for each old wait on it still standing (a waiting reason="ask <id>" with no cause, from before
+# team-ask typed it) it logs resumed id=<that wait's id>, ending it alone; then it commits the
+# ledger and pushes it to the team home's origin at once (ledger_push in bin/lib/team.sh, which
 # says on stderr when it is not on origin yet, the answer standing). Then team-inbox
 # takes the ask out of the team home's waiting.md; when that fails, a line on stderr says so, and
 # the answer stands.

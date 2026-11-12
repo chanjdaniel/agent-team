@@ -77,12 +77,13 @@
 # blocked, paused, held) carries a cause, one bin/lib/lifecycle.json's causes give its kind, and a
 # cause= given is kept: a held is daniel-hold, Daniel's hold, and is refused without discord_message
 # ("a held is Daniel's hold, and needs discord_message, the id of Daniel's message saying so"); a
-# waiting on=Daniel (any case) is daniel, on anyone else outside (ask is team-ask's); a blocked
-# on=T<m> is task, any other worker (denial, for a denial that stops the work, is given); a paused
-# has no default and is refused without one ("a paused needs cause=, one of limit, machine,
-# shutdown, worker"). A park logged after the fact takes since=<UTC time>, when it began: no later
-# than now and no earlier than the task's latest event, or it is refused naming both times; no other
-# kind takes since. A resumed names what it ends, and is refused with none of id, all=true and brief
+# waiting on=Daniel (any case) is daniel, on anyone else outside (ask is an asked's own wait, which
+# it parks itself); a blocked on=T<m> is task, any other worker (denial, for a denial that stops the
+# work, is given); a paused has no default and is refused without one ("a paused needs cause=, one
+# of limit, machine, shutdown, worker"). A park logged after the fact takes since=<UTC time>, when
+# it began: no later than now and no earlier than the task's latest event, or it is refused naming
+# both times; no other kind takes since. A resumed names what it ends, and is refused with none of
+# id, all=true and brief
 # ("resumed needs id=<a standing park>, all=true or brief=<brief>; team-state T<n> lists the
 # standing parks"): id=<park> ends that park, Daniel's hold only with discord_message, their word
 # lifting it, and never an ask's wait, which its ask's answer ends; all=true every standing park
