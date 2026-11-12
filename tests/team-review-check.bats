@@ -342,3 +342,14 @@ POST app/installations/777/access_tokens"
   assert_equal "$(curl_calls | tail -n 1)" "DELETE installation/token"
   assert_equal "$(bearer "$(($(curl_calls | wc -l) - 1))")" "$TOKEN"
 }
+
+@test "GitHub's message is read from a pretty-printed answer, as its REST API answers" {
+  printf '404 {\n  "message": "Not Found"\n}\n' >"$STUB_FIXTURES/curl.installation"
+  run_bin --separate-stderr -1 team-review-check "$URL" "$HEAD_SHA" success "no blocking findings"
+  assert_equal "$stderr" "team-review-check: reading the App's installation on Owner/agent-team failed: GitHub answered HTTP 404: Not Found; nothing posted"
+  rm "$STUB_FIXTURES/curl.installation"
+  printf '500 {\n  "message": "Server Error"\n}\n' >"$STUB_FIXTURES/curl.revoke"
+  run_bin --separate-stderr -1 team-review-check "$URL" "$HEAD_SHA" success "no blocking findings"
+  assert_equal "$output" 4242
+  assert_equal "$stderr" "team-review-check: revoking the App's token failed: GitHub answered HTTP 500: Server Error; it expires on its own within the hour"
+}

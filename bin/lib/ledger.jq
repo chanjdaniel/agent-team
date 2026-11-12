@@ -1102,6 +1102,7 @@ def reviewed_head_by($head; match):
         else back($up.from; $n - 1) end;
     back($head; $ups | length);
 def reviewed_head($head): reviewed_head_by($head; same_head(.[0]; .[1]));
+def exact_reviewed_head($head): reviewed_head_by($head; exact_head(.[0]; .[1]));
 
 # How a base branch's protection, as GitHub's branches API answers it (the branch's JSON as
 # input), fails to hold the reviewer App $app's check, each one object, none when it holds:
@@ -1113,7 +1114,6 @@ def review_app_pin_problems($app):
   .protection.required_status_checks
   | (select(any((. // {}).checks[]?; .context == "agent-review" and .app_id == $app) | not) | {kind: "pin"}),
     (select(. != null and .enforcement_level != "everyone") | {kind: "admins", level: (.enforcement_level // "no one")});
-def exact_reviewed_head($head): reviewed_head_by($head; exact_head(.[0]; .[1]));
 
 # Why the task's reviews do not let the default word, given on no head, merge the PR's
 # head $head unasked, one string per reason, none when they do, judged on the latest review of
