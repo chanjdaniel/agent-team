@@ -36,6 +36,9 @@ walks() {
 @test "the assignments before a command, and a command of assignments alone, are kept apart from its words" {
   walks 'X[0]=1 Y[k]+=2 run x' \
     '{"reached":"direct","assignments":["X[0]=1","Y[k]+=2"],"wrappers":[],"words":["run","x"]}'
+  walks 'X[ 0 ]=1 Y[a[0]]=2 Z["]"]=3 run x' \
+    '{"reached":"direct","assignments":["X[ 0 ]=1","Y[a[0]]=2","Z[\"]\"]=3"],"wrappers":[],"words":["run","x"]}'
+  walks 'echo X[ 0 ]=1' '{"reached":"direct","assignments":[],"wrappers":[],"words":["echo","X[","0","]=1"]}'
   walks 'A=1 B+=2 run x; P=$!' \
     '{"reached":"direct","assignments":["A=1","B+=2"],"wrappers":[],"words":["run","x"]}' \
     '{"reached":"direct","assignments":["P=$!"],"wrappers":[],"words":[]}'

