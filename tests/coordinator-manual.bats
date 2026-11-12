@@ -513,6 +513,33 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   ((checked > 20))
 }
 
+@test "T287: the manual runs a parallel phase with team-next --fill, and the skills stow, relaunch and recover its ticket builders" {
+  local approve build skills=$plugin/skills
+  approve=$(grep '^3\. \*\*Approve\.\*\*' "$manual")
+  build=$(awk '/^4\. \*\*Build\.\*\*/ { on = 1 } /^5\. / { on = 0 } on' "$manual")
+  # Step 3: the ask names the caps, and either approval logs them as parallel=.
+  grep -qF 'the merge word, naming the `Parallel:` line'"'"'s caps' <<<"$approve"
+  grep -qF '`parallel=<caps>`' <<<"$approve"
+  grep -qF 'a cap above 1 only once T287'"'"'s phase 3 is on `dev`' <<<"$approve"
+  # Step 4: the spec's one line on a parallel phase.
+  grep -qF 'In a phase whose cap is above 1, `team-next T<n> --fill` starts it and launches each ticket ready under the cap, each in a ticket worktree as `T<n>-builder-NN`; each `DONE <NN>` integrates the ticket (or prints what to send its builder) and fills again; run it with the Bash timeout at 600000, and again once a room refusal clears or after a resume.' <<<"$build"
+  # The level and resume skills relaunch a ticket builder with --fill, never by role.
+  grep -qF 'ticket builder of a parallel phase' "$skills/level/SKILL.md"
+  grep -qF '`team-next T<n> --fill`' "$skills/level/SKILL.md"
+  grep -qF 'never by role' "$skills/level/SKILL.md"
+  grep -qF 'ticket builder of a parallel phase' "$skills/resume/SKILL.md"
+  grep -qF '`team-next T<n> --fill`' "$skills/resume/SKILL.md"
+  grep -qF 'never by role' "$skills/resume/SKILL.md"
+  # STOW reaches each live builder, the ticket builders among them.
+  grep -qF 'each ticket builder `T<n>-builder-NN` among them' "$skills/level/SKILL.md"
+  grep -qF 'each ticket builder `T<n>-builder-NN` among them' "$skills/handoff/SKILL.md"
+  grep -qF '`T<n>-builder-NN`' "$skills/stow/SKILL.md"
+  # A ticket builder is recovered in its own ticket worktree, on its ticket's brief.
+  grep -qF 'in its own ticket worktree, on its ticket'"'"'s brief' "$skills/recover-worker/SKILL.md"
+  grep -qF '`ticket-gone`' "$skills/recover-worker/SKILL.md"
+  grep -qF 'session=<its 8-character session id>' "$skills/recover-worker/SKILL.md"
+}
+
 @test "the level skill holds Daniel's words, the stows and the relaunches, and the manual points at it" {
   local skill=$plugin/skills/level/SKILL.md
   grep -qF 'run `team-level <word> --message <id>`' "$skill"
@@ -625,7 +652,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 117 lines and 27240 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 118 lines and 27730 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -664,11 +691,13 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # words, with what it never holds on and the command that withdraws it for a task, a project or
   # all, 26830 once the review step named team-review-check, the reviewer App's check the
   # coordinator posts, 26940 once it said team-next posts it on a verdict taken only with --from
-  # the reviewer's session id, and 27240 once step 6 named the checks wait, team-next T<n> --ci,
+  # the reviewer's session id, 27240 once step 6 named the checks wait, team-next T<n> --ci,
   # what it prints at its end and its re-arm after a catch-up and on exit 75, and the sanctioned
-  # actions team-catch-up and its reruns).
-  (($(wc -l <"$manual") <= 117))
-  (($(wc -c <"$manual") <= 27240))
+  # actions team-catch-up and its reruns, and 118 lines and 27730 bytes once the plan step named
+  # the Parallel: caps and parallel= and the build step the one line on a parallel phase,
+  # team-next --fill and its integration).
+  (($(wc -l <"$manual") <= 118))
+  (($(wc -c <"$manual") <= 27730))
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

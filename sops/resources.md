@@ -246,12 +246,12 @@ It runs on the lease holder, once each task's live workers have answered the coo
 
 `team-stow T<n>... [--down] [--cause level|handoff] [--json]`, or `--all` for every open task, takes these steps, one line per step and task, each safe to run again:
 
-1. branches: each task's branches checked against origin's before any of its sessions stops; a diverged branch refuses its task, naming it, and its workers keep running;
+1. branches: each task's branches checked against origin's before any of its sessions stops; a diverged branch refuses its task, naming it, and its workers keep running; a ticket worktree's branch is never read on origin nor pushed, and step 5 checks it;
    then stowing: a `stowing` logged for each task left, `{machine, cause, roles}` with its unfinished roles, unless one stands already (`team-stow --begin`'s) or the task is stowed from this machine already (a run again);
-2. sessions: `claude stop` then `claude rm` for each live `T<n>-<role>` session; an ops session is ended with `team-ops-end`, never carried; one that will not stop refuses its task;
+2. sessions: `claude stop` then `claude rm` for each live `T<n>-<role>` session, a ticket builder's `T<n>-builder-NN` among them; an ops session is ended with `team-ops-end`, never carried; one that will not stop refuses its task;
 3. stacks: `team-stack stop --worktree <path>` for each worktree whose project has a stack block, its data kept (`team-stack down`, saving the logs, with `--down`); one that fails is said, and the task still stows;
 4. checkpoint: `team-checkpoint --force`, once per run, none when every task left was stowed already and no session was stopped;
-5. branches: each task branch pushed to its origin when strictly ahead, checked again first;
+5. branches: each task branch pushed to its origin when strictly ahead, checked again first; a ticket worktree is kept only when the checkpoint's `wip/<project>/T<n>--NN` holds its head and uncommitted changes, else it refuses its task;
 6. stowed: one `stowed` per task, with `cause` `level` (the default) or `handoff`; none when the task's latest machine event is already a stowed from this machine with the same worktrees.
    Its `sessions` names the sessions this run stopped and those an earlier run of the same lease stopped without stowing the task (one interrupted, or whose push failed), which `~/.local/state/agent-team/stow.json` keeps until the task is stowed.
    A `stowing` standing always gets its `stowed`, even for a task stowed already.

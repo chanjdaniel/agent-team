@@ -86,7 +86,7 @@ row_of() {
 
 @test "record refuses a drill the registry lacks, naming the known ones, and a drill its workflow's import records" {
   run_bin -1 team-drill record handof --verdict pass
-  assert_equal "$output" "team-drill: no drill 'handof'; the drills are handoff, steal, load-check-planner, load-check-ops-prod-write, load-check-ops-vercel-read, compaction, bootstrap-arch, bootstrap-macos, load-check-probe"
+  assert_equal "$output" "team-drill: no drill 'handof'; the drills are handoff, steal, load-check-planner, load-check-ops-prod-write, load-check-ops-vercel-read, compaction, bootstrap-arch, bootstrap-macos, load-check-probe, parallel-tickets"
   run_bin -1 team-drill record bootstrap-arch --verdict pass
   assert_equal "$output" "team-drill: bootstrap-arch runs as the Bootstrap workflow's job bootstrap-arch, whose run team-drill import <run id> records"
   [[ ! -e $RECORD ]]
@@ -154,13 +154,23 @@ load-check-ops-vercel-read                                                   due
 compaction                                                                   due: never ran
 bootstrap-arch                                                               due: never ran
 bootstrap-macos                                                              due: never ran
-load-check-probe                                                             due: never ran"
+load-check-probe                                                             due: never ran
+parallel-tickets                                                             due: never ran"
   run_bin -0 team-drill status --json
   assert_equal "$(jq -c '{schema, max_age_days, malformed}' <<<"$output")" '{"schema":"team-drill/1","max_age_days":30,"malformed":0}'
   assert_equal "$(jq -c '.drills[0]' <<<"$output")" \
     '{"drill":"handoff","by":"daniel","what":"The team moves to a second machine and back, with one trivial task at work.","last":null,"age_days":null,"due":["never"],"changed_by":null}'
   assert_equal "$(jq -r '[.drills[] | "\(.drill):\(.by):\(.due | join(","))"] | join(" ")' <<<"$output")" \
-    "handoff:daniel:never steal:daniel:never load-check-planner:coordinator:never load-check-ops-prod-write:daniel:never load-check-ops-vercel-read:daniel:never compaction:coordinator:never bootstrap-arch:coordinator:never bootstrap-macos:coordinator:never load-check-probe:coordinator:never"
+    "handoff:daniel:never steal:daniel:never load-check-planner:coordinator:never load-check-ops-prod-write:daniel:never load-check-ops-vercel-read:daniel:never compaction:coordinator:never bootstrap-arch:coordinator:never bootstrap-macos:coordinator:never load-check-probe:coordinator:never parallel-tickets:coordinator:never"
+}
+
+@test "T287: parallel-tickets is the coordinator's drill of a phase's tickets built at once, proving team-next, team-open and team-close, and a run is recorded by hand" {
+  assert_equal "$(jq -c '.drills[] | select(.name == "parallel-tickets") | {by, proves, workflow_job}' "$REPO_ROOT/bin/lib/drills.json")" \
+    '{"by":"coordinator","proves":["bin/team-next","bin/team-open","bin/team-close"],"workflow_job":null}'
+  run_bin -0 team-drill record parallel-tickets --verdict pass --detail "T9 phase 2 at parallel=2: built in 80 min, serial sum 130 min, critical path 75 min"
+  assert_equal "$(tail -1 "$RECORD" | jq -c '{drill, verdict, detail}')" \
+    '{"drill":"parallel-tickets","verdict":"pass","detail":"T9 phase 2 at parallel=2: built in 80 min, serial sum 130 min, critical path 75 min"}'
+  assert_equal "$(drill_json parallel-tickets | jq -c .due)" '[]'
 }
 
 @test "status shows a drill that passed today as ok, with its run, and one that failed as due" {

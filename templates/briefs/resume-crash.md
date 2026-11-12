@@ -2,7 +2,7 @@
 
 Path: {{path}}; you are the {{role}}, resuming the task from the checkpoint of {{checkpoint}}: {{machine}} stopped without a handoff.
 Project: {{project}} (`{{repo}}`), base `{{base}}`.
-Worktree: `{{worktree}}`, branch `{{branch}}`, made on this machine from what was pushed and that checkpoint.
+Worktree: `{{worktree}}`, branch `{{branch}}`, made on this machine from what was pushed and that checkpoint.{{parallel}}
 Task directory: `{{task_dir}}/` in the worktree, restored from the task's archive as that checkpoint left it.
 
 ## What may be missing

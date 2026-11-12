@@ -462,3 +462,114 @@ $wt2 axi"
   run_bin -2 team-stow T1 --begin --stop-runs
   run_bin -2 team-stow --begin
 }
+
+# T287: ticket worktrees.
+
+# Open T1's ticket <NN> in a pool slot of its own (slots 4 and 5 added to the pool), with a live
+# builder T1-builder-<NN> in session <NN>bbbbbb launched in it, and print its worktree.
+open_ticket() {
+  local wt
+  sed -i 's|"slots/home/3"]|"slots/home/3", "slots/home/4", "slots/home/5"]|' "$TEAM_HOME/projects.toml"
+  mkdir -p "$wt1/.scratch/task/tickets"
+  printf '# %s: t\n\nBlocked by: None\n' "$1" >"$wt1/.scratch/task/tickets/$1-t.md"
+  wt=$(TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-open" --task T1 --ticket "$1" | jq -r .worktree)
+  jq -cn --arg n "$1" --arg wt "$wt" '{ts: (now | todate), task: "T1", event: "launch", role: "builder",
+    session: "\($n)bbbbbb", worktree: $wt, toolkits: [], machine: "home-pc", project: "home",
+    branch: "feat/T1-work1--\($n)", brief: "brief-build-\($n)", ticket: $n}' >>"$TEAM_HOME/ledger.jsonl"
+  jq --arg n "$1" --arg wt "$wt" '. + [{id: "\($n)bbbbbb", sessionId: "\($n)bbbbbb-1111", name: "T1-builder-\($n)",
+    status: "busy", state: "working", cwd: $wt}]' "$BATS_TEST_TMPDIR/sessions.json" >"$BATS_TEST_TMPDIR/sessions.next"
+  mv "$BATS_TEST_TMPDIR/sessions.next" "$BATS_TEST_TMPDIR/sessions.json"
+  printf '%s\n' "$wt"
+}
+
+# Every branch ref of the project's origin and of its second remote, and every ref but wip/ and
+# the records' dev and lease of the team home's origin: where a pushed ticket branch would show.
+pushed_branches() {
+  git -C "$home_origin" for-each-ref --format='origin %(refname)' refs/heads
+  git -C "$fork" for-each-ref --format='fork %(refname)'
+  git -C "$team_origin" for-each-ref --format='team %(refname)' | grep -v -e ' refs/heads/wip/' -e ' refs/heads/dev$' -e ' refs/heads/lease$' || true
+}
+
+@test "T287: a task with ticket worktrees stows with no push of a ticket branch, each kept as its wip ref, its stowed naming each ticket" {
+  local t2 t3 h2 h3 w2 w3
+  fork=$BATS_TEST_TMPDIR/fork.git
+  git init -q --bare "$fork"
+  git -C "$wt1" remote add fork "$fork"
+  t2=$(open_ticket 02)
+  t3=$(open_ticket 03)
+  # Ticket 02 committed its work; ticket 03 has uncommitted changes on its head.
+  echo two >"$t2/two.txt"
+  git -C "$t2" add two.txt
+  git -C "$t2" commit -q -m "feat: two"
+  echo three >"$t3/three.txt"
+  h2=$(git -C "$t2" rev-parse HEAD) h3=$(git -C "$t3" rev-parse HEAD)
+  : >"$STUB_CALLS/claude.log"
+
+  run_bin -0 --separate-stderr team-stow T1
+  assert_equal "$stderr" ""
+  assert_contains "$output" "sessions: T1: stopped and removed T1-builder (a1a1a1a1)
+sessions: T1: stopped and removed T1-builder-02 (02bbbbbb)
+sessions: T1: stopped and removed T1-builder-03 (03bbbbbb)"
+  assert_equal "$(stops_and_removes)" "stop a1a1a1a1
+rm a1a1a1a1
+stop 02bbbbbb
+rm 02bbbbbb
+stop 03bbbbbb
+rm 03bbbbbb"
+  w2=$(git -C "$team_origin" rev-parse wip/home/T1--02)
+  w3=$(git -C "$team_origin" rev-parse wip/home/T1--03)
+  assert_equal "$w2" "$h2"
+  assert_equal "$(git -C "$team_origin" rev-parse "$w3^1")" "$h3"
+  assert_contains "$output" "branches: T1 home: pushed feat/T1-work1 at ${head1:0:7}"
+  assert_contains "$output" "branches: T1 home--02: feat/T1-work1--02 is kept as wip/home/T1--02 at ${h2:0:7}, never pushed"
+  assert_contains "$output" "branches: T1 home--03: feat/T1-work1--03 with its uncommitted changes in $t3 is kept as wip/home/T1--03 at ${w3:0:7}, never pushed"
+  assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work1 at ${head1:0:7}, home feat/T1-work1--02 at ${h2:0:7} (ticket 02), home feat/T1-work1--03 at ${h3:0:7} (ticket 03) with uncommitted changes; cause level"
+  # Only the task branch went up, to the project's origin.
+  assert_equal "$(pushed_branches)" "origin refs/heads/feat/T1-work1
+origin refs/heads/main"
+  assert_equal "$(stowed_events)" "$(jq -cn --arg h1 "$head1" --arg h2 "$h2" --arg h3 "$h3" '{task: "T1",
+    event: "stowed", machine: "home-pc", worktrees: [{project: "home", branch: "feat/T1-work1", head: $h1},
+      {project: "home", branch: "feat/T1-work1--02", head: $h2, ticket: "02"},
+      {project: "home", branch: "feat/T1-work1--03", head: $h3, uncommitted: true, ticket: "03"}],
+    roles: ["builder"], sessions: ["builder"], cause: "level"}')"
+  assert_equal "$(stow_kinds)" "T1 stowing
+T1 stowed"
+  # The ticket worktrees stay on disk, their work as it was.
+  assert_equal "$(cat "$t3/three.txt")" three
+}
+
+@test "T287: a ticket worktree whose wip ref does not hold its work refuses its task with a stow-failed, and stows once its ref does" {
+  local t2 h2
+  t2=$(open_ticket 02)
+  h2=$(git -C "$t2" rev-parse HEAD)
+  run_bin -0 team-checkpoint
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1--02)" "$h2"
+  # Off its ticket branch, the checkpoint skips it, so wip/home/T1--02 keeps the old head.
+  git -C "$t2" checkout -q -b elsewhere
+  echo moved >"$t2/moved.txt"
+  git -C "$t2" add moved.txt
+  git -C "$t2" commit -q -m "feat: moved"
+  : >"$STUB_CALLS/claude.log"
+
+  run_bin -1 --separate-stderr team-stow T1 T2
+  local reason="feat/T1-work1--02 (home, ticket 02) is not kept: wip/home/T1--02 on the team home's origin does not hold the head and uncommitted changes of $t2 on feat/T1-work1--02, and a ticket branch is never pushed"
+  assert_contains "$stderr" "team-stow: T1 is not stowed: $reason; make the checkpoint keep it (its line above says why it did not), then run team-stow again"
+  assert_contains "$output" "checkpoint: T1 home--02: skipped: "
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1--02)" "$h2"
+  # Refused after its sessions stopped and its checkpoint: no push of its branch, a stow-failed.
+  run -1 git -C "$home_origin" rev-parse -q --verify feat/T1-work1
+  run -1 git -C "$home_origin" rev-parse -q --verify feat/T1-work1--02
+  assert_equal "$(stow_kinds)" "T1 stowing
+T2 stowing
+T2 stowed
+T1 stow-failed: $reason"
+
+  # Back on its ticket branch, its ref holds its head again, and the run stows it.
+  git -C "$t2" checkout -q feat/T1-work1--02
+  run_bin -0 --separate-stderr team-stow T1
+  assert_contains "$output" "branches: T1 home--02: feat/T1-work1--02 is kept as wip/home/T1--02 at ${h2:0:7}, never pushed"
+  assert_equal "$(stowed_events | jq -c 'select(.task == "T1") | .worktrees[1]')" \
+    "$(jq -cn --arg h "$h2" '{project: "home", branch: "feat/T1-work1--02", head: $h, ticket: "02"}')"
+  assert_equal "$(stowed_events | jq -c 'select(.task == "T1") | .sessions')" '["builder"]'
+  run -1 git -C "$home_origin" rev-parse -q --verify feat/T1-work1--02
+}

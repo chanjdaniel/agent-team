@@ -37,11 +37,14 @@
 #                   machine holds, which asks for the holder's name typed on this terminal.
 #   8. heartbeat    team-timers enable.
 #   9. worktrees    team-open --task T<n> --resume <project> for each open worktree of each open
-#                   task, one line each ("T1 home: ..."); one that fails is said with its reason
-#                   on stderr and in the report, and the others still resume. Each failure is
-#                   also one rehome-failed in the ledger ({project, branch, machine, reason}, the
-#                   reason the first line team-open printed), which team-state and team-snapshot
-#                   show until team-open makes the worktree (its worktree-moved or rehomed). A
+#                   task, its task worktrees first, then each ticket worktree with --ticket NN
+#                   (made from wip/<project>/T<n>--NN, team-open's header says how), one line
+#                   each ("T1 home: ...", "T1 home--02: ..." for a ticket worktree); one that
+#                   fails is said with its reason on stderr and in the report, and the others
+#                   still resume. Each failure is also one rehome-failed in the ledger ({project,
+#                   branch, machine, reason}, with ticket for a ticket worktree's, the reason the
+#                   first line team-open printed), which team-state and team-snapshot show until
+#                   team-open makes that worktree (its worktree-moved or rehomed). A
 #                   team-open that fails hands back a slot it leased, or keeps it leased to the
 #                   task for the next run to take again (team-open's header), so a run again
 #                   leases no slot more.
@@ -73,10 +76,11 @@
 #                   nothing ended (a done of the role, a review, a ticket-done or a pr; for a
 #                   ticket builder a done of its session or its ticket's ticket-done); worktrees
 #                   team-open's facts
-#                   ({project, branch, worktree, from, moved, head, archive, snapshot}, archive
-#                   null when no scratch was restored, snapshot null unless the worktree resumed
-#                   from one, after a crash or a stowed with uncommitted changes), failures
-#                   [{project, branch, reason}], reason all team-open printed. Not committed:
+#                   ({project, branch, worktree, from, moved, head, archive, snapshot}, with
+#                   ticket for a ticket worktree, archive null when no scratch was restored,
+#                   snapshot null unless the worktree resumed from one, after a crash or a
+#                   stowed with uncommitted changes), failures [{project, branch, reason}], with
+#                   ticket for a ticket worktree's, reason all team-open printed. Not committed:
 #                   the resume skill deletes the day's reports.
 #  11. coordinator  claude-coordinator, with a first prompt naming the report and the resume skill;
 #                   then "Pin the coordinator in `claude agents` (Ctrl+T)."
@@ -273,7 +277,7 @@ main() {
   echo "heartbeat: $out"
 
   # 9. Each open task's worktrees, made here.
-  local entry task project reason tasks='[]' failed=0 task_json moved
+  local entry task project ticket label reason tasks='[]' failed=0 task_json moved
   local -a open=()
   if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
     mapfile -t open < <(ledger_jq 'ledger_events | by_task | . as $tasks | open_tasks[] | . as $task
@@ -282,7 +286,8 @@ main() {
            | if . then {ts, machine, roles, sessions} + (if .note then {note} else {} end) else null end),
          crashed: ($tasks[$task] | if crashed($machine) then
            {machine: (map(select(.event == "launch")) | last | .machine), roles: unfinished_roles} else null end),
-         open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch}]}
+         open: ([$tasks[$task] | open_worktrees(.[]; $home) | {project, branch, ticket}]
+           | map(select(.ticket == null)) + map(select(.ticket != null)))}
       | .here = (.crashed == null and .stowed.machine == $machine)' \
       -nRc --arg machine "$machine" "$TEAM_HOME/ledger.jsonl")
   fi
@@ -291,31 +296,34 @@ main() {
     task_json=$(jq -c '{task, here, stowed, crashed, worktrees: [], failures: []}' <<<"$entry")
     if [[ $(jq '.open | length' <<<"$entry") == 0 ]]; then echo "$task: no open worktree"; fi
     if [[ $(jq -r .here <<<"$entry") == true ]]; then echo "$task: stowed here on $machine: a same-machine resume"; fi
-    while IFS=$'\t' read -r project branch; do
+    while IFS=$'\t' read -r project branch ticket; do
       rc=0
-      out=$(team team-open --task "$task" --resume "$project" 2>"$err") || rc=$?
+      # A ticket worktree is named as the checkpoint names it, <project>--NN.
+      label="$task $project${ticket:+--$ticket}"
+      out=$(team team-open --task "$task" --resume "$project" ${ticket:+--ticket "$ticket"} 2>"$err") || rc=$?
       if ((rc == 0)); then
-        sed -E 's/^team-open: //' "$err" | prefixed "$task $project"
+        sed -E 's/^team-open: //' "$err" | prefixed "$label"
         moved=$(jq -r 'if .moved then ", moved from \(.from)" else "" end
           + if .archive then ", scratch restored from \(.archive)" else ", no scratch to restore" end' <<<"$out")
-        echo "$task $project: $(jq -r '"\(.worktree) on \(.branch) at \(.head[:7])"' <<<"$out")$moved"
+        echo "$label: $(jq -r '"\(.worktree) on \(.branch) at \(.head[:7])"' <<<"$out")$moved"
         task_json=$(jq -c --argjson wt "$out" \
-          '.worktrees += [$wt | {project, branch, worktree, from, moved, head, archive, snapshot}]' <<<"$task_json")
+          '.worktrees += [$wt | {project, branch, worktree, from, moved, head, archive, snapshot}
+            + if .ticket then {ticket} else {} end]' <<<"$task_json")
       else
         failed=$((failed + 1))
         reason=$(grep . "$err" | sed -E 's/^team-open: //' | paste -sd ' ' || true)
         [[ -n $reason ]] || reason="team-open exited $rc"
-        echo "team-resume: $task $project: not re-homed: $reason" >&2
+        echo "team-resume: $label: not re-homed: $reason" >&2
         # The ledger keeps it, where team-state shows it until the worktree is made, with only the
         # first line team-open printed.
         ledger_append "$(jq -cn --arg task "$task" --arg p "$project" --arg b "$branch" --arg m "$machine" \
-          --arg r "$(first_error)" --arg all "$reason" \
+          --arg r "$(first_error)" --arg all "$reason" --arg nn "$ticket" \
           '{ts: (now | todate), task: $task, event: "rehome-failed", project: $p, branch: $b, machine: $m,
-            reason: (if $r == "" then $all else $r end)}')"
-        task_json=$(jq -c --arg p "$project" --arg b "$branch" --arg r "$reason" \
-          '.failures += [{project: $p, branch: $b, reason: $r}]' <<<"$task_json")
+            reason: (if $r == "" then $all else $r end)} + if $nn == "" then {} else {ticket: $nn} end')"
+        task_json=$(jq -c --arg p "$project" --arg b "$branch" --arg r "$reason" --arg nn "$ticket" \
+          '.failures += [{project: $p, branch: $b, reason: $r} + if $nn == "" then {} else {ticket: $nn} end]' <<<"$task_json")
       fi
-    done < <(jq -r '.open[] | [.project, .branch] | @tsv' <<<"$entry")
+    done < <(jq -r '.open[] | [.project, .branch, .ticket // ""] | @tsv' <<<"$entry")
     if [[ $(jq -r '.crashed != null' <<<"$task_json") == true ]]; then
       task_json=$(crash_facts "$task" "$task_json" "$lease")
       echo "$task: $(jq -r '.crashed | "crashed on \(.machine // "the machine it last ran on"), with no handoff since its last launch; "
