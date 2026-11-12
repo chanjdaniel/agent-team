@@ -70,8 +70,8 @@ logged() {
   assert_equal "$(jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map(select(.task == "T7")) | [waiting.reason, parked]' \
     "$TEAM_HOME/ledger.jsonl")" '["ask sign-in",true]'
   # waiting.md lists it by the end of the command, linked to the question.
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T7 sign-in: Which of the two sign-in limits stays? <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001>"
+  assert_equal "$(waiting_items_shown | head -n 1)" \
+    "- **1** T7 sign-in: Which of the two sign-in limits stays? <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001> - unblocks 1 (1 task)"
 }
 
 @test "--script hashes the script first, ends the question with its path, its sha256 and the yes rule, and logs one asked with both" {
@@ -153,8 +153,8 @@ asked"
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
   # waiting.md, and the snapshot's pending asks, show it by that line.
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T7 write-1: $line <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001>"
+  assert_equal "$(waiting_items_shown | head -n 1)" \
+    "- **1** T7 write-1: $line <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001> - unblocks 1 (1 task)"
 }
 
 @test "the ping mentions each of Daniel's ids and cuts a long first line" {

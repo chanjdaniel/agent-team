@@ -8,6 +8,8 @@ load helpers/common
 load helpers/inbox
 
 STATE=inbox.json
+# The line after the items saying how they are ranked.
+RANKED="-# Ranked by what each answer unblocks: its task while that waits on it, the open tasks blocked on that task, the task's ready tickets and a PR to merge; ties oldest first."
 
 # An opened event of task <task> titled <title>, as team-open logs it.
 opened() {
@@ -98,19 +100,19 @@ Nothing waits on you."
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$output" "wrote waiting.md: 5 items"
   assert_equal "$stderr" ""
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T3 plan: Approve the plan? <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000003>
-- **2** T3 port: Which port? <#3333>
-- **3** T5 keep: Keep it?
-**PRs ready to merge**
-- **4** T4 Four: <https://github.com/owner/proj/pull/4>
-**Interviews under way**
-- **5** T9 Nine: <#9999>"
-  # waiting.json holds each item, its number, key and line, in the order waiting.md shows them.
-  assert_equal "$(jq -c '.items[0], .items[3], .items[4]' "$TEAM_HOME/waiting.json")" \
-    "{\"n\":1,\"key\":\"ask T3 plan 2026-10-01T11:00:00Z\",\"kind\":\"ask\",\"task\":\"T3\",\"title\":\"Three\",\"id\":\"plan\",\"text\":\"Approve the plan?\",\"thread\":\"3333\",\"message\":\"1564000000000000003\",\"line\":\"- **1** T3 plan: Approve the plan? <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000003>\"}
-{\"n\":4,\"key\":\"pr https://github.com/owner/proj/pull/4\",\"kind\":\"pr\",\"task\":\"T4\",\"title\":\"Four\",\"url\":\"https://github.com/owner/proj/pull/4\",\"line\":\"- **4** T4 Four: <https://github.com/owner/proj/pull/4>\"}
-{\"n\":5,\"key\":\"interview T9 9999\",\"kind\":\"interview\",\"task\":\"T9\",\"title\":\"Nine\",\"thread\":\"9999\",\"line\":\"- **5** T9 Nine: <#9999>\"}"
+  # T4's PR, which holds its task and a merge, leads; the rest each hold a task, all asked at once.
+  assert_equal "$(waiting_items_shown)" "- **1** T4 Four: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+- **2** T3 plan: Approve the plan? <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000003> - unblocks 1 (1 task)
+- **3** T3 port: Which port? <#3333> - unblocks 1 (1 task)
+- **4** T5 keep: Keep it? - unblocks 1 (1 task)
+- **5** T9 Nine: interview under way <#9999> - unblocks 1 (1 task)
+$RANKED"
+  # waiting.json holds each item, its number, key, start, what it unblocks and line, in the order
+  # waiting.md shows them.
+  assert_equal "$(jq -c '.items[0], .items[1], .items[4]' "$TEAM_HOME/waiting.json")" \
+    "{\"n\":1,\"key\":\"pr https://github.com/owner/proj/pull/4\",\"kind\":\"pr\",\"task\":\"T4\",\"title\":\"Four\",\"url\":\"https://github.com/owner/proj/pull/4\",\"since\":\"2026-10-01T11:00:00Z\",\"unblocks\":{\"tasks\":1,\"tickets\":0,\"prs\":1},\"line\":\"- **1** T4 Four: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)\"}
+{\"n\":2,\"key\":\"ask T3 plan 2026-10-01T11:00:00Z\",\"kind\":\"ask\",\"task\":\"T3\",\"title\":\"Three\",\"id\":\"plan\",\"text\":\"Approve the plan?\",\"thread\":\"3333\",\"message\":\"1564000000000000003\",\"since\":\"2026-10-01T11:00:00Z\",\"unblocks\":{\"tasks\":1,\"tickets\":0,\"prs\":0},\"line\":\"- **2** T3 plan: Approve the plan? <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000003> - unblocks 1 (1 task)\"}
+{\"n\":5,\"key\":\"interview T9 9999\",\"kind\":\"interview\",\"task\":\"T9\",\"title\":\"Nine\",\"thread\":\"9999\",\"since\":\"2026-10-01T11:00:00Z\",\"unblocks\":{\"tasks\":1,\"tickets\":0,\"prs\":0},\"line\":\"- **5** T9 Nine: interview under way <#9999> - unblocks 1 (1 task)\"}"
   assert_equal "$(jq -r '.items[] | .line' "$TEAM_HOME/waiting.json")" "$(waiting_items_shown | grep '^- ')"
 
   # One item is "1 item".
@@ -139,15 +141,15 @@ item_id() {
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
   assert_equal "$output" "wrote waiting.md: 3 items"
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T3 a: A?
-**Other asks**
-- **2** open a research task on Fable one-shots? <https://discord.com/channels/1/2/3>
-- **3** T4 which domain for the docs site
+  # They hold no task the ledger knows, so they rank after its items, in current.md's order.
+  assert_equal "$(waiting_items_shown)" "- **1** T3 a: A? - unblocks 1 (1 task)
+- **2** open a research task on Fable one-shots? <https://discord.com/channels/1/2/3> - unblocks 0
+- **3** T4 which domain for the docs site - unblocks 0
+$RANKED
 -# Owed you: T4 the weekly report, mine to send
 -# Owed you: a reply on the docs budget <https://discord.com/channels/1/2/4>"
   assert_equal "$(jq -c '.items[1] | del(.line)' "$TEAM_HOME/waiting.json")" \
-    "{\"n\":2,\"key\":\"note $(item_id "$research")\",\"kind\":\"note\",\"task\":\"-\",\"title\":null,\"id\":\"$(item_id "$research")\",\"text\":\"open a research task on Fable one-shots?\",\"where\":\"https://discord.com/channels/1/2/3\"}"
+    "{\"n\":2,\"key\":\"note $(item_id "$research")\",\"kind\":\"note\",\"task\":\"-\",\"title\":null,\"id\":\"$(item_id "$research")\",\"text\":\"open a research task on Fable one-shots?\",\"where\":\"https://discord.com/channels/1/2/3\",\"since\":null,\"unblocks\":{\"tasks\":0,\"tickets\":0,\"prs\":0}}"
   run_bin -0 team-inbox --item 3
   assert_equal "$output" "note T4 $(item_id "$domain")"
 
@@ -156,20 +158,82 @@ item_id() {
   mkdir "$TEAM_HOME/tasks/current.md"
   run_bin -0 --separate-stderr team-inbox
   assert_contains "$stderr" "team-inbox: leaves out the asks and owed replies of tasks/current.md, since it cannot be read: "
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T3 a: A?"
+  assert_equal "$(waiting_items_shown)" "- **1** T3 a: A? - unblocks 1 (1 task)
+$RANKED"
 }
 
-@test "a section with nothing in it is left out, and an ask settled by merge-approved goes with it" {
+# Task <task> of proj, opened at 09:00 in the worktree $BATS_TEST_TMPDIR/<task>, its task directory
+# holding the tickets given as "<NN-slug> <blockers>" (None for none).
+ticketed() {
+  local wt=$BATS_TEST_TMPDIR/$1 spec
+  mkdir -p "$wt/.scratch/task/tickets"
+  jq -nc --arg task "$1" --arg wt "$wt" '{ts: "2026-10-01T09:00:00Z", task: $task, event: "opened", project: "proj",
+    path: "feature", type: "feat", title: "Task \($task)", branch: "feat/\($task)", base: "main", base_sha: "0123456",
+    worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
+  for spec in "${@:2}"; do
+    printf '%s\n' "# ${spec%% *}" "" "Blocked by: ${spec#* }" >"$wt/.scratch/task/tickets/${spec%% *}.md"
+  done
+}
+
+@test "the list is ranked by what each answer unblocks, ties oldest first, each line showing its count, and new items numbered in that order" {
+  registry
+  # T20's plan ask holds two ready tickets (03 waits on 01); T21's ask holds T23, blocked on T21;
+  # T22's and T25's hold their tasks alone, T25's asked first; a launch went past T26's.
+  ticketed T20 "01-a None" "02-b None" "03-c 01"
+  log_events '{"ts":"2026-10-01T11:00:00Z","task":"T20","event":"asked","id":"plan","text":"Approve the plan?"}'
+  ticketed T21
+  log_events '{"ts":"2026-10-01T11:30:00Z","task":"T21","event":"asked","id":"a","text":"A?"}'
+  ticketed T22
+  log_events '{"ts":"2026-10-01T11:45:00Z","task":"T22","event":"asked","id":"b","text":"B?"}'
+  ticketed T23
+  log_events '{"ts":"2026-10-01T10:00:00Z","task":"T23","event":"blocked","cause":"task","on":"T21","reason":"needs T21 merged"}'
+  ticketed T25
+  log_events '{"ts":"2026-10-01T10:30:00Z","task":"T25","event":"asked","id":"c","text":"C?"}'
+  ticketed T26 "01-a None"
+  log_events '{"ts":"2026-10-01T10:15:00Z","task":"T26","event":"asked","id":"d","text":"D?"}' \
+    "{\"ts\":\"2026-10-01T10:20:00Z\",\"task\":\"T26\",\"event\":\"launch\",\"role\":\"builder\",\"session\":\"s26\",\"worktree\":\"$BATS_TEST_TMPDIR/T26\",\"toolkits\":[],\"past_ask\":[\"d\"]}"
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$(waiting_items_shown)" "- **1** T20 plan: Approve the plan? - unblocks 3 (1 task, 2 tickets)
+- **2** T21 a: A? - unblocks 2 (2 tasks)
+- **3** T25 c: C? - unblocks 1 (1 task)
+- **4** T22 b: B? - unblocks 1 (1 task)
+- **5** T26 d: D? - unblocks 0
+$RANKED"
+  assert_equal "$(jq -c '.items[0] | {since, unblocks}' "$TEAM_HOME/waiting.json")" \
+    '{"since":"2026-10-01T11:00:00Z","unblocks":{"tasks":1,"tickets":2,"prs":0}}'
+
+  # Once T21's ask is answered and T20's 01 is done, T20 still leads; a number keeps its item.
+  log_events '{"task":"T21","event":"answered","id":"a","answer":"yes"}' \
+    '{"task":"T20","event":"ticket-done","ticket":"01","commits":["1f2f4a1"]}'
+  run_bin -0 team-inbox
+  assert_equal "$(waiting_items_shown | sed -n 1,2p)" "- **1** T20 plan: Approve the plan? - unblocks 3 (1 task, 2 tickets)
+- **3** T25 c: C? - unblocks 1 (1 task)"
+}
+
+@test "a PR ready to merge counts its merge, as does an ask naming it, and a task whose tickets cannot be read counts none, saying why" {
+  registry
+  ready_pr T4 proj 4
+  log_events '{"ts":"2026-10-01T12:00:00Z","task":"T4","event":"asked","id":"merge","text":"Merge https://github.com/owner/proj/pull/4?"}'
+  ticketed T7 "01-a None" "bad"
+  log_events '{"ts":"2026-10-01T10:30:00Z","task":"T7","event":"asked","id":"x","text":"X?"}'
+  run_bin -0 --separate-stderr team-inbox
+  # The PR, its first pr event at 11:00, is older than the ask about it.
+  assert_equal "$(waiting_items_shown | sed -n 1,3p)" "- **1** T4 Task T4: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+- **2** T4 merge: Merge https://github.com/owner/proj/pull/4? - unblocks 2 (1 task, 1 PR)
+- **3** T7 x: X? - unblocks 1 (1 task)"
+  assert_equal "$stderr" "team-inbox: counts no ready tickets for T7, since team-tickets failed: team-tickets: $BATS_TEST_TMPDIR/T7/.scratch/task/tickets/bad.md: not named NN-<slug>.md, NN the ticket's two-digit number"
+}
+
+@test "an ask naming a PR is listed with the PR, and a merge-approved of it settles both" {
   opened T4 "Four" >>"$TEAM_HOME/ledger.jsonl"
   log_events '{"task":"T4","event":"pr","url":"https://github.com/owner/proj/pull/4","head":"abc1234def"}' \
     '{"task":"T4","event":"review","head":"abc1234def","verdict":"pass"}' \
     '{"task":"T4","event":"asked","id":"merge","text":"Merge https://github.com/owner/proj/pull/4?"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T4 merge: Merge https://github.com/owner/proj/pull/4?
-**PRs ready to merge**
-- **2** T4 Four: <https://github.com/owner/proj/pull/4>"
+  assert_equal "$(waiting_items_shown)" "- **1** T4 merge: Merge https://github.com/owner/proj/pull/4? - unblocks 2 (1 task, 1 PR)
+- **2** T4 Four: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+$RANKED"
   log_events '{"task":"T4","event":"merge-approved","url":"https://github.com/owner/proj/pull/4","discord_message":"1564000000000000004","head":"abc1234def"}'
   run_bin -0 team-inbox
   assert_equal "$(waiting_items_shown)" "Nothing waits on you."
@@ -184,8 +248,8 @@ item_id() {
   assert_equal "$(waiting_items_shown)" "Nothing waits on you."
   run_bin -0 team-log T4 review verdict=pass head=abc1234def "$counts" sent_back=none guarded=none
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T4 Four: <https://github.com/owner/proj/pull/4>"
+  assert_equal "$(waiting_items_shown)" "- **1** T4 Four: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+$RANKED"
 }
 
 @test "a merged PR, a later commit under review, and a closed task leave the list, and what stands keeps its number" {
@@ -198,11 +262,10 @@ item_id() {
   opened T9 "Nine" >>"$TEAM_HOME/ledger.jsonl"
   log_events '{"task":"T9","event":"interview-thread","discord_thread":"9999"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T4 Four: <https://github.com/owner/proj/pull/4>
-- **2** T6 Six: <https://github.com/owner/proj/pull/6/>
-**Interviews under way**
-- **3** T9 Nine: <#9999>"
+  assert_equal "$(waiting_items_shown)" "- **1** T4 Four: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+- **2** T6 Six: ready to merge <https://github.com/owner/proj/pull/6/> - unblocks 2 (1 task, 1 PR)
+- **3** T9 Nine: interview under way <#9999> - unblocks 1 (1 task)
+$RANKED"
   # A PR's key drops its URL's trailing slash.
   assert_equal "$(numbers | sed -n 2p)" "2 pr https://github.com/owner/proj/pull/6"
   # Approved at an older head, a PR still waits on Daniel's word for the new one.
@@ -211,8 +274,8 @@ item_id() {
     '{"task":"T6","event":"merge-approved","url":"https://github.com/owner/proj/pull/6","discord_message":"1564000000000000006","head":"5555555aaa"}' \
     '{"task":"T9","event":"plan-approved","by":"Daniel"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **2** T6 Six: <https://github.com/owner/proj/pull/6/>"
+  assert_equal "$(waiting_items_shown)" "- **2** T6 Six: ready to merge <https://github.com/owner/proj/pull/6/> - unblocks 2 (1 task, 1 PR)
+$RANKED"
   log_events '{"task":"T6","event":"closed","archive":[],"returned":[],"kept":[]}'
   run_bin -0 team-inbox
   assert_equal "$(waiting_items_shown)" "Nothing waits on you."
@@ -230,19 +293,19 @@ item_id() {
 3 ask T3 c 2026-10-01T11:00:00Z"
   log_events '{"task":"T3","event":"answered","id":"a","answer":"yes"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **2** T3 b: B? <#3333>
-- **3** T3 c: C? <#3333>"
-  # T2's new ask, listed first by its task, takes the free 1; T3's next takes 4.
+  assert_equal "$(waiting_items_shown)" "- **2** T3 b: B? <#3333> - unblocks 1 (1 task)
+- **3** T3 c: C? <#3333> - unblocks 1 (1 task)
+$RANKED"
+  # T2's new ask, asked with T3's and listed first by its task, takes the free 1; T3's next takes 4.
   opened T2 "Two" >>"$TEAM_HOME/ledger.jsonl"
   log_events '{"task":"T2","event":"asked","id":"d","text":"D?"}' \
     '{"task":"T3","event":"asked","id":"e","text":"E?"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T2 d: D?
-- **2** T3 b: B? <#3333>
-- **3** T3 c: C? <#3333>
-- **4** T3 e: E? <#3333>"
+  assert_equal "$(waiting_items_shown)" "- **1** T2 d: D? - unblocks 1 (1 task)
+- **2** T3 b: B? <#3333> - unblocks 1 (1 task)
+- **3** T3 c: C? <#3333> - unblocks 1 (1 task)
+- **4** T3 e: E? <#3333> - unblocks 1 (1 task)
+$RANKED"
 }
 
 @test "a number the latest post showed is not given to a new item until the next post frees it, and a re-asked id is a new item" {
@@ -262,12 +325,13 @@ item_id() {
     '["2026-10-01T12:00:00Z",["1569000000000000009"],[1,2]]'
   # A post showing 2 and 3 frees 1.
   posted_as
-  log_events '{"task":"T3","event":"asked","id":"c","text":"C?"}'
+  log_events '{"ts":"2026-10-01T13:00:00Z","task":"T3","event":"asked","id":"c","text":"C?"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T3 c: C?
-- **2** T3 b: B?
-- **3** T3 a: A, again?"
+  # Each holds its task alone, so they stand oldest first, whatever their numbers.
+  assert_equal "$(waiting_items_shown)" "- **2** T3 b: B? - unblocks 1 (1 task)
+- **3** T3 a: A, again? - unblocks 1 (1 task)
+- **1** T3 c: C? - unblocks 1 (1 task)
+$RANKED"
 }
 
 @test "an unreadable waiting.json, or one of another schema, numbers the list afresh and says so; a missing one says nothing" {
@@ -314,7 +378,7 @@ item_id() {
   echo "403" >"$STUB_FIXTURES/inbox/fail"
   run_bin -0 --separate-stderr team-inbox
   assert_contains "$stderr" "team-inbox: links each ask to its thread alone, since Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 403"
-  assert_equal "$(waiting_items_shown | sed -n 2p)" "- **1** T3 plan: Approve the plan? <#3333>"
+  assert_equal "$(waiting_items_shown | sed -n 2p)" "- **2** T3 plan: Approve the plan? <#3333> - unblocks 1 (1 task)"
   assert_equal "$(waiting_items_shown | tail -n 1)" \
     "-# Default merge word withdrawn for every project since message 1564100000000000001 in <#1562486564871995482>"
   [[ ! -e $state ]]
@@ -324,7 +388,7 @@ item_id() {
   : >"$STUB_FIXTURES/inbox/calls"
   run_bin -0 --separate-stderr team-inbox
   assert_contains "$stderr" "team-inbox: links each ask to its thread alone, since no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
-  assert_equal "$(waiting_items_shown | sed -n 2p)" "- **1** T3 plan: Approve the plan? <#3333>"
+  assert_equal "$(waiting_items_shown | sed -n 2p)" "- **2** T3 plan: Approve the plan? <#3333> - unblocks 1 (1 task)"
   assert_equal "$(inbox_calls)" ""
 }
 
@@ -473,14 +537,15 @@ POST channels/1562486564871995482/messages"
 posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001
 posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000002
 posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000003
-posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000004"
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000004
+posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000005"
   assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" \
-    '["1569000000000000001","1569000000000000002","1569000000000000003","1569000000000000004"]'
+    '["1569000000000000001","1569000000000000002","1569000000000000003","1569000000000000004","1569000000000000005"]'
   # Each message is at most 2000 characters, packed: the next message's first line would not fit.
   local id next
-  for id in 1 2 3 4; do
+  for id in 1 2 3 4 5; do
     (($(jq -r '.content | length' "$STUB_FIXTURES/inbox/156900000000000000$id.json") <= 2000))
-    if ((id < 4)); then
+    if ((id < 5)); then
       next=$(jq -r '.content | split("\n")[0] | length' "$STUB_FIXTURES/inbox/156900000000000000$((id + 1)).json")
       (($(jq -r '.content | length' "$STUB_FIXTURES/inbox/156900000000000000$id.json") + 1 + next > 2000))
     fi
@@ -504,7 +569,7 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
   run_bin -75 --separate-stderr team-inbox --post
   assert_equal "$output" "wrote waiting.md: 30 items
 posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"
-  assert_equal "$stderr" "team-inbox: Discord is rate-limiting the bot (429) on the post of the list's message 2 of 3: try again in 3 s"
+  assert_equal "$stderr" "team-inbox: Discord is rate-limiting the bot (429) on the post of the list's message 2 of 4: try again in 3 s"
   assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000001"]'
   local shown
   shown=$(jq -r '.posted.items[].n' "$TEAM_HOME/waiting.json" | paste -sd ' ')
@@ -515,7 +580,7 @@ posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/15690000000
   echo "2 500" >"$STUB_FIXTURES/inbox/fail-post"
   rm "$STUB_FIXTURES/inbox/posts"
   run_bin -1 --separate-stderr team-inbox --post
-  assert_equal "$stderr" "team-inbox: Discord refused the post of the list's message 2 of 3: curl: (22) The requested URL returned error: 500"
+  assert_equal "$stderr" "team-inbox: Discord refused the post of the list's message 2 of 4: curl: (22) The requested URL returned error: 500"
   assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000002"]'
 }
 
@@ -527,7 +592,7 @@ posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/15690000000
   assert_equal "$output" "wrote waiting.md: 5 items"
   assert_equal "$stderr" "team-inbox: Discord is rate-limiting the bot (429) on the post of the list: try again later"
   assert_equal "$(jq -c .posted "$TEAM_HOME/waiting.json")" null
-  assert_equal "$(waiting_items_shown | sed -n 2p)" "- **1** T3 plan: Approve the plan? <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000003>"
+  assert_equal "$(waiting_items_shown | sed -n 2p)" "- **2** T3 plan: Approve the plan? <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000003> - unblocks 1 (1 task)"
 
   echo "1 403" >"$STUB_FIXTURES/inbox/fail-post"
   run_bin -1 --separate-stderr team-inbox --post
@@ -545,18 +610,18 @@ posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/15690000000
   log_events '{"task":"T3","event":"answered","id":"a","answer":"no"}' \
     '{"task":"T3","event":"asked","id":"c","text":"C?"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **2** T3 b: B?
-- **3** T3 c: C?"
+  assert_equal "$(waiting_items_shown)" "- **2** T3 b: B? - unblocks 1 (1 task)
+- **3** T3 c: C? - unblocks 1 (1 task)
+$RANKED"
   # The next post shows 2 and 3, which frees 1 for d.
   run_bin -0 team-inbox --post
   assert_equal "$(jq -c '[.posted.items[].n]' "$TEAM_HOME/waiting.json")" '[2,3]'
-  log_events '{"task":"T3","event":"asked","id":"d","text":"D?"}'
+  log_events '{"ts":"2026-10-01T12:00:00Z","task":"T3","event":"asked","id":"d","text":"D?"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**Asks**
-- **1** T3 d: D?
-- **2** T3 b: B?
-- **3** T3 c: C?"
+  assert_equal "$(waiting_items_shown)" "- **2** T3 b: B? - unblocks 1 (1 task)
+- **3** T3 c: C? - unblocks 1 (1 task)
+- **1** T3 d: D? - unblocks 1 (1 task)
+$RANKED"
 }
 
 @test "a post pushes waiting.json and waiting.md to the team home's origin at once, and one it cannot push exits 0 and says so" {
@@ -681,15 +746,15 @@ said() {
   ready_pr T7 proj 7
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T6 Task T6: <https://github.com/owner/agent-team/pull/6>
-- **2** T7 Task T7: <https://github.com/owner/proj/pull/7>"
+  assert_equal "$(waiting_items_shown)" "- **1** T6 Task T6: ready to merge <https://github.com/owner/agent-team/pull/6> - unblocks 2 (1 task, 1 PR)
+- **2** T7 Task T7: ready to merge <https://github.com/owner/proj/pull/7> - unblocks 2 (1 task, 1 PR)
+$RANKED"
 
   # A refused default merge comes back as an ask naming the PR's URL, which merge-approved settles.
   log_events '{"task":"T4","event":"asked","id":"merge-4","text":"Merge https://github.com/owner/proj/pull/4 at abc1234?"}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown | head -n 2)" "**Asks**
-- **3** T4 merge-4: Merge https://github.com/owner/proj/pull/4 at abc1234?"
+  assert_equal "$(waiting_items_shown | head -n 1)" \
+    "- **3** T4 merge-4: Merge https://github.com/owner/proj/pull/4 at abc1234? - unblocks 2 (1 task, 1 PR)"
   assert_equal "$(waiting_items_shown | grep -c 'pull/4')" 1
   log_events '{"task":"T4","event":"merge-approved","url":"https://github.com/owner/proj/pull/4","discord_message":"1564000000000000003","head":"abc1234def"}'
   run_bin -0 team-inbox
@@ -699,7 +764,7 @@ said() {
   log_events '{"task":"T5","event":"review","head":"abc1234def","verdict":"pass","guarded":["ci"],
     "findings":{"blocking":0,"correctness":0,"security":0,"real-data":0,"note-change":0,"note-before":0}}'
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown | grep 'pull/5')" "- **3** T5 Task T5: <https://github.com/owner/conv/pull/5>"
+  assert_equal "$(waiting_items_shown | grep 'pull/5')" "- **3** T5 Task T5: ready to merge <https://github.com/owner/conv/pull/5> - unblocks 2 (1 task, 1 PR)"
 }
 
 @test "the team's own project's PR is listed whatever approval it has, by its repo or its path as well as by its name" {
@@ -713,9 +778,9 @@ said() {
   git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/Owner/proj/
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>
-- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>"
+  assert_equal "$(waiting_items_shown)" "- **1** T4 Task T4: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+- **2** T5 Task T5: ready to merge <https://github.com/owner/conv/pull/5> - unblocks 2 (1 task, 1 PR)
+$RANKED"
 }
 
 @test "each withdrawal that stands is named after the items, and its PRs are listed until it is given back" {
@@ -728,9 +793,9 @@ said() {
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
   assert_equal "$(waiting_shown)" "**Waiting on you**
-**PRs ready to merge**
-- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>
-- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>
+- **1** T4 Task T4: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+- **2** T5 Task T5: ready to merge <https://github.com/owner/conv/pull/5> - unblocks 2 (1 task, 1 PR)
+$RANKED
 -# Default merge word withdrawn for project proj since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>
 -# Default merge word withdrawn for T5 since <https://discord.com/channels/$INBOX_GUILD/5555/1564100000000000002>"
   assert_equal "$(jq -c '.withdrawn | map([.task, .scope, .discord_message])' "$TEAM_HOME/waiting.json")" \
@@ -739,17 +804,17 @@ said() {
   # T5's giving back leaves proj's withdrawal standing, and T5's PR merges on the default word.
   said merge-default-restored task 1564100000000000003 5555 T5
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>
+  assert_equal "$(waiting_items_shown)" "- **1** T4 Task T4: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+$RANKED
 -# Default merge word withdrawn for project proj since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000001>"
 
   # A withdrawal of every project is one line, and a giving back of all ends every withdrawal
   # (T278's C3).
   said merge-default-withdrawn all 1564100000000000004
   run_bin -0 team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>
-- **2** T5 Task T5: <https://github.com/owner/conv/pull/5>
+  assert_equal "$(waiting_items_shown)" "- **1** T4 Task T4: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+- **2** T5 Task T5: ready to merge <https://github.com/owner/conv/pull/5> - unblocks 2 (1 task, 1 PR)
+$RANKED
 -# Default merge word withdrawn for every project since <https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1564100000000000004>"
   said merge-default-restored all 1564100000000000005
   run_bin -0 team-inbox
@@ -765,15 +830,15 @@ Nothing waits on you."
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
   assert_equal "$(waiting_shown)" "**Waiting on you**
-**PRs ready to merge**
-- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>"
+- **1** T4 Task T4: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+$RANKED"
 }
 
 @test "with an approved plan awaiting merge and the registry unreadable, every PR ready to merge is listed and stderr says why" {
   approved_pr T4 proj 4
   run_bin -0 --separate-stderr team-inbox
-  assert_equal "$(waiting_items_shown)" "**PRs ready to merge**
-- **1** T4 Task T4: <https://github.com/owner/proj/pull/4>"
+  assert_equal "$(waiting_items_shown)" "- **1** T4 Task T4: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)
+$RANKED"
   assert_equal "$stderr" "team-inbox: lists every PR ready to merge, the default word aside, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
   # Nor is it read with no approved plan awaiting merge.
   : >"$TEAM_HOME/ledger.jsonl"
@@ -798,10 +863,11 @@ Nothing waits on you."
   log_events '{"task":"T9","event":"launch","role":"builder","session":"99999999","worktree":"/w/T9","toolkits":[]}'
   run_bin -0 --separate-stderr team-inbox --post
   assert_equal "$stderr" ""
-  assert_equal "$(posted_shown | tail -n 3 | head -n 2)" "- **5** T9 Nine: <#9999>
+  assert_equal "$(posted_shown | tail -n 4 | head -n 3)" "- **5** T9 Nine: interview under way <#9999> - unblocks 1 (1 task)
+$RANKED
 Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.0 GiB reserved; T5, T6 and T12 stowed, waiting to resume"
   # waiting.md holds no resources line.
-  assert_equal "$(waiting_shown | tail -n 1)" "- **5** T9 Nine: <#9999>"
+  assert_equal "$(waiting_shown | tail -n 1)" "$RANKED"
   assert_equal "$(inbox_resources_shown)" "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.0 GiB reserved; T5, T6 and T12 stowed, waiting to resume"
 }
 
@@ -895,9 +961,11 @@ EOF
   assert_equal "$output" "wrote waiting.md: 31 items"
   (($(wc -c <"$TEAM_HOME/waiting.md") > 2000))
   assert_equal "$(grep -c '^- \*\*[0-9]*\*\* T3 q' "$TEAM_HOME/waiting.md")" 30
-  # An ask's text is cut to 150 characters, a title to 80.
-  [[ $(grep -m 1 '^- \*\*1\*\* ' "$TEAM_HOME/waiting.md") == "- **1** T3 q1: $(printf "Question 1 %.0s" {1..20} | cut -c 1-147)... <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000001>" ]]
-  assert_equal "$(grep 'pull/3' "$TEAM_HOME/waiting.md")" "- **31** T3 $(printf 'Title %.0s' {1..30} | cut -c 1-77)...: <https://github.com/owner/proj/pull/3>"
+  # An ask's text is cut to 150 characters, a title to 80; the PR, which also counts its merge,
+  # ranks first.
+  [[ $(grep -m 1 '^- \*\*2\*\* ' "$TEAM_HOME/waiting.md") == "- **2** T3 q1: $(printf "Question 1 %.0s" {1..20} | cut -c 1-147)... <https://discord.com/channels/$INBOX_GUILD/3333/1564000000000000001> - unblocks 1 (1 task)" ]]
+  assert_equal "$(grep 'pull/3' "$TEAM_HOME/waiting.md")" \
+    "- **1** T3 $(printf 'Title %.0s' {1..30} | cut -c 1-77)...: ready to merge <https://github.com/owner/proj/pull/3> - unblocks 2 (1 task, 1 PR)"
 }
 
 @test "another run holding the lock for the wait is exit 75" {
@@ -935,12 +1003,12 @@ EOF
   run_bin -0 team-inbox
   local calls
   calls=$(inbox_calls)
-  run_bin -0 --separate-stderr team-inbox --item 1
+  run_bin -0 --separate-stderr team-inbox --item 2
   assert_equal "$output" "ask T3 plan"
   assert_equal "$stderr" ""
-  run_bin -0 team-inbox --item 3
-  assert_equal "$output" "ask T5 keep"
   run_bin -0 team-inbox --item 4
+  assert_equal "$output" "ask T5 keep"
+  run_bin -0 team-inbox --item 1
   assert_equal "$output" "pr T4 https://github.com/owner/proj/pull/4"
   run_bin -0 team-inbox --item 5
   assert_equal "$output" "interview T9 9999"
@@ -951,7 +1019,7 @@ EOF
   exec {lock}>>"$HOME/.local/state/agent-team/inbox.lock"
   flock "$lock"
   echo '{"since": "2026-10-29T10:00:00Z"}' >"$HOME/.local/state/agent-team/fenced"
-  TEAM_INBOX_LOCK_SECONDS=0 run_bin -0 team-inbox --item 2
+  TEAM_INBOX_LOCK_SECONDS=0 run_bin -0 team-inbox --item 3
   assert_equal "$output" "ask T3 port"
   exec {lock}>&-
   assert_equal "$(inbox_calls)" "$calls"
@@ -965,7 +1033,7 @@ EOF
   run_bin -0 team-inbox
   run_bin -1 --separate-stderr team-inbox --item 5
   assert_equal "$output" ""
-  assert_equal "$stderr" "team-inbox: item 5 no longer waits: the list posted 2026-10-01T12:00:00Z showed it as - **5** T9 Nine: <#9999>"
+  assert_equal "$stderr" "team-inbox: item 5 no longer waits: the list posted 2026-10-01T12:00:00Z showed it as - **5** T9 Nine: interview under way <#9999> - unblocks 1 (1 task)"
 }
 
 @test "--item on a number nothing holds names the numbers that wait, or that nothing does" {
@@ -978,11 +1046,11 @@ EOF
     '{"task":"T9","event":"closed","archive":[],"returned":[],"kept":[]}'
   run_bin -0 team-inbox
   run_bin -1 --separate-stderr team-inbox --item 5
-  assert_equal "$stderr" "team-inbox: no item 5 waits; the list holds 4"
+  assert_equal "$stderr" "team-inbox: no item 5 waits; the list holds 1"
   log_events '{"task":"T4","event":"closed","archive":[],"returned":[],"kept":[]}'
   run_bin -0 team-inbox
-  run_bin -1 --separate-stderr team-inbox --item 4
-  assert_equal "$stderr" "team-inbox: no item 4 waits; nothing waits"
+  run_bin -1 --separate-stderr team-inbox --item 1
+  assert_equal "$stderr" "team-inbox: no item 1 waits; nothing waits"
   # Two numbers are joined by "and" alone.
   jq '.items = [{n: 2, kind: "ask", task: "T3", id: "a"}, {n: 6, kind: "ask", task: "T3", id: "b"}]' \
     "$TEAM_HOME/waiting.json" >"$BATS_TEST_TMPDIR/w" && mv "$BATS_TEST_TMPDIR/w" "$TEAM_HOME/waiting.json"

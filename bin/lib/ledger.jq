@@ -2000,6 +2000,14 @@ def merge_ready_prs($withdrawals; $own):
           and (.head == null or same_head(.head; $pr.head))) | not)
       | select($own != null and ($events | default_holds($pr; $withdrawals; $own)) | not)] end;
 
+# Each open task's count of the other open tasks blocked on it, over by_task's answer: {"T<n>": n},
+# counting each task whose standing blocked park of cause task (no launch went past it) is on it.
+def blocked_on_counts:
+  [to_entries[] | select(.value | is_open) | .key as $t
+   | [.value | lifecycle | lifecycle_parks[] | select(.kind == "blocked" and .cause == "task" and (.passed | not))
+      | .on | tostring | ascii_upcase | select(. != $t)] | unique[] | {on: ., task: $t}]
+  | group_by(.on) | map({key: .[0].on, value: length}) | from_entries;
+
 # What waits on Daniel, over every ledger event, each open task's in task number order: {items,
 # withdrawn}. items, each keyed as waiting_numbered reads it: the open asks ({key: "ask <task> <id>
 # <the asked's ts>", kind: "ask", task, title, id, text (its first line), thread (the task's
@@ -2008,35 +2016,61 @@ def merge_ready_prs($withdrawals; $own):
 # merge_ready_prs has them over $own (own_projects' {projects, app}, or null),
 # then the interviews under way ({key: "interview <task> <thread>", kind: "interview", task, title,
 # thread}), then the asks of tasks/current.md, $notes' of kind ask ({key: "note <id>", kind: "note",
-# task (T<n> or -), title: null, id (team-current's), text, where}), in its order; withdrawn: the
+# task (T<n> or -), title: null, id (team-current's), text, where}), in its order; each also with
+# since, when it began (the asked's ts, the PR's first pr event's, the latest interview-thread's;
+# null for a note, which the ledger does not date), and unblocks, what its answer unblocks, {tasks,
+# tickets, prs}: while the item holds its task (an ask no launch went past, a PR ready to merge, an
+# interview under way), tasks is 1 for it and 1 for each other open task blocked on it
+# (blocked_on_counts) and tickets its ready tickets, $tickets' count for it ({"T<n>": n}, 0 when it
+# has none), else both are 0, as for a note, which holds no task; prs is 1 for a PR ready to merge
+# and for an ask whose text names one of its task's PRs not merged, else 0. withdrawn: the
 # withdrawals of the default merge word that stand (default_withdrawals), in ledger order; owed:
 # the replies owed to Daniel, $notes' of kind owe, as {task, text, where}. $notes is current.md's
 # ask and owe lines as team-inbox reads them, [{kind, task, text, where, id}].
-def inbox_items($own; $notes):
+def inbox_items($own; $notes; $tickets):
   default_events as $withdrawals
   | ($withdrawals | default_withdrawals(task_projects)) as $withdrawn
-  | [by_task | to_entries[] | select(.value | is_open)
+  | by_task as $tasks
+  | ($tasks | blocked_on_counts) as $blocked
+  | [$tasks | to_entries[] | select(.value | is_open)
     | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
   | by_task_number
-  | {items: ([.[] | . as $t | .events as $events | $events | unsettled_asks[]
+  | def unblocks($t; $holds; $prs):
+      if $holds then {tasks: (1 + ($blocked[$t] // 0)), tickets: ($tickets[$t] // 0)} else {tasks: 0, tickets: 0} end
+      + {prs: $prs};
+    {items: ([.[] | . as $t | .events as $events
+        | ($events | task_prs | map(select(pr_merged($events; $events | task_prs) | not) | .url | rtrimstr("/"))) as $open_prs
+        | ($events | lifecycle.asks | map({key: (.i | tostring), value: .passed}) | from_entries) as $passed
+        | $events | unsettled_asks[]
+        | (.ask.text | tostring) as $text
         | {key: "ask \($t.task) \(.ask.id) \(.ask.ts)", kind: "ask", task: $t.task, title: $t.title, id: .ask.id,
-           text: (.ask.text | tostring | split("\n")[0]),
+           text: ($text | split("\n")[0]),
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
-           message: (.ask.discord_message | if . == null then null else tostring end)}]
-      + [.[] | . as $t | .events | merge_ready_prs($withdrawals; $own)[] | .url
-        | {key: "pr \(rtrimstr("/"))", kind: "pr", task: $t.task, title: $t.title, url: .}]
+           message: (.ask.discord_message | if . == null then null else tostring end),
+           since: .ask.ts,
+           unblocks: unblocks($t.task; $passed[.k | tostring] != true;
+             if any($open_prs[]; . as $url | $text | contains($url)) then 1 else 0 end)}]
+      + [.[] | . as $t | .events as $events | $events | merge_ready_prs($withdrawals; $own)[] | .url
+        | rtrimstr("/") as $url
+        | {key: "pr \($url)", kind: "pr", task: $t.task, title: $t.title, url: .,
+           since: ([$events[] | select(.event == "pr" and (.url | strings | rtrimstr("/")) == $url) | .ts] | first),
+           unblocks: unblocks($t.task; true; 1)}]
       + [.[] | select(.events | interview_under_way)
-        | (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring) as $thread
-        | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread}]
-      + [$notes[] | select(.kind == "ask") | {key: "note \(.id)", kind: "note", task, title: null, id, text, where}]),
+        | (.events | map(select(.event == "interview-thread")) | last) as $interview
+        | ($interview.discord_thread | tostring) as $thread
+        | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread, since: $interview.ts,
+           unblocks: unblocks(.task; true; 0)}]
+      + [$notes[] | select(.kind == "ask")
+        | {key: "note \(.id)", kind: "note", task, title: null, id, text, where, since: null,
+           unblocks: {tasks: 0, tickets: 0, prs: 0}}]),
      withdrawn: [$withdrawn[] | {task, scope, ts, discord_message, discord_channel}],
      owed: [$notes[] | select(.kind == "owe") | {task, text, where}]};
 
-# The items of inbox_items, in its order, each given its number n, from the previous waiting.json
-# $previous (null when there is none or it cannot be read): an item whose key $previous's items
-# hold keeps its number, and each other item, in order, takes the lowest positive number that no
-# kept item holds, no earlier new item took and no item of the latest post ($previous.posted's
-# items) showed.
+# The items of inbox_items, in the order given, each given its number n, from the previous
+# waiting.json $previous (null when there is none or it cannot be read): an item whose key
+# $previous's items hold keeps its number, and each other item, in order, takes the lowest
+# positive number that no kept item holds, no earlier new item took and no item of the latest post
+# ($previous.posted's items) showed.
 def waiting_numbered($previous):
   ([$previous.items[]? | objects | select((.key | type) == "string" and (.n | type) == "number")]
    | map({key, value: .n}) | from_entries) as $kept
@@ -2051,53 +2085,62 @@ def waiting_numbered($previous):
         | .items[$i].n = $n | .taken += [$n] end)
   | .items;
 
+# What an item's answer unblocks, as one count: the sum of its unblocks.
+def waiting_rank: [.unblocks // {} | .[] | numbers] | add // 0;
+
 # A numbered item's line in waiting.md, its number in bold rather than an ordered list's marker,
 # which Discord and GitHub both renumber, and every URL in <>, which keeps Discord from showing a
 # preview card for it: an ask linked to the question's message in guild $guild (null when unknown),
-# to the task's thread when either is unknown, and to nothing with no thread; a PR with its URL; an
-# interview with its thread; an ask of current.md with its task unless -, and its where when that
-# is a URL (note_text).
+# to the task's thread when either is unknown, and to nothing with no thread; a PR, "ready to
+# merge", with its URL; an interview, "interview under way", with its thread; an ask of current.md
+# with its task unless -, and its where when that is a URL (note_text); then what its answer
+# unblocks, " - unblocks <n>", n being its unblocks' sum, and when it is more than 0 each part that
+# is, as "(1 task, 2 tickets, 1 PR)".
 def note_text:
   (if .task == "-" then "" else "\(.task) " end) + (.text | clip(150))
   + if (.where // "") | test("^https?://\\S+$") then " <\(.where)>" else "" end;
 def waiting_line($guild):
   def named: .task + if .title == null then "" else " \(.title | clip(80))" end;
-  "- **\(.n)** "
+  def count($n; $what): if $n == 0 then empty else "\($n) \($what)\(if $n == 1 then "" else "s" end)" end;
+  (.unblocks // {}) as $u
+  | ([count($u.tasks // 0; "task"), count($u.tickets // 0; "ticket"), count($u.prs // 0; "PR")] | join(", ")) as $parts
+  | "- **\(.n)** "
   + if .kind == "ask" then "\(.task) \(.id): \(.text | clip(150))"
       + if .thread == null then ""
         elif .message != null and $guild != null then " <https://discord.com/channels/\($guild)/\(.thread)/\(.message)>"
         else " <#\(.thread)>" end
-    elif .kind == "pr" then "\(named): <\(.url)>"
+    elif .kind == "pr" then "\(named): ready to merge <\(.url)>"
     elif .kind == "note" then note_text
-    else "\(named): <#\(.thread)>" end;
+    else "\(named): interview under way <#\(.thread)>" end
+  + " - unblocks \(waiting_rank)" + if $parts == "" then "" else " (\($parts))" end;
 
-# waiting.json from inbox_items' answer: the items numbered (waiting_numbered, from $previous), in
-# the order waiting.md shows them (the asks, the PRs, the interviews, current.md's asks, each in
-# number order), each with its line (waiting_line, in guild $guild), the withdrawals and the owed
-# replies as inbox_items has them, and $previous's post, null until team-inbox --post records one.
+# waiting.json from inbox_items' answer: the items ranked by what each answer unblocks
+# (waiting_rank), the most first, ties oldest first (by since, a note's null after every date),
+# then in inbox_items' order, then numbered in that order (waiting_numbered, from $previous), so a
+# new item's number follows its rank, each with its line (waiting_line, in guild $guild); the
+# withdrawals and the owed replies as inbox_items has them, and $previous's post, null until
+# team-inbox --post records one.
 def waiting_list($previous; $guild):
   {schema: "team-waiting/1",
-   items: (.items | waiting_numbered($previous)
-     | sort_by(.kind as $kind | [(["ask", "pr", "interview", "note"] | index($kind)), .n])
+   items: (.items | sort_by([- waiting_rank, .since // "~"]) | waiting_numbered($previous)
      | map({n} + . + {line: waiting_line($guild)})),
    withdrawn: .withdrawn,
    owed: .owed,
    posted: ($previous.posted // null)};
 
+# How waiting_rank counts, the line after the items.
+def waiting_rank_text:
+  "-# Ranked by what each answer unblocks: its task while that waits on it, the open tasks blocked on that task, the task's ready tickets and a PR to merge; ties oldest first.";
+
 # waiting.md from waiting_list's answer, with a final newline: its title; "Nothing waits on you."
-# or each section with items, its heading then its items' lines; one line per reply owed to Daniel,
-# "-# Owed you: <note_text>"; and one line per withdrawal of the default merge word that stands,
-# linked to Daniel's message in its channel in guild $guild (named by its id and channel when the
-# guild is unknown).
+# or the items' lines in their order and how they are ranked (waiting_rank_text); one line per
+# reply owed to Daniel, "-# Owed you: <note_text>"; and one line per withdrawal of the default
+# merge word that stands, linked to Daniel's message in its channel in guild $guild (named by its
+# id and channel when the guild is unknown).
 def waiting_text($guild):
   .items as $items
   | ["**Waiting on you**"]
-  + if $items == [] then ["Nothing waits on you."]
-    else [[["ask", "**Asks**"], ["pr", "**PRs ready to merge**"], ["interview", "**Interviews under way**"],
-        ["note", "**Other asks**"]][]
-      as [$kind, $heading]
-      | [$items[] | select(.kind == $kind) | .line] | select(. != []) | $heading, .[]]
-    end
+  + if $items == [] then ["Nothing waits on you."] else [$items[].line, waiting_rank_text] end
   + [.owed[]? | "-# Owed you: \(note_text)"]
   + [.withdrawn[] | "-# Default merge word withdrawn for \(default_scope_text) since "
       + if $guild != null then "<https://discord.com/channels/\($guild)/\(.discord_channel)/\(.discord_message)>"
