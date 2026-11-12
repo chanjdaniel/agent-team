@@ -309,6 +309,16 @@ TABLE
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" '{"task":"T14","event":"resumed","all":true}'
 }
 
+@test "a ledger lock that cannot be opened refuses the event, naming the lock, with nothing appended" {
+  opened_task T14
+  mkdir "$TEAM_HOME/ledger.jsonl.lock"
+  local before
+  before=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-log T14 resumed all=true
+  assert_contains "$stderr" "team-log: could not append the event to the ledger under its lock, $TEAM_HOME/ledger.jsonl.lock"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$before"
+}
+
 @test "values that parse as JSON are stored as JSON, others as strings" {
   opened_task T14
   run_bin -0 team-log T14 ticket-done ticket=03 'commits=["a1b2c3d", "e4f5a6b"]' count=3 ok=true \

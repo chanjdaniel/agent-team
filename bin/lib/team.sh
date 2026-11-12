@@ -232,7 +232,8 @@ LEDGER_TASKS=() LEDGER_KINDS=() LEDGER_PUSH_DUE=''
 # "refusing a ledger event: lifecycle: <problems joined by ; >", with nothing appended. Any other
 # writer acted before it logs, so its event is appended unchecked, saying nothing, and team-log
 # --check-lifecycle names it. With <seconds>, the lock is waited on at most that long, and a lock
-# still held then is a refusal, before any lifecycle check. An event of a kind the contract marks
+# still held then is a refusal, before any lifecycle check, and so is a lock or ledger that cannot
+# be written, nothing appended, whatever the caller's set -e. An event of a kind the contract marks
 # push (Daniel's word, or an outside fact) makes a push due, which the script's ledger_push makes:
 # ledger_append <event> [<seconds>]
 ledger_append() {
@@ -281,7 +282,8 @@ ledger_append() {
       esac
     fi
     printf '%s\n' "$line" >>"$ledger"
-  } 9>>"$TEAM_HOME/ledger.jsonl.lock"
+  } 9>>"$TEAM_HOME/ledger.jsonl.lock" ||
+    die "could not append the event to the ledger under its lock, $TEAM_HOME/ledger.jsonl.lock"
   [[ " ${LEDGER_TASKS[*]} " == *" $task "* ]] || LEDGER_TASKS+=("$task")
   [[ " ${LEDGER_KINDS[*]} " == *" $event "* ]] || LEDGER_KINDS+=("$event")
   [[ $push != true ]] || LEDGER_PUSH_DUE=1
