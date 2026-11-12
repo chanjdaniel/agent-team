@@ -1598,7 +1598,7 @@ nothing to launch: 06 waiting: PR 9; 07 blocked on 06"
   cp "$planning" "$TEAM_HOME/ledger.jsonl"
   # Caps team-log would refuse, written by hand, refuse the fill and leave other messages as they are.
   event plan-approved '{by: "coordinator", parallel: "5"}'
-  refused "T7's latest plan-approved has parallel '5', which is not a cap from 1 to 3 per phase joined by commas; log the approval again with team-log T7 plan-approved by=<who> parallel=<caps>" \
+  refused "T7's latest plan-approved has parallel '5', which is not a cap from 1 to 3 per phase joined by commas; log the approval again as step 3 of the manual logs it, with parallel=<caps>" \
     T7 --fill
   run_bin -0 team-next T7 -- "T7 QUESTION which file?"
   assert_equal "$(tail -n 1 <<<"$output")" "no hand-off for QUESTION"

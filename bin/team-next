@@ -517,13 +517,14 @@ project_worktree() {
 # A ticket's state with what it waits on, as the hand-offs name it: "02 blocked on 01".
 waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
 
-# The plan's caps, the latest plan-approved's parallel, 1 when it has none; cap_of <phase>: that
-# phase's, the last one for a later phase, refused when the caps are malformed (a hand-edited line).
-caps=$(jq -r 'map(select(.event == "plan-approved")) | last | .parallel // "1" | tostring' <<<"$events")
+# The plan's caps, the standing approval's parallel (plan_approval in bin/lib/ledger.jq), 1 when it
+# has none; cap_of <phase>: that phase's, the last one for a later phase, refused when the caps are
+# malformed (a hand-edited line).
+caps=$(ledger_jq 'plan_approval.parallel // "1" | tostring' -r <<<"$events")
 cap_of() {
   local -a list
   [[ $caps =~ ^[1-3](,[1-3])*$ ]] ||
-    die "$task's latest plan-approved has parallel '$caps', which is not a cap from 1 to 3 per phase joined by commas; log the approval again with team-log $task plan-approved by=<who> parallel=<caps>"
+    die "$task's latest plan-approved has parallel '$caps', which is not a cap from 1 to 3 per phase joined by commas; log the approval again as step 3 of the manual logs it, with parallel=<caps>"
   IFS=, read -ra list <<<"$caps"
   if (($1 <= ${#list[@]})); then echo "${list[$1 - 1]}"; else echo "${list[-1]}"; fi
 }
