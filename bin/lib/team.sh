@@ -566,23 +566,23 @@ archive_left_out() {
     # looks inside it.
     local -a crowded_dirs=()
     crowded() {
-      local dir=$1 child largest most n left kept=()
+      local dir=$1 crowd_sub crowd_largest crowd_most crowd_count crowd_out crowd_rest=()
       (($(files "$dir") > 200)) || return 0
-      while IFS= read -r -d '' child; do crowded "$dir/$child"; done < <(subdirs "$dir")
+      while IFS= read -r -d '' crowd_sub; do crowded "$dir/$crowd_sub"; done < <(subdirs "$dir")
       while (($(files "$dir") > 200)); do
-        largest='' most=-1
-        while IFS= read -r -d '' child; do
-          n=$(files "$dir/$child")
-          ((n <= most)) || largest=$child most=$n
+        crowd_largest='' crowd_most=-1
+        while IFS= read -r -d '' crowd_sub; do
+          crowd_count=$(files "$dir/$crowd_sub")
+          ((crowd_count <= crowd_most)) || crowd_largest=$crowd_sub crowd_most=$crowd_count
         done < <(subdirs "$dir")
-        if [[ -z $largest ]] || ((most == 0)); then
-          for left in "${crowded_dirs[@]}"; do [[ $left == "$dir"/* ]] || kept+=("$left"); done
-          crowded_dirs=("${kept[@]}" "$dir")
+        if [[ -z $crowd_largest ]] || ((crowd_most == 0)); then
+          for crowd_out in "${crowded_dirs[@]}"; do [[ $crowd_out == "$dir"/* ]] || crowd_rest+=("$crowd_out"); done
+          crowded_dirs=("${crowd_rest[@]}" "$dir")
           skip_path "$dir"
           return 0
         fi
-        crowded_dirs+=("$dir/$largest")
-        skip_path "$dir/$largest"
+        crowded_dirs+=("$dir/$crowd_largest")
+        skip_path "$dir/$crowd_largest"
       done
     }
     while IFS= read -r -d '' dir; do crowded "$dir"; done < <(subdirs .)
