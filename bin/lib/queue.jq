@@ -48,10 +48,12 @@ def queue_seconds: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 # What the ledger says of one task's events: whole, whether it is merged whole, which is the
 # ledger's own lifecycle (bin/lib/ledger.jq) left in its merged phase, so a merge logged with no
 # phases_left (before team-merge logged them) that a builder launch, a later PR or a merged part
-# follows is none; each merged's phases_left where it names them; and the events that end it, its
-# last merged when it is merged whole and its closed, the earliest first.
+# follows is none, or, once the task closed, any merged logged with no phase left (phases_left
+# []), whatever followed it; each merged's phases_left where it names them; and the events that
+# end it, its last merged when it is merged whole and its closed, the earliest first.
 def queue_task_facts:
-  (lifecycle.phase == "merged") as $whole
+  (lifecycle.phase == "merged"
+   or (any(.[]; .event == "closed") and any(.[]; .event == "merged" and .phases_left == []))) as $whole
   | {whole: $whole,
      merges: [.[] | select(.event == "merged") | .phases_left | arrays],
      ends: ([(select($whole) | last(.[] | select(.event == "merged")) | {event, ts}),

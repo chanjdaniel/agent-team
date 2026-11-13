@@ -253,6 +253,35 @@ tasks/queued/index.md"
 - a-done.md: T1 merged at 2026-01-01T00:00:00Z but it is still queued; the heartbeat's queue step moves it (team-queue tidy)"
 }
 
+@test "a closed task that merged whole is merged, though a later PR or launch moved its lifecycle on; one closed with only a part merged is not" {
+  rm "$queued/node-pin.md" "$queued/bootstrap-drill.md"
+  local t
+  for t in T1 T2 T3; do opened_task "$t"; done
+  # T1 merged whole, then logged a follow-up PR and closed with no second merge.
+  merged T1 '[]' 2026-01-01T00:00:00Z
+  jq -cn '{ts: "2026-01-01T00:01:00Z", task: "T1", event: "pr", url: "https://github.com/owner/proj/pull/2"}' >>"$TEAM_HOME/ledger.jsonl"
+  closed T1 2026-01-01T00:02:00Z
+  # T2 merged whole, then a builder launch, then closed.
+  merged T2 '[]' 2026-01-01T00:00:00Z
+  jq -cn '{ts: "2026-01-01T00:01:00Z", task: "T2", event: "launch", role: "builder", session: "b2"}' >>"$TEAM_HOME/ledger.jsonl"
+  closed T2 2026-01-01T00:02:00Z
+  # T3 merged a part and closed.
+  merged T3 '[2]' 2026-01-01T00:00:00Z
+  closed T3 2026-01-01T00:02:00Z
+  ready a-after-pr.md 2 S "a" "after: T1 merged"
+  ready b-after-launch.md 2 S "b" "after: T2 merged"
+  ready c-after-part.md 2 S "c" "after: T3 merged"
+  run_bin -0 team-queue index
+  assert_equal "$(sections)" "## Ready, ranked
+
+1. a-after-pr.md (proj, priority 2, S): a
+2. b-after-launch.md (proj, priority 2, S): b
+
+## Waiting
+
+- c-after-part.md (proj, priority 2, S): c; waits for T3 merged"
+}
+
 @test "--check names each malformed file, keeping T303's problems and refusing task:, and a stale index, writing nothing" {
   run_bin -0 team-queue index
   run_bin -0 team-queue index --check
