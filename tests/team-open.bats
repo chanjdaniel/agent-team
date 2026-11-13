@@ -473,11 +473,62 @@ holding() {
   done
 }
 
-@test "a task opens whatever the machine holds, taking no machine lock and no reading" {
+@test "a task opens whatever the machine holds while the level has room for a builder, keeping no admission" {
   holding proj 1 9
   run_bin -0 --separate-stderr team-open proj feature feat tenth "Tenth"
   assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T10 $slots/1"
-  [[ $stderr != *"task slot"* && $stderr != *"effective cap"* ]]
+  [[ $stderr != *"task slot"* && $stderr != *"effective cap"* && $stderr != *room* ]]
+  [[ -s $HOME/.local/state/agent-team/capacity/readings.jsonl ]]
+  [[ ! -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
+}
+
+@test "with no room for a builder a new task exits 75 with team-capacity's reason, claiming no number and taking no worktree" {
+  capacity_room $((256 * 1048576)) full
+  run_bin -75 --separate-stderr team-open proj feature feat crowded "Crowded"
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-open: no room to open a task: no room for session:builder at full (90%): 0.0 GiB of 0.3 GiB reserved, a builder needs 0.5 GiB; room comes when the team's work shrinks or the level rises"
+  [[ ! -e $TEAM_HOME/tasks/T1 && ! -e $slots/1 && ! -e $primary/.claude/worktrees ]]
+  assert_equal "$(git -C "$primary" worktree list | wc -l)" "1"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+  assert_equal "$(stub_calls curl)" ""
+  [[ ! -e $HOME/.local/state/agent-team/capacity/admitted.json ]]
+  # --task is refused the same way, before its task directory is made.
+  run_bin -75 --separate-stderr team-open --task T5 proj feature feat crowded "Crowded"
+  assert_contains "$stderr" "team-open: no room to open a task: no room for session:builder at full"
+  [[ ! -e $TEAM_HOME/tasks/T5 ]]
+  # At level none nothing opens, with the level's own reason.
+  capacity_room $((16 * 1073741824)) none
+  run_bin -75 --separate-stderr team-open proj feature feat crowded "Crowded"
+  assert_equal "$stderr" "team-open: no room to open a task: no room for session:builder: the team is at level none: nothing starts; room comes when Daniel raises the level"
+  [[ ! -e $TEAM_HOME/tasks/T1 ]]
+  # Room again: it opens, the listed slots held so on demand.
+  git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
+  git -C "$primary" worktree add -q "$slots/2" -b feat/T4-busy origin/main
+  capacity_room $((16 * 1073741824)) full
+  run_bin -0 --separate-stderr team-open proj feature feat roomy "Roomy"
+  assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T1 $primary/.claude/worktrees/1"
+}
+
+@test "when team-capacity cannot tell whether a task fits, a new task is refused, exit 1, claiming nothing" {
+  capacity_room $((16 * 1073741824)) full
+  rm "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  printf 'MemTotal:       33554432 kB\n' >"$TEAM_MEMINFO"
+  run_bin -1 --separate-stderr team-open proj feature feat blind "Blind"
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-open: cannot tell whether a task fits: team-capacity: no reading of the machine's load, so no budget to admit session:builder by: team-capacity sample says why it takes none"
+  [[ ! -e $TEAM_HOME/tasks/T1 && ! -e $slots/1 ]]
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+}
+
+@test "finishing a half-open task asks for no room" {
+  stub_reply curl '{"message":"Missing Access"}'
+  run_bin -1 team-open proj feature feat flaky "Flaky"
+  # At level none, a room check would refuse; none runs, so team-capacity keeps no state at all.
+  rm -rf "$HOME/.local/state/agent-team"
+  jq -cn '{ts: (now | floor | todate), mode: "manual", level: "none", by: "Daniel", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
+  stub_reply curl '{"id":"1563000000000000009"}'
+  run_bin -0 --separate-stderr team-open --task T1 proj feature feat flaky "Flaky"
+  assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T1 $slots/1"
   [[ ! -e $HOME/.local/state/agent-team ]]
 }
 
@@ -554,10 +605,13 @@ EOF
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
-@test "--help says a git pool makes its worktrees on demand, and what each exit 75 means" {
+@test "--help says a git pool makes its worktrees on demand, that the level bounds new tasks, and what each exit 75 means" {
   run_bin -0 team-open --help
   assert_contains "$output" "made on demand"
   assert_contains "$output" "a git pool's only exit 75 is its lock"
+  assert_contains "$output" "team-capacity admit --kind session:builder --dry-run"
+  assert_contains "$output" "no room to open a task"
+  [[ $output != *"never refuses an open"* ]]
   [[ $output != *"every slot is taken"* && $output != *"slot lock"* && $output != *"machine's cap"* ]]
 }
 

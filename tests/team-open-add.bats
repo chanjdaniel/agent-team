@@ -198,11 +198,15 @@ ledger_line() {
   assert_equal "$(events worktree-added | jq -r '"\(.project) \(.worktree)"')" "home $home/.claude/worktrees/1"
 }
 
-@test "--add is never held to a machine cap: a task holding a worktree here refuses nothing" {
+@test "--add is never held to a machine cap or the level's room: a task holding a worktree here refuses nothing" {
   run_bin -0 team-open home feature feat one "One"
+  # At level none a room check would refuse; none runs, so team-capacity keeps no state at all.
+  rm -rf "$HOME/.local/state/agent-team"
+  jq -cn '{ts: (now | floor | todate), mode: "manual", level: "none", by: "Daniel", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
   run_bin -0 --separate-stderr team-open --task T1 --add conv chore two
   assert_equal "$(jq -r .worktree <<<"$output")" "${conv_slots[0]}"
   assert_equal "$(events worktree-added | jq -r .project)" "conv"
+  [[ ! -e $HOME/.local/state/agent-team ]]
 }
 
 @test "with the treehouse pool full --add exits 75 with the lease's message" {
