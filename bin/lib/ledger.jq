@@ -495,7 +495,9 @@ def ends_launch($launch):
 #   running the launches but ops' no later event ends (ends_launch), the latest of each role and
 #           ticket, as {role, ticket, session, builds, stowed}: builds launch_ticket's, the ticket
 #           the launch builds, or null; stowed true once a stowed follows it, the work that stow
-#           stopped, which the next launch drops (its resume launches each again).
+#           stopped, which the next launch drops (its resume launches each again). unfinished_roles
+#           reads the entries no stowed has followed; running_ticket_launches reads the events
+#           instead, since it keeps a stopped launch after the next launch, with its index.
 #   ticket_worktrees the tickets whose ticket worktree is open (a worktree-added with ticket and
 #           no worktree-returned of that ticket since), in the order added.
 #   counts  each park kind's events so far, and the asked events that parked (asked), for the
@@ -944,17 +946,13 @@ def snapshot_due($project; $ticket; $machine):
     and any(.[$stowed].worktrees[]?; .project == $project and .ticket == $ticket and .uncommitted == true));
 def snapshot_due($project; $machine): snapshot_due($project; null; $machine);
 
-# The task's unfinished work: each role launched since its latest stowed whose latest launch of a
-# ticket (or of none) no later event ends (ends_launch), named once, in the order of those
-# launches. The roles a handoff's stowed records and a crash relaunches. Never ops: an ops session
-# runs only on Daniel's request, so on the other machine Daniel asks again.
+# The task's unfinished work: the role of each of the fold's running launches no stowed has
+# followed (the launches since its latest stowed that no later event ends), named once, in the
+# order of those launches. The roles a handoff's stowed records and a crash relaunches. Never ops:
+# an ops session runs only on Daniel's request, so on the other machine Daniel asks again.
 def unfinished_roles:
-  . as $events
-  | latest_stowed as $stowed
-  | [to_entries[] | select(.key > $stowed and .value.event == "launch" and .value.role != "ops")
-    | .value + {i: .key}]
-  | group_by([.role, .ticket]) | map(max_by(.i)) | sort_by(.i)
-  | map(. as $l | select(all($events[$l.i + 1:][]; ends_launch($l) | not)) | .role)
+  lifecycle
+  | [.running[] | select(.stowed | not) | .role]
   | reduce .[] as $role ([]; if index([$role]) then . else . + [$role] end);
 
 # Every worktree the task was given (opened or added), at its latest path (worktree-moved) and on
@@ -1459,6 +1457,9 @@ def state_line:
 # The task's running ticket launches, over its events: the latest launch of each ticket (a builder
 # in its ticket worktree) that no later event ends (ends_launch: a done of its session or its
 # ticket's ticket-done), live or not, each with i its index among the events, in launch order.
+# The fold's running holds the same launches until a stowed and the next launch, which drops the
+# ones the stow stopped; these are kept, whole, since parked, ticket-gone and the relaunch judge a
+# stopped ticket by the stowed after its index, and the relaunch reads its project and machine.
 def running_ticket_launches:
   . as $events
   | [to_entries[] | select(.value.event == "launch" and (.value.ticket | type) == "string") | .value + {i: .key}]

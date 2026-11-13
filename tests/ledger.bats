@@ -661,6 +661,16 @@ EVENTS
 {"event": "launch", "role": "ops", "toolkits": ["prod-read"], "request": "https://discord.com/channels/1/2/3"}
 EVENTS
 )" '["builder"]'
+  # A stow leaves nothing unfinished until a launch after it, which brings back only its own role.
+  local stowed='{"event": "launch", "role": "builder"}
+{"event": "launch", "role": "reviewer"}
+{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["builder", "reviewer"], "sessions": ["builder", "reviewer"]}'
+  assert_equal "$(unfinished_roles <<<"$stowed")" '[]'
+  assert_equal "$(unfinished_roles <<EVENTS
+$stowed
+{"event": "launch", "role": "reviewer"}
+EVENTS
+)" '["reviewer"]'
 }
 
 # The library's handed_on_launches over a task's events, given one JSON event per line, each as
