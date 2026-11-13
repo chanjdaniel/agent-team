@@ -940,13 +940,16 @@ pretooluse_problems() {
 # 600 seconds on one that hangs by default (T248, R1): every PreToolUse entry fails closed, soon.
 @test "every PreToolUse hook blocks on its failure and has a timeout, in every settings and toolkit hooks file" {
   local files=() file bad=$BATS_TEST_TMPDIR/bad.json
-  for file in "$REPO_ROOT"/settings/*.json "$REPO_ROOT"/coordinator.settings.json "$REPO_ROOT"/toolkits/*/hooks/hooks.json; do
+  for file in "$REPO_ROOT"/settings/*.json "$REPO_ROOT"/coordinator.settings.json "$REPO_ROOT"/bin/lib/gate-claude-settings.json \
+    "$REPO_ROOT"/toolkits/*/hooks/hooks.json; do
     files+=("${file#"$REPO_ROOT/"}")
   done
   assert_equal "$(cd "$REPO_ROOT" && pretooluse_problems "${files[@]}")" ""
-  # Each of the four guards, at its timeout.
-  assert_equal "$(cd "$REPO_ROOT" && jq -r '.hooks.PreToolUse // [] | .[].hooks[] | "\(.command | sub("^\"?@TEAM_CODE@/bin/hooks/"; "") | sub("\""; "")) \(.timeout)"' "${files[@]}" | LC_ALL=C sort -u)" \
-    "command-guard 10
+  # Each of the four guards, at its timeout, and the gate's command-guard, which names the code
+  # checkout by $HOME, since no-mistakes fills in no @TEAM_CODE@.
+  assert_equal "$(cd "$REPO_ROOT" && jq -r '.hooks.PreToolUse // [] | .[].hooks[] | "\(.command | sub("^\"?@TEAM_CODE@/bin/hooks/"; "") | gsub("\""; "")) \(.timeout)"' "${files[@]}" | LC_ALL=C sort -u)" \
+    "\$HOME/agent-team/bin/hooks/command-guard 10
+command-guard 10
 lease-fence --coordinator 60
 lease-fence 60
 ops-log 30
