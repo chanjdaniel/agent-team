@@ -1165,7 +1165,8 @@ pool_trusted() {
 # slot <slot>..., else the lowest free <primary>/.claude/worktrees/<n> from 1, made on demand, so
 # a git pool is never full. Free means no registered worktree of <primary> is the path (same_path)
 # and the path is missing or an empty directory; one that holds anything else is skipped, one line
-# on stderr saying so. After -- come the options of `git worktree add` and last its commit-ish:
+# on stderr saying so, and a numbered path already tried as the preferred path or a slot is not
+# tried again. After -- come the options of `git worktree add` and last its commit-ish:
 # `git -C <primary> worktree add -q <option>... <path> <commit>`. The pick and the add are made
 # under the pool's lock (team-open-pool.lock in <primary>'s git common directory), after reading
 # the registered worktrees again, so two runs at once never take one path: the second waits up to
@@ -1173,8 +1174,8 @@ pool_trusted() {
 # lock goes once the add is done, its descriptor closed for git's own processes. Exits 1 when the
 # add fails: pool_add_worktree <primary> <preferred> <slot>... -- <option>... <commit>
 pool_add_worktree() {
-  local primary=$1 preferred=$2 wait=${TEAM_OPEN_POOL_WAIT_SECONDS:-600} lock fd line wt n=0 candidate free
-  local pool_listed=() pool_options=() pool_worktrees=() pool_candidates=()
+  local primary=$1 preferred=$2 wait=${TEAM_OPEN_POOL_WAIT_SECONDS:-600} lock fd line wt n=0 candidate free tried
+  local pool_listed=() pool_options=() pool_worktrees=() pool_candidates=() pool_tried=()
   shift 2
   while (($#)) && [[ $1 != -- ]]; do pool_listed+=("$1") && shift; done
   [[ ${1:-} == -- && $# -ge 2 ]] || die "pool_add_worktree needs -- and the commit to add the worktree at"
@@ -1195,12 +1196,17 @@ pool_add_worktree() {
   for candidate in ${pool_listed[@]+"${pool_listed[@]}"}; do
     same_path "$candidate" "$preferred" || pool_candidates+=("$candidate")
   done
-  # Each candidate in turn, then each numbered path, until one is free.
+  # Each candidate in turn, then each numbered path not tried as a candidate, until one is free.
   while :; do
     if ((${#pool_candidates[@]})); then
       candidate=${pool_candidates[0]} pool_candidates=("${pool_candidates[@]:1}")
+      pool_tried+=("$candidate")
     else
-      n=$((n + 1)) candidate=$primary/.claude/worktrees/$n
+      n=$((n + 1)) candidate=$primary/.claude/worktrees/$n tried=''
+      for wt in ${pool_tried[@]+"${pool_tried[@]}"}; do
+        if same_path "$wt" "$candidate"; then tried=1 && break; fi
+      done
+      [[ -z $tried ]] || continue
     fi
     free=1
     for wt in ${pool_worktrees[@]+"${pool_worktrees[@]}"}; do

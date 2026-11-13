@@ -311,6 +311,22 @@ advance_origin() {
   assert_equal "$stderr" "team-open: $slots/1 is skipped: it holds files but is no worktree of $primary"
 }
 
+@test "a listed slot in .claude/worktrees that holds files is skipped with one line, not again as a numbered one" {
+  sed -i 's|^slots = .*|slots = ["projects/proj/.claude/worktrees/1", "projects/proj/.claude/worktrees/2"]|' \
+    "$TEAM_HOME/projects.toml"
+  local made=$primary/.claude/worktrees
+  mkdir -p "$made/1"
+  echo left >"$made/1/notes.txt"
+  run_bin -0 --separate-stderr team-open proj feature feat next "Next"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$made/2"
+  assert_equal "$stderr" "team-open: $made/1 is skipped: it holds files but is no worktree of $primary"
+  # With /2 held too, the walk goes on past both listed slots to /3, still naming /1 once.
+  run_bin -0 --separate-stderr team-open proj feature feat third "Third"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$made/3"
+  assert_equal "$(grep 'is skipped' <<<"$stderr")" \
+    "team-open: $made/1 is skipped: it holds files but is no worktree of $primary"
+}
+
 @test "a half-open task in an on-demand worktree is finished there" {
   git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
   git -C "$primary" worktree add -q "$slots/2" -b feat/T4-busy origin/main
