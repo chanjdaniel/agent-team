@@ -5,7 +5,8 @@
 #
 #   load_check_sandbox       sandbox, then the code checkout, code (a sandbox repo ignoring .scratch/
 #                            and .claude/worktrees/, with a CLAUDE.md, pushed to origin/main), which
-#                            TEAM_LOAD_CHECK_CHECKOUT names; wt, the load check's worktree in it;
+#                            TEAM_LOAD_CHECK_CHECKOUT names; wt, the load check's worktree in it,
+#                            its first numbered worktree, .claude/worktrees/1;
 #                            TEAM_DOCTOR, a stub doctor answering --json with the results
 #                            doctor_results last wrote (a PASS of machine until a test calls it), and
 #                            failing when they hold a FAIL, as team-doctor does; the registry; and
@@ -41,7 +42,7 @@ load_check_sandbox() {
   git -C "$code" add .gitignore CLAUDE.md
   git -C "$code" commit -q -m "chore: ignore scratch and worktrees"
   git -C "$code" push -q origin main
-  code=$(realpath "$code") wt=$code/.claude/worktrees/load-check
+  code=$(realpath "$code") wt=$code/.claude/worktrees/1
   export TEAM_LOAD_CHECK_CHECKOUT=$code
   # The doctor's own lines are tests/team-doctor*.bats'.
   export TEAM_DOCTOR=$BATS_TEST_TMPDIR/doctor
