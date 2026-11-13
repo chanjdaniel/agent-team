@@ -75,7 +75,11 @@
 # and wait/direct-pr-before-pr.md says there are no checks to wait for; and
 # before-pr/<template>.md takes the place of the template where it exists: before-pr/rereview.md
 # and before-pr/verify.md re-review a fix round's local head with no pr, the rereview partial's
-# -before-pr files saying what to read, and post nothing. A {{> review-rules}} line, in the
+# -before-pr files saying what to read, and post nothing. A {{> review-status}} line, in the
+# review/direct-pr partial, rereview and verify, is how the reviewer sets agent-review on the head
+# it reviewed: templates/briefs/review-status/reviewer-app.md, no status, on a project whose
+# agent-review the reviewer App posts (own_bar in bin/lib/team.sh), else commit-status.md, the
+# team-review-status command. A {{> review-rules}} line, in the
 # reviewer, rereview and verify templates where their checks are listed, is the project's standing
 # review rules, the team home's projects/<project>/review-rules.md: the coordinator's records,
 # never code, read as written before the placeholders, so they may use any, and put in as a
@@ -398,6 +402,17 @@ if ((${#partials[@]})); then
     [[ -f $partial_file ]] || die "no $partial partial for $project's delivery '$delivery'"
     text=${text//"{{> $partial}}"/"$(<"$partial_file")"}
   done
+fi
+
+# The agent-review a reviewer posts in place of a {{> review-status}} line: none, where the
+# reviewer App posts it as its check run (own_bar gives the project the App), else the commit
+# status, by team-review-status.
+status_line='{{> review-status}}'
+if grep -qxF -- "$status_line" <<<"$text"; then
+  bar=$(own_bar "$project") || exit 1
+  status_file=$briefs/review-status/commit-status.md
+  [[ $(jq -r 'objects | .app // empty' <<<"$bar") == "" ]] || status_file=$briefs/review-status/reviewer-app.md
+  text=${text//"$status_line"/"$(<"$status_file")"}
 fi
 
 # The project's standing review rules in place of a {{> review-rules}} line, and the gate parks
