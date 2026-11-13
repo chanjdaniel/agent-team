@@ -50,14 +50,20 @@ def queue_seconds: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 # phases_left (before team-merge logged them) that a builder launch, a later PR or a merged part
 # follows is none, or, once the task closed, any merged logged with no phase left (phases_left
 # []), whatever followed it; each merged's phases_left where it names them; and the events that
-# end it, its last merged when it is merged whole and its closed, the earliest first.
+# end it, its last merged when it is merged whole and its closed, the earliest first; and unmerged,
+# its last closed's {ts} when a feature, bug or small task (its latest opened's path) closed not
+# merged whole, which leaves its work unbuilt, else null (a research or retro task finishes by
+# closing, and a task with no path is read as one).
 def queue_task_facts:
   (lifecycle.phase == "merged"
    or (any(.[]; .event == "closed") and any(.[]; .event == "merged" and .phases_left == []))) as $whole
+  | (last(.[] | select(.event == "opened") | .path) // null) as $path
   | {whole: $whole,
      merges: [.[] | select(.event == "merged") | .phases_left | arrays],
      ends: ([(select($whole) | last(.[] | select(.event == "merged")) | {event, ts}),
-             (.[] | select(.event == "closed") | {event, ts})] | sort_by(.ts))};
+             (.[] | select(.event == "closed") | {event, ts})] | sort_by(.ts)),
+     unmerged: (if $whole or (IN($path; "feature", "bug", "small") | not) then null
+                else last(.[] | select(.event == "closed") | {ts}) // null end)};
 
 # Whether a parsed condition is met, given the tasks' facts, today's date, the queued files and
 # the files that left the queue: a phase is merged once a merged names phases left without it, or
@@ -86,7 +92,8 @@ def queue_item($facts; $projects; $today; $queued; $left; $now):
   | ($k.from // null | if . == null then [] else queue_parts end) as $from
   | ($k.takes // null | if . == null then [] else queue_parts end) as $takes
   | ($k.opened // null) as $opened
-  | (if $opened != null and ($opened | test(queue_task_re)) then $facts[$opened].ends[0]? // null else null end) as $end
+  | (if $opened != null and ($opened | test(queue_task_re)) then $facts[$opened] // {} else {} end) as $of
+  | (if $of.unmerged != null then null else $of.ends[0]? // null end) as $end
   | {file, title,
      summary: ($k.summary // null),
      project: ($k.project // null),
@@ -125,6 +132,9 @@ def queue_item($facts; $projects; $today; $queued; $left; $now):
        (select($k.waits == "") | "its waits is empty" | queue_fault("waits")),
        ($from[] | if test(queue_task_re) then queue_unknown("from"; $facts) else "from \(tojson) is not T<n>" end | queue_fault("from")),
        ($opened // empty | if test(queue_task_re) then queue_unknown("opened"; $facts) else "opened \(tojson) is not T<n>" end
+        | queue_fault("opened")),
+       ($of.unmerged // empty
+        | "opened names \($opened), which closed at \(.ts) with no whole merge: remove opened: to queue it again, or delete the file"
         | queue_fault("opened")),
        ($takes[] | . as $t | if test(queue_file_re) | not then "takes \(tojson) is not a queued file"
         elif IN($queued[]; $t) | not then "takes \($t), which is not queued"

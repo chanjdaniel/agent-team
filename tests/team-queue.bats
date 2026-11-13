@@ -340,7 +340,8 @@ tasks/queued/index.md: not as team-queue index writes it"
 
 @test "--check names an item whose task merged whole or closed over 15 minutes ago, never one in its grace or a merged part" {
   local t now
-  for t in T5 T6 T7 T8; do opened_task "$t"; done
+  for t in T5 T7 T8; do opened_task "$t"; done
+  opened_task T6 research
   now=$(date -u +%FT%TZ)
   merged T5
   closed T6 2026-01-02T03:04:05Z

@@ -34,7 +34,8 @@
 #   alone     yes, for work that runs with the project's other tasks held
 #   guarded   the short-list areas (bin/lib/guarded) the work touches, shown and never ranked
 # An item's state, the first that holds: unranked (it has a problem, below), finished (opened by a
-# task that merged whole or closed), opened (opened by a task still building it), taken (another
+# task that merged whole, or closed: a research or retro task's close, or a feature, bug or small
+# task's once it merged whole), opened (opened by a task still building it), taken (another
 # item takes it; it is listed under each taker, never alone), waiting (a waits line, or an after
 # condition not met), else ready.
 # Ready items rank across every project: by priority (1 first), then by how many queued items'
@@ -50,18 +51,20 @@
 # its title. It writes through a temporary file, under the ledger's lock, and commits the index
 # alone (commit_records), as "chore: queued index", then pushes the team home's branch; an index
 # already as written commits nothing. It prints "wrote tasks/queued/index.md: <n> files" ("1 file").
-# --check writes nothing, and prints each problem as "tasks/queued/<file>: <reason>", exiting 1
-# when it prints any: a front matter with no closing "---", a key given twice, a line that is no
+# --check writes nothing, and prints each problem as "tasks/queued/<file>: <reason>", exiting 1 when
+# it prints any: first "tasks/queued/: projects not checked: <why>" when the registry cannot be
+# read; then each file's: a front matter with no closing "---", a key given twice, a line that is no
 # "<key>: <value>", a key it does not read, task: (now from:), no summary (or no summary and no
-# title), an empty summary or waits, a required key missing or a value not as above (a project
-# not in projects.toml), an after, from or opened naming a task the ledger does not hold, an after
-# naming a file neither queued nor in a task's queued/, a takes naming a file not queued, itself,
-# an item that takes others or one a task opened, an item whose task merged or closed over 15
-# minutes ago that is still queued (the heartbeat should have moved it), and an item two open
-# tasks' plans cite that either could take (its project one of the task's, its from not naming
-# the task, not opened, not taken and waiting on nothing); then "tasks/queued/: projects not checked: <why>" first
-# when the registry cannot be read, and last "tasks/queued/index.md: not as team-queue index
-# writes it" when the index is stale.
+# title), an empty summary or waits, a required key missing or a value not as above (a project not
+# in projects.toml), an after, from or opened naming a task the ledger does not hold, an opened
+# naming a feature, bug or small task that closed with no whole merge (its work unbuilt: remove
+# opened: to queue it again, or delete the file), an after naming a file neither queued nor in a
+# task's queued/, a takes naming a file not queued, itself, an item that takes others or one a task
+# opened, an item whose task merged whole or closed over 15 minutes ago that is still queued (the
+# heartbeat should have moved it), and an item two open tasks' plans cite that either could take
+# (its project one of the task's, its from not naming the task, not opened, not taken and waiting on
+# nothing); and last "tasks/queued/index.md: not as team-queue index writes it" when the index is
+# stale.
 # set writes many files' front matter from one table, a tab-separated file whose header's first
 # column is file and whose others are front matter keys, each once; each line after it but a blank
 # one is a row, a cell per column, naming a queued file. A row sets each column's key on its file
@@ -95,17 +98,18 @@
 # tasks/T<n>/plan.md cites tasks/queued/<file> (any path ending so), whose projects hold the item's
 # and whom its from: does not name, writing opened: T<n> as take does ("linked <file> to T<n>: its
 # plan cites it"; an item two such plans cite is linked to neither, which --check names); then it
-# moves each item whose opened task merged whole or closed into tasks/T<n>/queued/<file> ("moved
-# <file> to tasks/T<n>/queued/: T<n> merged", or "closed"), with each file it takes that is not
-# finished itself, that no task opened and that no item staying queued takes ("moved <file> to
-# tasks/T<n>/queued/: <taker> takes it"; a file two leaving items take goes with the first by name);
-# then it rewrites the index when it changed ("wrote tasks/queued/index.md: <n> files"). It prints
-# one line per change, in that order, and nothing when nothing changed, and with no tasks/queued/ it
-# does nothing. It judges the queue first, then again under the ledger's lock, where it makes the
-# changes, through temporary files, as one commit of the files it linked, moved and wrote alone,
-# "chore: queued tidy". An item whose task's queued/ holds its name already stays queued, with the
-# files it takes, said on stderr ("left <file> queued: tasks/T<n>/queued/<file> is there already"),
-# and tidy exits 1 once the rest is made.
+# moves each finished item (its opened task merged whole or closed, as above) into
+# tasks/T<n>/queued/<file> ("moved <file> to tasks/T<n>/queued/: T<n> merged", or "closed"), with
+# each file it takes that is not finished itself, that no task opened and that no item staying
+# queued takes ("moved <file> to tasks/T<n>/queued/: <taker> takes it"; a file two leaving items
+# take goes with the first by name), leaving queued an item an unmerged close left unbuilt, which
+# --check names; then it rewrites the index when it changed ("wrote tasks/queued/index.md: <n>
+# files"). It prints one line per change, in that order, and nothing when nothing changed, and with
+# no tasks/queued/ it does nothing. It judges the queue first, then again under the ledger's lock,
+# where it makes the changes, through temporary files, as one commit of the files it linked, moved
+# and wrote alone, "chore: queued tidy". An item whose task's queued/ holds its name already stays
+# queued, with the files it takes, said on stderr ("left <file> queued: tasks/T<n>/queued/<file> is
+# there already"), and tidy exits 1 once the rest is made.
 # list writes nothing. It says whether the level has room for one more task, read from
 # team-capacity plan --json (the file --plan names when the caller already holds one, as the
 # sweep does, which may be {error: <why>}, else its own run) and team-capacity costs --json: it

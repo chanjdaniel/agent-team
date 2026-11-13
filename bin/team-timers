@@ -129,7 +129,8 @@
 #              queue  On the holder, after the ledger step, so the sweep the coordinator step runs
 #                     reads a tidy queue: team-queue tidy, which links each queued item an open
 #                     task's plan cites to that task, moves each item whose task merged whole or
-#                     closed into tasks/T<n>/queued/ with the files it takes, and rewrites the
+#                     closed (a feature, bug or small task's close once it merged whole) into
+#                     tasks/T<n>/queued/ with the files it takes, and rewrites the
 #                     queue's index, in one commit (bin/team-queue's header says how). Each line it
 #                     prints is logged ("queue: moved node-pin.md to tasks/T5/queued/: T5 merged"),
 #                     and it logs nothing when nothing changed. It is stopped after 60 s, killed 10

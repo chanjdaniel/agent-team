@@ -236,9 +236,9 @@ where() {
   (cd "$TEAM_HOME" && find tasks -path '*/queued/*.md' ! -name index.md | LC_ALL=C sort)
 }
 
-@test "tidy moves an item into its task's queued/ once the task merged whole, in one commit with the index, and after a closed too" {
-  opened_task T6
-  ready closing.md 2 S "closed unmerged" "opened: T6"
+@test "tidy moves an item into its task's queued/ once the task merged whole, in one commit with the index, and after a research task's closed too" {
+  opened_task T6 research
+  ready closing.md 2 S "researched" "opened: T6"
   ready node-pin.md 2 S "pin Node 24" "opened: T5"
   # A merged with a phase left builds on: the item stays, and tidy says and commits nothing.
   merged T5 '[2]'
@@ -274,6 +274,50 @@ tasks/T6/queued/closing.md
 tasks/queued/bootstrap-drill.md"
   assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued tidy"
   # Once tidy, a second run changes nothing.
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" ""
+  nothing_written
+}
+
+@test "tidy leaves queued an item whose feature, bug or small task closed with no whole merge, which --check names, and moves a research or retro task's" {
+  local t
+  for t in T5 T6 T7; do opened_task "$t"; done
+  opened_task T8 bug
+  opened_task T9 retro
+  opened_task T10 small
+  ready a-abandoned.md 2 S "a" "opened: T5" "takes: e-taken.md"
+  ready b-part.md 2 S "b" "opened: T6"
+  ready c-whole.md 2 S "c" "opened: T7"
+  ready d-bug.md 2 S "d" "opened: T8"
+  ready e-taken.md 3 S "e"
+  ready f-retro.md 2 S "f" "opened: T9"
+  ready g-small.md 2 S "g" "opened: T10"
+  # T5 closed with no merge, T6 with a part merged, T8 and T10 with no merge; T7 merged whole and
+  # closed, T9 is a retro, which finishes by closing.
+  merged T6 '[2]'
+  merged T7 '[]'
+  for t in T5 T6 T7 T8 T9 T10; do event "$t" closed; done
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" "moved c-whole.md to tasks/T7/queued/: T7 merged
+moved f-retro.md to tasks/T9/queued/: T9 closed
+wrote tasks/queued/index.md: 7 files"
+  assert_equal "$(where)" "tasks/T7/queued/c-whole.md
+tasks/T9/queued/f-retro.md
+tasks/queued/a-abandoned.md
+tasks/queued/b-part.md
+tasks/queued/bootstrap-drill.md
+tasks/queued/d-bug.md
+tasks/queued/e-taken.md
+tasks/queued/g-small.md
+tasks/queued/node-pin.md"
+  run_bin -1 team-queue index --check
+  assert_equal "$output" "tasks/queued/a-abandoned.md: opened names T5, which closed at 2026-01-01T00:00:00Z with no whole merge: remove opened: to queue it again, or delete the file
+tasks/queued/b-part.md: opened names T6, which closed at 2026-01-01T00:00:00Z with no whole merge: remove opened: to queue it again, or delete the file
+tasks/queued/d-bug.md: opened names T8, which closed at 2026-01-01T00:00:00Z with no whole merge: remove opened: to queue it again, or delete the file
+tasks/queued/g-small.md: opened names T10, which closed at 2026-01-01T00:00:00Z with no whole merge: remove opened: to queue it again, or delete the file"
+  # A second tidy leaves them.
   committed
   run_bin -0 team-queue tidy
   assert_equal "$output" ""
@@ -454,9 +498,9 @@ tasks/queued/index.md"
 }
 
 @test "tidy leaves an item queued whose task's queued/ holds its name already, says so and exits 1, moving the rest" {
-  opened_task T6
+  opened_task T6 research
   ready node-pin.md 2 S "pin Node 24" "opened: T5"
-  ready closing.md 2 S "closed unmerged" "opened: T6"
+  ready closing.md 2 S "researched" "opened: T6"
   mkdir -p "$TEAM_HOME/tasks/T5/queued"
   echo "an earlier copy" >"$TEAM_HOME/tasks/T5/queued/node-pin.md"
   merged T5
