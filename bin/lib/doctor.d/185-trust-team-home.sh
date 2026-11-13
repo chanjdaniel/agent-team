@@ -1,9 +1,9 @@
 # trust team home
 #               `claude --bg --name team-doctor-home-trust` with no prompt and Remote Control
 #               off in the team home, where claude-coordinator starts by default, judged as a
-#               project's trust line below; not probed when the team home is a registered project's primary checkout,
-#               whose own trust line probes it, nor while none is named or it is no directory,
-#               which warns (the team home line fails).
+#               project's trust line below; not probed when the team home is a registered
+#               project's primary checkout, whose own trust line probes it, nor while none is
+#               named or it is no directory, which warns (the team home line fails).
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # home_shown, from the team home check
 # reads state from: 080-team-home.sh

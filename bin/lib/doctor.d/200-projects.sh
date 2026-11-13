@@ -24,9 +24,9 @@
 #               command for Daniel to run in their own terminal, which asks before discarding
 #               changes; warns when treehouse does not answer.
 #   trust       `claude --bg --name team-doctor-trust-<project>` with no prompt and Remote
-#               Control off in the checkout fails on "Workspace not trusted"; the probe session (by the id it printed, and
-#               any session of that name) is stopped and removed either way, and one left
-#               behind turns a pass into a warning.
+#               Control off in the checkout fails on "Workspace not trusted"; the probe session
+#               (by the id it printed, and any session of that name) is stopped and removed
+#               either way, and one left behind turns a pass into a warning.
 #   branches    Warns on each local branch with commits on no origin branch (no upstream and
 #               never pushed, or ahead of what was pushed; a checkpoint's wip/<project>/T<n>
 #               on the team home's origin is no branch), with their count; an open ticket
