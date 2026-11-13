@@ -24,11 +24,13 @@
 # ops launch, the frontend toolkit's capture script, an assignment or an unset of AGENT_TEAM_ROLE
 # or AGENT_TEAM_TASK, a team script run with its environment emptied, a lease steal, the
 # coordinator's commands, an upload of a file or body to a host outside the team's own (as
-# bin/lib/outbound.py reads it), and a kill that reaches what is not the session's own (by name or
+# bin/lib/outbound.py reads it), a kill that reaches what is not the session's own (by name or
 # pattern, tmux's kill-*, of PIDs read from input, of a PID it cannot read, of a process group, of
-# a literal PID whose process is not proven its own; bin/lib/kill_rules.py). The hook refuses with
-# that row's reason, and its allowed way when it names one; command_rules.py's header holds each
-# row's wording and what the guard does not see.
+# a literal PID whose process is not proven its own; bin/lib/kill_rules.py), and a recursive delete
+# that reaches what is not the worker's own (outside the worktree and the job's tmp, either of
+# them or its .scratch/task, or a path it cannot read before it runs; bin/lib/delete_rules.py).
+# The hook refuses with that row's reason, and its allowed way when it names one;
+# command_rules.py's header holds each row's wording and what the guard does not see.
 # It fails closed: when command_rules.py exits non-zero, the call is refused with "it could not
 # check the command for an upload (bin/lib/outbound.py: <the error>)" when the upload row raised,
 # else "it could not read the command (bin/lib/command_rules.py: <its last stderr line>)", and so,
