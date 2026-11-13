@@ -1292,16 +1292,21 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
 
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
   open_task T7
-  run_bin -0 team-worker T7 reviewer "$wt1" -- go
-  local settings=$TEAM_HOME/tasks/T7/settings.reviewer.proj.json tool
-  for tool in Artifact DesignSync ScheduleWakeup CronCreate RemoteTrigger SendFeedback AskUserQuestion EnterWorktree; do
-    jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null ||
-      { echo "no deny rule for $tool" >&2; return 1; }
-  done
-  for tool in Bash Read Edit Write Agent Skill ToolSearch SendMessage ListAgents Monitor WebFetch WebSearch; do
-    if jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null; then
-      echo "denies $tool, which workers use" >&2 && return 1
-    fi
+  local settings role tool
+  # Workflow too: its description allows it only on the user's opt-in to multi-agent
+  # orchestration, which no worker has, and a deny rule drops its definition from the context.
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.proj.json
+    for tool in Artifact DesignSync ScheduleWakeup CronCreate RemoteTrigger SendFeedback AskUserQuestion EnterWorktree Workflow; do
+      jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null ||
+        { echo "the $role settings have no deny rule for $tool" >&2; return 1; }
+    done
+    for tool in Bash Read Edit Write Agent Skill ToolSearch SendMessage ListAgents Monitor WebFetch WebSearch; do
+      if jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null; then
+        echo "the $role settings deny $tool, which workers use" >&2 && return 1
+      fi
+    done
   done
   assert_equal "$(jq -c '.skillOverrides | [.lavish, .loop, .implement, .["code-review"]]' "$settings")" '["off","off","off",null]'
   # A brief that names a skill or tool the settings take away fails the check.
