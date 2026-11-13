@@ -30,14 +30,14 @@ Each operand is resolved without running anything, from the walk's word (its quo
     directory below; any of them is unread when the command's text names it otherwise than as a
     use ($X, ${X}, ${X:-y}), as an assignment, read, unset or a word of prose does;
   - a variable the command assigns is each value it is given, every one of which must pass: its
-    every mention in the command's text, the first among them, is an assignment (X=...) or a use,
-    and each value comes from a bare assignment or one of export, local, declare, typeset or
-    readonly (not declare -n); a value that is $(mktemp ...) or `mktemp ...` alone is a new path
-    directly under its directory (-p <dir>, --tmpdir=<dir>, or a template holding a /, which is
-    relative to the cwd, as a bare template is; -t, --tmpdir alone or no template under $TMPDIR, or
-    /tmp when it is empty); a value with a blank, or that starts with (, an array, is unread, and
-    so is a variable assigned before a command on its line (X=1 rm -rf "$X", env X=1 ...), which
-    the shell expands before the assignment;
+    first mention in the command's text is an assignment (X=...) and every other one an assignment
+    or a use, and each value comes from a bare assignment or one of export, local, declare,
+    typeset or readonly (not declare -n); a value that is $(mktemp ...) or `mktemp ...` alone is
+    the new path mktemp makes: its template under -p <dir> or --tmpdir=<dir>; its template's name
+    under $TMPDIR (/tmp when it is empty) with -t, --tmpdir alone or no template (tmp.XXXXXXXXXX);
+    else its template as written, relative to the cwd when relative; a value with a blank, or that
+    starts with (, an array, is unread, and so is a variable assigned before a command on its line
+    (X=1 rm -rf "$X", env X=1 ...), which the shell expands before the assignment;
   - any other $, a backtick, $( or <( or >( left in it makes it unread, and so does a variable
     while the command's text names IFS otherwise than as a use, since that may split its value;
   - a path under /proc or /dev is unread, since /proc/self and /dev/fd name the guard's own
