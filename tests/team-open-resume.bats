@@ -307,13 +307,17 @@ restored_from() {
   assert_equal "$(events worktree-moved | wc -l)" "1"
 }
 
-@test "--resume takes a new slot from the pool whatever the machine holds, saying nothing of a cap" {
+@test "--resume takes a new slot from the pool whatever the machine holds, saying nothing of a cap, and asks for no room" {
   open_elsewhere home feat work
   run_bin -0 team-open --task T2 home feature feat other "Other work"
+  # At level none a room check would refuse; none runs, so team-capacity keeps no state at all.
+  rm -rf "$HOME/.local/state/agent-team"
+  jq -cn '{ts: (now | floor | todate), mode: "manual", level: "none", by: "Daniel", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
   run_bin -0 --separate-stderr team-open --task T1 --resume home
   assert_equal "$stderr" ""
   assert_equal "$(jq -r .worktree <<<"$output")" "${home_slots[1]}"
   assert_equal "$(git -C "${home_slots[1]}" rev-parse --abbrev-ref HEAD)" "$branch"
+  [[ ! -e $HOME/.local/state/agent-team ]]
 }
 
 @test "a recorded on-demand worktree that is free here is made again at its path, before a free listed slot" {

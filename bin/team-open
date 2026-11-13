@@ -45,12 +45,21 @@
 # otherwise): opened and the printed facts carry it as story, and team-merge marks it done.
 # Prints the task's facts as JSON; the project's other open tasks go to stderr, each with the files
 # its branch changes against the base (git diff --name-only origin/<base>...<branch>, origin's
-# branch when pushed, else the local one), or "no branch yet". Exit 75 when the pool's lock stays
-# held (a git pool's only exit 75 is its lock), or the lease command fails (a treehouse pool, whose
-# own max_trees caps it), listing the slots and who holds them (a lease holder, else the task its
-# branch names).
-# The machine's load never refuses an open, since what the level admits is each launch
-# (team-capacity admit, which team-worker asks).
+# branch when pushed, else the local one), or "no branch yet". Exit 75 when a new task has no room
+# (below), when the pool's lock stays held (a git pool's only exit 75 is its lock), or when the
+# lease command fails (a treehouse pool, whose own max_trees caps it), listing the slots and who
+# holds them (a lease holder, else the task its branch names).
+# The level bounds the open tasks, the pool listing no bound but a treehouse pool's own max_trees:
+# a new task (the form with a path, type, slug and title, with or without --task) first runs its
+# own checkout's team-capacity admit --kind session:builder --dry-run, after the arguments and the
+# registry are read and before the number is claimed or anything is taken, since every task soon
+# launches a builder, the largest worker it starts. With no room it exits 75,
+# "team-open: no room to open a task: <team-capacity's reason>", naming memory and the level; when
+# team-capacity cannot tell (no reading to size the budget by), exit 1,
+# "team-open: cannot tell whether a task fits: <its reason>"; either way nothing is claimed. It is skipped when a worktree already holds the
+# task's branch (finishing a half-open task), and never runs for --add, --ticket or --resume, whose
+# task is open already. Each launch is still admitted on its own by team-worker, so two opens at
+# once may both pass the check while only one of their builders fits.
 # With --add, gives the open task T<n> a worktree in another project, on <type>/T<n>-<slug>: the
 # same pool steps, then worktree-added, with no plan, thread or opened. Refused for a task with
 # no opened event or with a closed one, and for a project the task already has an open worktree in.
@@ -209,6 +218,26 @@ if [[ $provider == treehouse ]]; then
   [[ -x $return_cmd ]] || die "the return command $return_cmd is not executable"
 fi
 
+# The room check (see the header), before a new task claims its number or takes anything: the level
+# must have room for a builder, the largest worker a task starts, as team-capacity admit would judge
+# one now, keeping no admission. A worktree of the primary checkout already holding <branch> ("" for
+# a number not yet claimed) is a half-open task to finish, which needs none.
+room_to_open() {
+  local list err rc=0 reason
+  if [[ -n $1 ]]; then
+    list=$(git -C "$primary" worktree list --porcelain)
+    ! grep -qxF "branch refs/heads/$1" <<<"$list" || return 0
+  fi
+  err=$(TEAM_HOME=$TEAM_HOME "$bin/team-capacity" admit --kind session:builder --dry-run 2>&1 >/dev/null) || rc=$?
+  ((rc != 0)) || return 0
+  reason=$(grep . <<<"$err" | tail -n 1) || reason="team-capacity admit failed (exit $rc), giving no reason"
+  if ((rc == 75)); then
+    echo "team-open: no room to open a task: $reason" >&2
+    exit 75
+  fi
+  die "cannot tell whether a task fits: $reason"
+}
+
 # The task number. Creating tasks/T<n>/ is the claim, so two runs never take the same number.
 # --add claims nothing: its task must be open, with no open worktree in the project yet. --resume
 # claims nothing either: its task must be open, with an open worktree in the project, whose
@@ -256,8 +285,10 @@ elif [[ -n $add ]]; then
 elif [[ -n $task ]]; then
   ! task_events "$task" | jq -se 'any(.[]; .event == "opened")' >/dev/null ||
     die "$task is already open: the ledger has its opened event"
+  room_to_open "$type/$task-$slug"
   mkdir -p "$TEAM_HOME/tasks/$task"
 else
+  room_to_open ''
   n=$({
     ledger_jq 'ledger_events[].task' -nRr "$ledger"
     find "$TEAM_HOME/tasks" -mindepth 1 -maxdepth 1 -name 'T*' -printf '%f\n'
