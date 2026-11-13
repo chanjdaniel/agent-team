@@ -253,31 +253,78 @@ advance_origin() {
   git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
   run_bin -0 --separate-stderr team-open proj feature feat next "Next"
   assert_equal "$(jq -r .worktree <<<"$output")" "$other/proj/2"
-  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
-  assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of proj is taken:" \
-    "  $other/proj/1: T3 (feat/T3-busy)" "  $other/proj/2: T1 (feat/T1-next)")"
+  # Both listed slots held, by either spelling: the next opens on demand.
+  run_bin -0 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$primary/.claude/worktrees/1"
 
   # A half-open task is finished in the slot holding its branch.
   git -C "$primary" worktree remove "$slots/1"
   stub_reply curl '{"message":"Missing Access"}'
   run_bin -1 --separate-stderr team-open proj feature feat flaky "Flaky"
   stub_reply curl '{"id":"1563000000000000009"}'
-  run_bin -0 --separate-stderr team-open --task T2 proj feature feat flaky "Flaky"
+  run_bin -0 --separate-stderr team-open --task T3 proj feature feat flaky "Flaky"
   assert_equal "$(jq -r .worktree <<<"$output")" "$other/proj/1"
 }
 
-@test "with every slot taken it exits 75 naming the holders, and gives the number back" {
+@test "with every listed slot taken a task opens in the lowest numbered worktree, and the next in the one after" {
   git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
   git -C "$primary" worktree add -q --detach "$slots/2" origin/main
   git -C "$primary" worktree add -q "$HOME/elsewhere" -b spare origin/main
-  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
-  assert_equal "$output" ""
-  assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of proj is taken:" \
-    "  $slots/1: T3 (feat/T3-busy)" "  $slots/2: no task (detached HEAD)")"
-  [[ ! -e $TEAM_HOME/tasks/T1 ]]
+  local made=$primary/.claude/worktrees base_sha
+  base_sha=$(git -C "$primary" rev-parse origin/main)
+  run_bin -0 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$(jq -c '{task, branch, base_sha, worktree, task_dir}' <<<"$output")" \
+    "$(jq -cn --arg wt "$made/1" --arg sha "$base_sha" \
+      '{task: "T1", branch: "feat/T1-late", base_sha: $sha, worktree: $wt, task_dir: "\($wt)/.scratch/task"}')"
+  assert_equal "$(git -C "$made/1" rev-parse --abbrev-ref HEAD)" "feat/T1-late"
+  assert_equal "$(git -C "$made/1" rev-parse --path-format=absolute --git-common-dir)" "$primary/.git"
+  assert_equal "$(events opened | jq -r .worktree)" "$made/1"
   assert_equal "$(git -C "$HOME/elsewhere" rev-parse --abbrev-ref HEAD)" "spare"
-  assert_equal "$(stub_calls curl)" ""
-  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+
+  run_bin -0 --separate-stderr team-open proj feature feat later "Later"
+  assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T2 $made/2"
+  run_bin -0 team-log --check
+
+  # A closed task's worktree, removed, is the lowest free number again.
+  git -C "$primary" worktree remove "$made/1"
+  run_bin -0 --separate-stderr team-open proj feature feat again "Again"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$made/1"
+}
+
+@test "a folder in the way that holds files but is no worktree is skipped with one line, and an empty one is taken" {
+  git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
+  git -C "$primary" worktree add -q "$slots/2" -b feat/T4-busy origin/main
+  local made=$primary/.claude/worktrees
+  mkdir -p "$made/1" "$made/2"
+  echo left >"$made/1/notes.txt"
+  run_bin -0 --separate-stderr team-open proj feature feat next "Next"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$made/2"
+  assert_equal "$stderr" "team-open: $made/1 is skipped: it holds files but is no worktree of $primary"
+  assert_equal "$(cat "$made/1/notes.txt")" "left"
+}
+
+@test "a listed slot that holds files but is no worktree is skipped too" {
+  mkdir -p "$slots/1"
+  echo left >"$slots/1/notes.txt"
+  run_bin -0 --separate-stderr team-open proj feature feat next "Next"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$slots/2"
+  assert_equal "$stderr" "team-open: $slots/1 is skipped: it holds files but is no worktree of $primary"
+}
+
+@test "a half-open task in an on-demand worktree is finished there" {
+  git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
+  git -C "$primary" worktree add -q "$slots/2" -b feat/T4-busy origin/main
+  local made=$primary/.claude/worktrees
+  stub_reply curl '{"message":"Missing Access"}'
+  run_bin -1 --separate-stderr team-open proj feature feat flaky "Flaky"
+  assert_contains "$stderr" "T1 is half open in $made/1; finish it with: team-open --task T1 proj feature feat flaky Flaky"
+  # Another task takes the next number meanwhile.
+  stub_reply curl '{"id":"1563000000000000009"}'
+  run_bin -0 --separate-stderr team-open proj feature feat other "Other"
+  assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T2 $made/2"
+  run_bin -0 --separate-stderr team-open --task T1 proj feature feat flaky "Flaky"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$made/1"
+  assert_equal "$(git -C "$primary" worktree list | wc -l)" "5"
 }
 
 @test "the task's branch checked out outside the slots is refused" {
@@ -434,14 +481,6 @@ holding() {
   [[ ! -e $HOME/.local/state/agent-team ]]
 }
 
-@test "a full pool is refused with its own message" {
-  git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
-  git -C "$primary" worktree add -q "$slots/2" -b feat/T4-busy origin/main
-  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
-  assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of proj is taken:" \
-    "  $slots/1: T3 (feat/T3-busy)" "  $slots/2: T4 (feat/T4-busy)")"
-}
-
 # Run team-open proj twice at once, the first run's `git worktree add` held until the second run
 # reaches its own (or 3 seconds pass, as when the second waits on the pool's lock), so the second
 # picks its slot while the first has not added one yet. Each run's exit code, stdout and stderr
@@ -491,13 +530,17 @@ EOF
   done
 }
 
-@test "two runs at once for a git pool with one free slot: one takes it, the other exits 75 on a full pool" {
+@test "two runs at once for a git pool with one free slot: one takes it, the other the first on-demand worktree" {
   git -C "$primary" worktree add -q "$slots/2" -b feat/T9-busy origin/main
   open_two_at_once
   local race=$BATS_TEST_TMPDIR/race
-  assert_equal "$(cat "$race/1.rc" "$race/2.rc" | sort | paste -sd ' ')" "0 75"
-  assert_equal "$(cat "$race/1.out" "$race/2.out" | jq -r .worktree)" "$slots/1"
-  assert_contains "$(cat "$race/1.err" "$race/2.err")" "team-open: every slot of proj is taken:"
+  assert_equal "$(cat "$race/1.rc") $(cat "$race/2.rc")" "0 0"
+  assert_equal "$(jq -r .worktree "$race/1.out" "$race/2.out" | sort)" \
+    "$(printf '%s\n' "$primary/.claude/worktrees/1" "$slots/1" | sort)"
+  local n
+  for n in 1 2; do
+    assert_equal "$(git -C "$(jq -r .worktree "$race/$n.out")" rev-parse --abbrev-ref HEAD)" "$(jq -r .branch "$race/$n.out")"
+  done
 }
 
 @test "a run that waits out the pool's lock exits 75 naming it, and gives the number back" {
@@ -506,15 +549,16 @@ EOF
   flock -x "$fd"
   TEAM_OPEN_POOL_WAIT_SECONDS=1 run_bin -75 --separate-stderr team-open proj feature feat late "Late"
   exec {fd}>&-
-  assert_equal "$stderr" "team-open: another team-open held proj's pool lock $lock for 1 seconds; run this again"
+  assert_equal "$stderr" "team-open: another run held the pool lock $lock of $primary for 1 seconds; run this again"
   [[ ! -e $TEAM_HOME/tasks/T1 && ! -e $slots/1 ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
-@test "--help says each project's pool is its only bound" {
+@test "--help says a git pool makes its worktrees on demand, and what each exit 75 means" {
   run_bin -0 team-open --help
-  assert_contains "$output" "Each project's pool is its only bound: the machine's load never refuses an open"
-  [[ $output != *"slot lock"* && $output != *"machine's cap"* ]]
+  assert_contains "$output" "made on demand"
+  assert_contains "$output" "a git pool's only exit 75 is its lock"
+  [[ $output != *"every slot is taken"* && $output != *"slot lock"* && $output != *"machine's cap"* ]]
 }
 
 @test "refused in a worker session, whatever its role and form, before any read; --help and the coordinator are not" {
