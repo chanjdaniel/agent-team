@@ -144,7 +144,19 @@ jobs:
       # MongoDB 8.0 starts or exits by the kernel's version (tests/toolkits/helpers/mongo.mjs).
       - name: Show the kernel
         run: uname -r
-      - run: tests/run toolkits
+      # T313 02's proof only, never merged: tests/run toolkits 10 times, each counted.
+      - name: tests/run toolkits, 10 times
+        run: |
+          pass=0
+          for n in $(seq 1 10); do
+            start=$SECONDS
+            if tests/run toolkits >"toolkits-$n.log" 2>&1; then pass=$((pass + 1)); verdict=passed; else verdict=failed; fi
+            echo "T313-02 run $n: $verdict in $((SECONDS - start)) s"
+            grep -E '^ℹ (tests|pass|fail|cancelled|skipped) ' "toolkits-$n.log" | paste -sd' '
+            if [[ $verdict == failed ]]; then tail -n 80 "toolkits-$n.log"; fi
+          done
+          echo "T313-02: $pass of 10 passed"
+          [[ $pass == 10 ]]
 
   # What the PR adds: no secret in its commits, no real email address, no image and no
   # node_modules/ path in its files.
