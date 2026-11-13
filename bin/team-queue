@@ -1,24 +1,60 @@
 #!/usr/bin/env bash
-# Keep the index of queued work, the team home's tasks/queued/index.md, from the files beside it.
+# Keep the queue of approved work, the team home's tasks/queued/, and its ranked index,
+# tasks/queued/index.md, from the files' front matter and the ledger (bin/lib/queue.jq).
 #
 # Usage: team-queue index [--check]
 #        team-queue migrate
-# Queued work is work Daniel approved and no task has opened yet: one file per piece of work in
-# tasks/queued/, its first line its "# <title>". The file may open with front matter, a "---" line,
-# then "summary: <one line>" and "task: <T<n> or ->" lines (each at most once, any order), then a
-# "---" line; the summary says what the work is and what it waits on, and task names the task it
-# came from or waits on.
-# index writes tasks/queued/index.md: its title "# Queued work", a line saying it is written by
-# team-queue index from the files' front matter, then one line per file but index.md, in name order:
-# "- <file>: <summary>", "- <file> (<task>): <summary>" with a task other than -, the summary its
-# front matter's, else its title. It writes through a temporary file, under the ledger's lock, and
-# commits the index alone (commit_records), as "chore: queued index", then pushes the team home's
-# branch; an index already as written commits nothing. It prints "wrote tasks/queued/index.md: <n>
-# files" ("1 file"). --check writes nothing, and prints, as "tasks/queued/<file>: <reason>", each
-# file whose front matter is malformed (no closing "---", a line that is no "summary:" or "task:",
-# either twice, an empty summary, a task that is not T<n> or -) or that has neither a summary nor a
-# title, and whether the index is stale ("tasks/queued/index.md: not as team-queue index writes
-# it"), exiting 1 when it prints any.
+# An item is work Daniel approved: one Markdown file in tasks/queued/ but index.md, its first "# "
+# line its title. It opens with front matter, a "---" line, then "<key>: <value>" lines, each key
+# at most once, then a "---" line. Required keys:
+#   summary   one non-empty line saying what the work is
+#   project   a project team-project --list names
+#   priority  1 fixes something failing now or Daniel asked for it next; 2 approved work with a
+#             clear payoff (the default for Daniel's approvals); 3 follow-ups and polish (the
+#             default for a review's notes); 4 someday
+#   size      S (one small PR), M (a ticketed task of 2 to 5 tickets) or L (several phases)
+# Optional keys:
+#   after     conditions joined by ", ", every one of which must hold first: "T<n> merged" (a
+#             merged of T<n> with no phases_left or an empty one), "T<n> phase <k> merged" (a
+#             merged of T<n> whose phases_left does not hold k), "T<n> closed", a YYYY-MM-DD date
+#             (today's UTC date is that day or later; TEAM_QUEUE_TODAY stands for today), or
+#             "<name>.md" (that item left the queue: it is in some tasks/T<m>/queued/, not here)
+#   waits     one line naming what outside the ledger and the calendar it waits on; removed by
+#             hand when the wait ends
+#   from      the tasks it came from, T<n> joined by ", "
+#   opened    the one task that builds it, T<n>
+#   takes     other queued items it carries, <name>.md joined by ", ", which leave with it
+#   alone     yes, for work that runs with the project's other tasks held
+#   guarded   the short-list areas (bin/lib/guarded) the work touches, shown and never ranked
+# An item's state, the first that holds: unranked (it has a problem, below), finished (opened by a
+# task that merged whole or closed), opened (opened by a task still building it), taken (another
+# item takes it; it is listed under each taker, never alone), waiting (a waits line, or an after
+# condition not met), else ready.
+# Ready items rank across every project: by priority (1 first), then by how many queued items'
+# after names them (more first), then by size (S, M, L), then by file name; waiting items list in
+# the same order, opened and finished ones by task number, unranked ones by name.
+# index writes tasks/queued/index.md: "# Queued work", a line saying team-queue index writes it,
+# then the sections "## Ready, ranked" ("<rank>. <file> (<project>, priority <p>, <size>):
+# <summary>"), "## Waiting" (the same as a "- " line, then "; waits for <the waits line and each
+# condition not met, joined by ", ">"), "## Opened" ("- <file> (<project>, <task>): <summary>") and
+# "## Unranked" ("- <file>: <its problems, joined by "; ">"), a section with no item left out,
+# ", guarded: <text>" and ", alone" after the size when given, and under each item a
+# "   - takes <file>: <summary>" line for each queued item it takes; an item with no summary shows
+# its title. It writes through a temporary file, under the ledger's lock, and commits the index
+# alone (commit_records), as "chore: queued index", then pushes the team home's branch; an index
+# already as written commits nothing. It prints "wrote tasks/queued/index.md: <n> files" ("1 file").
+# --check writes nothing, and prints each problem as "tasks/queued/<file>: <reason>", exiting 1
+# when it prints any: a front matter with no closing "---", a key given twice, a line that is no
+# "<key>: <value>", a key it does not read, task: (now from:), no summary (or no summary and no
+# title), an empty summary or waits, a required key missing or a value not as above (a project
+# not in projects.toml), an after, from or opened naming a task the ledger does not hold, an after
+# naming a file neither queued nor in a task's queued/, a takes naming a file not queued, itself,
+# an item that takes others or one a task opened, an item whose task merged or closed over 15
+# minutes ago that is still queued (the heartbeat should have moved it), and an item two open
+# tasks' plans cite that either could take (its project one of the task's, its from not naming
+# the task, not opened and not taken); then "tasks/queued/: projects not checked: <why>" first
+# when the registry cannot be read, and last "tasks/queued/index.md: not as team-queue index
+# writes it" when the index is stale.
 # migrate moves the queued lines of tasks/current.md (team-current's, "- queued <task> <text> |
 # <where>") into front matter, once, after which team-current takes no queued line: each line whose
 # where names a file in tasks/queued/ (relative to the team home, in full, or under ~/) gives that
@@ -34,7 +70,8 @@
 # exits 0; a commit that fails (the team home's hooks refuse it) leaves the change written for the
 # next checkpoint to commit, saying so on stderr, and exits 1.
 # It refuses in a worker session (worker_refusal in bin/lib/team.sh).
-# Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
+# Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line (or a
+# TEAM_QUEUE_TODAY that is no YYYY-MM-DD).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -45,9 +82,16 @@ index=$TEAM_HOME/$index_rel
 current_rel=tasks/current.md
 current=$TEAM_HOME/$current_rel
 
-# A file's front matter and title as JSON, {summary, task, title, problems}, every control
-# character escaped, so a carriage return of a CRLF file never makes jq reject it: card <file>
-card() {
+# Every queued file's card, one JSON object a line in name order, {file, title, keys, problems}:
+# its first "# " line, its front matter's "<key>: <value>" lines (a key twice kept once) and the
+# problems of its form (no closing "---", a key twice, a line that is no "<key>: <value>"), every
+# control character escaped, so a carriage return of a CRLF file never makes jq reject it, in one
+# awk pass over all the files: cards
+cards() {
+  local -a paths=()
+  local name
+  while IFS= read -r name; do paths+=("$queued/$name"); done < <(files)
+  ((${#paths[@]})) || return 0
   awk '
     BEGIN { for (i = 1; i < 32; i++) ctl[sprintf("%c", i)] = sprintf("\\u%04x", i) }
     function esc(s,  out, c, i) {
@@ -60,42 +104,75 @@ card() {
       }
       return out
     }
-    function add(p) { problems = problems (problems == "" ? "" : "\t") p }
-    NR == 1 && $0 == "---" { in_front = 1; next }
-    in_front && $0 == "---" { in_front = 0; closed = 1; next }
+    function add(p) { problems = problems (problems == "" ? "" : ",") "\"" esc(p) "\"" }
+    function flush(  name) {
+      if (file == "") return
+      if (in_front) add("front matter has no closing ---")
+      name = file
+      sub(/.*\//, "", name)
+      card[file] = "{\"file\":\"" esc(name) "\",\"title\":\"" esc(title) "\",\"keys\":{" keys "},\"problems\":[" problems "]}"
+    }
+    FNR == 1 { flush(); file = FILENAME; in_front = 0; title = ""; keys = ""; problems = ""; split("", seen) }
+    FNR == 1 && $0 == "---" { in_front = 1; next }
+    in_front && $0 == "---" { in_front = 0; next }
     in_front {
-      if (match($0, /^summary:[ ]*/)) { if (has_summary++) add("summary given twice"); summary = substr($0, RLENGTH + 1) }
-      else if (match($0, /^task:[ ]*/)) { if (has_task++) add("task given twice"); task = substr($0, RLENGTH + 1) }
-      else add("front matter line \"" $0 "\" is no summary: or task:")
+      if (match($0, /^[a-z_]+:/)) {
+        key = substr($0, 1, RLENGTH - 1)
+        value = substr($0, RLENGTH + 1)
+        sub(/^ +/, "", value)
+        if (key in seen) add(key " given twice")
+        else { seen[key] = 1; keys = keys (keys == "" ? "" : ",") "\"" key "\":\"" esc(value) "\"" }
+      } else add("front matter line \"" $0 "\" is no <key>: <value>")
       next
     }
     title == "" && /^# / { title = substr($0, 3) }
     END {
-      if (in_front) add("front matter has no closing ---")
-      if (has_summary && summary == "") add("its summary is empty")
-      if (has_task && task !~ /^(T[0-9]+|-)$/) add("task \"" task "\" is not T<n> or -")
-      if (summary == "" && title == "") add("it has no summary and no title")
-      printf "{\"summary\":\"%s\",\"task\":\"%s\",\"title\":\"%s\",\"problems\":\"%s\"}\n", esc(summary), esc(task), esc(title), esc(problems)
-    }' "$1"
+      flush()
+      for (i = 1; i < ARGC; i++) {
+        if (ARGV[i] in card) { print card[ARGV[i]]; continue }
+        name = ARGV[i]
+        sub(/.*\//, "", name)
+        print "{\"file\":\"" esc(name) "\",\"title\":\"\",\"keys\":{},\"problems\":[]}"
+      }
+    }' "${paths[@]}" </dev/null
 }
 
-# The queued files but the index, by name, one path a line: files
+# The queued files but the index, by name, one name a line: files
 files() {
   find "$queued" -mindepth 1 -maxdepth 1 -type f -name '*.md' ! -name index.md -printf '%f\n' 2>/dev/null | LC_ALL=C sort
 }
 
+# Run one queue.jq program over every item, the ledger and what the items need: the registry's
+# project names, the files that left the queue (tasks/T<n>/queued/<file>), the queued files each
+# task's plan cites, today and now; the program sees $items (queue_items'), $registry_error and
+# $current (the index as it is, "" when missing). jq's options come first: queue_jq <option>... <program>
+queue_jq() {
+  local names registry_error='' program=${*: -1}
+  local -a plans opts=("${@:1:$#-1}")
+  if ! names=$(team_project --list 2>&1); then
+    registry_error=${names##*$'\n'} registry_error=${registry_error#team-project: } names=''
+  fi
+  shopt -s nullglob
+  plans=("$TEAM_HOME"/tasks/T*/plan.md)
+  shopt -u nullglob
+  jq -nR -L "$TEAM_LIB" "${opts[@]}" \
+    --slurpfile cards <(cards) \
+    --arg names "$names" --arg registry_error "$registry_error" \
+    --rawfile left <(find "$TEAM_HOME/tasks" -mindepth 3 -maxdepth 3 -type f -path "$TEAM_HOME/tasks/T*/queued/*.md" 2>/dev/null) \
+    --rawfile cites <( ((${#plans[@]} == 0)) || grep -oHE 'tasks/queued/[A-Za-z0-9][A-Za-z0-9._-]*\.md' -- "${plans[@]}" || true) \
+    --rawfile current <(cat "$index" 2>/dev/null || true) \
+    --arg today "$today" \
+    'include "queue"; include "ledger";
+    (if $registry_error == "" then $names | split("\n") | map(select(. != "")) else null end) as $projects
+    | [$left | split("\n")[] | capture("/(?<task>T[1-9][0-9]*)/queued/(?<file>[^/]+)$")] as $left
+    | [$cites | split("\n")[] | capture("/(?<task>T[1-9][0-9]*)/plan\\.md:tasks/queued/(?<file>[^/]+)$")] as $cites
+    | queue_items($cards; ledger_events; $projects; $left; $cites; $today; now) as $items
+    | '"$program" "$TEAM_HOME/ledger.jsonl"
+}
+
 # The index as team-queue index writes it, on stdout: index_text
 index_text() {
-  local name entry
-  echo "# Queued work"
-  echo
-  echo "Written by \`team-queue index\` from each file's front matter (its title when it has none); edit the files, never this index."
-  echo
-  while IFS= read -r name; do
-    entry=$(card "$queued/$name")
-    jq -r --arg name "$name" '(if .summary != "" then .summary else .title end) as $what
-      | "- \($name)" + (if .task != "" and .task != "-" then " (\(.task))" else "" end) + ": \($what)"' <<<"$entry"
-  done < <(files)
+  queue_jq -j '$items | queue_view | queue_index_text'
 }
 
 # Write the index, under the lock commit_records holds: edit_index
@@ -190,6 +267,8 @@ commit() {
 
 why=$(worker_refusal "" "edits no records") && die "$why"
 (($#)) || usage_error "$usage"
+today=${TEAM_QUEUE_TODAY:-$(date -u +%F)}
+[[ $today =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || usage_error "TEAM_QUEUE_TODAY \"$today\" is not a YYYY-MM-DD date"
 command=$1
 shift
 case $command in
@@ -201,23 +280,14 @@ case $command in
       *) usage_error "$usage" ;;
     esac
     if [[ -n $check ]]; then
-      bad=0
-      while IFS= read -r name; do
-        while IFS= read -r problem; do
-          [[ -n $problem ]] || continue
-          echo "tasks/queued/$name: $problem"
-          bad=1
-        done < <(card "$queued/$name" | jq -r '.problems | split("\t")[]')
-      done < <(files)
-      # Compared whole, never piped to cmp, which on macOS stops reading at the first difference,
-      # so index_text's later writes would fail on stderr; the trailing "." keeps final newlines.
-      expected=$(index_text && echo .)
-      actual=$(cat "$index" 2>/dev/null && echo .) || actual=''
-      if [[ $actual != "$expected" ]]; then
-        echo "$index_rel: not as team-queue index writes it"
-        bad=1
-      fi
-      exit "$bad"
+      # The index is compared whole inside jq, never piped to cmp, which on macOS stops reading at
+      # the first difference.
+      problems=$(queue_jq -r '($items | queue_problem_lines($registry_error)),
+        (select($current != ($items | queue_view | queue_index_text)) | "'"$index_rel"': not as team-queue index writes it")') ||
+        exit 1
+      [[ -n $problems ]] || exit 0
+      printf '%s\n' "$problems"
+      exit 1
     fi
     NET_ERR=$(mktemp)
     trap 'rm -f "$NET_ERR"' EXIT
