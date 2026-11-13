@@ -652,7 +652,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 118 lines and 27730 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 118 lines and 27860 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message; a paused of a cause
   # no worker reports (the usage limit, the machine's load, the machine off) is the coordinator's own.
@@ -695,9 +695,24 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # what it prints at its end and its re-arm after a catch-up and on exit 75, and the sanctioned
   # actions team-catch-up and its reruns, and 118 lines and 27730 bytes once the plan step named
   # the Parallel: caps and parallel= and the build step the one line on a parallel phase,
-  # team-next --fill and its integration).
+  # team-next --fill and its integration, and 27860 once the BLOCKED row named the one that took a
+  # command-guard refusal's allowed way, logged denied and listed in the next status report).
   (($(wc -l <"$manual") <= 118))
-  (($(wc -c <"$manual") <= 27730))
+  (($(wc -c <"$manual") <= 27860))
+}
+
+@test "a worker goes on by a command-guard refusal's allowed way and reports it, which the coordinator logs denied and lists in its status report" {
+  # Each worker role says it in the same words, right after its denial section's first sentence.
+  local sentence="When a \`command-guard\` refusal names an allowed way, take that way and go on, and still send \`T<n> BLOCKED command-guard <the refusal's reason>; took its allowed way\`, which parks nothing; a refusal with no allowed way is as above." role
+  for role in builder planner reviewer ops; do
+    assert_equal "$(grep -A 3 -x '## When something is denied' "$REPO_ROOT/roles/$role.md" | sed -n 4p)" "$sentence"
+  done
+  # The manual's BLOCKED row logs it denied and puts it in the next status report.
+  grep -E '^\| `BLOCKED <what> <why>`' "$manual" |
+    grep -qF 'one ending "; took its allowed way" is logged denied (it parks nothing) and goes in your next status report, never a ping of its own.'
+  grep -qF "the snapshot's denials line" "$plugin/skills/status-report/SKILL.md"
+  # The form the role sentence gives is one team-log --from-message reads.
+  grep -qF '"BLOCKED <what> <why>; took its allowed way"' "$REPO_ROOT/bin/lib/messages.jq"
 }
 
 @test "the manual and the status-report skill keep the waiting list in waiting.md, post it fresh, and route a reply by number" {

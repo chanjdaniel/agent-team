@@ -14,6 +14,7 @@ description: Answer Daniel's request for status from team-snapshot. Use when Dan
 - Lead with what waits on Daniel: say in the answer's first line how many items wait, or that nothing does, and name the first item of `waiting.md`, the one whose answer unblocks the most; once the answer is sent run `team-inbox --post`, which posts the numbered list as the newest message in `#coordinator`, ranked by how much work each answer unblocks with the count on each line, so Daniel answers right under it; never repeat its list, and in a task's thread name that task's items by their numbers in the team home's `waiting.md`; when it fails, list them yourself from the snapshot, the ones holding the most work first.
 - When Daniel asks only what waits on them, run `team-inbox --post` alone, with no status.
 - Then each open task in one line: its title, what it has achieved and what comes next, in Daniel's terms, from the snapshot's progress (its tickets done, its latest review, its PR's checks and how far it is behind its base), never from `tasks/current.md`.
+- After the open tasks, the snapshot's denials line in Daniel's terms, when it has one: what a worker was refused and went past.
 - Outcomes, not machinery: what was built, found, merged or decided, never sessions, sweeps, ledger events or phases by their internal names.
 - Every PR as its full `https://github.com/...` URL, never `#118` alone.
 - Anything wrong you found while reading the snapshot (a stray session, a task with no worker), with what you are doing about it.

@@ -5,7 +5,8 @@ include "ledger";
 
 # The forms a message takes after its task, as the role prompts and brief templates write them.
 def message_forms:
-  ["QUESTION <text>", "BLOCKED <what> <why>", "NEED toolkit <name>", "PAUSED <why>",
+  ["QUESTION <text>", "BLOCKED <what> <why>", "BLOCKED <what> <why>; took its allowed way", "NEED toolkit <name>",
+   "PAUSED <why>",
    "PR <full url> [merged <base> conflicts: <files or none>]",
    "DONE <NN> <sha>... <line>", "DONE review-ready <sha>", "DONE merged <base> <sha> conflicts: <files or none>",
    "DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list> [widening=<list>] [memory=<path>]",
@@ -112,6 +113,17 @@ def message_park($task; $events; $from; $kind; $cause; $reason):
   | if $s.problems and $from != "" then $s
     else {events: [message_event($kind; [["reason", $reason], ["cause", $cause]]
       + if $s.sender then [["role", $s.sender.role], ["session", $s.sender.session]] else [] end)]} end;
+
+# A worker's BLOCKED <what> <why>; took its allowed way ($body, the text before the marker): a
+# refusal that named an allowed way, which the worker took and went on by. Its denied carries the
+# sender's role and session (refused when the sender cannot be told, as a QUESTION's), what the
+# body's first word and why the rest; it parks nothing.
+def message_denied($task; $events; $from; $body):
+  ($body | capture("^(?<what>\\S+)\\s+(?<why>\\S.*)$"; "s") // null) as $d
+  | if $d == null then
+      message_refused("BLOCKED takes 'BLOCKED <what> <why>; took its allowed way', got 'BLOCKED \($body); took its allowed way'")
+    else with_sender($task; $events; $from; null;
+      {events: [message_event("denied"; [["role", .role], ["what", $d.what], ["why", $d.why], ["session", .session]])]}) end;
 
 # The cause of a worker's PAUSED <why>, by its first word (any case): stowed a stow, the answer to
 # STOW; held coordinator-hold, the answer to HOLD; offline offline, GitHub out of reach; any other
@@ -252,7 +264,10 @@ def parse_message($task; $events; $records; $from; $sent_back; $app):
       with_sender($task; $events; $from; null;
         if .role == "ops" then message_ops("question"; .; $rest)
         else {events: [message_event("question"; [["role", .role], ["text", $rest]])]} end)
-    elif $m.kind == "BLOCKED" then message_park($task; $events; $from; "blocked"; "worker"; $rest)
+    elif $m.kind == "BLOCKED" then
+      ($rest | capture("^(?<body>.*?)\\s*;\\s*took its allowed way$"; "s") // null) as $went
+      | if $went != null then message_denied($task; $events; $from; $went.body)
+        else message_park($task; $events; $from; "blocked"; "worker"; $rest) end
     elif $m.kind == "NEED" then
       if ($rest | test("^toolkit\\s+\\S+$")) then message_park($task; $events; $from; "blocked"; "worker"; "needs " + ($rest | sub("\\s+"; " ")))
       else message_refused("NEED takes 'NEED toolkit <name>', got 'NEED \($rest)'") end

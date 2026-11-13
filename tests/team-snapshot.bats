@@ -176,7 +176,7 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","default_withdrawn","production","sessions","strays","prs","pending_asks","waiting","items","queued"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","default_withdrawn","production","denials","sessions","strays","prs","pending_asks","waiting","items","queued"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
@@ -430,7 +430,7 @@ Pending asks: none
 Current items: none"
   rm "$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-snapshot --json
-  assert_equal "$(jq -c '[.tasks, .default_withdrawn, .sessions, .strays, .pending_asks, .items]' <<<"$output")" '[[],[],[],[],[],[]]'
+  assert_equal "$(jq -c '[.tasks, .default_withdrawn, .sessions, .strays, .pending_asks, .items, .denials]' <<<"$output")" '[[],[],[],[],[],[],[]]'
 }
 
 # said <task> <kind> <scope> <message> <ts>: Daniel's withdrawal of the default merge word
@@ -556,6 +556,69 @@ Live team sessions: none"
   line=$(sed -n 3p <<<"$output")
   assert_equal "${#line}" 200
   [[ $line == "Production: proj check-1 down since "*... ]] || { echo "line: $line" >&2; return 1; }
+}
+
+# denied <task> <ts> <role> <what> <why>: a denial a worker went past, as team-log --from-message
+# logs a BLOCKED that took its allowed way.
+denied() {
+  ledger_line --arg t "$1" --arg ts "$2" --arg role "$3" --arg what "$4" --arg why "$5" \
+    '{ts: $ts, task: $t, event: "denied", role: $role, what: $what, why: $why, session: "b0000001"}'
+}
+
+@test "the denials of the last day follow the Production line, newest first, and --json lists them" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  opened T5
+  opened T4
+  production_check proj api
+  local at hour two_hours day_ago
+  at=$(date -u -d '-3 minutes' +%FT%TZ)
+  production_state "$at" "$(up_check proj api "$at")"
+  hour=$(date -u -d '-1 hour' +%FT%TZ)
+  two_hours=$(date -u -d '-2 hours' +%FT%TZ)
+  day_ago=$(date -u -d '-25 hours' +%FT%TZ)
+  denied T3 "$day_ago" builder command-guard 'a kill of PID 7, a day and an hour ago'
+  denied T3 "$two_hours" builder command-guard 'a recursive delete of /tmp/x, which is outside your worktree'
+  denied T5 "$hour" reviewer command-guard 'a kill by name or pattern (pkill)'
+  denied T4 "$hour" builder command-guard 'a closed task'"'"'s denial'
+  event T4 closed '{archive: [], returned: [], kept: []}'
+  run_bin -0 team-snapshot
+  assert_equal "$(grep -A 2 '^Production: ' <<<"$output")" "Production: all 1 check up, last checked $(date -d "$at" +%H:%M)
+Denials gone past in the last day: 2: T5 reviewer command-guard: a kill by name or pattern (pkill); T3 builder command-guard: a recursive delete of /tmp/x, which is outside your worktree
+Live team sessions: none"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c .denials <<<"$output")" "$(jq -cn --arg hour "$hour" --arg two "$two_hours" '[
+    {task: "T5", ts: $hour, role: "reviewer", what: "command-guard", why: "a kill by name or pattern (pkill)"},
+    {task: "T3", ts: $two, role: "builder", what: "command-guard",
+     why: "a recursive delete of /tmp/x, which is outside your worktree"}]')"
+}
+
+@test "with no denial in the last day there is no denials line, and --json's denials is empty" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  denied T3 "$(date -u -d '-25 hours' +%FT%TZ)" builder command-guard 'a kill of PID 7'
+  run_bin -0 team-snapshot
+  [[ $output != *Denials* ]] || { echo "$output" >&2; return 1; }
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c .denials <<<"$output")" '[]'
+}
+
+@test "the denials line is cut at 200 columns" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  local n
+  for n in 1 2 3 4; do
+    denied T3 "$(date -u -d "-$n minutes" +%FT%TZ)" builder command-guard "a recursive delete of /tmp/scratch-$n, which is outside your worktree and your job's tmp"
+  done
+  run_bin -0 team-snapshot
+  local line
+  line=$(grep '^Denials' <<<"$output")
+  assert_equal "${#line}" 200
+  [[ $line == "Denials gone past in the last day: 4: T3 builder command-guard: a recursive delete of /tmp/scratch-1, "*... ]] ||
+    { echo "line: $line" >&2; return 1; }
 }
 
 @test "a team-uptime that fails gives production its error, the text says production is unreadable, and the rest is as before" {
