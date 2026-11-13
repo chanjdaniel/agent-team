@@ -324,6 +324,20 @@ tasks/queued/g-small.md: opened names T10, which closed at 2026-01-01T00:00:00Z 
   nothing_written
 }
 
+@test "tidy moves an item whose task merged with no phases_left, then launched a builder, then closed: a closed task's merge is whole unless it names phases left" {
+  opened_task T1 small
+  ready a-small.md 2 S "a" "opened: T1"
+  merged T1
+  event T1 launch '{role: "builder", session: "b1"}'
+  event T1 closed
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" "moved a-small.md to tasks/T1/queued/: T1 merged
+wrote tasks/queued/index.md: 2 files"
+  run_bin -0 team-queue index --check
+  assert_equal "$output" ""
+}
+
 @test "tidy moves a taken file with its taker unless another queued item still takes it or a task opened it" {
   opened_task T6
   opened_task T7
