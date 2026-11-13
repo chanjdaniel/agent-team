@@ -1,6 +1,6 @@
 # The queue of approved work, the team home's tasks/queued/: what each item's state is, when an
-# after: condition is met, how the items rank, the problems team-queue index --check names and the
-# text of the index. Used by team-queue as
+# after: condition is met, how the items rank, the problems team-queue index --check names, the
+# text of the index and the judging of team-queue set's table. Used by team-queue as
 # jq -nR -L bin/lib 'include "queue"; include "ledger"; ...' over the ledger's lines, with the
 # items' cards (team-queue's one awk pass: {file, title, keys, problems}), the registry's project
 # names, the items that left the queue, the queued files the tasks' plans cite, today's UTC date
