@@ -63,13 +63,16 @@ The rows, in order:
     it runs, of a process group, every process or PID 0 or 1, and of a literal PID not proven the
     session's to stop (gone, or the user's, not the session's own and working inside a root, as
     the process table says at the time of the call), each naming its allowed way.
-  The delete rows, bin/lib/delete_rules.py's: none yet.
+  The delete rows, bin/lib/delete_rules.py's (its header holds their wording and how a path is
+    resolved): a recursive delete (rm -r, find -delete or find -exec rm) of a path outside the
+    worktree and the job tmp, of either of them, the worktree's .scratch/task or a directory
+    holding one, and of a path the guard cannot read before it runs, each naming its allowed way.
 Each row is given the call's context (Context): the command's text, the hook input's cwd, the
 worktree, the job tmp, the roots, the kept paths and the role, each read on a row's first use of
 it; only the kill and delete rows use it, so a call with neither reads no process or file for it.
 A row reads every command the walk yields, a shell's script file and a sourced one among them (a
-file named team-worker that bash runs is team-worker), but for the upload row, which reads no
-file's name as curl.
+file named team-worker that bash runs is team-worker), but for the upload and delete rows, which
+read no file's name as curl or rm.
 Not seen: a name built by a substitution or held in a variable; a function of one's own, a
 script of one's own written by an earlier call or the Write tool (one this call writes and runs is
 read), or a copy or link of a guarded one; a string another interpreter runs (python3 -c, node -e,
@@ -79,7 +82,8 @@ unshare, systemd-run, tmux send-keys, git rebase's --exec); each under an emptie
 too, so a team script one of those runs there goes unseen. Of a kill or a delete, not seen: one in
 a script file written by an earlier call or the Write tool, a package script (npm run, make), an
 interpreter's own code (python3 -c "os.kill(...)"), systemctl, launchctl, docker kill or docker
-rm, ssh's remote command, a single file's rm and git clean (which the worker settings deny).
+rm, ssh's remote command, a single file's rm and git clean (which the worker settings deny); of a
+delete, a link or a move the same command makes before it (ln -s /tmp l && rm -rf l/x).
 It is a speed bump, as a deny rule is, which the role's rule against reaching a refused thing
 another way holds.
 """

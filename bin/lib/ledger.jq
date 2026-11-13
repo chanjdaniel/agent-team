@@ -1900,6 +1900,16 @@ def resources_line($level; $stowed):
 # The ids of the open tasks among every task's events by id, in task number order.
 def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:] | tonumber);
 
+# The denials workers went past in the last day, over every task's events by id: each open task's
+# denied events of the last 24 hours, as {task, ts, role, what, why}, newest first; the status report
+# lists them, since a worker that took a refusal's allowed way sends no ping of its own.
+def snapshot_denials:
+  (now - 86400) as $since
+  | [to_entries[] | select(.value | is_open) | .value[]
+     | select(.event == "denied" and ((.ts // "") | (try fromdateiso8601 catch 0) >= $since))
+     | {task, ts, role, what, why}]
+  | sort_by(.ts) | reverse;
+
 # team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON in
 # task number order ($states; {task, error} for a task whose state could not be told), the team's
 # resource level ($level, team-level status --json's object or {error}), the withdrawals of the
@@ -1907,7 +1917,8 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # registered project's open PRs ($prs), the current items ($items) and the production checks' last
 # results ($production, team-uptime status --json's object or {error}). It carries $level as level,
 # the open tasks stowed, waiting to resume, as awaiting_resume, the resources_line as resources
-# (null when $level is {error}), and $production as production.
+# (null when $level is {error}), $production as production, and the open tasks' denials of the last
+# day (snapshot_denials) as denials.
 def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production; $waiting; $queued):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed
@@ -1918,6 +1929,7 @@ def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $prod
      resources: resources_line($level; $stowed),
      default_withdrawn: $withdrawn,
      production: $production,
+     denials: ($tasks | snapshot_denials),
      sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
      prs: $prs,
@@ -1950,7 +1962,9 @@ def checks_waits_to_arm:
 # "Checks waits to arm unless running: team-next T<n> --ci (<url> at <short>, since <ts>)", none
 # when there is none. After the resources line, one line per withdrawal of the default merge word
 # that stands. The Production line, after them, is team-uptime's status line, or "Production
-# unreadable: <error>", and there is none when no project has a check.
+# unreadable: <error>", and there is none when no project has a check. The denials line follows it,
+# "Denials gone past in the last day: <n>: T<n> <role> <what>: <why>; ...", cut at 200 columns, and
+# there is none with no denial.
 def snapshot_text:
   def section($title; $lines; $columns):
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
@@ -1965,6 +1979,10 @@ def snapshot_text:
    | if .line | type == "string" then .line | clip(200)
      elif .error != null then "Production unreadable: \(.error)" | clip(200)
      else empty end),
+  ((.denials // []) as $denials
+   | if $denials == [] then empty
+     else "Denials gone past in the last day: \($denials | length): "
+       + ([$denials[] | "\(.task) \(.role) \(.what): \(.why)"] | join("; ")) | clip(200) end),
   section("Live team sessions";
     [.sessions[] | session_text + if .logged then "" else " (no launch of it in the ledger)" end]),
   section("Stray sessions";
