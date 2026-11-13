@@ -10,6 +10,7 @@
 
 load helpers/common
 load helpers/docker
+load helpers/inbox
 
 setup() {
   sandbox
@@ -27,10 +28,8 @@ setup() {
   Q=$TASK_DIR/q.md
   echo "This is the page you are on." >"$Q"
   echo '{"allowFrom": ["757"]}' >"$HOME/.claude/channels/discord/access.json"
-  # #coordinator's guild, as team-inbox keeps it after its first read, so the refresh of the
-  # waiting list after a walk starts or stops calls Discord for nothing.
-  mkdir -p "$HOME/.local/state/agent-team"
-  echo '{"channel":"1562486564871995482","guild":"1560000000000000000"}' >"$HOME/.local/state/agent-team/inbox.json"
+  # The refresh of the waiting list after a walk starts or stops calls Discord for nothing.
+  inbox_guild_kept
   export DISCORD_DIR=$BATS_TEST_TMPDIR/discord
   mkdir -p "$DISCORD_DIR"
   # A post gets a new message id; a read of a message gets $DISCORD_DIR/<id>.json, or a 404.

@@ -6,6 +6,7 @@
 # behaviour is tests/toolkits/frontend.test.mjs's.
 
 load helpers/common
+load helpers/inbox
 
 setup() {
   sandbox
@@ -36,10 +37,8 @@ EOF
   chmod +x "$capture"
   open_task T7
   ui=$TEAM_HOME/tasks/T7/ui
-  # #coordinator's guild, as team-inbox keeps it after its first read, so the refresh of the
-  # waiting list after a walk starts or stops calls Discord for nothing.
-  mkdir -p "$HOME/.local/state/agent-team"
-  echo '{"channel":"1562486564871995482","guild":"1560000000000000000"}' >"$HOME/.local/state/agent-team/inbox.json"
+  # The refresh of the waiting list after a walk starts or stops calls Discord for nothing.
+  inbox_guild_kept
   inbox=$HOME/.claude/channels/discord/inbox
   mkdir -p "$inbox"
   printf 'shot' >"$inbox/1563-screenshot.png"
