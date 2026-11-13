@@ -337,7 +337,7 @@ read 3 of 3 transcripts; wrote 1 day file"
   assert_equal "$(jq -r '.source' "$prices")" "https://platform.claude.com/docs/en/about-claude/pricing"
   [[ $(jq -r '.read' "$prices") =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
   assert_equal "$(jq -r '.models | keys[]' "$prices" | paste -sd ' ')" \
-    "<synthetic> claude-fable-5-1 claude-haiku-5-5 claude-opus-4-8 claude-opus-5 claude-opus-5-5 claude-sonnet-5-5"
+    "<synthetic> claude-fable-5-1 claude-fable-5-2 claude-haiku-5-5 claude-opus-4-8 claude-opus-5 claude-opus-5-5 claude-sonnet-5-5"
   assert_equal "$(jq '[.models[] | ., (.above // empty) | del(.tokens, .above) | keys == ["cache_read", "cache_write_1h", "cache_write_5m", "input", "output"] and all(.[]; type == "number")] | all' "$prices")" true
   assert_equal "$(jq -c '.models["<synthetic>"] | [.[]] | unique' "$prices")" "[0]"
 }
@@ -379,6 +379,71 @@ read 3 of 3 transcripts; wrote 1 day file"
     '[0,50000,6,1.26] [50000,100000,8,3.44] [100000,200000,2,0.24] [200000,400000,3,1.475]'
   assert_equal "$(q '.rebuilds')" \
     '{"roles":[{"role":"coordinator","rebuilds":1,"extra_w":1.17,"role_w":2.39,"compactions":1},{"role":"planner","rebuilds":0,"extra_w":0,"role_w":0.69,"compactions":0},{"role":"builder","rebuilds":0,"extra_w":0,"role_w":2.24,"compactions":0},{"role":"reviewer","rebuilds":0,"extra_w":0,"role_w":0.75,"compactions":0}],"gap_minutes":{"count":1,"median":130,"over_hour":1,"five_to_sixty":0}}'
+}
+
+# A report of its own for the long sessions, in the day file of home-pc on 2026-10-20, each reply on
+# Opus 5.5 ($8 a million for a one-hour write, $0.20 a read, $20 an output):
+# - T5's builder a5 peaks at 300k: a 100k reply (0.82), then one of 300k (0.236), past 250k; its
+#   subagent's 400k reply (0.1) is no main conversation's, so it counts in neither;
+# - T5's builder b5 peaks at 100k (0.82), and T5 has two tickets done;
+# - T6's reviewer c6 has one reply of 260k (0.15).
+long_fixture() {
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$TEAM_HOME/usage/home-pc"
+  jq -nc '
+    {ts: "2026-10-20T07:00:00Z", task: "T5", event: "opened", project: "agent-team"},
+    {ts: "2026-10-20T07:00:01Z", task: "T6", event: "opened", project: "conventioner"},
+    ({ts: "2026-10-20T07:01:00Z", event: "launch", worktree: "/home/dan/agent-team/.claude/worktrees/1", toolkits: [],
+      machine: "home-pc"} | (.task = "T5" | .role = "builder" | .session = "a5a5a5a5"),
+     (.task = "T5" | .role = "builder" | .session = "b5b5b5b5"), (.task = "T6" | .role = "reviewer" | .session = "c6c6c6c6")),
+    {ts: "2026-10-20T09:00:00Z", task: "T5", event: "ticket-done", ticket: "01", commits: ["1111111"]},
+    {ts: "2026-10-20T10:00:00Z", task: "T5", event: "ticket-done", ticket: "02", commits: ["2222222"]}' >"$TEAM_HOME/ledger.jsonl"
+  jq -nc '
+    def reply($ts; $s; $req; $w1h; $read):
+      {ts: $ts, machine: "home-pc", session: "\($s)-0000-4000-8000-000000000000", project_dir: "-home-dan-agent-team--claude-worktrees-1",
+       model: "claude-opus-5-5", request: $req, input: 0, cache_write_1h: $w1h, cache_write_5m: 0, cache_read: $read, output: 1000};
+    reply("2026-10-20T08:00:00.000Z"; "a5a5a5a5"; "req_a5_1"; 100000; 0),
+    (reply("2026-10-20T08:05:00.000Z"; "a5a5a5a5"; "req_a5_s"; 0; 400000) | .agent = "agent-x"),
+    reply("2026-10-20T08:10:00.000Z"; "a5a5a5a5"; "req_a5_2"; 20000; 280000),
+    reply("2026-10-20T08:20:00.000Z"; "b5b5b5b5"; "req_b5_1"; 100000; 0),
+    reply("2026-10-20T08:30:00.000Z"; "c6c6c6c6"; "req_c6_1"; 10000; 250000)' >"$TEAM_HOME/usage/home-pc/2026-10-20.jsonl"
+}
+
+@test "the report gives each worker role's sessions past 250k of context, and each task's" {
+  long_fixture
+  report_json
+  assert_equal "$(q '.long_sessions.threshold')" 250000
+  assert_equal "$(q '.long_sessions.roles[]' | paste -sd ' ')" \
+    '{"role":"builder","sessions":2,"long":1,"w":1.056,"role_w":1.876,"past_w":0.236} {"role":"reviewer","sessions":1,"long":1,"w":0.15,"role_w":0.15,"past_w":0.15}'
+  assert_equal "$(q '.long_sessions.tasks[]' | paste -sd ' ')" \
+    '{"task":"T5","project":"agent-team","role":"builder","sessions":1,"w":1.056,"past_w":0.236,"max_context":300000,"tickets_done":2} {"task":"T6","project":"conventioner","role":"reviewer","sessions":1,"w":0.15,"past_w":0.15,"max_context":260000,"tickets_done":0}'
+  run_bin -0 --separate-stderr team-tokens --until 2026-10-21T16:00Z
+  assert_contains "$output" $'\n'"## Long sessions"$'\n'
+  assert_contains "$output" "| builder | 1 | 2 | 1.1 | 56.3% | 0.24 |"
+  assert_contains "$output" "| T5 | agent-team | builder | 1 | 1.1 | 0.24 | 300k | 2 |"
+  assert_contains "$output" "| T6 | conventioner | reviewer | 1 | 0.15 | 0.15 | 260k | 0 |"
+  # --task keeps that task's rows alone.
+  report_json --task T6
+  assert_equal "$(q '[.long_sessions.roles[].role, .long_sessions.tasks[].task]')" '["reviewer","T6"]'
+}
+
+@test "the long sessions table shows the top 15 tasks by \$w, and says how many more there are" {
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$TEAM_HOME/usage/home-pc"
+  # Seventeen tasks, T1 to T17, each a builder of one 300k reply whose $w grows with its number.
+  jq -nc 'range(1; 18) as $n
+    | {ts: "2026-10-20T07:00:00Z", task: "T\($n)", event: "launch", role: "builder", session: "\($n + 10000000)",
+       worktree: "/home/dan/agent-team/.claude/worktrees/1", toolkits: [], machine: "home-pc"}' >"$TEAM_HOME/ledger.jsonl"
+  jq -nc 'range(1; 18) as $n
+    | {ts: "2026-10-20T08:00:00.000Z", machine: "home-pc", session: "\($n + 10000000)-0000-4000-8000-000000000000",
+       project_dir: "-home-dan-agent-team--claude-worktrees-1", model: "claude-opus-5-5", request: "req_\($n)", input: 0,
+       cache_write_1h: 0, cache_write_5m: 0, cache_read: 300000, output: ($n * 1000)}' >"$TEAM_HOME/usage/home-pc/2026-10-20.jsonl"
+  report_json
+  assert_equal "$(q '[.long_sessions.tasks | length, .[0].task, .[-1].task]')" '[17,"T17","T1"]'
+  run_bin -0 --separate-stderr team-tokens --until 2026-10-21T16:00Z
+  assert_contains "$output" "| T3 | (unknown) | builder |"
+  [[ $output != *"| T2 | (unknown) | builder |"* ]]
+  assert_contains "$output" "The 15 of 17 rows with the most \$w; --json gives every one."
 }
 
 @test "the report gives cost per outcome, relaunches and re-reviews from the ledger" {
@@ -503,7 +568,7 @@ read 3 of 3 transcripts; wrote 1 day file"
   assert_contains "$output" "21 replies in 13 sessions, 1.5M tokens, 6.9 \$w; 17 ledger events in the window."
   assert_contains "$output" "Day files: home-pc through 2026-10-20, laptop through 2026-10-21; and 0 replies from this machine's transcripts since its last."
   for heading in "Token types" "Models" "Machines" "Roles" "Projects and tasks" "Days (UTC)" "Sessions and context" "Context" \
-    "Cache rebuilds" "Cost per outcome" "Relaunches" "5-hour blocks" "The last seven days"; do
+    "Long sessions" "Cache rebuilds" "Cost per outcome" "Relaunches" "5-hour blocks" "The last seven days"; do
     assert_contains "$output" $'\n'"## $heading"$'\n'
   done
   assert_contains "$output" "| cache_write_1h | 0.7 | 44.8% | 5.2 | 75.3% |"
@@ -535,6 +600,21 @@ read 3 of 3 transcripts; wrote 1 day file"
   sed -i 's/claude-sonnet-5-5/claude-opus-4-8/' "$TEAM_HOME/usage/home-pc/2026-10-20.jsonl"
   report_json
   assert_equal "$(q '.models[] | select(.model == "claude-opus-4-8") | [.replies, .w]')" '[1,0.625]'
+}
+
+@test "a Fable 5.2 reply is weighed at its own price on every token type, with no warning" {
+  report_fixture
+  # r1's reply on Fable 5.2, with every type: 10k input at $8 a million (0.08), 50k one-hour writes
+  # at $16 (0.8), 20k five-minute writes at $10 (0.2), 100k reads at $0.20 (0.02) and 5k output at
+  # $40 (0.2); at Opus 5.5's prices it would weigh 0.66.
+  local day=$TEAM_HOME/usage/home-pc/2026-10-20.jsonl fable
+  fable=$(jq -c 'select(.request == "req_r1_1")
+    | .model = "claude-fable-5-2" | .input = 10000 | .cache_write_5m = 20000 | .cache_read = 100000' "$day")
+  jq -c 'select(.request != "req_r1_1")' "$day" >"$day.rest"
+  { cat "$day.rest" && echo "$fable"; } >"$day"
+  rm "$day.rest"
+  report_json
+  assert_equal "$(q '.models[] | select(.model == "claude-fable-5-2") | [.replies, .w]')" '[1,1.3]'
 }
 
 @test "a model with no price is weighed as Opus 5.5, with a warning" {

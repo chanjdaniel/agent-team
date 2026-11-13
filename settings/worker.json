@@ -31,6 +31,7 @@
       "ScheduleWakeup",
       "SendFeedback",
       "SendUserFile",
+      "Workflow",
       "Bash(git push --force*)",
       "Bash(git push -f*)",
       "Bash(git push * --force*)",
