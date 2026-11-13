@@ -483,8 +483,9 @@ local_path() {
 #                      names) to 200 at most: its crowded subdirectories by this same rule, then
 #                      its largest other subdirectories, the largest first and a research
 #                      task's work/probes/ last, at most ten of them, or else the directory
-#                      whole; at work/ beside probes, as many as it takes, so the probes are kept
-#                      beside the work/tmp/ their runs filled or many small notes
+#                      whole; at work/ beside probes, as many as it takes, so the probes go
+#                      only after every other subdirectory, when work/'s own files leave no
+#                      room for them
 #   link               a symbolic link
 #   video              a file named .webm, .mp4, .m4v, .mov, .mkv or .avi, in any case (a
 #                      Playwright sweep's video.webm)
@@ -599,7 +600,8 @@ archive_left_out() {
     # those as large) and work/probes last, until the rest holds at most 200; when that takes
     # more than ten of them, or they are not enough, leave out <dir> itself in their place. At
     # work/, while work/probes holds files, there is no bound of ten, so its siblings go one by
-    # one, as many as it takes, and the probes stay.
+    # one, as many as it takes, and work/probes goes after every one of them, only when work/'s
+    # own files leave no room for it.
     crowded() {
       local crowd_at=$1 crowd_sub crowd_subs=() crowd_most crowd_left crowd_picked=() crowd_cap=10
       ((${crowd_count[$crowd_at]:-0} > 200)) || return 0
