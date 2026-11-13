@@ -505,15 +505,27 @@ tickets.html"
 missing|no Chrome found; set TEAM_CHROME or install Google Chrome
 printf 'starting\n[ERROR] no display\n\n' >&2; exit 3|Chrome exited 3: [ERROR] no display
 exit 9|Chrome exited 9
-exit 124|Chrome timed out after 60 s
+exit 124|Chrome timed out after 90 s
 for a; do if [[ $a == --screenshot=* ]]; then echo text >"${a#*=}"; fi; done; echo done >&2|Chrome exited 0 and wrote no PNG: done
 for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "9 bytes written to file $s" >&2; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
 for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s.other" >&2; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
 for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
 for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; echo text >"$s"; echo "5 bytes written to file $s" >&2; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
-for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s" >&2; exit 124|Chrome timed out after 60 s
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s" >&2; exit 124|Chrome timed out after 90 s
 for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s" >&2; echo killed >&2; exit 137|Chrome exited 137: killed
 CASES
+}
+
+@test "--graph gives Chrome 90 seconds, then 5 more after its TERM before the kill" {
+  ticket 01-one "Blocked by: None"
+  stub_chrome
+  # The machine's timeout runs each call, through a stub that logs it, ahead of macOS's GNU tools.
+  command -v timeout >"$STUB_FIXTURES/timeout.real"
+  printf '%s\n' 'exec "$(<"$STUB_FIXTURES/timeout.real")" "$@"' >"$STUB_FIXTURES/timeout.sh"
+  stub_command timeout
+  export TEAM_PATH_FIRST=$BATS_TEST_TMPDIR/stubs
+  run_bin -0 team-tickets T172 --graph
+  assert_equal "$(jq -r --arg chrome "$TEAM_CHROME" 'select(.[3] == $chrome) | .[:3] | join(" ")' "$STUB_CALLS/timeout.log")" "-k 5 90"
 }
 
 @test "--graph takes the PNG of a Chrome that exits otherwise once it says it wrote the screenshot whole" {
