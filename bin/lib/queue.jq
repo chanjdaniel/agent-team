@@ -336,7 +336,8 @@ def queue_unstaffed($tasks):
 # Whether the level has room for one more task, {fits, says}, from team-capacity plan --json's
 # object ($plan, {error} when it could not be read), costs --json's ($costs, alike), the events by
 # task ($tasks) and today (YYYY-MM-DD): it fits when the level is not none, the plan has a budget
-# and is not over it, no task waits to resume or to launch (stowed and refused work comes first),
+# and is not over it, no task waits to resume or to launch (stowed and refused work comes first,
+# but for work something holds, a hold the plan gives, which it will not relaunch),
 # the budget less what is reserved is at least a builder's estimate (every task soon launches
 # one, the largest worker a task starts), and no open task has an opened with no launch since (a
 # task just opened gets its first worker before the next is named), the first that fails saying
@@ -347,8 +348,8 @@ def queue_room($plan; $costs; $tasks; $today):
   elif $plan.level == "none" then no("the level is none")
   elif $plan.budget == null then no("no reading of the machine's load, so no budget")
   elif $plan.over then no("over budget")
-  elif ($plan.resume // []) != [] then no("\($plan.resume[0].task) waits to resume")
-  elif ($plan.launch // []) != [] then no("\($plan.launch[0].task) waits to launch")
+  elif any($plan.resume[]?; .hold == null) then no("\(first($plan.resume[] | select(.hold == null)).task) waits to resume")
+  elif any($plan.launch[]?; .hold == null) then no("\(first($plan.launch[] | select(.hold == null)).task) waits to launch")
   elif $costs.error != null then no("the costs cannot be read: \($costs.error)")
   else
     (first($costs.costs[]? | select(.kind == "session:builder") | .estimate_bytes | numbers) // null) as $need

@@ -109,7 +109,8 @@
 # team-capacity plan --json (the file --plan names when the caller already holds one, as the
 # sweep does, which may be {error: <why>}, else its own run) and team-capacity costs --json: it
 # fits when the level is not none, the plan has a budget and is not over it, its resume and launch
-# lists are empty (stowed and refused work comes first), the budget less what is reserved is at
+# lists hold no entry with a null hold (stowed and refused work comes first, but for work
+# something holds, which the plan will not relaunch), the budget less what is reserved is at
 # least the session:builder estimate (every task soon launches a builder, the largest worker a
 # task starts), and no open task has an opened with no launch after it (a task just opened gets
 # its first worker before the next is named). Its line, the first that holds: "no room: the plan

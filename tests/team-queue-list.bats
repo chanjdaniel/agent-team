@@ -111,6 +111,18 @@ says() {
   assert_equal "$(says)" "no room: T171 waits to resume"
   plan '.launch = [{task: "T5", refused: "2026-11-13T00:00:00Z", roles: ["reviewer"], needs: 1, fits: false, hold: null}]'
   assert_equal "$(says)" "no room: T5 waits to launch"
+  # Stowed or refused work something holds will not be relaunched, so it takes no room first.
+  plan '.resume = [{task: "T9", stowed: "2026-11-13T01:00:00Z", roles: ["builder"], needs: 1, fits: true, hold: "held: Daniel'"'"'s hold"},
+      {task: "T171", stowed: "2026-11-13T02:00:00Z", roles: ["builder"], needs: 1, fits: true, hold: null}]
+    | .launch = [{task: "T5", refused: "2026-11-13T00:00:00Z", roles: ["reviewer"], needs: 1, fits: true, hold: "unanswered ask a1: which?"}]'
+  assert_equal "$(says)" "no room: T171 waits to resume"
+  plan '.resume = [{task: "T9", stowed: "2026-11-13T01:00:00Z", roles: ["builder"], needs: 1, fits: true, hold: "held: Daniel'"'"'s hold"}]
+    | .launch = [{task: "T5", refused: "2026-11-13T00:00:00Z", roles: ["reviewer"], needs: 1, fits: true, hold: "unanswered ask a1: which?"},
+      {task: "T6", refused: "2026-11-13T00:00:00Z", roles: ["reviewer"], needs: 1, fits: true, hold: null}]'
+  assert_equal "$(says)" "no room: T6 waits to launch"
+  plan '.resume = [{task: "T9", stowed: "2026-11-13T01:00:00Z", roles: ["builder"], needs: 1, fits: true, hold: "held: Daniel'"'"'s hold"}]
+    | .launch = [{task: "T5", refused: "2026-11-13T00:00:00Z", roles: ["reviewer"], needs: 1, fits: true, hold: "unanswered ask a1: which?"}]'
+  assert_equal "$(says)" "room for one more task at full (90%): 11.7 GiB of 16.9 GiB free, a builder needs 1.7 GiB"
   plan '.level = "minor" | .share = 0.3 | .budget = (9.2 * '"$GIB"' | round) | .reserved = (8.3 * '"$GIB"' | round)'
   assert_equal "$(says)" "no room: 0.9 GiB free at minor (30%), a builder needs 1.7 GiB"
   # Exactly a builder's estimate free is room.
