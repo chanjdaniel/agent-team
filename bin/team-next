@@ -1031,7 +1031,7 @@ launch_ticket() {
     worktree=$(project_worktree "$project") || exit
     brief=$(sibling team-brief "$task" builder-ticket --project "$project" --name "$name" --set "ticket=$n" "${force[@]}") || exit
   else
-    # Its reason, the last line it starts with its name (a full pool's list of slots follows it).
+    # Its reason, the last line it starts with its name (a failed treehouse lease's list of slots follows it).
     sibling_said 'team-open: ' team-open --task "$task" --ticket "$n"
     opened=$out said=${said:-team-open: it gave no reason}
     if ((rc == 75)); then
