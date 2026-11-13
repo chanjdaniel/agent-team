@@ -2353,6 +2353,27 @@ launched T7-builder-02 c0000002"
   refused "--next 02 is not ready: 02 running in session c0000002" T7 --fill --next 02
 }
 
+@test "--fill launches no ticket an ask holds, names it held, and refuses it as --next, until the ask is answered" {
+  fill_ready 2
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: None" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: None" "Touches: four.txt"
+  event asked '{id: "prune", text: "Prune 03?", tickets: ["03"]}'
+  refused "--next 03 is not ready: 03 held by the unanswered ask prune" T7 --fill --next 03
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(grep '^launched' <<<"$output")" "launched T7-builder-02 c0000001
+launched T7-builder-04 c0000002"
+  # With a slot free and only the held ticket left, nothing is launched, and the line says why.
+  event ticket-done '{ticket: "04", commits: ["0123456"]}'
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(tail -n 1 <<<"$output")" "nothing to launch: 02 running in session c0000001; 03 held by the unanswered ask prune"
+  assert_equal "$(bg_calls | wc -l)" 2
+  # Answered, it is ready again.
+  event answered '{id: "prune", answer: "keep it"}'
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(grep '^launched' <<<"$output")" "launched T7-builder-03 c0000003"
+}
+
 @test "a launch refused for room stops --fill with exit 75 and its line, keeping the worktree, and a rerun launches the rest" {
   fill_ready 2
   ticket 02-second "Blocked by: 01" "Touches: two.txt"
