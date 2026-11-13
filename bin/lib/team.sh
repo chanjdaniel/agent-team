@@ -597,9 +597,9 @@ archive_left_out() {
     # crowded <dir>: when <dir> holds over 200 files, leave out its crowded subdirectories by this
     # same rule, then its largest other subdirectories, the largest first (the first by name of
     # those as large) and work/probes last, until the rest holds at most 200; when that takes
-    # more than ten of them, or they are not enough, leave out <dir> itself in their place. The
-    # ten bound none at work/ while work/probes holds files, so its siblings go one by one, as many
-    # as it takes, and the probes stay.
+    # more than ten of them, or they are not enough, leave out <dir> itself in their place. At
+    # work/, while work/probes holds files, there is no bound of ten, so its siblings go one by
+    # one, as many as it takes, and the probes stay.
     crowded() {
       local crowd_at=$1 crowd_sub crowd_subs=() crowd_most crowd_left crowd_picked=() crowd_cap=10
       ((${crowd_count[$crowd_at]:-0} > 200)) || return 0
