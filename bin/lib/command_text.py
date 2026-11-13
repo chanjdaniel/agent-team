@@ -14,12 +14,11 @@ subshells), groups ((, $(, a backtick, ${ in which quotes nest up to its first }
 which a comment and a newline's heredoc bodies are read as outside it, a { ... }, if ... fi, a
 while, until, for or select loop to its done (for's and select's to a { ... } body before any
 do), and after = an array assignment's list, a word's part in which no word is reserved), case's
-patterns,
-pipelines, here-strings and heredocs, whose marker is its word up to a blank or an operator with
-its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic, ${ or [[ opens
-none. In arithmetic ($((, $[, (( and for's ((, in a double quote too) only its quotes, a $(, a
-backtick and a nested $(( are read, to its close: each substitution in it is a group, whose commands
-Bash runs.
+patterns, pipelines, here-strings and heredocs, whose marker is its word up to a blank or an
+operator with its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic, ${
+or [[ opens none. In arithmetic ($((, $[, (( and for's ((, in a double quote too) only its quotes,
+a $(, a backtick and a nested $(( are read, to its close: each substitution in it is a group,
+whose commands Bash runs.
 A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it as one, as its
 reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
 a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time, its -p or the -- after
@@ -58,13 +57,14 @@ command the text runs (simple_commands: those in a group, a substitution, a pipe
 too): the assignments before its name, env's and an array element's (X[0]=1, its subscript one
 bracket pair as Bash's lexer reads it there, blanks, quotes, nested brackets and operators in it,
 kept as written: X[ 0 ]=1, X[;]=1) among them, since Bash runs the command after one it refuses;
-its words from the name of what runs on, past the wrappers env, command, exec, nohup, time, nice,
-ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock with their options
-(env's lone - among them), numbers and flock's file, parallel's inputs after its ::: or :::: left
-out but for those with a scheme (https://host/u), read as URLs; the wrappers it ran behind, each
-its own words, the outermost first, with the command that ran its string, its find, or the shell
-or source that ran its file; and how it was reached: directly, in a string a tool runs, by
-find -exec, in a string watch or parallel join, as a shell's script file or by source.
+its words from the name of what runs on, past the wrappers env, command, builtin, exec, nohup,
+time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock with
+their options (env's lone - among them; command's and the reserved word time's take no value,
+so command -p source runs source), numbers and flock's file, parallel's inputs after its ::: or
+:::: left out but for those with a scheme (https://host/u), read as URLs; the wrappers it ran
+behind, each its own words, the outermost first, with the command that ran its string, its find,
+or the shell or source that ran its file; and how it was reached: directly, in a string a tool
+runs, by find -exec, in a string watch or parallel join, as a shell's script file or by source.
 A command string is walked in turn, its commands yielded after the command that runs it, where
 the tool itself takes one: what watch and parallel join of their command's words (from the first
 word that is no option, and the next too when an option may take that one), env's -S or
@@ -272,12 +272,13 @@ def read_command(text, start=0, group=False):
     pipelines, heredocs, strings, pending = [], [], [], []
     # Each group open at i: its kind (root, (, `, {, ${, [[, an array assignment's list, a case's
     # case-word, case-pattern or case-body, or a COMPOUNDS kind: if, for or loop), its pipeline,
-    # where its segment starts, whether a pipe began that segment, the quote it sits in, whether a reserved word may come
-    # next (True, False, or "name", "coproc", "time" or "time -p" after function, coproc, time or
-    # time's -p; or "assign" where only assignments and redirections came before in the command, so
-    # no reserved word may come but an element's assignment may, and "target" where a redirection's
-    # target comes next in such a place), and that state for its parent once it ends: a compound
-    # command's end lets one come, a word's part does not, but for keeping its assignment's place.
+    # where its segment starts, whether a pipe began that segment, the quote it sits in, whether a
+    # reserved word may come next (True, False, or "name", "coproc", "time" or "time -p" after
+    # function, coproc, time or time's -p; or "assign" where only assignments and redirections came
+    # before in the command, so no reserved word may come but an element's assignment may, and
+    # "target" where a redirection's target comes next in such a place), and that state for its
+    # parent once it ends: a compound command's end lets one come, a word's part does not, but for
+    # keeping its assignment's place.
     frames = []
     # Each arithmetic open at i, $((, $[ or ((, or an element's subscript in an assignment's place,
     # read only for the substitutions in it, which Bash runs: the depth of the frames it sits in,
@@ -793,8 +794,8 @@ ASSIGNMENT = re.compile(r"[A-Za-z_]\w*(?:\[.*\])?\+?=", re.DOTALL)
 NUMBER = re.compile(r"[0-9][0-9.]*[smhd]?")
 # The commands that run the command after them, past their options.
 WRAPPERS = frozenset(
-    "env command exec nohup time nice ionice stdbuf timeout setsid sudo doas xargs parallel watch"
-    " flock".split()
+    "env command builtin exec nohup time nice ionice stdbuf timeout setsid sudo doas xargs parallel"
+    " watch flock".split()
 )
 SHELLS = frozenset("bash sh zsh dash ksh".split())
 # The commands a wrapper's option never takes as its value: those whose strings the walk reads,
@@ -935,6 +936,9 @@ def _command(words):
     while i < n and os.path.basename(words[i]) in WRAPPERS:
         start, wrapper = i, os.path.basename(words[i])
         file_left, option = wrapper == "flock", False
+        # command's options (-p, -v, -V) and the reserved word time's (-p) take no value, and
+        # builtin takes none, so the word after one may be the builtin they run (source, ., trap).
+        valueless = wrapper in ("command", "builtin") or words[i] == "time"
         inputs = inputs or wrapper == "parallel"
         if wrapper in JOINING:
             joined = _joined(words[i + 1 :], wrapper == "parallel")
@@ -964,7 +968,7 @@ def _command(words):
                 # env's lone -, -i's other name, takes no value.
                 option = False
             elif word.startswith("-") and word != "-":
-                option = True
+                option = not valueless
             elif NUMBER.fullmatch(word):
                 option = False
             elif option:

@@ -11,11 +11,11 @@ code), each heredoc that text still opens blanked so that every line of it is co
 each simple command that text runs, then each one the command's own text runs (its heredocs'
 bodies left out as Bash reads them, so a substitution a body leaves open in the code text hides
 no line after it), as command_text.commands yields them: past the wrappers env, nohup, command,
-exec, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock
-with its file, their options and env's assignments, into the substitutions in arithmetic, and
-into the strings a shell's -c, eval, trap's action, su's and script's -c, env -S, flock -c, watch
-and parallel, and find -exec run, a shell's script file and what source or . reads among them,
-by its name.
+builtin, exec, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch
+and flock with its file, their options and env's assignments, into the substitutions in
+arithmetic, and into the strings a shell's -c, eval, trap's action, su's and script's -c, env -S,
+flock -c, watch and parallel, and find -exec run, a shell's script file and what source or .
+reads among them, by its name.
 For each row of the table in order, and each command in the walk's order, the first command a
 row refuses ends the walk: it prints one JSON line, {"rule": <id>, "reason": <text>, "allowed":
 <text or null>}, the reason being the text command-guard puts after "Blocked by command-guard: ",
