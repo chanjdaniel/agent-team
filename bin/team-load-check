@@ -50,11 +50,13 @@
 # Then it launches a planner through bin/team-worker in the lowest free .claude/worktrees/<n> of
 # the code checkout's main checkout, made as team-open makes a git pool's worktree, under the same
 # pool lock (its exit 75 when another run holds that lock too long), detached at the code
-# checkout's HEAD and locked with the reason team-load-check, so its proof of trust, isolation,
-# toolkits and the edit hook is a proof on the kind of worktree a task runs in. The worktree is
-# removed at the end, and at the start every worktree of the main checkout locked as
-# team-load-check, and the old .claude/worktrees/load-check, so a run that was killed leaves
-# nothing the next run keeps (TEAM_LOAD_CHECK_CHECKOUT names another checkout, the tests' seam).
+# checkout's HEAD and locked with the reason "team-load-check <its pid>", so its proof of trust,
+# isolation, toolkits and the edit hook is a proof on the kind of worktree a task runs in. The
+# worktree is removed at the end, and at the start every worktree of the main checkout locked as
+# team-load-check whose run is gone (no process of that pid running team-load-check, or no pid),
+# and the old .claude/worktrees/load-check, so a run that was killed leaves nothing the next run
+# keeps, and two runs at once leave each other's worktree alone (TEAM_LOAD_CHECK_CHECKOUT names
+# another checkout, the tests' seam).
 # It has the planner list its MCP tools and skills, and checks that
 #   - its only MCP tools are the given toolkits' (none when no toolkit is given), and each MCP
 #     server a given toolkit's .mcp.json declares brought at least one of them (FAIL: toolkit
@@ -499,13 +501,14 @@ lease_checks() {
 # load_worktree: the lowest free numbered .claude/worktrees/<n> of the code checkout's main
 # checkout, made by pool_add_worktree as team-open makes a git pool's, under the same pool lock, so
 # it is never a path a running team-open holds; detached at the code checkout's HEAD and locked
-# with the reason team-load-check, which the EXIT trap removes with every session in ids.
+# with the reason team-load-check <its pid>, which the EXIT trap removes with every session in ids;
+# before it, what a run that is gone left is removed (stale_load_worktrees).
 ids=()
 load_worktree() {
   # Background sessions start only in trusted directories. A linked worktree takes its trust from
   # its main checkout's, so a worktree of the code checkout needs no trust step of its own, as every
   # task's .claude/worktrees/<n> runs, and the planner's start there is the proof of that trust.
-  local head
+  local head stale
   checkout=${TEAM_LOAD_CHECK_CHECKOUT:-$home}
   main=$(main_checkout "$checkout")
   [[ -n $main ]] || die "the code checkout $checkout is not a git checkout, so the load check has no worktree to run in"
@@ -515,27 +518,42 @@ load_worktree() {
   cleanup() {
     local id
     for id in "${ids[@]}"; do claude stop "$id" >/dev/null 2>&1 || true; claude rm "$id" >/dev/null 2>&1 || true; done
-    remove_load_worktrees
+    [[ -z $wt ]] || remove_load_worktrees "$wt"
   }
-  cleanup
+  mapfile -t stale < <(stale_load_worktrees)
+  remove_load_worktrees "${stale[@]}"
   trap 'on_exit cleanup' EXIT
 
-  wt=$(pool_add_worktree "$main" "" -- --detach --lock --reason team-load-check "$head") || exit $?
+  wt=$(pool_add_worktree "$main" "" -- --detach --lock --reason "team-load-check $$" "$head") || exit $?
   mkdir -p "$wt/.scratch"
 }
 
-# remove_load_worktrees: every worktree of the main checkout locked with the reason team-load-check,
-# this run's and what a killed run left, and the old fixed .claude/worktrees/load-check, so nothing
-# of a run outlives the next one
-remove_load_worktrees() {
-  local line path='' stale=("$main/.claude/worktrees/load-check")
+# stale_load_worktrees: what no running load check holds, one path per line: each worktree of the
+# main checkout locked as a load check's (team-load-check <pid>) whose run is gone, no process
+# <pid> running team-load-check, or locked team-load-check with no pid, and the old fixed
+# .claude/worktrees/load-check
+stale_load_worktrees() {
+  local line path='' pid args
+  echo "$main/.claude/worktrees/load-check"
   while IFS= read -r line; do
     case $line in
       'worktree '*) path=${line#worktree } ;;
-      'locked team-load-check') stale+=("$path") ;;
+      'locked team-load-check') echo "$path" ;;
+      'locked team-load-check '*)
+        pid=${line#locked team-load-check }
+        args=''
+        [[ ! $pid =~ ^[1-9][0-9]*$ ]] || args=$(ps -o args= -p "$pid" 2>/dev/null) || args=''
+        [[ $args =~ (^|[ /])team-load-check( |$) ]] || echo "$path"
+        ;;
     esac
   done < <(git -C "$main" worktree list --porcelain 2>/dev/null)
-  for path in "${stale[@]}"; do
+}
+
+# remove_load_worktrees <path>...: each path's worktree of the main checkout and its folder, then a
+# prune of what git still lists
+remove_load_worktrees() {
+  local path
+  for path in "$@"; do
     git -C "$main" worktree remove --force --force "$path" >/dev/null 2>&1 || true
     rm -rf -- "${path:?}"
   done
