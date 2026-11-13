@@ -685,6 +685,82 @@ tasks/T1/scratch/work/probes/autosave.test.ts"
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch/work/cache | wc -l)" "60"
 }
 
+@test "a research task's work/probes/ is kept beside a smaller or equal sibling that crowds work/" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  mkdir -p "$dir/work/probes" "$dir/work/tmp"
+  # The probes outnumber the files a run's TMPDIR left beside them, and still only work/tmp/ goes.
+  touch "$dir/work/probes/"{1..120}.py "$dir/work/tmp/"{1..100}.json
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: work/tmp (over 200 files)
+T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/work/probes" -type f | wc -l)" "120"
+
+  # As many probes as tmp/ files, and a note that crowds work/ past 200: probes/ is still kept.
+  rm "$dir/work/probes/"{101..120}.py
+  echo "findings" >"$dir/work/findings.md"
+  run_bin -0 --separate-stderr team-checkpoint --force
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: work/tmp (over 200 files)
+T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/work/probes" -type f | wc -l)" "100"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/work" -maxdepth 1 | sort)" "$TEAM_HOME/tasks/T1/scratch/work
+$TEAM_HOME/tasks/T1/scratch/work/findings.md
+$TEAM_HOME/tasks/T1/scratch/work/probes"
+}
+
+@test "a directory left out once its own crowded subdirectory was trimmed is named alone" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  mkdir -p "$dir/work/probes" "$dir/work/tmp/a" "$dir/work/tmp/b"
+  # work/tmp/ is trimmed of a/ first, then left out of work/ whole, so a/ is not named apart.
+  touch "$dir/work/probes/"{1..100}.py "$dir/work/tmp/a/"{1..150}.json "$dir/work/tmp/b/"{1..120}.json
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: work/tmp (over 200 files)
+T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/work" -mindepth 1 -maxdepth 1)" "$TEAM_HOME/tasks/T1/scratch/work/probes"
+}
+
+@test "a crowded directory of many small subdirectories is left out whole, in one line" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  # A cache's fan-out: 400 subdirectories of one file each, beside the probes. Leaving them out
+  # one at a time would take 200 lines, and minutes of a count per subdirectory each.
+  mkdir -p "$dir/work/probes" "$dir/work/cache/"{1..400}
+  touch "$dir/work/probes/1.py"
+  printf '%s\0' "$dir/work/cache/"{1..400}/entry | xargs -0 touch
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: work/cache (over 200 files)
+T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch" -type f)" "$TEAM_HOME/tasks/T1/scratch/work/probes/1.py"
+}
+
+@test "a research task's probes take the archive's bounds as every kept path does" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  mkdir -p "$dir/work/probes/run" "$dir/work/probes/many"
+  # A probe over 1 MiB, and a probe directory past 200 files, are left out; a small binary probe
+  # that is no image, video or build output is kept, as such a file is anywhere.
+  echo "def test_a(): pass" >"$dir/work/probes/test_a.py"
+  head -c 1048577 /dev/zero >"$dir/work/probes/run/capture.log"
+  printf '\0\1\2probe' >"$dir/work/probes/run/state.bin"
+  touch "$dir/work/probes/many/"{1..201}.py
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: work/probes/many (over 200 files)
+T1 home: left out of tasks/T1/scratch: work/probes/run/capture.log (over 1 MiB)
+T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -type f | sort)" "./work/probes/run/state.bin
+./work/probes/test_a.py"
+}
+
 @test "the archive leaves out every image anywhere in the task directory, named, and keeps the text beside it" {
   run_bin -0 team-open home feature feat work "Do the work"
   local dir=$HOME/slots/home/1/.scratch/task

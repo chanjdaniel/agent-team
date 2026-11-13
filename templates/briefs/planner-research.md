@@ -14,7 +14,8 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git).
 
 1. `report.md`: everything the plan's acceptance criteria ask for, citing the primary sources you used, with anything unverified marked as unverified.
 2. `tickets/NN-<slug>.md` for the follow-up work, when the plan asks for it, each with `Blocked by:` and a `- [ ]` acceptance list.
-   Keep each probe a ticket cites as text in `work/probes/`, and what a probe's run leaves (a test's `TMPDIR`, a build) in a directory of its own, so the task's archive keeps the probes at its close: at most 200 files, none over 1 MiB, and no image, video or build output (`archive_left_out` in `{{team_code}}/bin/lib/team.sh` is the list).
+   Keep each probe a ticket cites as text in `work/probes/`, and point what a probe's run leaves (a test's `TMPDIR`, a build) at `{{task_dir}}/tmp/`, beside `work/` and never inside it, so the task's archive keeps the probes at its close.
+   The archive keeps no file over 1 MiB, no image, video or build output, and no directory holding over 200 files through its subdirectories, a bound `work/` takes as a whole, its probes and every file beside them counted (`archive_left_out` in `{{team_code}}/bin/lib/team.sh` is the list).
 3. Send `{{task}} DONE {{task_dir}}/report.md` to `coordinator`.
 
 ## Rules

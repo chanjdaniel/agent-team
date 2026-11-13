@@ -481,9 +481,9 @@ local_path() {
 #   over 200 files     what brings each other directory holding more than 200 files through
 #                      its subdirectories (none counted inside a directory another reason
 #                      names) to 200 at most: its crowded subdirectories by this same rule, then
-#                      its largest other subdirectories, the largest first, or else the
-#                      directory whole, so a research task's work/probes/ is kept beside the
-#                      work/tmp/ its tests filled
+#                      its largest other subdirectories, the largest first and a research
+#                      task's work/probes/ last, at most ten of them, or else the directory
+#                      whole, so the probes are kept beside the work/tmp/ their runs filled
 #   link               a symbolic link
 #   video              a file named .webm, .mp4, .m4v, .mov, .mkv or .avi, in any case (a
 #                      Playwright sweep's video.webm)
@@ -502,8 +502,8 @@ local_path() {
 #                      and one such file would stop every checkpoint's commit of its task
 # Nothing is looked for inside a directory a reason names, nor in a file an earlier reason names.
 # What is kept is bounded so: no file over 1 MiB, and no directory under <dir> over 200 files,
-# a research task's probes among them. This is the one
-# place the list is written; the scripts that archive, and their docs, point here.
+# a research task's probes as any other path. This is the one place the list is written; the
+# scripts that archive, and their docs, point here.
 # A missing directory has none: archive_left_out <dir>
 archive_left_out() {
   (
@@ -527,72 +527,136 @@ archive_left_out() {
         skip_path "$dir"
       done < <(find ui-check -mindepth 2 -maxdepth 2 -type d -name lighthouse -print0 | sort -z)
     fi
-    local is_repo=(-type d \( -exec test -e '{}/.git' ';' -o -exec test -f '{}/HEAD' ';' -exec test -d '{}/objects' ';' -exec test -d '{}/refs' ';' \))
-    local is_deps=(-type d \( -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \))
-    local is_playwright=(-type d \( -name test-results -o -name playwright-report -o -name blob-report \))
-    local is_built=(-type d -name dist)
+    # The directory rules, each read by its name through set_pruned's, dir_rule's and file_rule's
+    # namerefs.
+    # shellcheck disable=SC2034 # read by name
+    local is_repo=(-type d \( -exec test -e '{}/.git' ';' -o -exec test -f '{}/HEAD' ';' -exec test -d '{}/objects' ';' -exec test -d '{}/refs' ';' \)) \
+      is_deps=(-type d \( -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \)) \
+      is_playwright=(-type d \( -name test-results -o -name playwright-report -o -name blob-report \)) \
+      is_build_output=(-type d -name dist)
     local is_image=(-regextype posix-extended -iregex ".*\\.($IMAGE_TYPE)")
     local is_video=(-type f -regextype posix-extended -iregex '.*\.(webm|mp4|m4v|mov|mkv|avi)')
     local is_trace=(-type f \( -iname trace.zip -o -iname '*.trace.zip' -o -iname '*-trace.zip' \))
     local is_bundle=(-type f -regextype posix-extended -iregex '.*(\.min\.(js|mjs|cjs|css)|\.map|\.(ttf|otf|woff2?|eot))')
     # A file left out by its name alone, never read for an image, a size, a secret or an address.
     local is_named=(\( "${is_video[@]}" \) -o \( "${is_trace[@]}" \) -o \( "${is_bundle[@]}" \))
-    # prunes: set pruned to what no rule after the directories' own looks inside: what skip names,
-    # as it grows, and every nested repository, dependency tree, Playwright and build directory.
+    # set_pruned [<rule>...]: set pruned to what skip names, as it grows, and what each directory
+    # rule (is_repo, is_deps, is_playwright, is_build_output) matches but the rules named, the
+    # one place their list is written.
     local -a pruned
-    prunes() { pruned=(\( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) -o \( "${is_playwright[@]}" \) -o \( "${is_built[@]}" \)); }
-    # walk <from> <expression>: find under <from>, never inside what prunes names; the expression
-    # applies to every other path.
+    set_pruned() {
+      local pruned_rule
+      pruned=(\( "${skip[@]}" \))
+      for pruned_rule in is_repo is_deps is_playwright is_build_output; do
+        [[ " $* " != *" $pruned_rule "* ]] || continue
+        local -n pruned_test=$pruned_rule
+        pruned+=(-o \( "${pruned_test[@]}" \))
+        unset -n pruned_test
+      done
+    }
+    # walk <from> <expression>: find under <from>, never inside what skip or a directory rule
+    # names; the expression applies to every other path.
     walk() {
-      prunes
+      set_pruned
       find "$1" -mindepth 1 \( "${pruned[@]}" \) -prune -o "${@:2}"
     }
-    find . -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_playwright[@]}" \) -o \( "${is_built[@]}" \) \) -prune -o \
-      \( "${is_repo[@]}" \) -printf 'nested repository\t%P\0' -prune | sort -z
-    find . -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_playwright[@]}" \) -o \( "${is_built[@]}" \) \) -prune -o \
-      \( "${is_deps[@]}" \) -printf 'dependencies\t%P\0' -prune | sort -z
-    # files <dir>: how many files <dir> holds through its subdirectories, none inside what prunes
-    # names.
-    files() { walk "./$1" ! -type d -printf . | wc -c; }
-    # subdirs <dir>: <dir>'s subdirectories that prunes does not name, by name, NUL-terminated.
-    subdirs() {
-      prunes
-      find "./$1" -mindepth 1 -maxdepth 1 -type d ! \( "${pruned[@]}" \) -printf '%P\0' | sort -z
+    # dir_rule <reason> <rule> [<rule>...]: name, as <reason>, each outermost directory the first
+    # <rule> matches, never inside what skip or a directory rule other than those given matches.
+    dir_rule() {
+      local -n dir_test=$2
+      set_pruned "${@:2}"
+      find . -mindepth 1 \( "${pruned[@]}" \) -prune -o \( "${dir_test[@]}" \) -printf "$1\t%P\0" -prune | sort -z
+    }
+    # A nested repository is named inside a dependency tree too.
+    dir_rule 'nested repository' is_repo is_deps
+    dir_rule dependencies is_deps
+    # crowd_count[<dir>]: how many files <dir> holds through its subdirectories, none inside what
+    # skip or a directory rule names, counted in one walk; a directory holding none has no entry.
+    local -A crowd_count=()
+    local crowd_dir
+    while IFS= read -r -d '' crowd_dir; do
+      crowd_dir=${crowd_dir#.} crowd_dir=${crowd_dir#/}
+      while [[ -n $crowd_dir ]]; do
+        crowd_count[$crowd_dir]=$((${crowd_count[$crowd_dir]:-0} + 1))
+        if [[ $crowd_dir == */* ]]; then crowd_dir=${crowd_dir%/*}; else crowd_dir=''; fi
+      done
+    done < <(walk . ! -type d -printf '%h\0')
+    # crowd_cut <dir>: leave <dir> out, taking what it still holds off its count and each
+    # enclosing directory's.
+    local -a crowded_dirs=()
+    crowd_cut() {
+      local cut_dir=$1 cut_files=${crowd_count[$1]}
+      while :; do
+        crowd_count[$cut_dir]=$((${crowd_count[$cut_dir]} - cut_files))
+        [[ $cut_dir == */* ]] || break
+        cut_dir=${cut_dir%/*}
+      done
+      crowded_dirs+=("$1")
     }
     # crowded <dir>: when <dir> holds over 200 files, leave out its crowded subdirectories by this
     # same rule, then its largest other subdirectories, the largest first (the first by name of
-    # those as large), until the rest of it holds at most 200, or else <dir> itself in place of
-    # them; crowded_dirs holds what is left out, each added to skip, so no later count or rule
-    # looks inside it.
-    local -a crowded_dirs=()
+    # those as large) and work/probes last, until the rest holds at most 200; when that takes
+    # more than ten of them, or they are not enough, leave out <dir> itself in their place.
     crowded() {
-      local dir=$1 crowd_sub crowd_largest crowd_most crowd_count crowd_out crowd_rest=()
-      (($(files "$dir") > 200)) || return 0
-      while IFS= read -r -d '' crowd_sub; do crowded "$dir/$crowd_sub"; done < <(subdirs "$dir")
-      while (($(files "$dir") > 200)); do
-        crowd_largest='' crowd_most=-1
-        while IFS= read -r -d '' crowd_sub; do
-          crowd_count=$(files "$dir/$crowd_sub")
-          ((crowd_count <= crowd_most)) || crowd_largest=$crowd_sub crowd_most=$crowd_count
-        done < <(subdirs "$dir")
-        if [[ -z $crowd_largest ]] || ((crowd_most == 0)); then
-          for crowd_out in "${crowded_dirs[@]}"; do [[ $crowd_out == "$dir"/* ]] || crowd_rest+=("$crowd_out"); done
-          crowded_dirs=("${crowd_rest[@]}" "$dir")
-          skip_path "$dir"
-          return 0
-        fi
-        crowded_dirs+=("$dir/$crowd_largest")
-        skip_path "$dir/$crowd_largest"
+      local crowd_at=$1 crowd_sub crowd_subs=() crowd_largest crowd_most crowd_left crowd_picked=()
+      local -A crowd_taken=()
+      ((${crowd_count[$crowd_at]:-0} > 200)) || return 0
+      for crowd_sub in "${!crowd_count[@]}"; do
+        [[ $crowd_sub != "$crowd_at"/* || $crowd_sub == "$crowd_at"/*/* ]] || crowd_subs+=("$crowd_sub")
       done
+      ((${#crowd_subs[@]} == 0)) || mapfile -d '' -t crowd_subs < <(printf '%s\0' "${crowd_subs[@]}" | sort -z)
+      for crowd_sub in "${crowd_subs[@]}"; do crowded "$crowd_sub"; done
+      crowd_left=${crowd_count[$crowd_at]}
+      while ((crowd_left > 200 && ${#crowd_picked[@]} <= 10)); do
+        crowd_largest='' crowd_most=0
+        for crowd_sub in "${crowd_subs[@]}"; do
+          [[ $crowd_sub == work/probes || -n ${crowd_taken[$crowd_sub]:-} ]] || ((${crowd_count[$crowd_sub]} <= crowd_most)) ||
+            crowd_largest=$crowd_sub crowd_most=${crowd_count[$crowd_sub]}
+        done
+        if [[ -z $crowd_largest && $crowd_at == work && -z ${crowd_taken[work/probes]:-} ]] && ((${crowd_count[work/probes]:-0} > 0)); then
+          crowd_largest=work/probes crowd_most=${crowd_count[work/probes]}
+        fi
+        [[ -n $crowd_largest ]] || break
+        crowd_taken[$crowd_largest]=1
+        crowd_picked+=("$crowd_largest")
+        crowd_left=$((crowd_left - crowd_most))
+      done
+      if ((crowd_left > 200 || ${#crowd_picked[@]} > 10)); then
+        crowd_cut "$crowd_at"
+      else
+        for crowd_sub in "${crowd_picked[@]}"; do crowd_cut "$crowd_sub"; done
+      fi
     }
-    while IFS= read -r -d '' dir; do crowded "$dir"; done < <(subdirs .)
-    ((${#crowded_dirs[@]} == 0)) || printf 'over 200 files\t%s\0' "${crowded_dirs[@]}" | sort -z
+    while IFS= read -r -d '' crowd_dir; do crowded "$crowd_dir"; done < <(
+      for crowd_dir in "${!crowd_count[@]}"; do [[ $crowd_dir == */* ]] || printf '%s\0' "$crowd_dir"; done | sort -z
+    )
+    # Each directory left out is named once, never inside another one left out, and no later rule
+    # looks inside it.
+    local -A crowd_out=()
+    local crowd_named=()
+    for crowd_dir in "${crowded_dirs[@]}"; do crowd_out[$crowd_dir]=1; done
+    for crowd_dir in "${crowded_dirs[@]}"; do
+      dir=$crowd_dir
+      while [[ $dir == */* ]]; do
+        dir=${dir%/*}
+        [[ -z ${crowd_out[$dir]:-} ]] || continue 2
+      done
+      crowd_named+=("$crowd_dir")
+      skip_path "$crowd_dir"
+    done
+    ((${#crowd_named[@]} == 0)) || printf 'over 200 files\t%s\0' "${crowd_named[@]}" | sort -z
     walk . -type l -printf 'link\t%P\0' | sort -z
     walk . "${is_video[@]}" -printf 'video\t%P\0' | sort -z
-    find . -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) -o \( "${is_built[@]}" \) \) -prune -o \
-      \( "${is_playwright[@]}" \) -printf 'Playwright output\t%P\0' -prune -o \( "${is_trace[@]}" \) -printf 'Playwright output\t%P\0' | sort -z
-    find . -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) -o \( "${is_playwright[@]}" \) \) -prune -o \
-      \( "${is_built[@]}" \) -printf 'build output\t%P\0' -prune -o \( "${is_bundle[@]}" \) -printf 'build output\t%P\0' | sort -z
+    # file_rule <reason> <directory rule> <file rule>: name, as <reason>, each outermost directory
+    # the first rule matches and each other file the second does.
+    file_rule() {
+      local -n file_dir_test=$2 file_test=$3
+      set_pruned "$2"
+      find . -mindepth 1 \( "${pruned[@]}" \) -prune -o \( "${file_dir_test[@]}" \) -printf "$1\t%P\0" -prune -o \
+        \( "${file_test[@]}" \) -printf "$1\t%P\0" | sort -z
+    }
+    file_rule 'Playwright output' is_playwright is_trace
+    file_rule 'build output' is_build_output is_bundle
     # An image by its extension, or by its first bytes, which image_magic reads only in the files
     # that could start with an image's signature: those grep takes for binary (a NUL byte, as tiff's
     # and ico's signatures hold) or empty, and the text files a line of which starts as png's,
