@@ -305,7 +305,7 @@ if [[ $task != T0 ]]; then
     thread='any(.[]; .event == "thread")' \
     worktrees='[open_worktrees(.[]; $home) | [.worktree, "\(.worktree) (\(.project), \(.branch))", (.project // ""), tojson]
       | map(tostring) | join("\u001f")] | join("\n")' \
-    -- --arg task "$task" --arg role "$role" --args ${past[@]+"${past[@]}"} <<<"$events"
+    -- --arg task "$task" --arg role "$role" --args -- ${past[@]+"${past[@]}"} <<<"$events"
   # Every task has its Discord thread before any worker starts (bin/team-thread).
   [[ $thread == true ]] || die "$task has no Discord thread; open one first with team-thread"
   [[ -z $refusal ]] || die "$refusal"
@@ -332,7 +332,7 @@ if [[ $task != T0 ]]; then
   if [[ $role == builder ]]; then
     json_vars --ledger refusal='[launch_refusal($task; $role; $ARGS.positional; true;
         {ticket: (if $ticket == "" then null else $ticket end), brief: $brief} | launch_ticket)] | join("; ")' \
-      -- --arg task "$task" --arg role "$role" --arg ticket "$ticket" --arg brief "$brief" --args ${past[@]+"${past[@]}"} <<<"$events"
+      -- --arg task "$task" --arg role "$role" --arg ticket "$ticket" --arg brief "$brief" --args -- ${past[@]+"${past[@]}"} <<<"$events"
     [[ -z $refusal ]] || die "$refusal"
   fi
 fi
@@ -804,7 +804,7 @@ fi
 
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --arg template "$template" --arg ticket "$ticket" --argjson at "${worktree_event:-null}" --argjson past "$(jq -cn '$ARGS.positional' --args ${past[@]+"${past[@]}"})" --args '{ts: (now | todate), task: $task,
+    --arg machine "$machine" --arg admission "$admission" --arg model "$model" --arg request "$request" --arg discord_message "$request_message" --arg brief "$brief" --arg template "$template" --arg ticket "$ticket" --argjson at "${worktree_event:-null}" --argjson past "$(jq -cn '$ARGS.positional' --args -- ${past[@]+"${past[@]}"})" --args '{ts: (now | todate), task: $task,
       event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
       + ($at // {} | {project, branch} | with_entries(select(.value != null)))
       + {machine: $machine}
