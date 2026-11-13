@@ -43,7 +43,7 @@ pool_name() {
 }
 
 # The slots line of <project>, whose registered slots <slot>... are all in the treehouse pool
-# <pool> of the checkout <path>: each slot of the pool (treehouse_slots) and each other numbered
+# <pool> of the checkout <path>: each slot of the pool (pool_slots) and each other numbered
 # folder beside them, by number. A slot that is a worktree of the checkout, or missing (treehouse
 # makes it), is the team's; one that is a worktree of another clone, which treehouse leases only
 # to that clone, warns, with how many are the team's; so does an empty folder, which treehouse
@@ -51,7 +51,7 @@ pool_name() {
 check_slot_owners() {
   local project=$1 path=$2 pool=$3 slot n dir mine common clone ours=0 all=0 found=() others='' rest='' reason fix
   mine=$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)
-  mapfile -t found < <(treehouse_slots "${@:4}")
+  mapfile -t found < <(pool_slots treehouse "$path" "${@:4}")
   for slot in "${@:4}"; do
     for dir in "${slot%/*/*}"/*/; do
       dir=${dir%/}

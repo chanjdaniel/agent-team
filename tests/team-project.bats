@@ -235,6 +235,20 @@ TOML
   done
 }
 
+@test "a git pool may list no slots, and a treehouse pool may not" {
+  sed '/^slots = \["beta/d' "$TEAM_HOME/projects.toml" >"$BATS_TEST_TMPDIR/projects.toml"
+  registry <"$BATS_TEST_TMPDIR/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project beta pool
+  assert_equal "$(jq -c . <<<"$output")" '{"provider":"git","slots":[]}'
+  run_bin -0 team-project beta pool.slots
+  assert_equal "$output" "[]"
+  sed '/^slots = \[".treehouse/d' "$TEAM_HOME/projects.toml" >"$BATS_TEST_TMPDIR/projects.toml"
+  registry <"$BATS_TEST_TMPDIR/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "alpha.pool: a treehouse pool needs 'slots'"
+}
+
 @test "--check refuses a project named coordinator, the team home's memory folder" {
   sed 's/^\[beta/[coordinator/' "$TEAM_HOME/projects.toml" >"$BATS_TEST_TMPDIR/projects.toml"
   registry <"$BATS_TEST_TMPDIR/projects.toml"

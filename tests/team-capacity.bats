@@ -683,6 +683,18 @@ team_reading() {
     "$STATE_DIR/readings.jsonl")" '[["T7",0],["T9",400]]'
 }
 
+@test "sample: a git pool's unregistered numbered worktree is the team's, and a folder of another name is not" {
+  sample_machine
+  # agent-team's pool registers worktrees 1 to 5; 7 is made on demand, 07 and load-check are not
+  # numbered worktrees.
+  mkdir -p "$HOME/agent-team/.claude/worktrees/"{7,07,load-check}
+  proc 600 1 700 1 "$HOME/agent-team/.claude/worktrees/7/src"
+  proc 601 1 50 1 "$HOME/agent-team/.claude/worktrees/07"
+  proc 602 1 30 1 "$HOME/agent-team/.claude/worktrees/load-check"
+  run_bin -0 team-capacity sample
+  assert_equal "$(jq -c --argjson mib "$MIB" '(.memory.team - 628935884 - 315621376) / $mib' "$STATE_DIR/readings.jsonl")" 700
+}
+
 @test "sample: a ticket builder T<n>-builder-NN is a session of its task with the role builder" {
   sample_machine
   as_macos

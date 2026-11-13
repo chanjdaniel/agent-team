@@ -13,7 +13,7 @@
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, plan_task_dir, plan_files, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, claude_cache_dir, tool_dirs,
 # team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, memory_setting, same_path, bounded, docker_bounded, docker_silence, trust_probe,
-# pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
+# pool_status, pool_entry, pool_slot, pool_slots, pool_trusted, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, own_projects, own_bar, review_app, base64url, review_app_jwt, review_app_api, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
 # discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_merge_authority, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
@@ -978,20 +978,55 @@ pool_slot() {
   return 1
 }
 
-# A treehouse pool's slots: its registered slots <slot>..., then each other <dir>/<n>/<folder> that
-# exists (<n> a number) beside a registered <dir>/<m>/<folder>, by number. treehouse numbers a new
-# slot past a folder it finds in the way, an empty one too, so the registry may not list every
-# slot it makes: treehouse_slots <slot>...
-treehouse_slots() {
-  local slot found extra=()
-  for slot in "$@"; do
-    echo "$slot"
-    for found in "${slot%/*/*}"/*/"${slot##*/}"; do
-      [[ -d $found && $(basename "${found%/*}") =~ ^[0-9]+$ ]] || continue
-      pool_slot "$found" "$@" "${extra[@]}" >/dev/null || extra+=("$found")
+# A pool's slots: its registered slots <slot>..., then each other numbered worktree of the pool
+# that exists, by number. For git (<provider>), each <primary>/.claude/worktrees/<n> (<n> a positive
+# whole number with no leading zero), which team-open makes on demand. For treehouse, each other
+# <dir>/<n>/<folder> (<n> a number) beside a registered <dir>/<m>/<folder>: treehouse numbers a
+# new slot past a folder it finds in the way, an empty one too, so the registry may not list
+# every slot it makes: pool_slots <provider> <primary> <slot>...
+pool_slots() {
+  local provider=$1 primary=$2 slot found extra=()
+  shift 2
+  (($# == 0)) || printf '%s\n' "$@"
+  if [[ $provider == git ]]; then
+    for found in "$primary"/.claude/worktrees/*; do
+      [[ -d $found && ${found##*/} =~ ^[1-9][0-9]*$ ]] || continue
+      pool_slot "$found" "$@" >/dev/null || extra+=("$found")
     done
+  else
+    for slot in "$@"; do
+      for found in "${slot%/*/*}"/*/"${slot##*/}"; do
+        [[ -d $found && $(basename "${found%/*}") =~ ^[0-9]+$ ]] || continue
+        pool_slot "$found" "$@" "${extra[@]}" >/dev/null || extra+=("$found")
+      done
+    done
+  fi
+  ((${#extra[@]} == 0)) || printf '%s\n' "${extra[@]}" | awk -F/ -v git="$([[ $provider == git ]] && echo 1)" \
+    '{ print (git ? $NF : $(NF - 1)) "\t" $0 }' | sort -n -k1,1 | cut -f2-
+}
+
+# Whether <path>, however spelled, is a worktree path the pool trusts, existing or not: one of its
+# registered slots <slot>...; for git (<provider>), any <primary>/.claude/worktrees/<n>; for
+# treehouse, any <dir>/<n>/<folder> beside a registered <dir>/<m>/<folder> (<n>, <m> numbers, as
+# pool_slots reads them). Prints the path as the registry or the rule spells it; fails, printing
+# nothing, when the pool trusts no such path: pool_trusted <provider> <primary> <path> <slot>...
+pool_trusted() {
+  local provider=$1 primary=$2 path=${3%/} slot n candidate
+  shift 3
+  pool_slot "$path" "$@" && return 0
+  n=${path##*/}
+  if [[ $provider == git ]]; then
+    candidate=$primary/.claude/worktrees/$n
+    if [[ $n =~ ^[1-9][0-9]*$ ]] && same_path "$candidate" "$path"; then echo "$candidate" && return 0; fi
+    return 1
+  fi
+  n=$(basename "$(dirname "$path")")
+  [[ $n =~ ^[0-9]+$ ]] || return 1
+  for slot in "$@"; do
+    candidate=${slot%/*/*}/$n/${slot##*/}
+    if same_path "$candidate" "$path"; then echo "$candidate" && return 0; fi
   done
-  ((${#extra[@]} == 0)) || printf '%s\n' "${extra[@]}" | awk -F/ '{ print $(NF - 1) "\t" $0 }' | sort -n -k1,1 | cut -f2-
+  return 1
 }
 
 # The slot of the pool <pool> (pool_status' lines) that is the path <path>; fails, printing

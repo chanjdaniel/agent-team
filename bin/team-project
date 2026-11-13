@@ -61,8 +61,10 @@
 #                    checkout: lease <holder> prints the leased slot's path; return <slot> hands
 #                    it back, and passes --force and --if-lease-holder <holder> on to treehouse
 #                    return (team-open forces back a slot its own lease dirtied)
-#   slots            the trusted slot paths a task's worktree may be; for treehouse, each other
-#                    numbered slot in their pool's folder is trusted too (team-open)
+#   slots            the registered slot paths, taken first; for git, optional (default []), each
+#                    <primary>/.claude/worktrees/<n> is trusted too and made on demand when no
+#                    registered one is free; for treehouse, each other numbered slot in their
+#                    pool's folder, which treehouse makes
 # Per project stack ([<name>.stack]), optional: the Docker stacks team-stack manages for the
 # project's worktrees (sops/docker.md); a project without one has none:
 #   compose          the project's compose wrapper, which meets the wrapper contract
@@ -225,7 +227,7 @@ def check_pool(name, pool, slot_owners, problems):
     if not isinstance(pool, dict):
         problems.append(f"{where}: must be a table")
         return
-    check_keys(where, pool, POOL_KEYS, ("provider", "slots"), problems)
+    check_keys(where, pool, POOL_KEYS, ("provider",), problems)
     for key in ("provider",) + TREEHOUSE_ONLY:
         if key in pool:
             check_string(where, key, pool[key], problems)
@@ -234,6 +236,9 @@ def check_pool(name, pool, slot_owners, problems):
             problems.append(f"{where}: a treehouse pool needs '{key}'")
         if pool.get("provider") == "git" and key in pool:
             problems.append(f"{where}: '{key}' is for treehouse pools only")
+    # A git pool's slots may be left out: its numbered worktrees are made on demand.
+    if pool.get("provider") == "treehouse" and "slots" not in pool:
+        problems.append(f"{where}: a treehouse pool needs 'slots'")
     slots = pool.get("slots", [])
     if not is_string_list(slots):
         problems.append(f"{where}.slots: must be a list of strings")
@@ -439,7 +444,7 @@ def resolve(project, home):
             resolved["stack"].setdefault(key, default)
     pool = resolved["pool"]
     resolved["path"] = os.path.normpath(os.path.join(home, project["path"]))
-    pool["slots"] = [os.path.normpath(os.path.join(home, slot)) for slot in pool["slots"]]
+    pool["slots"] = [os.path.normpath(os.path.join(home, slot)) for slot in pool.get("slots", [])]
     for key in TREEHOUSE_ONLY:
         if key in pool:
             pool[key] = os.path.normpath(os.path.join(resolved["path"], pool[key]))

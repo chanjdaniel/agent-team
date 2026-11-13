@@ -155,7 +155,7 @@ macos_memory() {
 # says: take_reading <dir> <build>
 take_reading() {
   local dir=$1 build=$2 readings=$1/readings.jsonl snapshot=$1/procs.tsv
-  local os meminfo memory total available cpus age=null snapshot_read=/dev/null stacks=null line fresh slots provider held_count
+  local os meminfo memory total available cpus age=null snapshot_read=/dev/null stacks=null line fresh slots provider primary held_count
   local -a paths=() resolved=() registered=()
   mkdir -p "$dir"
   exec {sample_fd}>>"$dir/sample.lock"
@@ -217,22 +217,18 @@ take_reading() {
     "$work/procs" >"$work/procs.json" 2>"$work/err" ||
     die "the processes are malformed: $(grep -m1 . "$work/err" || echo "jq could not read them")"
 
-  # The worktrees held, and the team paths: the team home, the code checkout, every registered
-  # project's slots, each held worktree, and the gate's ~/.no-mistakes; every path resolved by
+  # The worktrees held, and the team paths: the team home, the code checkout, every project's pool
+  # slots (pool_slots), each held worktree, and the gate's ~/.no-mistakes; every path resolved by
   # one realpath.
   jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson worktrees "$worktrees" "$READING_HELD" "$ledger" >"$work/held-given.json"
   mapfile -t paths < <(jq -r '.[].worktree' "$work/held-given.json")
   held_count=${#paths[@]}
   paths+=("$TEAM_HOME" "${TEAM_LIB%/*}/.." "$CODE" "$HOME/.no-mistakes")
-  while IFS= read -r provider && IFS= read -r slots; do
+  while IFS= read -r provider && IFS= read -r primary && IFS= read -r slots; do
     registered=()
     ((slots == 0)) || mapfile -t -n "$slots" registered
-    if [[ $provider == treehouse ]]; then
-      mapfile -t -O "${#paths[@]}" paths < <(treehouse_slots ${registered[@]+"${registered[@]}"} </dev/null)
-    else
-      paths+=(${registered[@]+"${registered[@]}"})
-    fi
-  done < <(jq -r '.[].facts.pool | .provider, (.slots // [] | length), (.slots // [])[]' <<<"$registry")
+    mapfile -t -O "${#paths[@]}" paths < <(pool_slots "$provider" "$primary" ${registered[@]+"${registered[@]}"} </dev/null)
+  done < <(jq -r '.[].facts | .pool.provider, .path, (.pool.slots // [] | length), (.pool.slots // [])[]' <<<"$registry")
   for line in "${!paths[@]}"; do
     ((line < held_count)) || [[ -n ${paths[line]} ]] || unset 'paths[line]'
   done

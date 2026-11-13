@@ -111,6 +111,7 @@ running: echo /.scratch/task/ >>~/projects/Conventioner/.git/info/exclude
 running: cd ~/projects/Conventioner && no-mistakes init
 conventioner is set up in ~/projects/Conventioner
 running: git clone -q https://github.com/owner/site.git ~/projects/site
+running: echo /.claude/worktrees/ >>~/projects/site/.git/info/exclude
 site is set up in ~/projects/site"
   assert_equal "$(git -C "$CONVENTIONER" remote get-url origin)" https://github.com/chanjdaniel/Conventioner.git
   assert_equal "$(git -C "$SITE" remote get-url origin)" https://github.com/owner/site.git
@@ -140,12 +141,28 @@ running: echo /.claude/worktrees/ >>~/projects/fork/.git/info/exclude
 fork is set up in ~/projects/fork"
   git -C "$fork" worktree add -q "$fork/.claude/worktrees/1"
   assert_equal "$(git -C "$fork" status --porcelain)" ""
-  # A pool outside the checkout (site's) adds nothing.
-  assert_equal "$(grep -c worktrees "$SITE/.git/info/exclude" || true)" 0
   # A dry run says so before the clone.
   rm -rf "$fork"
   run_bin -1 team-bootstrap --dry-run
-  assert_contains "$output" "projects: would then set up fork's task directory exclude, its pool slots' exclude"
+  assert_contains "$output" "projects: would then set up fork's task directory exclude, its pool's exclude"
+}
+
+@test "a git pool that lists no slots still has .claude/worktrees/ ignored, where team-open makes its worktrees" {
+  tools_at arch
+  register bare owner/bare direct-pr git
+  local bare=$HOME/projects/bare
+  rm -rf "$bare"
+  run_bin -1 team-bootstrap --dry-run
+  assert_contains "$output" "projects: would then set up bare's task directory exclude, its pool's exclude"
+  run_bin -0 team-bootstrap
+  assert_equal "$(stage_lines projects)" "running: git clone -q https://github.com/owner/bare.git ~/projects/bare
+running: echo /.scratch/task/ >>~/projects/bare/.git/info/exclude
+running: echo /.claude/worktrees/ >>~/projects/bare/.git/info/exclude
+bare is set up in ~/projects/bare"
+  git -C "$bare" worktree add -q "$bare/.claude/worktrees/1"
+  assert_equal "$(git -C "$bare" status --porcelain)" ""
+  # A treehouse pool's checkout gets no such line.
+  assert_equal "$(grep -c worktrees "$CONVENTIONER/.git/info/exclude" || true)" 0
 }
 
 @test "config: the plugins first, apply only to add what is missing, and Discord off; a file changed here is Daniel's call" {
