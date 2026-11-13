@@ -233,7 +233,7 @@ if sys.version_info < (3, 11):
     )
     sys.exit(1)
 
-# The heredoc rule is bin/lib/command_text.py's, which bin/hooks/command-guard reads too; its
+# The heredoc rule is bin/lib/command_text.py's, which bin/lib/command_rules.py reads too; its
 # import writes no __pycache__ into the code checkout.
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
