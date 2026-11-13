@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# PreToolUse hook on a worker's Bash that refuses a guarded thing where a command starts, never
-# for its name inside an argument, a commit message, a search or a file's text: exit 2 blocks the
-# call and shows the agent "Blocked by command-guard: <the rule>; a guardrail, so report it as
-# BLOCKED and do not reach it another way." on stderr; exit 0 passes it.
+# PreToolUse hook on a worker's Bash that refuses a guarded thing a command runs, never for its
+# name inside an argument, a commit message, a search or a file's text: exit 2 blocks the call and
+# shows the agent "Blocked by command-guard: <the rule>; a guardrail, so report it as BLOCKED and
+# do not reach it another way." on stderr; exit 0 passes it.
 #
 # Usage: command-guard   (the hook's input on stdin)
 #
@@ -10,45 +10,20 @@
 # tool_input.command is missing or not a string. Another tool's call passes, and so does a command
 # naming none of team-worker, team-load-check, ui-capture, AGENT_TEAM_, --steal, team-ask,
 # team-answer, team-inbox, team-thread, team-run-approved, curl and wget, nor env or exec before an
-# option together with team- or claude-coordinator, at once. Any other is read as
-# bin/lib/command_text.py prints it (each heredoc's body left out but an unquoted one's command
-# substitutions, and all of one a shell may read as its script; the string after a shell's -c,
-# eval, env -S and find -exec read as code, and the text piped into a shell where a command
-# starts), and refused, where a command starts (COMMAND_START in bin/lib/team.sh, after a
-# separator, a parenthesis, a brace or a reserved word, also past the wrappers env, nohup,
-# command, exec, time, nice, ionice, stdbuf, timeout, setsid, xargs, parallel, watch, flock and
-# its file, sudo, doas and the shells, their options and env's assignments), when it is:
-#   team-worker or team-load-check with ops among its words (before team-worker's --): an ops
-#     session is the coordinator's to launch, on Daniel's request;
-#   the frontend toolkit's capture script, ui-capture, by any path or run by bash, sh, node, deno,
-#     bun, npx, source or `.`: it is Daniel's own sessions';
-#   an assignment of AGENT_TEAM_ROLE or AGENT_TEAM_TASK, alone, before a command or through env,
-#     either named by export, declare, typeset, local, readonly, let, read, mapfile or readarray,
-#     or by printf -v; or either named by unset or by env's -u or --unset: worker_refusal in
-#     bin/lib/team.sh reads them;
-#   a team script, a command named team-<anything> or claude-coordinator by any path, behind an
-#     emptied environment, env -i (alone or among env's short options), env --ignore-environment,
-#     env - or exec -c, past any wrappers between: it would run with no AGENT_TEAM_ROLE, so its
-#     own worker_refusal would not see the worker;
-#   team-lease or team-resume with --steal among its words, by any path or read by source or `.`:
-#     a lease steal is Daniel's word, through the coordinator;
-#   team-ask, team-answer, team-inbox or team-run-approved, with any arguments or none, or
-#     team-thread with a task id (T and digits) as its first word, by any path or read by source
-#     or `.`: the coordinator's commands (team-thread wait T<n> passes, which each role's settings
-#     allow or deny).
-# It also refuses uploading a file or body to a host outside the team's own: a curl or wget that
-# sends one to a literal host other than the local ones, directly or through a proxy, as
-# bin/lib/outbound.py reads the code text (its header says which flags and hosts), which prints
-# the reason; a host held in a variable is not seen, nor another tool's or an interpreter's upload.
-# When outbound.py cannot decide, the command is refused, naming its exit.
-# The text is matched as written, quotes and all, so a separator inside quotes counts as one,
-# which refuses more, never less. Not seen: a name spelled across quotes or held in a variable; a
-# script or function of one's own, or a copy or link of a guarded one; a string another
-# interpreter runs (python3 -c, node -e, perl -e, a require of the capture script); and a file a
-# shell reads on stdin (cat x | bash); each under an emptied environment too, so a team script
-# that one of those runs there goes unseen. It is a speed bump, as a deny rule is, which the
-# role's rule against reaching a refused thing another way holds.
-# When command_text.py cannot run, a command naming one of those is refused, naming why.
+# option together with team- or claude-coordinator, at once, with no Python run.
+# Any other is decided by one rule table, bin/lib/command_rules.py, run once on the hook's input:
+# it walks each simple command the call runs (past its wrappers, into the strings its shells,
+# eval, su, script, env -S, flock -c, watch, parallel and find -exec run, and a shell's script or
+# a sourced file by its name), and prints the first row that refuses one, in its table's order: an
+# ops launch, the frontend toolkit's capture script, an assignment or an unset of AGENT_TEAM_ROLE
+# or AGENT_TEAM_TASK, a team script run with its environment emptied, a lease steal, the
+# coordinator's commands, and an upload of a file or body to a host outside the team's own (as
+# bin/lib/outbound.py reads it). The hook refuses with that row's reason; command_rules.py's header
+# holds each row's wording and what the guard does not see.
+# It fails closed: when command_rules.py exits non-zero, the call is refused with "it could not
+# check the command for an upload (bin/lib/outbound.py: <the error>)" when the upload row raised,
+# else "it could not read the command (bin/lib/command_rules.py: <its last stderr line>)", and so,
+# naming its last line, when what it prints holds no reason.
 # It reads nothing of the team home, so it decides on a machine that names none. A wrong argument
 # on its command line refuses every call, and any command of its own that fails ends as an exit 2
 # naming the hook and the exit code (team_guard in bin/lib/team.sh): a guard that cannot decide
@@ -81,56 +56,15 @@ command=$(jq -er '.tool_input.command | strings' <<<"$input" 2>/dev/null) ||
   (($command == *env*[[:space:]]-* || $command == *exec*[[:space:]]-*) &&
   ($command == *team-* || $command == *claude-coordinator*)) ]] || exit 0
 
-code=$(python3 -I "$TEAM_LIB/command_text.py" <<<"$command" 2>&1) ||
-  block "it could not read the command (bin/lib/command_text.py: ${code##*$'\n'})"
-
-# Where a command starts, past any wrappers: each with its options (one may take a value), a
-# duration and env's assignments (flock its file too), and the directory of what it runs.
-wrapper='(env|nohup|command|exec|time|nice|ionice|stdbuf|timeout|setsid|xargs|parallel|watch|sudo|doas|bash|sh|zsh|dash|ksh|flock([[:space:]]+-[^[:space:];&|]*)*[[:space:]]+[^-[:space:];&|][^[:space:];&|]*)'
-arg='[[:space:]]+(-[^[:space:];&|]*([[:space:]]+[^-[:space:];&|][^[:space:];&|]*)?|[0-9][0-9.]*[smhd]?|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)'
-lead="$COMMAND_START($wrapper($arg)*[[:space:]]+([^[:space:];&|]*/)?)*"
-# A command's words up to a separator, none of them --.
-words='([[:space:]]+([^-[:space:];&|][^[:space:];&|]*|-|-[^-[:space:];&|][^[:space:];&|]*|--[^[:space:];&|]+))*'
-# The end of a word.
-end='([[:space:];&|)]|$)'
-
-ops=$lead"['\"]?team-(worker|load-check)['\"]?${words}[[:space:]=]['\"]?ops['\"]?$end"
-capture=$lead"((node|deno([[:space:]]+run)?|bun([[:space:]]+run)?|npx|source|\\.)($arg)*[[:space:]]+([^[:space:];&|]*/)?)?['\"]?ui-capture['\"]?$end"
-assign=$lead'AGENT_TEAM_(ROLE|TASK)\+?='
-declared=$lead"(export|declare|typeset|local|readonly|let|read|mapfile|readarray)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+['\"]?AGENT_TEAM_(ROLE|TASK)([=+'\"[:space:];&|)<]|$)"
-printed=$lead"printf([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-v[[:space:]]*['\"]?AGENT_TEAM_(ROLE|TASK)"
-unset_var=$lead"unset([[:space:]]+[^[:space:];&|]+)*[[:space:]]+['\"]?AGENT_TEAM_(ROLE|TASK)(['\"[:space:];&|)]|$)"
-env_unset=$lead"env([[:space:]]+[^[:space:];&|]+)*[[:space:]]+(-[[:alnum:]]*u[[:space:]]*|--unset([[:space:]]+|=))['\"]?AGENT_TEAM_(ROLE|TASK)"
-# env's -i, alone or among its short options (ending in one that takes a value, C, u or S, with
-# it), --ignore-environment (or a prefix GNU takes) or a lone -, or exec's -c (the same, a's value),
-# then what it runs, past any wrappers: a team script by its name.
-value='([^[:space:];&|]+|[[:space:]]+[^[:space:];&|]+)'
-emptier="(env($arg)*[[:space:]]+(-[[:alnum:]]*i([[:alnum:]]*[CuS]$value|[[:alnum:]]*)|--ignore-e[a-z-]*|-)|exec($arg)*[[:space:]]+-[[:alnum:]]*c([[:alnum:]]*a$value|[[:alnum:]]*))"
-# A script read by source or ., as ui-capture's rule takes it.
-sourced="((source|\\.)($arg)*[[:space:]]+([^[:space:];&|]*/)?)?"
-steal=$lead$sourced"['\"]?team-(lease|resume)['\"]?${words}[[:space:]]['\"]?--steal['\"]?$end"
-coordinator=$lead$sourced"['\"]?(team-(ask|answer|inbox|run-approved)['\"]?|team-thread['\"]?[[:space:]]+['\"]?T[0-9]+['\"]?)$end"
-emptied=$lead"$emptier($arg)*[[:space:]]+($wrapper($arg)*[[:space:]]+)*([^[:space:];&|]*/)?['\"]?(team-[^[:space:];&|/'\"]+|claude-coordinator)['\"]?$end"
-
-if [[ $code =~ $ops ]]; then
-  block "an ops session is the coordinator's to launch, on Daniel's request (team-worker or team-load-check with ops)"
-elif [[ $code =~ $capture ]]; then
-  block "the frontend toolkit's capture script is Daniel's own sessions' (run by its path or by an interpreter)"
-elif [[ $code =~ $assign || $code =~ $declared || $code =~ $printed ]]; then
-  block "a worker's role and task are its settings' (an assignment of AGENT_TEAM_ROLE or AGENT_TEAM_TASK)"
-elif [[ $code =~ $unset_var || $code =~ $env_unset ]]; then
-  block "a worker's role and task are its settings' (an unset of AGENT_TEAM_ROLE or AGENT_TEAM_TASK)"
-elif [[ $code =~ $emptied ]]; then
-  block "a worker's role and task are its settings' (a team script run with its environment emptied, by env -i, env --ignore-environment, env - or exec -c)"
-elif [[ $code =~ $steal ]]; then
-  block "a lease steal is Daniel's word, through the coordinator (team-lease or team-resume with --steal)"
-elif [[ $code =~ $coordinator ]]; then
-  block "the coordinator's commands (team-ask, team-answer, team-inbox, team-thread T<n> and team-run-approved)"
-fi
-
-# A curl or wget sending a file or body to a literal host outside the team's own, read on the code
-# text so a heredoc's body that is data counts for nothing.
-upload=$(python3 -I "$TEAM_LIB/outbound.py" <<<"$code" 2>&1) ||
-  block "it could not check the command for an upload (bin/lib/outbound.py exited $?: ${upload##*$'\n'})"
-[[ -z $upload ]] || block "$upload"
-exit 0
+# The rule table's one line names the first row that refuses; an error of its own, or a row's,
+# is its last line, the upload row's naming outbound.py.
+rules=$(python3 -I "$TEAM_LIB/command_rules.py" <<<"$input" 2>&1) || {
+  last=${rules##*$'\n'}
+  [[ $last != upload:* ]] ||
+    block "it could not check the command for an upload (bin/lib/outbound.py: ${last#upload: })"
+  block "it could not read the command (bin/lib/command_rules.py: $last)"
+}
+[[ -n $rules ]] || exit 0
+reason=$(jq -er '.reason | strings' <<<"$rules" 2>/dev/null) ||
+  block "it could not read the command (bin/lib/command_rules.py: ${rules##*$'\n'})"
+block "$reason"
