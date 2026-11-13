@@ -121,6 +121,22 @@ events() {
   $slot: T1 (leased; feat/T1-five)"
 }
 
+@test "a slot the lease makes past the registered ones, while team-open runs, is trusted and taken" {
+  local made=$pool/3/proj
+  # treehouse makes a third slot when the registered two are leased: this lease makes it on the spot.
+  cat >"$primary/scripts/th-lease.sh" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+git worktree add -q --detach "$made" origin/main
+printf '%s\t%s\n' "$made" "\$1" >>"$BATS_TEST_TMPDIR/leases"
+echo "$made"
+SH
+  echo "$made" >>"$BATS_TEST_TMPDIR/pool"
+  run_bin -0 --separate-stderr team-open proj feature feat three "Three"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$made"
+  assert_equal "$(git -C "$made" rev-parse --abbrev-ref HEAD)" "feat/T1-three"
+}
+
 @test "a leased path outside the trusted slots is returned at once and refused" {
   local stray=$HOME/.treehouse/proj-zzz999/1/proj
   git -C "$primary" worktree add -q --detach "$stray" origin/main

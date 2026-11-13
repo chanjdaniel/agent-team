@@ -2330,18 +2330,20 @@ launched T7-builder-03 c0000002"
 "03"'
 }
 
-@test "a ticket worktree the pool has no slot for stops --fill with exit 75 and team-open's reason" {
+@test "a ticket worktree team-open cannot make now stops --fill with exit 75 and team-open's reason" {
   fill_ready 3
-  sed -i 's|slots = \[[^]]*\]|slots = ["slots/proj/1", "slots/proj/2"]|' "$TEAM_HOME/projects.toml"
   ticket 02-second "Blocked by: 01" "Touches: two.txt"
   ticket 03-third "Blocked by: None" "Touches: three.txt"
   ticket 04-fourth "Blocked by: None" "Touches: four.txt"
-  run_bin -75 --separate-stderr team-next T7 --fill
-  assert_equal "$output" "worktree $HOME/slots/proj/2 for ticket 02
-brief $TEAM_HOME/tasks/T7/brief-build-02.md
-launched T7-builder-02 c0000001"
-  assert_equal "$(tail -n 1 <<<"$stderr")" "team-next: no worktree for ticket 03: team-open: every slot of proj is taken; ready and waiting for room: 03, 04; run team-next T7 --fill once there is room"
-  assert_equal "$(bg_calls | wc -l)" 1
+  # Another run holds the pool's lock, a git pool's only exit 75.
+  local lock=$primary/.git/team-open-pool.lock fd
+  exec {fd}<>"$lock"
+  flock -x "$fd"
+  TEAM_OPEN_POOL_WAIT_SECONDS=1 run_bin -75 --separate-stderr team-next T7 --fill
+  exec {fd}>&-
+  assert_equal "$output" ""
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-next: no worktree for ticket 02: team-open: another run held the pool lock $lock of $primary for 1 seconds; run this again; ready and waiting for room: 02, 03, 04; run team-next T7 --fill once there is room"
+  assert_equal "$(bg_calls | wc -l)" 0
 }
 
 @test "cap 1's --fill launches the lowest ready ticket in the task worktree only when none runs, and each idle case says why" {

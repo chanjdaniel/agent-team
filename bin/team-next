@@ -87,9 +87,9 @@
 # or with every ticket done "phase <p>'s tickets are all done: its deliverer comes from the last
 # ticket's DONE". A room refusal (exit 75) of team-worker stops the fill, "no room for build-NN:
 # the launch said <its last stderr line>; ready and waiting for room: <NN and the tickets after
-# it>; run team-next T<n> --fill once there is room", exit 75, and so does a pool with no free
-# slot, "no worktree for ticket NN: <team-open's reason>; ..."; the ticket worktree is kept for the
-# next fill, and any other failure exits with its code.
+# it>; run team-next T<n> --fill once there is room", exit 75, and so does team-open's (its pool's
+# lock, or a treehouse pool with no free slot), "no worktree for ticket NN: <team-open's reason>;
+# ..."; the ticket worktree is kept for the next fill, and any other failure exits with its code.
 # Before it launches a ready ticket, --fill relaunches each running ticket of that phase whose
 # builder, its latest launch in its ticket worktree, has no live session (claude agents --json) and
 # was stowed (the task's latest stowed follows that launch) or crashed (it ran on another machine

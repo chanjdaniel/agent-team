@@ -316,6 +316,34 @@ restored_from() {
   assert_equal "$(git -C "${home_slots[1]}" rev-parse --abbrev-ref HEAD)" "$branch"
 }
 
+@test "a recorded on-demand worktree that is free here is made again at its path, before a free listed slot" {
+  git -C "$home" worktree add -q "${home_slots[0]}" -b feat/T8-busy origin/main
+  git -C "$home" worktree add -q "${home_slots[1]}" -b feat/T9-busy origin/main
+  open_elsewhere home feat work
+  assert_equal "$wt" "$home/.claude/worktrees/1"
+  git -C "$home" worktree remove "${home_slots[0]}"
+  git -C "$home" worktree remove "${home_slots[1]}"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -c . <<<"$output")" "$(facts home "$branch" "$wt" "$head" "$wt" '"tasks/T1/scratch"')"
+  assert_equal "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" "$branch"
+  assert_equal "$(events worktree-moved)" ""
+}
+
+@test "a recorded on-demand worktree taken here: the first free listed slot, else the next number" {
+  git -C "$home" worktree add -q "${home_slots[0]}" -b feat/T8-busy origin/main
+  git -C "$home" worktree add -q "${home_slots[1]}" -b feat/T9-busy origin/main
+  open_elsewhere home feat work
+  git -C "$home" worktree add -q "$wt" -b feat/T7-here origin/main
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r '"\(.worktree) \(.moved)"' <<<"$output")" "$home/.claude/worktrees/2 true"
+  assert_equal "$(git -C "$home/.claude/worktrees/2" rev-parse --abbrev-ref HEAD)" "$branch"
+
+  # The branch already checked out in an on-demand worktree here is that worktree.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r '"\(.worktree) \(.moved)"' <<<"$output")" "$home/.claude/worktrees/2 false"
+}
+
 @test "a treehouse pool leases another slot, switched to the branch, and logs worktree-moved" {
   open_elsewhere conv feat work
   # The other machine's slot is free here, but the lease hands out the other one first.
