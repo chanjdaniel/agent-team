@@ -1858,6 +1858,28 @@ def sweep($sessions; $plan; $activity; $own; $health; $self):
     + [$events | retro_status | retro_due_finding]
     + [$health | health_findings];
 
+# The findings team-sweep adds after sweep's, from the views it reads beside the ledger: team-queue
+# list --json's object ($queue), its findings (queue-ready, queue) as team-queue made them, then
+# team-current check --json's ($current), one current-stale finding naming each item whose task
+# closed; each view null when there is nothing to read, and {error} when its script failed, which
+# is one finding of kind queue or current naming the error and "fix what <script> names". Each
+# finding has task, session and name null.
+def sweep_views($queue; $current):
+  def failed($kind; $script):
+    "fix what \($script) names" as $next
+    | {task: null, kind: $kind, session: null, name: null, next: $next, text: "\($kind): \(.error): \($next)"};
+  ($queue | if . == null then [] elif .error != null then [failed("queue"; "team-queue")] else .findings // [] end)
+  + ($current
+     | if . == null then []
+       elif .error != null then [failed("current"; "team-current")]
+       elif (.closed // []) == [] then []
+       else (.closed | length) as $n
+         | "team-current done <id> for each that is done, or add it again under an open task" as $next
+         | [{task: null, kind: "current-stale", session: null, name: null, next: $next,
+             text: "current: \($n) item\(if $n == 1 then " names" else "s name" end) a closed task: \(
+               [.closed[] | "\(.id) (\(.task), closed \(.closed_at[:10]))"] | join(", ")); next: \($next)"}]
+       end);
+
 # What team-capacity plan reads of the ledger, over every ledger event as one array, with the
 # session list <sessions>: one {task, opened (its opened's time, else its first event's),
 # finished ([{session, role}]: the idle live sessions whose work is handed on, handed_on_launches

@@ -359,21 +359,8 @@ look() {
   rm -f "$plan_file" "$plan_file.sessions" "$plan_file.health" "$plan_file.queue" "$plan_file.current"
   [[ -n $queue ]] || queue='{"error": "team-queue list printed nothing"}'
   [[ -n $current ]] || current='{"error": "team-current check printed nothing"}'
-  FINDINGS=$(jq -c --argjson queue "$queue" --argjson current "$current" '
-    def failed($kind; $script):
-      "fix what \($script) names" as $next
-      | {task: null, kind: $kind, session: null, name: null, next: $next, text: "\($kind): \(.error): \($next)"};
-    . + ($queue | if . == null then [] elif .error != null then [failed("queue"; "team-queue")] else .findings // [] end)
-      + ($current
-         | if . == null then []
-           elif .error != null then [failed("current"; "team-current")]
-           elif (.closed // []) == [] then []
-           else (.closed | length) as $n
-             | "team-current done <id> for each that is done, or add it again under an open task" as $next
-             | [{task: null, kind: "current-stale", session: null, name: null, next: $next,
-                 text: "current: \($n) item\(if $n == 1 then " names" else "s name" end) a closed task: \(
-                   [.closed[] | "\(.id) (\(.task), closed \(.closed_at[:10]))"] | join(", ")); next: \($next)"}]
-           end)' <<<"$found")
+  FINDINGS=$(ledger_jq '. + sweep_views($queue; $current)' -c --argjson queue "$queue" --argjson current "$current" \
+    <<<"$found")
 }
 
 # The sweep watch: see --wait in the header.
