@@ -24,7 +24,8 @@
 # (<id>): <reason>; only Daniel's word lifts it: team-log T<n> resumed id=<id>
 # discord_message=<their message id>"), a task with an unanswered ask no --past-ask and no earlier
 # launch's past_ask names ("T<n> has an unanswered ask, <id>, since <ts>; launch past it with
-# --past-ask <id>"), and a --past-ask naming none ("--past-ask <id> names no unanswered ask of
+# --past-ask <id>"), an ask that names tickets only for a builder of one of them (its ticket
+# worktree's ticket, else its brief-build-NN or brief-resume-build-NN), and a --past-ask naming none ("--past-ask <id> names no unanswered ask of
 # T<n>"); a builder or reviewer of a task on any path whose plan approval is withdrawn ("T<n>'s
 # plan approval was withdrawn at <ts> in Discord message <id>, so it takes no <role> until Daniel
 # approves the plan again (plan-approved by=Daniel)"); and a builder or reviewer of a feature task
@@ -325,6 +326,14 @@ if [[ $task != T0 ]]; then
       [[ ! $named_brief =~ ^brief-build-([0-9]{2})$ || ${BASH_REMATCH[1]} == "$ticket" ]] ||
         die "$worktree is ticket $ticket's worktree, but the brief is ticket ${BASH_REMATCH[1]}'s"
     done
+  fi
+  # An ask that names tickets holds only those tickets' builders, so a builder's launch is checked
+  # again with its ticket: its worktree's, else its brief's (launch_ticket in bin/lib/ledger.jq).
+  if [[ $role == builder ]]; then
+    json_vars --ledger refusal='[launch_refusal($task; $role; $ARGS.positional; true;
+        {ticket: (if $ticket == "" then null else $ticket end), brief: $brief} | launch_ticket)] | join("; ")' \
+      -- --arg task "$task" --arg role "$role" --arg ticket "$ticket" --arg brief "$brief" --args ${past[@]+"${past[@]}"} <<<"$events"
+    [[ -z $refusal ]] || die "$refusal"
   fi
 fi
 

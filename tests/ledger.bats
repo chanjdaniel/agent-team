@@ -662,6 +662,42 @@ handed_on() {
     'include "ledger"; map({ts: "2026-10-24T12:00:00Z", task: "T1"} + .) | handed_on_launches($role; "/home/x") | map([.session, .handed_on])'
 }
 
+# The launch refusals of a launch of <role> for <ticket> ("" for none), after an approved feature
+# task's events given, one JSON object each: refusals_for <role> <ticket> <event>...
+refusals_for() {
+  local role=$1 ticket=$2
+  shift 2
+  printf '%s\n' "$@" | jq -L "$REPO_ROOT/bin/lib" -sc --arg role "$role" --arg ticket "$ticket" 'include "ledger";
+    [{event: "opened", path: "feature", project: "proj", branch: "feat/T1-x", worktree: "/w/1"},
+     {event: "plan-approved", by: "coordinator"}] + . | map({ts: "2026-11-01T00:00:00Z", task: "T1"} + .)
+    | [launch_refusal("T1"; $role; []; false; if $ticket == "" then null else $ticket end)]'
+}
+
+@test "an ask that names its tickets refuses only the launches of those tickets' builders, by ticket or brief" {
+  local scoped='{"event": "asked", "id": "prune", "text": "Prune phase 2?", "tickets": ["03", "04"]}'
+  local whole='{"event": "asked", "id": "store", "text": "Which store?"}'
+  local held='["T1 has an unanswered ask, prune, since 2026-11-01T00:00:00Z"]'
+  assert_equal "$(refusals_for builder 03 "$scoped")" "$held"
+  assert_equal "$(refusals_for builder 04 "$scoped")" "$held"
+  # Another ticket, another role and a message that launches nothing go on.
+  assert_equal "$(refusals_for builder 02 "$scoped")" "[]"
+  assert_equal "$(refusals_for reviewer '' "$scoped")" "[]"
+  assert_equal "$(refusals_for '' '' "$scoped")" "[]"
+  # An ask that names no tickets holds every launch, as before.
+  assert_equal "$(refusals_for builder 02 "$whole")" '["T1 has an unanswered ask, store, since 2026-11-01T00:00:00Z"]'
+  # Answered, it holds nothing.
+  assert_equal "$(refusals_for builder 03 "$scoped" '{"event": "answered", "id": "prune", "answer": "yes"}')" "[]"
+  # A launch's ticket is its ticket, else its build brief's number, a resume's and a -<k> one's too.
+  assert_equal "$(jq -nc -L "$REPO_ROOT/bin/lib" 'include "ledger"; [{ticket: "03"}, {brief: "brief-build-04"},
+      {brief: "brief-resume-build-03-2"}, {brief: "brief-deliver"}, {}] | map(launch_ticket)')" '["03","04","03",null,null]'
+  # The ledger's own check of a launch reads it so too.
+  assert_equal "$(printf '%s\n' "$scoped" | jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger";
+      [{event: "opened", path: "feature", project: "proj", branch: "feat/T1-x", worktree: "/w/1"},
+       {event: "plan-approved", by: "coordinator"}] + . | map({ts: "2026-11-01T00:00:00Z", task: "T1"} + .)
+      | [transition_problems({task: "T1", event: "launch", role: "builder", session: "b1", brief: "brief-build-03"}),
+         transition_problems({task: "T1", event: "launch", role: "builder", session: "b2", brief: "brief-build-02"})]')" "$held"
+}
+
 @test "a ticket builder ends only by its own done or its ticket's ticket-done, and a task worktree's builder as before" {
   local two='{"event": "launch", "role": "builder", "session": "b3", "worktree": "/w/1--03", "ticket": "03"}
 {"event": "launch", "role": "builder", "session": "b4", "worktree": "/w/1--04", "ticket": "04"}'

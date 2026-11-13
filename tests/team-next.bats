@@ -311,6 +311,24 @@ launched T7-builder c0000001"
   assert_equal "$(bg_calls | wc -l)" 1
 }
 
+@test "an ask that names tickets holds only those tickets, so the hand-off goes on to another" {
+  # T193: the ask held only later tickets, yet ticket 01's DONE was refused.
+  event asked '{id: "prune", text: "Prune 03?", tickets: ["03"]}'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-build-02.md"
+  assert_contains "$output" "launched T7-builder c0000001"
+}
+
+@test "a ticket an ask holds is neither the next ready one nor one --next may name, until the ask is answered" {
+  event asked '{id: "prune", text: "Prune 02?", tickets: ["02"]}'
+  refused "--next 02 is not ready once 01 is done: 02 held by the unanswered ask prune" T7 --next 02 -- "T7 DONE 01 $sha done"
+  refused "tickets remain once 01 is done, but none is ready: 02 held by the unanswered ask prune" T7 -- "T7 DONE 01 $sha done"
+  # Answered, it holds nothing.
+  event answered '{id: "prune", answer: "keep it"}'
+  run_bin -0 team-next T7 -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-build-02.md"
+}
+
 @test "the brief path in the prompt is the one team-brief printed, and team-worker reads it" {
   run_bin -0 team-next T7 -- "T7 DONE 01 $sha done"
   local brief

@@ -3,7 +3,8 @@
 # a one-line ping in #coordinator that links there, both through team-post (so a fenced machine
 # posts nothing), then log the ask in the ledger. team-answer takes their answer back.
 #
-# Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]...
+# Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--tickets <NN,...>]
+#                 [--attach <image>]...
 # <id> names the ask (letters, digits, dot, dash and underscore), as team-answer names it again.
 # The question is the file's text, its leading and trailing blank lines and spaces dropped. The
 # ping mentions each of Daniel's ids, the top-level allowFrom of the Discord plugin's
@@ -29,6 +30,10 @@
 # outside the task's open worktrees and its tasks/T<n>/ once its links are resolved, is refused
 # before anything is posted, as team-run-approved refuses it (script_place_refusal in
 # bin/lib/team.sh).
+# --tickets <NN,...>, two-digit ticket numbers joined by commas, logs the asked with tickets=<them>:
+# an ask that holds only those tickets, whose builders' launches it refuses until it is answered
+# (team-next and team-worker go on with the task's other work), and which parks the task only while
+# none of its work is unfinished (parked in bin/lib/ledger.jq); with none, it holds the whole task.
 # --attach <image>, repeatable, posts the image with the question in the task's thread through
 # team-post --attach (on the question's first message and on), which checks each image before
 # anything is posted and logs it as image-posted; the ping carries none.
@@ -43,15 +48,21 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 # The most characters of the question's first line the ping carries.
 PING_LINE=200
-USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]..."
+USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--tickets <NN,...>] [--attach <image>]..."
 
-task='' id='' file='' role='' script='' attach=()
+task='' id='' file='' role='' script='' tickets='' attach=()
 while (($#)); do
   case $1 in
     --file) (($# > 1)) || usage_error "$USAGE"; file=$2; shift ;;
     --from) (($# > 1)) || usage_error "$USAGE"; role=$2; [[ $role =~ ^[a-z]+$ ]] || usage_error "$USAGE"; shift ;;
     --script) (($# > 1)) && [[ -n $2 ]] || usage_error "$USAGE"; script=$2; shift ;;
     --attach) (($# > 1)) && [[ -n $2 ]] || usage_error "$USAGE"; attach+=(--attach "$2"); shift ;;
+    --tickets)
+      (($# > 1)) && [[ $2 =~ ^[0-9]{2}(,[0-9]{2})*$ ]] ||
+        usage_error "--tickets takes two-digit ticket numbers joined by commas, as 03,04"
+      tickets=$2
+      shift
+      ;;
     -*) usage_error "$USAGE" ;;
     *)
       if [[ -z $task ]]; then task=$1
@@ -98,12 +109,13 @@ mentions=$(jq -r '.allowFrom | arrays | map(tostring | select(test("^[0-9]+$")) 
 # never left unlogged by a refused event.
 now=$(date -u +%FT%TZ)
 mapfile -t lines < <(jq -nc --arg ts "$now" --arg task "$task" --arg id "$id" --arg role "$role" \
-  --arg question "$question" --arg line "$line" --arg script "$script" --arg sha256 "$sha256" '
+  --arg question "$question" --arg line "$line" --arg script "$script" --arg sha256 "$sha256" --arg tickets "$tickets" '
   {ts: $ts, task: $task} as $e
   | (if $role == "ops" then $e + {event: "question", role: $role, chars: ($question | length)}
      elif $role != "" then $e + {event: "question", role: $role, text: $question} else empty end),
     $e + {event: "asked", id: $id, text: $line}
-      + (if $script != "" then {script: $script, sha256: $sha256} else {} end)')
+      + (if $script != "" then {script: $script, sha256: $sha256} else {} end)
+      + (if $tickets != "" then {tickets: ($tickets | split(","))} else {} end)')
 for event in "${lines[@]}"; do
   problems=$(ledger_jq '[append_problems($contract; "team-ask")] | join("; ")' -r <<<"$event")
   [[ -z $problems ]] || die "refusing a ledger event: $problems"

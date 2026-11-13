@@ -35,7 +35,9 @@
 # open ("T<n> is closed", "T<n> is not open: the ledger has no opened event for it"), not on
 # Daniel's hold ("T<n> is on Daniel's hold since <since> (<id>): <reason>; only Daniel's word lifts
 # it: ..."), and has no ask to Daniel that nothing settled and no launch went past ("T<n> has an
-# unanswered ask, <id>, since <ts>"); it takes no --past-ask, so a message refused for an ask is
+# unanswered ask, <id>, since <ts>"; an ask that names tickets, team-ask --tickets', refuses no
+# message and no hand-off but its tickets' builders: such a ticket is held, below); it takes no
+# --past-ask, so a message refused for an ask is
 # logged with team-log --from-message, as the manual says. Before that guard, and for every
 # hand-off below, a task whose plan approval stands withdrawn (plan_approval in bin/lib/ledger.jq)
 # is refused naming it ("T<n>'s plan approval was withdrawn at <ts> in Discord message <id>, so no
@@ -53,7 +55,10 @@
 # team-tickets T<n>'s tickets; when a sha is not a commit the sending builder's worktree's HEAD
 # holds; when --next names a ticket that is not ready or waiting once NN is done, or one of
 # another phase than the one being built; or when tickets of that phase remain of which none is
-# ready, each named with what it waits on. A ticket's phase is its Phase: line's, else 1
+# ready, each named with what it waits on. A ticket an unanswered ask names (an ask that names
+# tickets, which no launch went past) is held: never ready nor waiting, so neither the next ticket
+# nor one --next or --fill launches, named "NN held by the unanswered ask <id>" in those
+# refusals and lines. A ticket's phase is its Phase: line's, else 1
 # (team-tickets), and the phase being built is the earliest, up to NN's, with a ticket not done.
 # Otherwise the next ticket, --next's or that phase's lowest-numbered ready one once NN is done,
 # gets team-brief T<n> builder-ticket --set ticket=<NN> --name build-<NN> in its project; when
@@ -1015,7 +1020,20 @@ project_worktree() {
 }
 
 # A ticket's state with what it waits on, as the hand-offs name it: "02 blocked on 01".
-waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
+waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)",
+  held: " by the unanswered ask \(.held_by)"}[.state] // "");'
+
+# team-tickets T<n>'s tickets as JSON, each one an ask that names tickets holds (no event settled
+# it and no launch went past it: the fold's asks in bin/lib/ledger.jq) marked held_by <its id>, so
+# held (below) takes it from ready or waiting to held, which no hand-off launches: task_tickets
+task_tickets() {
+  local list held
+  list=$(sibling team-tickets "$task" --json) || return
+  held=$(ledger_jq 'lifecycle | [.asks[] | select((.passed | not) and .tickets != null) | .id as $id
+    | .tickets[] | {key: ., value: $id}] | from_entries' -c <<<"$events") || return
+  jq -c --argjson held "$held" 'map(if $held[.ticket] != null then .held_by = $held[.ticket] else . end)' <<<"$list"
+}
+held_def='def held: map(if .held_by != null and (.state | IN("ready", "waiting")) then .state = "held" else . end);'
 
 # The plan's caps, the standing approval's parallel (plan_approval in bin/lib/ledger.jq), 1 when it
 # has none; cap_of <phase>: that phase's, the last one for a later phase, refused when the caps are
@@ -1185,13 +1203,13 @@ tilde() {
 fill() {
   local tickets phase building cap problem open running_tsv candidates_tsv n alone project k=0 c
   local -a running=() waiting=() todo=() todo_projects=() bare=() launched=()
-  tickets=$(sibling team-tickets "$task" --json) || exit
+  tickets=$(task_tickets) || exit
   json_vars phase='.phase' building='.building' problem='.problem' open='.open' \
     running_tsv='[.running[] | [.ticket, .alone] | @tsv] | join("\n")' \
     candidates_tsv='[.candidates[] | [.ticket, .alone, .project] | @tsv] | join("\n")' \
-    <<<"$(jq -c --arg n "$next" --arg task "$task" "$waits"'
+    <<<"$(jq -c --arg n "$next" --arg task "$task" "$waits$held_def"'
     def ph: .phase // 1;
-    ([.[] | select(.state != "done") | ph] | min) as $b
+    held | ([.[] | select(.state != "done") | ph] | min) as $b
     | ($b // ([.[] | ph] | max) // 1) as $p
     | (map(select(.ticket == $n)) | first) as $nx
     | ([sort_by(.ticket)[] | select(.state != "done" and ph == $p) | waits] | join("; ")) as $open
@@ -1568,19 +1586,19 @@ json_vars ticket='$reported.ticket | tostring' commits='[$reported.commits[]? | 
 [[ -z $sender_ticket || $sender_ticket == "$ticket" ]] ||
   die "$task-builder-$sender_ticket ($sender_session) is ticket $sender_ticket's builder, so its DONE $ticket is not integrated"
 
-tickets=$(sibling team-tickets "$task" --json) || exit
+tickets=$(task_tickets) || exit
 
 # In one jq run over the tickets: whether NN is one, and once NN is done (updated): the tickets,
 # NN's phase, whether the task has more than one phase, the phase being built (the earliest, up to
 # NN's, with a ticket not done; empty when none), the ticket chosen (--next's, else that phase's
 # lowest-numbered ready one), whether it is ready or waiting, what it waits on, its phase, its
 # project, and NN's phase's tickets as a list.
-updated='def updated: map(if .ticket == $t then .state = "done" | .session = null else . end)
+updated="$held_def"'def updated: map(if .ticket == $t then .state = "done" | .session = null else . end)
   | [.[] | select(.state == "done") | .ticket] as $done
   | map(if .state == "blocked" then (.on - $done) as $on
       | if $on == [] then .on = [] | .state = (if .waits_for == null then "ready" else "waiting" end) else .on = $on end
     else . end)
-  | sort_by(.ticket);
+  | held | sort_by(.ticket);
   def phase: map(select(.ticket == $t)) | first | .phase // 1;
   def building: phase as $p | [.[] | select(.state != "done" and (.phase // 1) <= $p) | .phase // 1] | min;
   def chosen: if $n != "" then map(select(.ticket == $n)) | first

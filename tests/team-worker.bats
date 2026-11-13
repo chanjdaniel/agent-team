@@ -1459,6 +1459,23 @@ allowed_in() {
   assert_equal "$(launches | jq -c 'has("past_ask")')" $'true\nfalse'
 }
 
+@test "an ask that names tickets refuses only a builder of one of them, read from its brief, and the task's other launches go" {
+  open_task T7
+  ledger_line '{ts: "2026-11-11T09:30:00Z", task: "T7", event: "asked", id: "prune", text: "Prune phase 2?", tickets: ["03"]}'
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "Build ticket 03." >"$TEAM_HOME/tasks/T7/brief-build-03.md"
+  echo "Build ticket 02." >"$TEAM_HOME/tasks/T7/brief-build-02.md"
+  refused_launch "T7 has an unanswered ask, prune, since 2026-11-11T09:30:00Z; launch past it with --past-ask prune" \
+    T7 builder "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-build-03.md"
+  run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-build-02.md"
+  run_bin -0 team-worker T7 reviewer "$wt1" -- go
+  run_bin -0 team-worker T7 builder "$wt1" --past-ask prune -- "Read your brief at $TEAM_HOME/tasks/T7/brief-build-03.md"
+  assert_equal "$(launches | jq -c '[.brief, .past_ask]')" '["brief-build-02",null]
+[null,null]
+["brief-build-03",["prune"]]'
+  run_bin -0 team-log --check
+}
+
 @test "a feature task's builder or reviewer waits for its plan; its planner, and a research or small task's builder, go" {
   thread T7
   ledger_line --arg wt "$wt1" '{ts: (now | todate), task: "T7", event: "opened", project: "proj", path: "feature",

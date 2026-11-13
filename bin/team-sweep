@@ -15,7 +15,9 @@
 # reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
-# id, no merge-approved whose url its text names), or when a park (held, blocked, waiting, paused)
+# id, no merge-approved whose url its text names; one that names tickets, team-ask --tickets', only
+# while none of the task's work is unfinished, so the work it does not hold is watched, and never
+# for merge-due or ci-due), or when a park (held, blocked, waiting, paused)
 # stands in the ledger's lifecycle fold; an ask a launch went past (team-worker --past-ask) and its
 # wait park nothing, so that launch's worker is watched; a park of one ticket's builder in a
 # parallel phase (one naming the session of a builder in a ticket worktree, T<n>-builder-NN, or

@@ -829,6 +829,23 @@ coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-10-22T
   assert_contains "$output" "T3 no-worker"
 }
 
+@test "an ask that names its tickets parks the task only while none of its work is unfinished" {
+  opened T3
+  launch T3 builder 11111111
+  event T3 asked '{id: "prune", text: "Prune phase 2?", tickets: ["03", "04"]}'
+  # The builder launched beside it is still watched: gone with no done, the task has no worker.
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 no-worker"
+  # Once its work is done, what is left waits on the ask: parked.
+  event T3 'done' '{role: "builder", session: "11111111"}'
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+  # Answered, it parks nothing.
+  event T3 answered '{id: "prune", answer: "yes"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 no-worker"
+}
+
 @test "a merge ask settled by a merge-approved naming its URL no longer parks the task" {
   opened T3
   launch T3 builder 11111111
