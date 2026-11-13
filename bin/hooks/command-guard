@@ -2,24 +2,32 @@
 # PreToolUse hook on a worker's Bash that refuses a guarded thing a command runs, never for its
 # name inside an argument, a commit message, a search or a file's text: exit 2 blocks the call and
 # shows the agent "Blocked by command-guard: <the rule>; a guardrail, so report it as BLOCKED and
-# do not reach it another way." on stderr; exit 0 passes it.
+# do not reach it another way." on stderr; exit 0 passes it. A rule that names an allowed way
+# shows "Blocked by command-guard: <the rule>; the allowed way: <the way>. A guardrail: report it
+# as BLOCKED, saying you took the allowed way, and go on only by that way." to a worker
+# (AGENT_TEAM_ROLE set), and "... <the way>. A guardrail: do not reach it another way." with no
+# role, as a gate agent has.
 #
 # Usage: command-guard   (the hook's input on stdin)
 #
 # Input it cannot read is refused, naming why: not JSON, no tool_name, or a Bash call whose
 # tool_input.command is missing or not a string. Another tool's call passes, and so does a command
 # naming none of team-worker, team-load-check, ui-capture, AGENT_TEAM_, --steal, team-ask,
-# team-answer, team-inbox, team-thread, team-run-approved, curl and wget, nor env or exec before an
-# option together with team- or claude-coordinator, at once, with no Python run.
+# team-answer, team-inbox, team-thread, team-run-approved, curl, wget, kill (pkill, killall and
+# tmux's kill-server among it), fuser, -delete and rm as a word of its own (git rm among it), nor
+# env or exec before an option together with team- or claude-coordinator, at once, with no Python
+# run.
 # Any other is decided by one rule table, bin/lib/command_rules.py, run once on the hook's input:
 # it walks each simple command the call runs (past its wrappers, into the strings its shells,
 # eval, su, script, env -S, flock -c, watch, parallel and find -exec run, and a shell's script or
 # a sourced file by its name), and prints the first row that refuses one, in its table's order: an
 # ops launch, the frontend toolkit's capture script, an assignment or an unset of AGENT_TEAM_ROLE
 # or AGENT_TEAM_TASK, a team script run with its environment emptied, a lease steal, the
-# coordinator's commands, and an upload of a file or body to a host outside the team's own (as
-# bin/lib/outbound.py reads it). The hook refuses with that row's reason; command_rules.py's header
-# holds each row's wording and what the guard does not see.
+# coordinator's commands, an upload of a file or body to a host outside the team's own (as
+# bin/lib/outbound.py reads it), and a kill that reaches what is not the session's own (by name or
+# pattern, tmux's kill-*, of PIDs read from input, of a PID it cannot read, of a process group;
+# bin/lib/kill_rules.py). The hook refuses with that row's reason, and its allowed way when it
+# names one; command_rules.py's header holds each row's wording and what the guard does not see.
 # It fails closed: when command_rules.py exits non-zero, the call is refused with "it could not
 # check the command for an upload (bin/lib/outbound.py: <the error>)" when the upload row raised,
 # else "it could not read the command (bin/lib/command_rules.py: <its last stderr line>)", and so,
@@ -38,8 +46,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 # A wrong argument in the settings blocks every call the hook sees, the fail-closed side.
 [[ $# -eq 0 ]] || usage_error "usage: command-guard   (the hook's input on stdin)"
 
+# Refuse with <reason>, and the allowed way when one is given: block <reason> [<allowed>]
 block() {
-  echo "Blocked by command-guard: $1; a guardrail, so report it as BLOCKED and do not reach it another way." >&2
+  if [[ -z ${2:-} ]]; then
+    echo "Blocked by command-guard: $1; a guardrail, so report it as BLOCKED and do not reach it another way." >&2
+  elif [[ -n ${AGENT_TEAM_ROLE:-} ]]; then
+    echo "Blocked by command-guard: $1; the allowed way: $2. A guardrail: report it as BLOCKED, saying you took the allowed way, and go on only by that way." >&2
+  else
+    echo "Blocked by command-guard: $1; the allowed way: $2. A guardrail: do not reach it another way." >&2
+  fi
   exit 2
 }
 
@@ -52,7 +67,8 @@ command=$(jq -er '.tool_input.command | strings' <<<"$input" 2>/dev/null) ||
 [[ $command == *team-worker* || $command == *team-load-check* || $command == *ui-capture* ||
   $command == *AGENT_TEAM_* || $command == *--steal* || $command == *team-ask* || $command == *team-answer* ||
   $command == *team-inbox* || $command == *team-thread* || $command == *team-run-approved* ||
-  $command == *curl* || $command == *wget* ||
+  $command == *curl* || $command == *wget* || $command == *kill* || $command == *fuser* || $command == *-delete* ||
+  $command =~ (^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$) ||
   (($command == *env*[[:space:]]-* || $command == *exec*[[:space:]]-*) &&
   ($command == *team-* || $command == *claude-coordinator*)) ]] || exit 0
 
@@ -67,4 +83,6 @@ rules=$(python3 -I "$TEAM_LIB/command_rules.py" <<<"$input" 2>&1) || {
 [[ -n $rules ]] || exit 0
 reason=$(jq -er '.reason | strings' <<<"$rules" 2>/dev/null) ||
   block "it could not read the command (bin/lib/command_rules.py: ${rules##*$'\n'})"
-block "$reason"
+allowed=$(jq -r '.allowed // empty | strings' <<<"$rules" 2>/dev/null) ||
+  block "it could not read the command (bin/lib/command_rules.py: ${rules##*$'\n'})"
+block "$reason" "$allowed"

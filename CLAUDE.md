@@ -16,9 +16,10 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the worktrees held, a reading of the machine's load and the team's use per task, the cost samples and estimates, the reservations and the admission rule, the stow and resume plans, and their texts.
     - `chrome.sh`: the one lookup of a machine's Chrome, its executable and its app, which `team-doctor`'s `chrome` line and `team-tickets --graph` both take.
     - `code`: the paths every tracked path matches.
-    - `command_rules.py`: `bin/hooks/command-guard`'s rule table, each row a guarded thing a Bash call may run (an ops launch, the capture script, the role variables, an emptied environment, a lease steal, the coordinator's commands, an upload), decided on each command of `command_text.py`'s walk.
+    - `command_rules.py`: `bin/hooks/command-guard`'s rule table, each row a guarded thing a Bash call runs (an ops launch, the capture script, the role variables, an emptied environment, a lease steal, the coordinator's commands, an upload, a kill, a delete), decided on `command_text.py`'s walk.
     - `command_text.py`: a Bash command's code text (heredoc bodies out unless a shell may read one, `-c` strings and what is piped into a shell in) and the walk of each simple command it runs, past wrappers, into tools' strings, for `command_rules.py`; `team-tokens` takes its heredoc rule.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
+    - `delete_rules.py`: `command_rules.py`'s delete rows, a recursive delete of what is not the session's own; none yet.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
     - `drills.jq`: the drills module, the one place that says what a line of the team home's `drills.jsonl` is, when a drill is due and how `team-drill status` shows it.
     - `drills.json`: the drill registry, each drill's name, what it is, who runs it (`coordinator`, or `daniel` when it needs them present) and the code it proves, with the one age past which a drill is due.
@@ -26,6 +27,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode), and reads `agent_args_override`'s list for one agent.
     - `guarded`: the short list, one extended regular expression per line with its area, `@<project>` or `@own` for one project's line, any changed path of which brings a merge on the default word, the approved plan, back to Daniel for the per-head word, read by `team-merge` from its own checkout.
     - `health.jq`: the health module, the one place that says what unhealthy means: the fold of each heartbeat run into the health record, the ledger's one-pass scan, every health threshold, and the view `team-timers health` prints, its problems and its line in markup and plain text.
+    - `kill_rules.py`: `command_rules.py`'s kill rows, refusing a kill by name or pattern, tmux's `kill-*`, a kill of PIDs read from input or of a PID the guard cannot read, and a kill of a process group, every process or PID 0 or 1, each naming its allowed way.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
     - `lifecycle.json`: the task lifecycle's table, its statuses, phases, start states, what each kind may follow and does, the park causes and what ends each, and the `lifecycle_from` and `asked_parks_from` cutovers, which `ledger.jq` imports.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.

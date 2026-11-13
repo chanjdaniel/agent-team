@@ -4,8 +4,9 @@
 Usage: python3 -I command_text.py              (the command on stdin; prints the text on stdout)
        python3 -I command_text.py --commands   (the command on stdin; prints its walk, below)
 
-bin/lib/command_rules.py, the rule table bin/hooks/command-guard runs, imports code_text,
-read_command and commands, the walk of each simple command, from it; outbound.py imports commands
+bin/lib/command_rules.py, the rule table bin/hooks/command-guard runs, imports code_parts,
+read_command and commands, the walk of each simple command, from it, with heads_behind and the
+other readings of where a command's name may stand, which kill_rules.py reads too; outbound.py imports commands
 and the option readers long_options and short_cluster, and team-tokens without_heredocs.
 It reads the command far enough to know its quotes ('...', "..." and $'...'), backslashes, comments,
 arithmetic ($[, and $(( or (( whose two closing parentheses are adjacent, matched as Bash's
@@ -51,6 +52,10 @@ substitution in which starts one, as (bash) or tee >(bash) does; so a shell or .
 argument feeds it nothing.
 The words it adds of a command piped into a shell split at a separator inside quotes too: a walk
 of the text sees more commands there, never fewer.
+code_parts(command) gives the same text as a list, the command first, then each added line: a
+line may leave a quote open (find -exec's string to its line's end, its closing quote with it, or
+a fed string's apostrophe), which in the joined text would hide every line after it, so a reader
+walks each part alone.
 
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
@@ -607,7 +612,14 @@ def _runs_shell(command, start, end, bodies, subscripts):
 
 def code_text(command):
     """The command's text as code: heredoc bodies out, run strings and fed text added, as the
-    header says."""
+    header says, its parts (code_parts) one per line."""
+    return "\n".join(code_parts(command))
+
+
+def code_parts(command):
+    """The command's code text in parts: the command with its heredoc bodies out, then each string
+    and fed text added, each a part of its own, so a walk of each alone leaves no quote, group or
+    heredoc one opens to hide another."""
     reading = read_command(command)
     bodies = {h.body[0]: h.end for h in reading.heredocs}
     shells = [
@@ -646,7 +658,7 @@ def code_text(command):
                 for simple in SIMPLE.split(piped.replace("'", "").replace('"', "")):
                     words = simple.split(None, 1)
                     added += words[1:]
-    return "\n".join([text] + [inner for inner in added if inner])
+    return [text] + [inner for inner in added if inner]
 
 
 # The reserved words a simple command's words may start with, which are no part of it.
@@ -1124,6 +1136,85 @@ def commands(text):
     """Each Command the text runs, as the header says: each simple command (simple_commands), then
     the commands of each string, find -exec, script file or sourced file it runs, in turn."""
     return _commands(text, 0, (), DIRECT)
+
+
+# What runs the command after it, past its options, as a reading of where a command starts takes
+# it: the wrappers and the shells.
+RUNNERS = WRAPPERS | SHELLS
+
+
+def command_name(word):
+    """A word's name as a command: its basename."""
+    return os.path.basename(word)
+
+
+def has_blank(word):
+    """Whether a word holds a blank, so a reading of the command's text as written took it as
+    more than one word."""
+    return re.search(r"\s", word) is not None
+
+
+def leads(words, starts=(0,), wrappers=True):
+    """Where a command's name may stand among words, from the starts on, as a reading of where a
+    command starts takes them: past options (each with or without the next word as its value,
+    when that word is no option), numbers and assignments, and, with wrappers, past a wrapper or
+    a shell (flock with its options and file); a word holding a blank ends the reading.
+    It is a second reader of the wrappers' options beside _command, which knows
+    which option takes a value and so reads one name; this one reads each name an option's value
+    may hide, as the regexes did. A wrapper or option _command learns may need reading here too."""
+    reach, n = set(starts), len(words)
+    for k, word in enumerate(words):
+        if k not in reach:
+            continue
+        yield k
+        if has_blank(word):
+            continue
+        if word.startswith("-"):
+            reach.add(k + 1)
+            if k + 1 < n and not words[k + 1].startswith("-") and not has_blank(words[k + 1]):
+                reach.add(k + 2)
+        elif NUMBER.fullmatch(word) or ASSIGNMENT.match(word):
+            reach.add(k + 1)
+        elif wrappers and command_name(word) == "flock":
+            j = k + 1
+            while j < n and words[j].startswith("-") and not has_blank(words[j]):
+                j += 1
+            reach.add(j + 1)
+        elif wrappers and command_name(word) in RUNNERS:
+            reach.add(k + 1)
+
+
+def from_wrappers(command: Command):
+    """Each of the command's wrappers (a shell's too) with the words after it: its own, the later
+    wrappers' and the command's."""
+    for t, wrapper in enumerate(command.wrappers):
+        if wrapper and command_name(wrapper[0]) in RUNNERS:
+            yield wrapper + tuple(word for words in command.wrappers[t + 1 :] for word in words) + command.words
+
+
+def heads_behind(command: Command):
+    """Each way of reading the command's words from its name on, with the names of what it ran
+    behind: the walk's own words behind every wrapper's name, and from each word after a wrapper
+    that may be the name of what it runs, where the walk took it as an option's value, behind the
+    wrappers before that one and each wrapper or shell named before that word; a word holding a
+    blank, or an option, is never a name."""
+    names = tuple(command_name(wrapper[0]) for wrapper in command.wrappers if wrapper)
+    yield command.words, names
+    for t, wrapper in enumerate(command.wrappers):
+        if not wrapper or command_name(wrapper[0]) not in RUNNERS:
+            continue
+        words = wrapper + tuple(word for later in command.wrappers[t + 1 :] for word in later) + command.words
+        outer = tuple(command_name(before[0]) for before in command.wrappers[:t] if before)
+        for k in leads(words):
+            if k and not words[k].startswith("-") and not has_blank(words[k]):
+                ran = tuple(command_name(word) for word in words[:k] if command_name(word) in RUNNERS)
+                yield words[k:], outer + ran
+
+
+def heads(command: Command):
+    """Each way of reading the command's words from its name on, as heads_behind reads them."""
+    for words, _ in heads_behind(command):
+        yield words
 
 
 def main():
