@@ -24,8 +24,9 @@ export const mongoImage = "mongo:8.0.34@sha256:4a4ab5d4834207389e0d7270fac988e21
 // rseq use those kernels break (SERVER-121912, SERVER-125742). The image turns glibc's rseq off
 // (GLIBC_TUNABLES=glibc.pthread.rseq=0) so tcmalloc can take rseq for those caches; turning it back
 // on leaves tcmalloc on per-thread caches, which mongod's startup check lets start
-// (docs/v8.0/administration/tcmalloc-performance). Drop this once GitHub's runners are on 7.0.14
-// or later, where 8.0.30 and newer start with per-CPU caches.
+// (docs/v8.0/administration/tcmalloc-performance). Drop this once every machine that runs these
+// tests, GitHub's runners included, is on 7.0.14 or later, where 8.0.30 and newer start with
+// per-CPU caches.
 const perThreadCaches = ["--env", "GLIBC_TUNABLES=glibc.pthread.rseq=1"];
 
 // The image declares /data/db and /data/configdb as volumes, so a container with nothing mounted

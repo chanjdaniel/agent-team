@@ -268,15 +268,25 @@ function ref(output, role, name) {
   return `@${found[1]}`;
 }
 
-// A free port on 127.0.0.1, for the test's bridge: a named session's own port is hashed from its
-// name into a range other sessions on the machine share.
-async function freePort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+// A port for the test's bridge, since a named session's own port is hashed from its name into a
+// range other sessions on the machine share: a random one from 20000 to 29999, below every default
+// ephemeral range (Linux's starts at 32768, macOS's at 49152), so no socket the kernel picks a port
+// for can take it between this check and the bridge's bind, checked free by listening on it once.
+async function bridgePort() {
+  for (let tries = 0; tries < 100; tries++) {
+    const port = 20000 + Math.floor(Math.random() * 10000);
+    const server = createServer();
+    const free = await new Promise((resolve) => {
+      server.once("error", () => resolve(false));
+      server.listen(port, "127.0.0.1", () => server.close(() => resolve(true)));
+    });
+    if (free) return port;
+  }
+  throw new Error("no free port from 20000 to 29999 in 100 tries");
 }
+
+// chrome-devtools-axi's refusal when its bridge exits at once because something holds its port.
+const portInUse = /^help\[\d+\]: "Port \d+ is already in use\./m;
 
 describe("every chrome-devtools-axi command ui-check names, run headless on a fixture site", () => {
   const ran = new Set();
@@ -306,13 +316,29 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
       HOME: home,
       PATH: testPath({ withOp: false }),
       CHROME_DEVTOOLS_AXI_SESSION: `toolkit-test-${process.pid}`,
-      CHROME_DEVTOOLS_AXI_PORT: String(await freePort()),
       CHROME_DEVTOOLS_AXI_MCP_PATH: join(repoRoot, "servers", "node_modules", "chrome-devtools-mcp", "build", "src", "bin", "chrome-devtools-mcp.js"),
       CHROME_DEVTOOLS_AXI_EXECUTABLE_PATH: chromePath(),
       CHROME_DEVTOOLS_AXI_CHROME_ARGS: "--use-mock-keychain --password-store=basic",
       CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1",
       CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1",
     };
+    // A port another socket took after bridgePort's check refuses the bridge's bind: try another,
+    // 3 tries in all.
+    const tried = [];
+    for (;;) {
+      const port = await bridgePort();
+      tried.push(port);
+      env.CHROME_DEVTOOLS_AXI_PORT = String(port);
+      try {
+        await axi("start");
+        break;
+      } catch (error) {
+        if (!portInUse.test(error.message)) throw error;
+        if (tried.length === 3) {
+          throw new Error(`the axi bridge's ports ${tried.join(", ")} were each already in use:\n${error.message}`);
+        }
+      }
+    }
   });
   after(async () => {
     await promisify(execFile)(axiBin, ["stop"], { env, timeout: 60_000 }).catch(() => {});
