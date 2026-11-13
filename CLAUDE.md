@@ -19,7 +19,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `command_rules.py`: `bin/hooks/command-guard`'s rule table, each row a guarded thing a Bash call runs (an ops launch, the capture script, the role variables, an emptied environment, a lease steal, the coordinator's commands, an upload, a kill, a delete), decided on `command_text.py`'s walk.
     - `command_text.py`: a Bash command's code text (heredoc bodies out unless a shell may read one, `-c` strings and what is piped into a shell in) and the walk of each simple command it runs, past wrappers, into tools' strings, for `command_rules.py`; `team-tokens` takes its heredoc rule.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
-    - `delete_rules.py`: `command_rules.py`'s delete rows, a recursive delete of what is not the session's own; none yet.
+    - `delete_rules.py`: `command_rules.py`'s delete rows, refusing an `rm -r`, `find -delete` or `find -exec rm` of a path outside the worktree and the job's tmp, of either or `.scratch/task` or a directory holding one, or of a path the guard cannot read, each naming its allowed way.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
     - `drills.jq`: the drills module, the one place that says what a line of the team home's `drills.jsonl` is, when a drill is due and how `team-drill status` shows it.
     - `drills.json`: the drill registry, each drill's name, what it is, who runs it (`coordinator`, or `daniel` when it needs them present) and the code it proves, with the one age past which a drill is due.
