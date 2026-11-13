@@ -12,18 +12,20 @@
 
 # One jq per index: its lines, its characters, the lines a session loads and how full it is.
 memory_lines=200 memory_chars=25000
-memory_reasons=() memory_fixes=() memory_unread=() memory_count=0 memory_fullest=''
+memory_commas='def commas: tostring | until(test("^[0-9]{4}") | not; sub("(?<a>[0-9])(?<b>[0-9]{3})(?<c>(,|$))"; "\(.a),\(.b)\(.c)"));'
+memory_reasons=() memory_over=() memory_unread=() memory_count=0 memory_fullest=''
 if [[ -z $TEAM_HOME || ! -d $TEAM_HOME ]]; then
   report "memory index" WARN "no team home to read the memory indexes from (the team home line)" \
     "the team home line's fix, then run team-doctor again"
 else
+  memory_chars_text=$(jq -nr --argjson chars "$memory_chars" "$memory_commas"' $chars | commas')
   for memory_index in "$TEAM_HOME"/memory/*/MEMORY.md; do
     [[ -f $memory_index ]] || continue
     memory_path=${memory_index#"$TEAM_HOME"/}
     memory_project=${memory_path#memory/} memory_project=${memory_project%/MEMORY.md}
     if [[ ! -r $memory_index ]] || ! memory_view=$(jq -Rsr --argjson lines "$memory_lines" --argjson chars "$memory_chars" '
       def units: [explode[] | if . > 65535 then 2 else 1 end] | add // 0;
-      def commas: tostring | until(test("^[0-9]{4}") | not; sub("(?<a>[0-9])(?<b>[0-9]{3})(?<c>(,|$))"; "\(.a),\(.b)\(.c)"));
+      '"$memory_commas"'
       trim | split("\n") as $all
       | ($all | length) as $n
       # Where each of the first $lines lines ends, its newline there: a line loads when it ends
@@ -40,7 +42,7 @@ else
     memory_count=$((memory_count + 1))
     if [[ $memory_verdict == over ]]; then
       memory_cap="past it too"
-      ((${#memory_reasons[@]})) || memory_cap="past Claude Code's load cap of 200 lines or 25,000 characters"
+      ((${#memory_reasons[@]})) || memory_cap="past Claude Code's load cap of $memory_lines lines or $memory_chars_text characters"
       if ((memory_kept == 0)); then
         memory_load="part of line 1 and the cut falls inside it"
       elif ((memory_kept == 1)); then
@@ -49,31 +51,31 @@ else
         memory_load="lines 1 to $memory_kept and the cut falls at line $((memory_kept + 1))"
       fi
       memory_reasons+=("$memory_project's MEMORY.md is $memory_counts, $memory_cap, so its sessions load $memory_load")
-      memory_fixes+=("$memory_path")
+      memory_over+=("$memory_path")
     elif [[ -z $memory_fullest ]] || jq -ne --argjson a "$memory_fill" --argjson b "$memory_fullest_fill" '$a > $b' >/dev/null; then
       memory_fullest=$memory_project memory_fullest_counts=$memory_counts memory_fullest_fill=$memory_fill
     fi
   done
   if ((${#memory_reasons[@]} + ${#memory_unread[@]})); then
-    memory_fix=()
-    if ((${#memory_fixes[@]})); then
-      memory_list=$(printf '%s and ' "${memory_fixes[@]}")
-      memory_fix+=("condense each line of ${memory_list% and } to its hook, one line per memory, so every memory loads")
+    memory_fix_texts=()
+    if ((${#memory_over[@]})); then
+      memory_over_list=$(printf '%s and ' "${memory_over[@]}")
+      memory_fix_texts+=("condense each line of ${memory_over_list% and } to its hook, one line per memory, so every memory loads")
     fi
     if ((${#memory_unread[@]})); then
-      memory_list=$(printf '%s and ' "${memory_unread[@]}")
-      memory_reasons+=("${memory_list% and } cannot be read")
-      memory_fix+=("make ${memory_list% and } readable, then run team-doctor again")
+      memory_unread_list=$(printf '%s and ' "${memory_unread[@]}")
+      memory_reasons+=("${memory_unread_list% and } cannot be read")
+      memory_fix_texts+=("make ${memory_unread_list% and } readable, then run team-doctor again")
     fi
     memory_reason=$(printf '%s; ' "${memory_reasons[@]}")
-    memory_list=$(printf '%s; ' "${memory_fix[@]}")
-    report "memory index" WARN "${memory_reason%; }" "${memory_list%; }"
+    memory_fix=$(printf '%s; ' "${memory_fix_texts[@]}")
+    report "memory index" WARN "${memory_reason%; }" "${memory_fix%; }"
   elif ((memory_count == 0)); then
     report "memory index" PASS "the team home has no memory/*/MEMORY.md, so no index to load"
   else
     memory_indexes="$memory_count memory indexes, each within"
     memory_named="; the fullest, $memory_fullest's, is $memory_fullest_counts"
     ((memory_count > 1)) || memory_indexes="1 memory index, within" memory_named="; $memory_fullest's is $memory_fullest_counts"
-    report "memory index" PASS "$memory_indexes Claude Code's load cap of 200 lines and 25,000 characters$memory_named"
+    report "memory index" PASS "$memory_indexes Claude Code's load cap of $memory_lines lines and $memory_chars_text characters$memory_named"
   fi
 fi
