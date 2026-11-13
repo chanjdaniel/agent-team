@@ -511,8 +511,10 @@ for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89P
 for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s.other" >&2; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
 for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
 for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; echo text >"$s"; echo "5 bytes written to file $s" >&2; echo "Teardown watchdog expired; recording dump and terminating." >&2; exit 2|Chrome exited 2: Teardown watchdog expired; recording dump and terminating.
-for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s" >&2; exit 124|Chrome timed out after 90 s
-for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "8 bytes written to file $s" >&2; echo killed >&2; exit 137|Chrome exited 137: killed
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo "9 bytes written to file $s" >&2; exit 124|Chrome timed out after 90 s
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; exit 124|Chrome timed out after 90 s
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; printf '\x89PNG\r\n\x1a\n' >"$s"; echo killed >&2; exit 137|Chrome exited 137: killed
+for a; do if [[ $a == --screenshot=* ]]; then s=${a#*=}; fi; done; echo text >"$s"; echo "5 bytes written to file $s" >&2; echo killed >&2; exit 137|Chrome exited 137: killed
 CASES
 }
 
@@ -528,26 +530,30 @@ CASES
   assert_equal "$(jq -r --arg chrome "$TEAM_CHROME" 'select(.[3] == $chrome) | .[:3] | join(" ")' "$STUB_CALLS/timeout.log")" "-k 5 90"
 }
 
-@test "--graph takes the PNG of a Chrome that exits otherwise once it says it wrote the screenshot whole" {
+@test "--graph takes the PNG of a Chrome that exits otherwise, or times out, once it says it wrote the screenshot whole" {
   ticket 01-one "Blocked by: None"
   stub_chrome
-  # As a Mac with no display does: the screenshot written, then the teardown watchdog's exit 2.
-  cat >"$STUB_FIXTURES/chrome.sh" <<'SH'
-for a; do [[ $a != --screenshot=* ]] || s=${a#*=}; done
-printf '\x89PNG\r\n\x1a\n' >"$s"
-echo "8 bytes written to file $s" >&2
+  local dir=$wt/.scratch/task exit_status
+  # As a Mac with no display does: the screenshot written, then a hang in its teardown, ended by
+  # Chrome's watchdog (exit 2), by the timeout's TERM (124) or by its kill (137) on a loaded one.
+  for exit_status in 2 124 137; do
+    rm -f "$dir/tickets.png"
+    cat >"$STUB_FIXTURES/chrome.sh" <<SH
+for a; do [[ \$a != --screenshot=* ]] || s=\${a#*=}; done
+printf '\\x89PNG\\r\\n\\x1a\\n' >"\$s"
+echo "8 bytes written to file \$s" >&2
 echo "Teardown watchdog expired; recording dump and terminating." >&2
-exit 2
+exit $exit_status
 SH
-  local dir=$wt/.scratch/task
-  run_bin -0 --separate-stderr team-tickets T172 --graph
-  assert_equal "$output" "$dir/tickets.png
+    run_bin -0 --separate-stderr team-tickets T172 --graph
+    assert_equal "$output" "$dir/tickets.png
 $dir/tickets.html"
-  assert_equal "$stderr" ""
-  assert_equal "$(head -c 4 "$dir/tickets.png" | tail -c 3)" "PNG"
-  assert_equal "$(ls -A "$dir")" "tickets
+    assert_equal "$stderr" ""
+    assert_equal "$(head -c 4 "$dir/tickets.png" | tail -c 3)" "PNG"
+    assert_equal "$(ls -A "$dir")" "tickets
 tickets.html
 tickets.png"
+  done
 }
 
 @test "--graph refuses a task with no tickets, writing nothing" {
