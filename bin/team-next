@@ -222,9 +222,9 @@
 # launch of no role (closed, Daniel's hold, an ask open), "T<n>'s latest review is not a pass on
 # an open PR, so no checks wait for a merge" when checks_wait in bin/lib/ledger.jq is null, "the
 # checks of <short> failed and went back as a round on <ts>" when its state is failed (until the
-# round's builder logs a done with no new head, a rerun that passed, which waits again), and, once a
-# wait ended, "the checks wait of T<n> moved to <url> at <short> while it waited on <short>: arm
-# team-next T<n> --ci again" when a catch-up moved it. Else it runs
+# round's builder logs a done with no pr of the PR at another head since, a rerun that passed, which
+# waits again), and, once a wait ended, "the checks wait of T<n> moved to <url> at <short> while it
+# waited on <short>: arm team-next T<n> --ci again" when a catch-up moved it. Else it runs
 # team-ci-wait --no-agent-review --json <url> <head> on checks_wait's url and head (the passed
 # head, or the merge the latest team-catch-up made from it), and on its end:
 #   passed or none   once team-state shows the PR open at that head (a later head is the moved

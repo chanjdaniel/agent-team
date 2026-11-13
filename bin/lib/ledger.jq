@@ -419,6 +419,27 @@ def park_ticket($state):
         | select(IN($state.ticket_worktrees[]; .))) // null
       else null end);
 
+# The ticket a launch (the input, a launch event or {ticket, brief}) builds: its ticket (a builder
+# in a ticket worktree), else the number of its brief when that is a ticket's build, resume or
+# relaunch (brief-build-NN, brief-resume-build-NN, either with -<k>), else null.
+def launch_ticket:
+  (.ticket | strings)
+  // first(.brief | strings | capture("^brief-(resume-)?build-(?<n>[0-9]{2})(-[0-9]+)?$") | .n)
+  // null;
+
+# Whether the event ends the worker of the launch <launch> (a launch event, its role, session and
+# ticket): a launch with a ticket (a builder in that ticket's worktree) only by a done of its
+# session or a ticket-done of its ticket; any other by its DONE, which the coordinator logs as a
+# done of that role, a review (a reviewer's), or a ticket-done or a pr (a builder's: a delivering
+# builder's PR <url> is logged as a pr, not a done).
+def ends_launch($launch):
+  if $launch.ticket != null then
+    (.event == "done" and .session == $launch.session) or (.event == "ticket-done" and .ticket == $launch.ticket)
+  else
+    (.event == "done" and .role == $launch.role) or (.event == "review" and $launch.role == "reviewer")
+    or ((.event == "ticket-done" or .event == "pr") and $launch.role == "builder")
+  end;
+
 # The state before a task's first event. The state's fields, which later readers add to rather
 # than fold again:
 #   status  unknown (no event), legacy (events but no opened), open, closed.
@@ -447,7 +468,8 @@ def park_ticket($state):
 #           park_ticket's, the ticket whose builder it parks, or null; on, reason, session and ask
 #           (a wait's ask id) its fields, or null; since its since field or its ts; i its index
 #           among the task's events; passed whether a launch since named its ask (a wait's ask
-#           id) in past_ask, so it parks nothing. A typed park ends by its cause's rules in the
+#           id) in past_ask, so it parks nothing; builds the ticket its refused launch builds
+#           (launch_ticket of its ticket and brief), or null. A typed park ends by its cause's rules in the
 #           table's causes: a launch by lifecycle_launch_ends (a ticket's park only by a launch of
 #           that ticket), a resumed by lifecycle_resume_ends,
 #           and an ask's wait (lifecycle_ask_wait) only once no ask of the state is its ask. An
@@ -470,6 +492,10 @@ def park_ticket($state):
 #           the stowing's cause and roles and adds reason, read as stowed for the resume; since
 #           and i the event's ts and index.
 #   tickets each ticket launch's session (a builder's in a ticket worktree), as {<session>: NN}.
+#   running the launches but ops' no later event ends (ends_launch), the latest of each role and
+#           ticket, as {role, ticket, session, builds, stowed}: builds launch_ticket's, the ticket
+#           the launch builds, or null; stowed true once a stowed follows it, the work that stow
+#           stopped, which the next launch drops (its resume launches each again).
 #   ticket_worktrees the tickets whose ticket worktree is open (a worktree-added with ticket and
 #           no worktree-returned of that ticket since), in the order added.
 #   counts  each park kind's events so far, and the asked events that parked (asked), for the
@@ -477,7 +503,7 @@ def park_ticket($state):
 #   seen    the events folded so far, the next event's index.
 def lifecycle_start:
   {status: "unknown", path: null, opened_at: null, phase: "planning", since: null, approval: null, withdrawal: null, prs: [], reviews: [], parks: [],
-   asks: [], stow: null, tickets: {}, ticket_worktrees: [], counts: {}, seen: 0};
+   asks: [], stow: null, tickets: {}, running: [], ticket_worktrees: [], counts: {}, seen: 0};
 
 # Whether the merged event $e names the PR (the input, one of the state's or task_prs' PRs) among
 # $prs: by its URL when the event names one; a legacy event names only the number, and then, when
@@ -556,7 +582,8 @@ def lifecycle_review_phase($ts): lifecycle_review_phase($ts; ["building", "in-re
 # merged; with none open, merged-part when it names a non-empty phases_left, else merged; else the
 # review phase), ask, settle, park, resume, stowing, stowed, stow-failed and worktree (a
 # worktree-added or worktree-returned of a ticket worktree, ticket_worktrees) (as the state's
-# fields say); a launch with a ticket also records its session's ticket (tickets).
+# fields say); a launch with a ticket also records its session's ticket (tickets), and every
+# event keeps the running launches (running).
 def lifecycle_step($e):
   (lifecycle_table.kinds[$e.event // ""].effect // null) as $effect
   | .seen as $i
@@ -582,6 +609,10 @@ def lifecycle_step($e):
       | .parks |= map(select(lifecycle_launch_ends($e) | not) | if .ask != null and IN(.ask; $past[]) then .passed = true else . end)
       | .stow = null
       | if ($e.ticket | type) == "string" and ($e.session | type) == "string" then .tickets[$e.session] = $e.ticket else . end
+      | if $e.role == "ops" then .
+        else .running = [.running[] | select((.stowed | not) and [.role, .ticket] != [$e.role, ($e.ticket // null)])]
+          + [{role: $e.role, ticket: ($e.ticket // null), session: ($e.session // null), builds: ($e | launch_ticket), stowed: false}]
+        end
     elif $effect == "build" then
       if IN(.phase; "planning", "merged-part", "merged") and .approval != "withdrawn" then lifecycle_move("building"; $e.ts) else . end
     elif $effect == "done" then
@@ -632,20 +663,23 @@ def lifecycle_step($e):
       | .parks += [{id: "\($e.event)-\(.counts[$e.event])", kind: $e.event, cause: ($e | park_cause),
           typed: ($e.cause != null), on: ($e.on // null), reason: ($e.reason // null), role: ($e | park_role),
           session: ($e.session // null), ticket: ($e | park_ticket($state)), ask: ($e.ask // null),
-          since: ($e.since // $e.ts), ts: $e.ts, i: $i, passed: false}]
+          since: ($e.since // $e.ts), ts: $e.ts, i: $i, passed: false,
+          builds: ({ticket: ($e | park_ticket($state)), brief: $e.brief} | launch_ticket)}]
     elif $effect == "resume" then
       .parks |= map(select(lifecycle_resume_ends($e) | not))
     elif $effect == "stowing" then
       .stow = {state: "stowing", cause: ($e.cause // null), roles: ($e.roles // []), since: $e.ts, i: $i}
     elif $effect == "stowed" then
       .stow = {state: "stowed", cause: ($e.cause // null), roles: ($e.roles // []), since: $e.ts, i: $i}
+      | .running |= map(.stowed = true)
     elif $effect == "stow-failed" then
       (if .stow.state == "stowing" then .stow else {cause: null, roles: []} end) as $stowing
       | .stow = {state: "failed", cause: $stowing.cause, roles: $stowing.roles, since: $e.ts, i: $i, reason: ($e.reason // null)}
     elif $effect == "worktree" and ($e.ticket | type) == "string" then
       if $e.event == "worktree-added" then .ticket_worktrees |= (if index([$e.ticket]) then . else . + [$e.ticket] end)
       else .ticket_worktrees |= map(select(. != $e.ticket)) end
-    else . end;
+    else . end
+  | .running |= map(. as $l | select($e | ends_launch($l) | not));
 
 # The task's state: its events, in ledger order, folded from lifecycle_start.
 def lifecycle: reduce .[] as $e (lifecycle_start; lifecycle_step($e));
@@ -683,14 +717,6 @@ def lifecycle_launch_refusal($task; $role; $past; $hint; $ticket):
   end;
 def lifecycle_launch_refusal($task; $role; $past; $hint): lifecycle_launch_refusal($task; $role; $past; $hint; null);
 def lifecycle_launch_refusal($task; $role; $past): lifecycle_launch_refusal($task; $role; $past; false);
-
-# The ticket a launch (the input, a launch event or {ticket, brief}) builds: its ticket (a builder
-# in a ticket worktree), else the number of its brief when that is a ticket's build, resume or
-# relaunch (brief-build-NN, brief-resume-build-NN, either with -<k>), else null.
-def launch_ticket:
-  (.ticket | strings)
-  // first(.brief | strings | capture("^brief-(resume-)?build-(?<n>[0-9]{2})(-[0-9]+)?$") | .n)
-  // null;
 
 # The launch refusal (lifecycle_launch_refusal) over a task's events, as team-worker and team-next
 # check it before they act.
@@ -854,36 +880,48 @@ def crashed($machine):
 def lifecycle_stowed_awaiting_resume: .stow != null and IN(.stow.state; "stowed", "failed") and .stow.roles != [];
 def stowed_awaiting_resume: lifecycle | lifecycle_stowed_awaiting_resume;
 
-# What keeps a task's parked work, parked at its event of index <since>, from being launched, as
-# text, or null, from the fold: wherever it was logged, its latest Daniel's hold (a park of cause
-# daniel-hold, "held: <reason>") or its latest ask no launch passed and naming no tickets ("unanswered ask <id>:
-# <text>"); else its latest held of another cause, waiting ("waiting on <on>: <reason>") or
-# blocked ("blocked: <reason>") logged after <since>, a passed ask's wait aside. A wait or block
-# before it was the state the work was parked in, which its launch resumes, and a paused never
-# holds it, since every park logs one; a resumed, or the ask's answer, lifts each.
-def lifecycle_hold_since($since):
-  def after($kind): [.parks[] | select(.kind == $kind and .i > $since and (.passed | not))] | last;
+# What keeps a task's parked work $work (its launches, each {role, builds}: builds the ticket a
+# builder builds, launch_ticket's, or null), parked at its event of index <since>, from being
+# launched, as text, or null, from the fold: wherever it was logged, its latest Daniel's hold (a
+# park of cause daniel-hold, "held: <reason>") or its latest ask no launch passed ("unanswered ask
+# <id>: <text>") that names no tickets, or names one $work builds while each of $work is a
+# builder of a ticket such an ask names (an ask that names tickets holds only their builders'
+# launches); else its latest held of another cause, waiting ("waiting on <on>: <reason>") or
+# blocked ("blocked: <reason>") logged after <since>, a passed ask's wait and a wait on an ask
+# that names tickets aside. A wait or block before it was the state the work was parked in, which
+# its launch resumes, and a paused never holds it, since every park logs one; a resumed, or the
+# ask's answer, lifts each.
+def lifecycle_hold_since($since; $work):
+  def after($kind): [.parks[] | select(.kind == $kind and .i > $since and (.passed | not) and .tickets == null)] | last;
   ([.parks[] | select(.cause == "daniel-hold")] | last) as $hold
-  | ([.asks[] | select((.passed | not) and .tickets == null)] | last) as $ask
+  | [.asks[] | select(.passed | not)] as $open
+  | ([$open[] | .tickets // [] | .[]] | unique) as $held
+  | ($work != [] and all($work[]; .role == "builder" and .builds != null and IN(.builds; $held[]))) as $all_held
+  | ([$open[] | select(.tickets == null or ($all_held and (.tickets as $t | any($work[]; IN(.builds; $t[])))))] | last) as $ask
   | if $hold != null then "held: \($hold.reason)"
     elif $ask != null then "unanswered ask \($ask.id): \($ask.text)"
     elif after("held") != null then "held: \(after("held").reason)"
     elif after("waiting") != null then after("waiting") | "waiting on \(.on): \(.reason)"
     elif after("blocked") != null then "blocked: \(after("blocked").reason)"
     else null end;
+def lifecycle_hold_since($since): lifecycle_hold_since($since; []);
 def hold_since($since): lifecycle | lifecycle_hold_since($since);
 
 # What keeps the task, stowed and waiting to resume, from being relaunched (hold_since the fold's
-# stow): Daniel's hold or an ask no launch passed holds it wherever it was logged, while a wait or
-# block before the stow was the stowed worker's own state (a planner interviewing Daniel), which
-# its relaunch resumes.
-def lifecycle_stow_hold: lifecycle_hold_since(.stow.i // -1);
+# stow, its work the running launches of the stow's roles): Daniel's hold or an ask no launch
+# passed holds it wherever it was logged, an ask that names tickets only while that work is their
+# builders', while a wait or block before the stow was the stowed worker's own state (a planner
+# interviewing Daniel), which its relaunch resumes.
+def lifecycle_stow_hold:
+  (.stow.roles // []) as $roles
+  | lifecycle_hold_since(.stow.i // -1; [.running[] | select(IN(.role; $roles[])) | {role, builds}]);
 def stow_hold: lifecycle | lifecycle_stow_hold;
 
 # The launches of the task refused for room and not launched or resumed since: the fold's standing
 # parks whose cause (park_cause) is room and whose role (park_role) is known, as {at (the latest
 # refusal's time), roles (each role once, in the order refused), hold (hold_since the latest
-# refusal: Daniel's hold or an ask no launch passed wherever it was logged, while a wait or block
+# refusal, its work the refused launches: Daniel's hold or an ask no launch passed wherever it was
+# logged, an ask that names tickets only while those are their builders', while a wait or block
 # before it did not stop the launch tried then)}; null with none, or
 # while the task is stowed_awaiting_resume, whose resume relaunches its roles.
 def lifecycle_refused_launches:
@@ -891,7 +929,7 @@ def lifecycle_refused_launches:
   else [.parks[] | select(.cause == "room" and .role != null)] as $refused
     | if $refused == [] then null
       else {at: $refused[-1].ts, roles: (reduce $refused[].role as $r ([]; if index([$r]) then . else . + [$r] end)),
-            hold: lifecycle_hold_since($refused[-1].i)}
+            hold: lifecycle_hold_since($refused[-1].i; [$refused[] | {role, builds}])}
       end
   end;
 def refused_launches: lifecycle | lifecycle_refused_launches;
@@ -905,19 +943,6 @@ def snapshot_due($project; $ticket; $machine):
   crashed($machine) or (latest_stowed as $stowed | $stowed >= 0
     and any(.[$stowed].worktrees[]?; .project == $project and .ticket == $ticket and .uncommitted == true));
 def snapshot_due($project; $machine): snapshot_due($project; null; $machine);
-
-# Whether the event ends the worker of the launch <launch> (a launch event, its role, session and
-# ticket): a launch with a ticket (a builder in that ticket's worktree) only by a done of its
-# session or a ticket-done of its ticket; any other by its DONE, which the coordinator logs as a
-# done of that role, a review (a reviewer's), or a ticket-done or a pr (a builder's: a delivering
-# builder's PR <url> is logged as a pr, not a done).
-def ends_launch($launch):
-  if $launch.ticket != null then
-    (.event == "done" and .session == $launch.session) or (.event == "ticket-done" and .ticket == $launch.ticket)
-  else
-    (.event == "done" and .role == $launch.role) or (.event == "review" and $launch.role == "reviewer")
-    or ((.event == "ticket-done" or .event == "pr") and $launch.role == "builder")
-  end;
 
 # The task's unfinished work: each role launched since its latest stowed whose latest launch of a
 # ticket (or of none) no later event ends (ends_launch), named once, in the order of those
@@ -1191,7 +1216,8 @@ def review_app_pin_problems($app):
 # the passed head again; reviewed_head's rule, forward), else reviewed; state the outcome of the
 # latest ci of head on the PR logged after the pass and that catch-up (passed, failed,
 # infrastructure or pending), waiting when none, and waiting again after a failed one once a
-# builder's done follows it (the round's answer on the same head: a rerun that passed); since the
+# builder's done follows it with no pr of the PR at another head between them (the round's
+# answer on the same head: a rerun that passed); since the
 # ts of the latest of the pass, that catch-up, each ci and ci-rerun of head on the PR logged after
 # them (a rerun starts the wait again) and that done; reruns the names of the checks with a
 # ci-rerun of head on the PR, whenever logged, each once, in the order first rerun. URLs compare
@@ -1216,7 +1242,10 @@ def checks_wait:
           | select($events[.] | (.event == "ci" or .event == "ci-rerun") and url_of == $url and same_head(.head; $up.head))] as $ends
       | ([$ends[] | select($events[.].event == "ci")] | last) as $c
       | (if $c == null then null else $events[$c] end) as $ci
-      | (if $ci.outcome == "failed" then [range($c + 1; length) | select($events[.] | .event == "done" and .role == "builder")] | last
+      | (if $ci.outcome == "failed" then
+           (first(range($c + 1; length) | select($events[.] | .event == "pr" and url_of == $url and (same_head(.head; $up.head) | not)))
+            // length) as $moved
+           | [range($c + 1; $moved) | select($events[.] | .event == "done" and .role == "builder")] | last
          else null end) as $answer
       | {url: $pr.url, reviewed: $pass.head, head: $up.head,
          since: ([$ends[], $answer | values] | max | if . == null then $events[$up.at].ts else $events[.].ts end),
@@ -1493,8 +1522,8 @@ def default_holds($pr; $withdrawals; $own):
          | any(.words[]; .word == "default" and .holds));
 
 # team-sweep's merge-due finding, over a task's events and the session list, or nothing: the task
-# awaits merge, nothing else parks it (no ask nothing settled, pause or wait, an ask that names
-# tickets and its wait aside, since they hold only those tickets' builders), the checks of its
+# awaits merge, nothing else parks it (no ask nothing settled, pause or wait; an ask that names
+# tickets too, since it may concern a ticket the PR holds), the checks of its
 # latest pass have passed (checks_wait's state is passed: team-next T<n> --ci logged a ci passed of
 # the head it waits on), no merge-base round is in flight, and a PR not merged has the default
 # word holding on the ledger (default_holds, merge_authority's word: the plan approved, the team's
@@ -1509,7 +1538,7 @@ def merge_due_finding($withdrawals; $sessions; $own):
   .[0].task as $task
   | . as $events
   | lifecycle as $state
-  | if $own != null and ($state | lifecycle_phase) == "awaiting-merge" and all($state.asks[], $state.parks[]; .tickets != null)
+  | if $own != null and ($state | lifecycle_phase) == "awaiting-merge" and $state.asks == [] and $state.parks == []
       and ($events | checks_wait | .state) == "passed" then
       select($events | merge_base_round($sessions) | not)
       | task_prs as $prs

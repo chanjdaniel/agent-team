@@ -404,6 +404,14 @@ rerun_of() {
   assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" '{"event": "done", "role": "reviewer", "session": "r0000001"}')" \
     "$(waiting_on b2c3d4e5 4 failed)"
   assert_equal "$(waits_of "$pr" "$pass" "$up" "$round" "$(ci_of failed b2c3d4e5)")" "$(waiting_on b2c3d4e5 5 failed)"
+  # A round that pushed a new head answers with that head, not on the same one: a done after a pr
+  # of the PR at another head leaves it failed, and one after a pr at the same head waits again.
+  local moved='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "e5f6a7b8"}'
+  local same='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "b2c3d4e5f6"}'
+  local other='{"event": "pr", "url": "https://github.com/o/q/pull/5", "head": "e5f6a7b8"}'
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$moved" "$round" | jq -c '.state')" '"failed"'
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$same" "$round")" "$(waiting_on b2c3d4e5 6 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$other" "$round")" "$(waiting_on b2c3d4e5 6 waiting)"
 }
 
 @test "checks_wait of a task with two PRs is on the PR the pass names by its head, else its latest PR delivered before the pass" {

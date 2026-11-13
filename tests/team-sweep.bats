@@ -986,6 +986,10 @@ due() {
   event T3 asked '{id: "q1", text: "Which name?"}'
   run_bin -0 team-sweep
   event T3 answered '{id: "q1", answer: "Kim"}'
+  # So does an ask that names tickets, which may concern a ticket the PR holds.
+  event T3 asked '{id: "q2", text: "Keep ticket 03 in?", tickets: ["03"]}'
+  run_bin -0 team-sweep
+  event T3 answered '{id: "q2", answer: "yes"}'
   for kind in held blocked; do
     event T3 "$kind" '{reason: "OS update"}'
     run_bin -0 team-sweep
