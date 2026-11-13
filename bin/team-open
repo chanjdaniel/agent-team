@@ -353,7 +353,7 @@ lease_holder=$task${ticket:+--$ticket}
 # On failure, a slot this run took and has not yet put on the branch is returned (forced when
 # force_return is set: see the header), and a number this run claimed is given back while nothing
 # holds it yet; once a slot holds the task's branch, the task is half open and re-running with
-# --task finishes it.
+# --task (and --queued <file>, so the item is linked) finishes it.
 worktree='' leased='' force_return='' lease_log='' new_branch=''
 on_exit() {
   local status=$?
@@ -389,7 +389,7 @@ on_exit() {
       "team-open --task $task --add $project $type $slug" >&2
   else
     echo "team-open: $task is half open in $worktree; finish it with:" \
-      "team-open --task $task $project $path $type $slug $(printf '%q' "$title")" >&2
+      "team-open --task $task${queued_given:+ --queued $queued_file} $project $path $type $slug $(printf '%q' "$title")" >&2
   fi
 }
 trap on_exit EXIT

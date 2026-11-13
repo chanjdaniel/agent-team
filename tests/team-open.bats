@@ -651,6 +651,24 @@ From the queue: \`tasks/queued/fix-the-sign-in-limit.md\`: the summary of fix-th
   assert_contains "$(cat "$TEAM_HOME/tasks/T1/plan.md")" "From the queue: \`tasks/queued/hook-refused.md\`: the summary of hook-refused.md"
 }
 
+@test "a --queued open that fails after the slot is taken names the command that finishes it, --queued kept, and that command links the item" {
+  queued_item half-open.md "Half open" "project: proj" "priority: 2" "size: S"
+  stub_reply curl '{"message":"Missing Access"}'
+  run_bin -1 --separate-stderr team-open --queued half-open.md
+  assert_contains "$stderr" "T1 is half open in $slots/1; finish it with: team-open --task T1 --queued half-open.md proj small fix half-open Half\\ open"
+  [[ -z $(grep '^opened:' "$TEAM_HOME/tasks/queued/half-open.md") ]]
+
+  local finish
+  finish=$(sed -n 's/^team-open: T1 is half open in .*; finish it with: //p' <<<"$stderr")
+  stub_reply curl '{"id":"1563000000000000009"}'
+  eval "run_bin -0 --separate-stderr $finish"
+  assert_equal "$(jq -r '[.task, .worktree] | join(" ")' <<<"$output")" "T1 $slots/1"
+  assert_equal "$(grep '^opened:' "$TEAM_HOME/tasks/queued/half-open.md")" "opened: T1"
+  assert_contains "$(cat "$TEAM_HOME/tasks/T1/plan.md")" "From the queue: \`tasks/queued/half-open.md\`: the summary of half-open.md"
+  run_bin -0 team-queue list --json
+  assert_equal "$(jq -c '[.ready[].file]' <<<"$output")" "[]"
+}
+
 @test "--queued goes only with a new task, and takes the file alone or every argument" {
   run_bin -2 team-open --queued
   run_bin -2 team-open --queued a.md proj feature feat slug
