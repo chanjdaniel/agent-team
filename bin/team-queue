@@ -277,21 +277,24 @@ give() {
   } >"$1.$$"
 }
 
-# Write the table's rows into their files and the index, under the lock commit_records holds, or
-# print the table's refusals on the descriptor $stdout names (commit_records' stdout is not the
-# command's) and exit 1, writing nothing; sets set_count: edit_set
-edit_set() {
+# Judge with one queue.jq program, whose result is {refusals, writes: [{file, front}]}, then write
+# each file's front matter (give) and the index under the lock commit_records holds, every file
+# through a temporary one moved into place once all are written, or print the refusals on the
+# descriptor $stdout names (commit_records' stdout is not the command's) and exit 1 saying
+# <refused>, writing nothing; sets write_count to the files written:
+# write_judged <refused> <what is judged> <jq option>... <program>
+write_judged() {
+  local refused=$1 judged=$2 i
   local -a out temps=() targets=()
-  local i
-  queue_jq -j --rawfile table "$table" --arg name "$table" \
-    'queue_set($table; $name; $cards; queue_items_of(.))
+  shift 2
+  queue_jq -j "${@:1:$#-1}" "${!#}"'
     | if .refusals != [] then "refuse\u0000", (.refusals[] | "\(.)\u0000")
       else "write\u0000", (.writes[] | "\(.file)\u0000\(.front)\u0000") end' >"$plan" ||
-    die "cannot judge $table"
+    die "cannot judge $judged"
   mapfile -d '' -t out <"$plan"
   if [[ ${out[0]:-} != write ]]; then
     printf '%s\n' "${out[@]:1}" >&"$stdout"
-    die "the table is refused whole, so nothing is written"
+    die "$refused"
   fi
   for ((i = 1; i < ${#out[@]}; i += 2)); do
     targets+=("$queued/${out[i]}")
@@ -301,36 +304,22 @@ edit_set() {
   for i in "${!temps[@]}"; do
     mv -f "${temps[i]}" "${targets[i]}" || { rm -f "${temps[@]}"; die "cannot write ${targets[i]}"; }
   done
-  set_count=${#temps[@]}
+  write_count=${#temps[@]}
   edit_index
 }
 
-# Write opened: T<n> (or with --part T<n> in from:) into each file take names, and the index,
-# under the lock commit_records holds, or print take's refusals on the descriptor $stdout names and
-# exit 1, writing nothing: edit_take
+# Write the table's rows into their files and the index, or refuse the table whole: edit_set
+edit_set() {
+  write_judged "the table is refused whole, so nothing is written" "$table" --rawfile table "$table" --arg name "$table" \
+    'queue_set($table; $name; $cards; queue_items_of(.))'
+}
+
+# Write opened: T<n> (or with --part T<n> in from:) into each file take names, and the index, or
+# refuse the take: edit_take
 edit_take() {
-  local -a out temps=() targets=()
-  local i
-  queue_jq -j --arg task "$take_task" --argjson files "$(printf '%s\n' "${take_files[@]}" | jq -Rnc '[inputs]')" \
-    --argjson part "$part" \
-    'queue_take($task; $files; $part; $cards; $events; $items)
-    | if .refusals != [] then "refuse\u0000", (.refusals[] | "\(.)\u0000")
-      else "write\u0000", (.writes[] | "\(.file)\u0000\(.front)\u0000") end' >"$plan" ||
-    die "cannot judge the take"
-  mapfile -d '' -t out <"$plan"
-  if [[ ${out[0]:-} != write ]]; then
-    printf '%s\n' "${out[@]:1}" >&"$stdout"
-    die "nothing is taken"
-  fi
-  for ((i = 1; i < ${#out[@]}; i += 2)); do
-    targets+=("$queued/${out[i]}")
-    temps+=("$queued/${out[i]}.$$")
-    give "${targets[-1]}" "${out[i + 1]}" || { rm -f "${temps[@]}"; die "cannot write ${targets[-1]}"; }
-  done
-  for i in "${!temps[@]}"; do
-    mv -f "${temps[i]}" "${targets[i]}" || { rm -f "${temps[@]}"; die "cannot write ${targets[i]}"; }
-  done
-  edit_index
+  write_judged "nothing is taken" "the take" --arg task "$take_task" \
+    --argjson files "$(printf '%s\n' "${take_files[@]}" | jq -Rnc '[inputs]')" --argjson part "$part" \
+    'queue_take($task; $files; $part; $cards; $events; $items)'
 }
 
 # tidy's judging (queue_tidy) into $plan, NUL-separated: "link", the file, the task and its front
@@ -455,12 +444,12 @@ case $command in
       line=${line#"${line%%[! ]*}"} line=${line%"${line##*[! ]}"}
       [[ -z $line ]] || paths+=("tasks/queued/$line")
     done < <(tail -n +2 -- "$table")
-    set_count=0
+    write_count=0
     exec {stdout}>&1
     # shellcheck disable=SC2034 # read by commit_records
     records_edit=edit_set
     commit "chore: queued set" "${paths[@]}"
-    echo "set $set_count file$( ((set_count == 1)) || echo s)"
+    echo "set $write_count file$( ((write_count == 1)) || echo s)"
     echo "wrote $index_rel: $(counted)"
     problems=$(queue_jq -r '$items | queue_problem_lines($registry_error)') || exit 1
     [[ -n $problems ]] || exit 0
