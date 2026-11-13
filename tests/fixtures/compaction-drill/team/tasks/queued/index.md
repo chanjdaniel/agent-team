@@ -1,5 +1,7 @@
 # Queued work
 
-Written by `team-queue index` from each file's front matter (its title when it has none); edit the files, never this index.
+Written by `team-queue index` from each file's front matter and the ledger; edit the files, never this index.
 
-- lint-cleanup.md: the drill project's lint cleanup, approved by Daniel, mine to open
+## Ready, ranked
+
+1. lint-cleanup.md (drill, priority 2, M): the drill project's lint cleanup, approved by Daniel

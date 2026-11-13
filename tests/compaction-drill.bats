@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # tests/compaction-drill, dry-run against a stub claude: the sandbox it builds from its fixture,
-# the three print-mode turns it asks for and the purge after them, its checks' verdicts on canned
-# answers, and the compaction line it records in the team home's drills.jsonl through
-# bin/team-drill. The real drill starts Claude sessions, which only the coordinator runs.
+# whose digest shows the fixture's tasks, sessions, items and queue (its one ready item, through
+# team-queue list), the three print-mode turns it asks for and the purge after them, its checks'
+# verdicts on canned answers, and the compaction line it records in the team home's drills.jsonl
+# through bin/team-drill. The real drill starts Claude sessions, which only the coordinator runs.
 load helpers/common
 
 setup() {
@@ -211,7 +212,7 @@ Pending asks (1):
 Current items (2):
   - owe - the weekly status report Daniel asked for, mine to send | https://discord.com/channels/1100000000000000000/1200000000000000000/1300000000000000001
   - next T91 open the licence file task once Daniel answers q1, mine | ledger T91 asked q1
-Queued work: 1 file, listed in tasks/queued/index.md
+Queue: 1 ready, 0 waiting, 0 opened; no room: no reading of the machine's load, so no budget; next: lint-cleanup.md (drill, priority 2, M): the drill project's lint cleanup, approved by Daniel
 "
   # Turn 3's digest has the promise turn 1 wrote.
   assert_contains "$(cat "$STUB_FIXTURES/turn-3.digest")" "Current items (3):"

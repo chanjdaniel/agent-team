@@ -386,7 +386,7 @@ it builds two of tasks/queued/ideas.md."
   run_bin -0 team-queue tidy
   assert_equal "$output" ""
   nothing_written
-  [[ -z $(grep -l '^opened:' "$queued/split.md" "$queued/after-merge.md" "$queued/ideas.md") ]]
+  run -1 grep -l '^opened:' "$queued/split.md" "$queued/after-merge.md" "$queued/ideas.md"
 }
 
 @test "tidy links no cited item another item takes" {
