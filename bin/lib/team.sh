@@ -95,9 +95,8 @@ PACK_LOOSE=200
 # hook follows with a command's name: at the start, after a separator, a parenthesis (a subshell's
 # or a case pattern's), a brace (a group's or a function's body), a backtick or a line break, past
 # the reserved words a command may follow there ({, !, if, then, else, elif, do, while, until,
-# time and coproc), any variable assignments and a directory. bin/hooks/lease-fence and
-# bin/hooks/command-guard read it.
-# shellcheck disable=SC2034 # read by the hooks
+# time and coproc), any variable assignments and a directory. bin/hooks/lease-fence reads it.
+# shellcheck disable=SC2034 # read by the hook
 COMMAND_START=$'(^|[;&|(){`\n])[[:space:]]*((\\{|!|if|then|else|elif|do|while|until|time|coproc)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?'
 
 # Refuse with a reason on stderr.
@@ -478,9 +477,22 @@ local_path() {
 #                      audits are in the run's findings.md, which is kept)
 #   nested repository  a directory holding .git, or a bare repository's HEAD, objects/ and refs/
 #   dependencies       a directory named node_modules, .venv, venv or __pycache__
-#   over 200 files     any other directory holding more than 200 files through its
-#                      subdirectories, the outermost one only
+#   over 200 files     what brings each other directory holding more than 200 files through
+#                      its subdirectories (none counted inside a directory another reason
+#                      names) to 200 at most: its crowded subdirectories by this same rule, then
+#                      its largest other subdirectories, the largest first and a research
+#                      task's work/probes/ last, at most ten of them, or else the directory
+#                      whole; at work/ beside probes, as many as it takes, so the probes go
+#                      only after every other subdirectory, when work/'s own files leave no
+#                      room for them
 #   link               a symbolic link
+#   video              a file named .webm, .mp4, .m4v, .mov, .mkv or .avi, in any case (a
+#                      Playwright sweep's video.webm)
+#   Playwright output  a directory named test-results, playwright-report or blob-report, and a
+#                      trace (trace.zip, or a name ending in .trace.zip or -trace.zip)
+#   build output       a directory named dist, and a minified bundle, a source map or a font (a
+#                      name ending in .min.js, .min.mjs, .min.cjs, .min.css, .map, .ttf, .otf,
+#                      .woff, .woff2 or .eot, in any case)
 #   image              a file whose extension IMAGE_TYPE names, in any case, or whose first
 #                      bytes image_magic reads as an image's (a screenshot is never kept in git;
 #                      the records hook refuses one)
@@ -489,8 +501,10 @@ local_path() {
 #   email at a public  a file whose bytes hold an address refused_emails records counts, the
 #   provider           owner being the team home's git user.email: the records hook refuses it,
 #                      and one such file would stop every checkpoint's commit of its task
-# Nothing is looked for inside a path named by an earlier reason. This is the one place the list
-# is written; the scripts that archive, and their docs, point here.
+# Nothing is looked for inside a directory a reason names, nor in a file an earlier reason names.
+# What is kept is bounded so: no file over 1 MiB, and no directory under <dir> over 200 files,
+# a research task's probes as any other path. This is the one place the list is written; the
+# scripts that archive, and their docs, point here.
 # A missing directory has none: archive_left_out <dir>
 archive_left_out() {
   (
@@ -514,22 +528,139 @@ archive_left_out() {
         skip_path "$dir"
       done < <(find ui-check -mindepth 2 -maxdepth 2 -type d -name lighthouse -print0 | sort -z)
     fi
-    local is_repo=(-type d \( -exec test -e '{}/.git' ';' -o -exec test -f '{}/HEAD' ';' -exec test -d '{}/objects' ';' -exec test -d '{}/refs' ';' \))
-    local is_deps=(-type d \( -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \))
+    # The directory rules, each read by its name through set_pruned's, dir_rule's and file_rule's
+    # namerefs.
+    # shellcheck disable=SC2034 # read by name
+    local is_repo=(-type d \( -exec test -e '{}/.git' ';' -o -exec test -f '{}/HEAD' ';' -exec test -d '{}/objects' ';' -exec test -d '{}/refs' ';' \)) \
+      is_deps=(-type d \( -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \)) \
+      is_playwright=(-type d \( -name test-results -o -name playwright-report -o -name blob-report \)) \
+      is_build_output=(-type d -name dist)
     local is_image=(-regextype posix-extended -iregex ".*\\.($IMAGE_TYPE)")
-    # walk <from> <expression>: find under <from>, never inside what skip, is_repo or is_deps match; the
-    # expression applies to every other path.
-    walk() { find "$1" -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -prune -o "${@:2}"; }
-    find . -mindepth 1 \( "${skip[@]}" \) -prune -o \( "${is_repo[@]}" \) -printf 'nested repository\t%P\0' -prune | sort -z
-    find . -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) \) -prune -o \( "${is_deps[@]}" \) -printf 'dependencies\t%P\0' -prune | sort -z
-    # A directory never holds more files than its parent, so the outermost crowded directories are
-    # among the top-level ones.
-    while IFS= read -r -d '' dir; do
-      (($(walk "./$dir" ! -type d -printf . | wc -c) > 200)) || continue
-      printf 'over 200 files\t%s\0' "$dir"
-      skip_path "$dir"
-    done < <(find . -mindepth 1 -maxdepth 1 -type d ! \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -printf '%P\0' | sort -z)
+    local is_video=(-type f -regextype posix-extended -iregex '.*\.(webm|mp4|m4v|mov|mkv|avi)')
+    local is_trace=(-type f \( -iname trace.zip -o -iname '*.trace.zip' -o -iname '*-trace.zip' \))
+    local is_bundle=(-type f -regextype posix-extended -iregex '.*(\.min\.(js|mjs|cjs|css)|\.map|\.(ttf|otf|woff2?|eot))')
+    # A file left out by its name alone, never read for an image, a size, a secret or an address.
+    local is_named=(\( "${is_video[@]}" \) -o \( "${is_trace[@]}" \) -o \( "${is_bundle[@]}" \))
+    # set_pruned [<rule>...]: set pruned to what skip names, as it grows, and what each directory
+    # rule (is_repo, is_deps, is_playwright, is_build_output) matches but the rules named, the
+    # one place their list is written.
+    local -a pruned
+    set_pruned() {
+      local pruned_rule
+      pruned=(\( "${skip[@]}" \))
+      for pruned_rule in is_repo is_deps is_playwright is_build_output; do
+        [[ " $* " != *" $pruned_rule "* ]] || continue
+        local -n pruned_test=$pruned_rule
+        pruned+=(-o \( "${pruned_test[@]}" \))
+        unset -n pruned_test
+      done
+    }
+    # walk <from> <expression>: find under <from>, never inside what skip or a directory rule
+    # names; the expression applies to every other path.
+    walk() {
+      set_pruned
+      find "$1" -mindepth 1 \( "${pruned[@]}" \) -prune -o "${@:2}"
+    }
+    # dir_rule <reason> <rule> [<rule>...]: name, as <reason>, each outermost directory the first
+    # <rule> matches, never inside what skip or a directory rule other than those given matches.
+    dir_rule() {
+      local -n dir_test=$2
+      set_pruned "${@:2}"
+      find . -mindepth 1 \( "${pruned[@]}" \) -prune -o \( "${dir_test[@]}" \) -printf "$1\t%P\0" -prune | sort -z
+    }
+    # A nested repository is named inside a dependency tree too.
+    dir_rule 'nested repository' is_repo is_deps
+    dir_rule dependencies is_deps
+    # crowd_count[<dir>]: how many files <dir> holds through its subdirectories, none inside what
+    # skip or a directory rule names, counted in one walk; a directory holding none has no entry.
+    local -A crowd_count=()
+    local crowd_dir
+    while IFS= read -r -d '' crowd_dir; do
+      crowd_dir=${crowd_dir#.} crowd_dir=${crowd_dir#/}
+      while [[ -n $crowd_dir ]]; do
+        crowd_count[$crowd_dir]=$((${crowd_count[$crowd_dir]:-0} + 1))
+        if [[ $crowd_dir == */* ]]; then crowd_dir=${crowd_dir%/*}; else crowd_dir=''; fi
+      done
+    done < <(walk . ! -type d -printf '%h\0')
+    # crowd_cut <dir>: leave <dir> out, taking what it still holds off its count and each
+    # enclosing directory's.
+    local -a crowded_dirs=()
+    crowd_cut() {
+      local cut_dir=$1 cut_files=${crowd_count[$1]}
+      while :; do
+        crowd_count[$cut_dir]=$((${crowd_count[$cut_dir]} - cut_files))
+        [[ $cut_dir == */* ]] || break
+        cut_dir=${cut_dir%/*}
+      done
+      crowded_dirs+=("$1")
+    }
+    # crowded <dir>: when <dir> holds over 200 files, leave out its crowded subdirectories by this
+    # same rule, then its largest other subdirectories, the largest first (the first by name of
+    # those as large) and work/probes last, until the rest holds at most 200; when that takes
+    # more than ten of them, or they are not enough, leave out <dir> itself in their place. At
+    # work/, while work/probes holds files, there is no bound of ten, so its siblings go one by
+    # one, as many as it takes, and work/probes goes after every one of them, only when work/'s
+    # own files leave no room for it.
+    crowded() {
+      local crowd_at=$1 crowd_sub crowd_subs=() crowd_most crowd_left crowd_picked=() crowd_cap=10
+      ((${crowd_count[$crowd_at]:-0} > 200)) || return 0
+      for crowd_sub in "${!crowd_count[@]}"; do
+        [[ $crowd_sub != "$crowd_at"/* || $crowd_sub == "$crowd_at"/*/* ]] || crowd_subs+=("$crowd_sub")
+      done
+      ((${#crowd_subs[@]} == 0)) || mapfile -d '' -t crowd_subs < <(printf '%s\0' "${crowd_subs[@]}" | sort -z)
+      for crowd_sub in "${crowd_subs[@]}"; do crowded "$crowd_sub"; done
+      [[ $crowd_at != work ]] || ((${crowd_count[work/probes]:-0} == 0)) || crowd_cap=${#crowd_subs[@]}
+      # The subdirectories still holding files, in the order they are taken, sorted once.
+      ((${#crowd_subs[@]} == 0)) || mapfile -d '' -t crowd_subs < <(
+        for crowd_sub in "${crowd_subs[@]}"; do
+          crowd_most=${crowd_count[$crowd_sub]}
+          ((crowd_most > 0)) || continue
+          [[ $crowd_sub != work/probes ]] || crowd_most=-1
+          printf '%s\t%s\0' "$crowd_most" "$crowd_sub"
+        done | sort -z -t $'\t' -k1,1nr -k2 | cut -z -f 2-
+      )
+      crowd_left=${crowd_count[$crowd_at]}
+      for crowd_sub in "${crowd_subs[@]}"; do
+        ((crowd_left > 200 && ${#crowd_picked[@]} <= crowd_cap)) || break
+        crowd_picked+=("$crowd_sub")
+        crowd_left=$((crowd_left - ${crowd_count[$crowd_sub]}))
+      done
+      if ((crowd_left > 200 || ${#crowd_picked[@]} > crowd_cap)); then
+        crowd_cut "$crowd_at"
+      else
+        for crowd_sub in "${crowd_picked[@]}"; do crowd_cut "$crowd_sub"; done
+      fi
+    }
+    while IFS= read -r -d '' crowd_dir; do crowded "$crowd_dir"; done < <(
+      for crowd_dir in "${!crowd_count[@]}"; do [[ $crowd_dir == */* ]] || printf '%s\0' "$crowd_dir"; done | sort -z
+    )
+    # Each directory left out is named once, never inside another one left out, and no later rule
+    # looks inside it.
+    local -A crowd_out=()
+    local crowd_named=()
+    for crowd_dir in "${crowded_dirs[@]}"; do crowd_out[$crowd_dir]=1; done
+    for crowd_dir in "${crowded_dirs[@]}"; do
+      dir=$crowd_dir
+      while [[ $dir == */* ]]; do
+        dir=${dir%/*}
+        [[ -z ${crowd_out[$dir]:-} ]] || continue 2
+      done
+      crowd_named+=("$crowd_dir")
+      skip_path "$crowd_dir"
+    done
+    ((${#crowd_named[@]} == 0)) || printf 'over 200 files\t%s\0' "${crowd_named[@]}" | sort -z
     walk . -type l -printf 'link\t%P\0' | sort -z
+    walk . "${is_video[@]}" -printf 'video\t%P\0' | sort -z
+    # file_rule <reason> <directory rule> <file rule>: name, as <reason>, each outermost directory
+    # the first rule matches and each other file the second does.
+    file_rule() {
+      local -n file_dir_test=$2 file_test=$3
+      set_pruned "$2"
+      find . -mindepth 1 \( "${pruned[@]}" \) -prune -o \( "${file_dir_test[@]}" \) -printf "$1\t%P\0" -prune -o \
+        \( "${file_test[@]}" \) -printf "$1\t%P\0" | sort -z
+    }
+    file_rule 'Playwright output' is_playwright is_trace
+    file_rule 'build output' is_build_output is_bundle
     # An image by its extension, or by its first bytes, which image_magic reads only in the files
     # that could start with an image's signature: those grep takes for binary (a NUL byte, as tiff's
     # and ico's signatures hold) or empty, and the text files a line of which starts as png's,
@@ -540,7 +671,7 @@ archive_left_out() {
     local path owner small=() signature=$'^(\x89PNG|\xff\xd8\xff|GIF8|RIFF|BM)|ftyp'
     while IFS= read -r -d '' path; do image[$path]=1; done < <(walk . -type f "${is_image[@]}" -printf '%P\0')
     while IFS= read -r -d '' path; do candidate[$path]=1; done < <(
-      walk . -type f ! \( "${is_image[@]}" \) -printf '%P\0' |
+      walk . -type f ! \( "${is_image[@]}" \) ! \( "${is_named[@]}" \) -printf '%P\0' |
         xargs -0r sh -c 'grep -sILZ -e "" -- "$@"; grep -slZE -e "$0" -- "$@"' "$signature" || true
     )
     for path in "${!candidate[@]}"; do
@@ -549,10 +680,10 @@ archive_left_out() {
     ((${#image[@]} == 0)) || printf 'image\t%s\0' "${!image[@]}" | sort -z
     while IFS= read -r -d '' path; do
       [[ -n ${image[$path]:-} ]] || printf 'over 1 MiB\t%s\0' "$path"
-    done < <(walk . -type f ! \( "${is_image[@]}" \) -size +1048576c -printf '%P\0' | sort -z)
+    done < <(walk . -type f ! \( "${is_image[@]}" \) ! \( "${is_named[@]}" \) -size +1048576c -printf '%P\0' | sort -z)
     while IFS= read -r -d '' path; do
       [[ -n ${image[$path]:-} ]] || small+=("$path")
-    done < <(walk . -type f ! \( "${is_image[@]}" \) -size -1048577c -printf '%P\0' | sort -z)
+    done < <(walk . -type f ! \( "${is_image[@]}" \) ! \( "${is_named[@]}" \) -size -1048577c -printf '%P\0' | sort -z)
     ((${#small[@]} == 0)) || while IFS= read -r path; do
       secret[$path]=1
       printf 'may hold a secret\t%s\0' "$path"
