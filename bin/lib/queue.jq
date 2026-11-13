@@ -43,18 +43,24 @@ def queue_condition:
 # A ledger timestamp as seconds since the epoch, fractions dropped.
 def queue_seconds: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 
-# What the ledger says of one task's events: each merged's phases left, and the events that end
-# it, a whole merge (a merged with no phases_left or an empty one) or a closed, the earliest first.
+# What the ledger says of one task's events: whole, whether it is merged whole, which is the
+# ledger's own lifecycle (bin/lib/ledger.jq) left in its merged phase, so a merge logged with no
+# phases_left (before team-merge logged them) that a builder launch, a later PR or a merged part
+# follows is none; each merged's phases_left where it names them; and the events that end it, its
+# last merged when it is merged whole and its closed, the earliest first.
 def queue_task_facts:
-  {merges: [.[] | select(.event == "merged") | (.phases_left // [])],
-   ends: ([.[] | select((.event == "merged" and ((.phases_left // []) == [])) or .event == "closed")
-           | {event, ts}] | sort_by(.ts))};
+  (lifecycle.phase == "merged") as $whole
+  | {whole: $whole,
+     merges: [.[] | select(.event == "merged") | .phases_left | arrays],
+     ends: ([(select($whole) | last(.[] | select(.event == "merged")) | {event, ts}),
+             (.[] | select(.event == "closed") | {event, ts})] | sort_by(.ts))};
 
 # Whether a parsed condition is met, given the tasks' facts, today's date, the queued files and
-# the files that left the queue.
+# the files that left the queue: a phase is merged once a merged names phases left without it, or
+# the task is merged whole.
 def queue_met($facts; $today; $queued; $left):
-  if .kind == "merged" then any($facts[.task].ends[]?; .event == "merged")
-  elif .kind == "phase" then . as $c | any($facts[.task].merges[]?; IN(.[]; $c.phase) | not)
+  if .kind == "merged" then $facts[.task].whole // false
+  elif .kind == "phase" then . as $c | $facts[.task] // {} | .whole or any(.merges[]?; IN(.[]; $c.phase) | not)
   elif .kind == "closed" then any($facts[.task].ends[]?; .event == "closed")
   elif .kind == "date" then $today >= .date
   elif .kind == "file" then (IN($queued[]; .file) | not) and IN($left[]; .file)
@@ -135,7 +141,11 @@ def queue_item($facts; $projects; $today; $queued; $left; $now):
 # waits).
 def queue_items($cards; $events; $projects; $left; $cites; $today; $now):
   ($events | by_task) as $tasks
-  | ($tasks | map_values(queue_task_facts)) as $facts
+  # The lifecycle is folded only for the tasks an item's after: or opened: names; every other task
+  # the ledger holds gets {}, which says only that it holds it.
+  | ([$cards[].keys | ((.after // "" | queue_parts[] | queue_condition | .task // empty), (.opened // empty))] | unique) as $named
+  | (reduce $named[] as $t ($tasks | map_values({});
+      if $tasks[$t] == null then . else .[$t] = ($tasks[$t] | queue_task_facts) end)) as $facts
   | ($events | task_projects) as $task_projects
   | ([$cites[].task] | unique | map(select($tasks[.] | is_open))) as $open
   | [$cards[].file] as $queued

@@ -208,6 +208,51 @@ tasks/queued/index.md"
   assert_equal "$stderr" "team-queue: TEAM_QUEUE_TODAY \"soon\" is not a YYYY-MM-DD date"
 }
 
+@test "a task merged whole is one the ledger's lifecycle leaves merged, so a merge logged with no phases_left that a builder launch or a merged part follows is none" {
+  rm "$queued/node-pin.md" "$queued/bootstrap-drill.md"
+  local t
+  for t in T1 T2 T3; do opened_task "$t"; done
+  merged T1
+  # T2's merge was logged before team-merge logged phases_left, and its builder went on building.
+  merged T2
+  jq -cn '{ts: "2026-01-01T00:00:00Z", task: "T2", event: "launch", role: "builder", session: "b2"}' >>"$TEAM_HOME/ledger.jsonl"
+  # T3's first merge too, then a merge that names phase 3 still to build.
+  merged T3
+  merged T3 '[3]'
+  ready a-done.md 2 S "a" "opened: T1"
+  ready b-going.md 2 S "b" "opened: T2"
+  ready c-part.md 2 S "c" "opened: T3"
+  ready d-whole.md 2 S "d" "after: T1 merged"
+  ready e-going.md 2 S "e" "after: T2 merged"
+  ready f-part.md 2 S "f" "after: T3 merged"
+  ready g-phase-met.md 2 S "g" "after: T3 phase 2 merged"
+  ready h-phase-left.md 2 S "h" "after: T3 phase 3 merged"
+  ready i-phase-unknown.md 2 S "i" "after: T2 phase 2 merged"
+  ready j-phase-whole.md 2 S "j" "after: T1 phase 2 merged"
+  run_bin -0 team-queue index
+  assert_equal "$(sections)" "## Ready, ranked
+
+1. d-whole.md (proj, priority 2, S): d
+2. g-phase-met.md (proj, priority 2, S): g
+3. j-phase-whole.md (proj, priority 2, S): j
+
+## Waiting
+
+- e-going.md (proj, priority 2, S): e; waits for T2 merged
+- f-part.md (proj, priority 2, S): f; waits for T3 merged
+- h-phase-left.md (proj, priority 2, S): h; waits for T3 phase 3 merged
+- i-phase-unknown.md (proj, priority 2, S): i; waits for T2 phase 2 merged
+
+## Opened
+
+- b-going.md (proj, T2): b
+- c-part.md (proj, T3): c
+
+## Unranked
+
+- a-done.md: T1 merged at 2026-01-01T00:00:00Z but it is still queued; the heartbeat's queue step moves it (team-queue tidy)"
+}
+
 @test "--check names each malformed file, keeping T303's problems and refusing task:, and a stale index, writing nothing" {
   run_bin -0 team-queue index
   run_bin -0 team-queue index --check

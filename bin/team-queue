@@ -14,9 +14,11 @@
 #             default for a review's notes); 4 someday
 #   size      S (one small PR), M (a ticketed task of 2 to 5 tickets) or L (several phases)
 # Optional keys:
-#   after     conditions joined by ", ", every one of which must hold first: "T<n> merged" (a
-#             merged of T<n> with no phases_left or an empty one), "T<n> phase <k> merged" (a
-#             merged of T<n> whose phases_left does not hold k), "T<n> closed", a YYYY-MM-DD date
+#   after     conditions joined by ", ", every one of which must hold first: "T<n> merged" (T<n>
+#             merged whole: the ledger's lifecycle left in its merged phase, so a merge logged with
+#             no phases_left that a builder launch, a PR or a merged part followed is none), "T<n>
+#             phase <k> merged" (a merged of T<n> whose phases_left does not hold k, or T<n> merged
+#             whole), "T<n> closed", a YYYY-MM-DD date
 #             (today's UTC date is that day or later; TEAM_QUEUE_TODAY stands for today), or
 #             "<name>.md" (that item left the queue: it is in some tasks/T<m>/queued/, not here)
 #   waits     one line naming what outside the ledger and the calendar it waits on; removed by
