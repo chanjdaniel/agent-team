@@ -1091,28 +1091,14 @@ role_texts() {
       "$(jq -c .permissions.deny "$worker")"
     assert_equal "$(jq -c --slurpfile w "$worker" --slurpfile r "$REPO_ROOT/settings/$role.json" \
       '.skillOverrides == ($w[0].skillOverrides * ($r[0].skillOverrides // {}))' "$settings")" true
-    assert_equal "$(jq -c '[.syncClaudeAiPlugins, .syncClaudeAiSkills, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" \
-      '[false,false,false]'
+    # The built-in easel plugin is off in enabledPlugins, so it never registers mcp__easel__chart,
+    # an MCP tool from outside the toolkits, nor its prompt section or automatic charts; a deny
+    # rule on the tool alone would leave the charts.
+    assert_equal "$(jq -c '[.syncClaudeAiPlugins, .syncClaudeAiSkills, .enabledPlugins["cc-plugin-plugin-authoring@builtin"],
+      .enabledPlugins["cc-plugin-easel@builtin"]]' "$settings")" '[false,false,false,false]'
     mapfile -t texts < <(role_texts "$role")
     ((${#texts[@]} > 1)) || { echo "no brief template found for $role" >&2; return 1; }
     keeps_named "$settings" "${texts[@]}" || { echo "in $role's settings" >&2; return 1; }
-  done
-}
-
-@test "every role's settings turn off Claude Code's built-in easel plugin, whose chart tool would be an MCP tool from outside the toolkits" {
-  open_task T7
-  ops_stub
-  local role settings
-  for role in planner builder reviewer ops; do
-    if [[ $role == ops ]]; then
-      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
-    else
-      run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    fi
-    settings=$(generated settings "$role")
-    # Off in enabledPlugins, so the plugin never registers mcp__easel__chart, its prompt section
-    # or its automatic charts; a deny rule on the tool alone would leave the charts.
-    assert_equal "$(jq -c '.enabledPlugins["cc-plugin-easel@builtin"]' "$settings")" false
   done
 }
 
