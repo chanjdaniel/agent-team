@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Keep the queue of approved work, the team home's tasks/queued/, and its ranked index,
-# tasks/queued/index.md, from the files' front matter and the ledger (bin/lib/queue.jq).
+# tasks/queued/index.md, from the files' front matter and the ledger (bin/lib/queue.jq), and say
+# what is ready to open and whether the level has room for it.
 #
 # Usage: team-queue index [--check]
 #        team-queue set <table>
+#        team-queue list [--json] [--plan <file>]
 # An item is work Daniel approved: one Markdown file in tasks/queued/ but index.md, its first "# "
 # line its title. It opens with front matter, a "---" line, then "<key>: <value>" lines, each key
 # at most once, then a "---" line. Required keys:
@@ -71,16 +73,46 @@
 # those files alone, "chore: queued set", and prints "set <n> files" ("1 file") and the index's
 # line, then each line --check still names (a file the table leaves alone, a key it has no column
 # for, a finished item, an item two plans cite), exiting 1 when it prints any.
+# list writes nothing. It says whether the level has room for one more task, read from
+# team-capacity plan --json (the file --plan names when the caller already holds one, as the
+# sweep does, which may be {error: <why>}, else its own run) and team-capacity costs --json: it
+# fits when the level is not none, the plan has a budget and is not over it, its resume and launch
+# lists are empty (stowed and refused work comes first), the budget less what is reserved is at
+# least the session:builder estimate (every task soon launches a builder, the largest worker a
+# task starts), and no open task has an opened with no launch after it (a task just opened gets
+# its first worker before the next is named). Its line, the first that holds: "no room: the plan
+# cannot be read: <why>" (team-capacity's last line on stderr, ~ for the home directory, "no plan
+# at <file>", or "<file> is no team-capacity-plan/1 object"), "no room: the level is none", "no
+# room: no reading of the machine's load, so no budget", "no room: over budget", "no room: T171
+# waits to resume", "no room: T5 waits to launch", "no room: the costs cannot be read: <why>",
+# "no room: the costs give no builder's estimate", "no room: 0.9 GiB free at minor (30%), a
+# builder needs 1.7 GiB", "no room: T312, opened at 14:05, has no worker yet" (the first by task
+# number; "at 2026-11-12 14:05" when not opened today, UTC), else "room for one more task at full
+# (90%): 11.7 GiB of 16.9 GiB free, a builder needs 1.7 GiB". The text is that line, then the
+# index's sections as index writes them. --json prints one line, {schema: "team-queue/1", room:
+# {fits, says}, ready, waiting, opened (each [item], in the index's order), unranked: [{file,
+# problems}], problems: [{file (null for the registry's), problem}] (every line --check names but
+# the stale index's), findings}, an item being {file, title, summary, project, priority, size,
+# after: [{condition, met}], waits, from, opened, takes, alone, guarded, unblocks (how many queued
+# items' after names it), rank (null but for a ready one)}. findings are team-sweep's, each {task:
+# null, kind, session: null, name: null, next, text}: queue-ready while the room fits and an item
+# is ready, "queue: <the room's line>: open <file> (<project>, priority <p>, <size>): <summary,
+# cut to 80 characters, the last three dots>; next: team-open --queued <file>", for an item that
+# runs alone "...; it runs alone: hold <project>'s other open tasks (T<a>, T<b>) first; next: ..."
+# while any is open; and queue while there are problems, "queue: <n> problem(s) in tasks/queued/:
+# <the first two, as --check prints them, joined by "; ">; next: fix each file team-queue index
+# --check names". A plan or costs that cannot be read is no room, never a failure: list exits 0.
 # A push that fails keeps the commit for the next checkpoint to push, saying so on stderr, and
 # exits 0; a commit that fails (the team home's hooks refuse it) leaves the change written for the
 # next checkpoint to commit, saying so on stderr, and exits 1.
-# It refuses in a worker session (worker_refusal in bin/lib/team.sh).
+# It refuses in a worker session (worker_refusal in bin/lib/team.sh), list too, which only the
+# coordinator, the sweep and the snapshot read.
 # Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line (or a
 # TEAM_QUEUE_TODAY that is no YYYY-MM-DD).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-queue index [--check] | set <table>"
+usage="usage: team-queue index [--check] | set <table> | list [--json] [--plan <file>]"
 queued=$TEAM_HOME/tasks/queued
 index_rel=tasks/queued/index.md
 index=$TEAM_HOME/$index_rel
@@ -234,6 +266,15 @@ edit_set() {
   edit_index
 }
 
+# team-capacity <sub> --json's object into <out>, or {error} with the last line it said on stderr
+# (~ for the home directory) when it fails: capacity_json <sub> <out>
+capacity_json() {
+  local line
+  if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-capacity" "$1" --json >"$2" 2>"$2.err" </dev/null; then return 0; fi
+  line=$(grep . "$2.err" | tail -n 1) || line="team-capacity $1 failed with no reason given"
+  jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}' >"$2"
+}
+
 # Commit <path>... as <message> through commit_records, which runs records_edit first: a push that
 # failed (commit_records said why) is no failure here, a commit that failed is: commit <message> <path>...
 commit() {
@@ -244,7 +285,7 @@ commit() {
   die "the change is written but not committed; the next checkpoint commits it"
 }
 
-why=$(worker_refusal "" "edits no records") && die "$why"
+why=$(worker_refusal "" "$(if [[ ${1:-} == list ]]; then echo "reads no queue"; else echo "edits no records"; fi)") && die "$why"
 (($#)) || usage_error "$usage"
 today=${TEAM_QUEUE_TODAY:-$(date -u +%F)}
 [[ $today =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || usage_error "TEAM_QUEUE_TODAY \"$today\" is not a YYYY-MM-DD date"
@@ -301,6 +342,38 @@ case $command in
     [[ -n $problems ]] || exit 0
     printf '%s\n' "$problems"
     exit 1
+    ;;
+  list)
+    json=false plan_file='' plan_given=''
+    while (($#)); do
+      case $1 in
+        --json) [[ $json == false ]] || usage_error "$usage"; json=true; shift ;;
+        --plan) [[ -z $plan_given && $# -ge 2 ]] || usage_error "$usage"; plan_given=1 plan_file=$2; shift 2 ;;
+        *) usage_error "$usage" ;;
+      esac
+    done
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    capacity_json costs "$work/costs" &
+    costs_pid=$!
+    if [[ -z $plan_given ]]; then
+      capacity_json plan "$work/plan" &
+      plan_pid=$!
+      plan_name="team-capacity plan --json's output"
+      wait "$plan_pid" || true
+    elif [[ -f $plan_file && -r $plan_file ]]; then
+      cp -- "$plan_file" "$work/plan"
+      plan_name=$plan_file
+    else
+      jq -cn --arg error "no plan at $plan_file" '{error: $error}' >"$work/plan"
+      plan_name=$plan_file
+    fi
+    wait "$costs_pid" || true
+    queue_jq -j --rawfile plan "$work/plan" --rawfile costs "$work/costs" --arg plan_name "$plan_name" --argjson json "$json" \
+      '($plan | queue_capacity($plan_name; "team-capacity-plan/1")) as $plan
+      | ($costs | queue_capacity("team-capacity costs --json'"'"'s output"; "team-capacity-costs/1")) as $costs
+      | $items | queue_list($plan; $costs; $events; $registry_error; $today)
+      | if $json then tojson + "\n" else queue_list_text($items | queue_view) end'
     ;;
   *) usage_error "$usage" ;;
 esac

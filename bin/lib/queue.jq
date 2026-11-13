@@ -1,10 +1,12 @@
 # The queue of approved work, the team home's tasks/queued/: what each item's state is, when an
 # after: condition is met, how the items rank, the problems team-queue index --check names, the
-# text of the index and the judging of team-queue set's table. Used by team-queue as
+# text of the index, the judging of team-queue set's table, whether the level has room for one
+# more task and team-queue list's object and findings. Used by team-queue as
 # jq -nR -L bin/lib 'include "queue"; include "ledger"; ...' over the ledger's lines, with the
 # items' cards (team-queue's one awk pass: {file, title, keys, problems}), the registry's project
-# names, the items that left the queue, the queued files the tasks' plans cite, today's UTC date
-# and the time now; team-queue's header documents the keys, the states and the words.
+# names, the items that left the queue, the queued files the tasks' plans cite, today's UTC date,
+# the time now, and for list team-capacity's plan and costs; team-queue's header documents the
+# keys, the states and the words.
 include "ledger";
 
 # The front matter keys, in the order team-queue writes them.
@@ -203,27 +205,40 @@ def queue_label: "(\(.project), priority \(.priority), \(.size)\(if .guarded != 
 # The lines under an item for each queued item it takes.
 def queue_taken_lines($items): .takes[] | $items[.] // empty | "   - takes \(.file): \(queue_what)";
 
+# The index's sections as lines, each section opening with a blank line, from queue_view's object:
+# Ready, ranked; Waiting; Opened; Unranked; a section with no item left out.
+def queue_section_lines:
+  . as $v
+  | (select($v.ready != []) | "", "## Ready, ranked", "",
+     ($v.ready[] | "\(.rank). \(.file) \(queue_label): \(queue_what)", queue_taken_lines($v.items))),
+    (select($v.waiting != []) | "", "## Waiting", "",
+     ($v.waiting[] | "- \(.file) \(queue_label): \(queue_what); waits for \(.reasons | join(", "))", queue_taken_lines($v.items))),
+    (select($v.opened != []) | "", "## Opened", "",
+     ($v.opened[] | "- \(.file) (\(.project), \(.opened)): \(queue_what)", queue_taken_lines($v.items))),
+    (select($v.unranked != []) | "", "## Unranked", "",
+     ($v.unranked[] | "- \(.file): \(.problems | join("; "))", queue_taken_lines($v.items)));
+
 # The index, tasks/queued/index.md, as one string ending in a newline, from queue_view's object.
 def queue_index_text:
-  . as $v
-  | [ "# Queued work",
-      "",
-      "Written by `team-queue index` from each file's front matter and the ledger; edit the files, never this index.",
-      (select($v.ready != []) | "", "## Ready, ranked", "",
-       ($v.ready[] | "\(.rank). \(.file) \(queue_label): \(queue_what)", queue_taken_lines($v.items))),
-      (select($v.waiting != []) | "", "## Waiting", "",
-       ($v.waiting[] | "- \(.file) \(queue_label): \(queue_what); waits for \(.reasons | join(", "))", queue_taken_lines($v.items))),
-      (select($v.opened != []) | "", "## Opened", "",
-       ($v.opened[] | "- \(.file) (\(.project), \(.opened)): \(queue_what)", queue_taken_lines($v.items))),
-      (select($v.unranked != []) | "", "## Unranked", "",
-       ($v.unranked[] | "- \(.file): \(.problems | join("; "))", queue_taken_lines($v.items)))
-    ] | join("\n") + "\n";
+  [ "# Queued work",
+    "",
+    "Written by `team-queue index` from each file's front matter and the ledger; edit the files, never this index.",
+    queue_section_lines
+  ] | join("\n") + "\n";
 
-# The lines team-queue index --check prints, from the items: the registry's when it could not be
-# read ($registry_error, else ""), then each item's problems in name order.
-def queue_problem_lines($registry_error):
-  (select($registry_error != "") | "tasks/queued/: projects not checked: \($registry_error)"),
-  (.[] | .file as $f | .problems[] | "tasks/queued/\($f): \(.)");
+# The problems team-queue index --check names but the stale index's, from the items, as
+# {file, problem}: the registry's first when it could not be read ($registry_error, else ""), its
+# file null, then each item's in name order.
+def queue_problems($registry_error):
+  [(select($registry_error != "") | {file: null, problem: "projects not checked: \($registry_error)"}),
+   (.[] | .file as $f | .problems[] | {file: $f, problem: .})];
+
+# A problem as --check prints it, "tasks/queued/<file>: <reason>", or "tasks/queued/: <reason>"
+# for one of no file.
+def queue_problem_line: "tasks/queued/\(.file // ""): \(.problem)";
+
+# The lines team-queue index --check prints, from the items: queue_problems', each as a line.
+def queue_problem_lines($registry_error): queue_problems($registry_error)[] | queue_problem_line;
 
 # "<n> <word>s", or "1 <word>": queue_count($word)
 def queue_count($word): "\(.) \($word)\(if . == 1 then "" else "s" end)";
@@ -283,3 +298,103 @@ def queue_set($table; $name; $cards; items):
            [$sets[] | {file, front: ("---\n" + ([.card.keys | to_entries[] | "\(.key): \(.value)\n"] | add // "") + "---\n")}] end)}
     end
   end;
+
+# <bytes> as GiB with one decimal place: "11.7 GiB".
+def queue_gib: "\((. / 1073741824 * 10 | round) / 10 | tostring | if test("\\.") then . else . + ".0" end) GiB";
+
+# The level as the room says it, from a team-capacity-plan/1 object: "full (90%)".
+def queue_at: "\(.level) (\(.share * 100 | round)%)";
+
+# A team-capacity --json object read from its raw text, $name saying where it came from: the
+# object when its schema is $schema, {error} as given (the caller's {error} for a run that
+# failed), else {error} naming it as no $schema object.
+def queue_capacity($name; $schema):
+  (try fromjson catch null)
+  | if type == "object" and (.error | type) == "string" then {error}
+    elif type == "object" and .schema == $schema then .
+    else {error: "\($name) is no \($schema) object"} end;
+
+# The open tasks whose latest opened no launch follows, [{task, ts}] by task number, from the
+# events by task (by_task's object).
+def queue_unstaffed($tasks):
+  [$tasks | to_entries[] | .key as $t | .value
+   | (last(to_entries[] | select(.value.event == "opened")) // null) as $o
+   | select($o != null and (any(.[$o.key + 1:][]; .event == "launch") | not))
+   | select(is_open)
+   | {task: $t, ts: $o.value.ts}]
+  | sort_by(.task[1:] | tonumber);
+
+# Whether the level has room for one more task, {fits, says}, from team-capacity plan --json's
+# object ($plan, {error} when it could not be read), costs --json's ($costs, alike), the events by
+# task ($tasks) and today (YYYY-MM-DD): it fits when the level is not none, the plan has a budget
+# and is not over it, no task waits to resume or to launch (stowed and refused work comes first),
+# the budget less what is reserved is at least a builder's estimate (every task soon launches
+# one, the largest worker a task starts), and no open task has an opened with no launch since (a
+# task just opened gets its first worker before the next is named), the first that fails saying
+# why.
+def queue_room($plan; $costs; $tasks; $today):
+  def no($why): {fits: false, says: "no room: \($why)"};
+  if $plan.error != null then no("the plan cannot be read: \($plan.error)")
+  elif $plan.level == "none" then no("the level is none")
+  elif $plan.budget == null then no("no reading of the machine's load, so no budget")
+  elif $plan.over then no("over budget")
+  elif ($plan.resume // []) != [] then no("\($plan.resume[0].task) waits to resume")
+  elif ($plan.launch // []) != [] then no("\($plan.launch[0].task) waits to launch")
+  elif $costs.error != null then no("the costs cannot be read: \($costs.error)")
+  else
+    (first($costs.costs[]? | select(.kind == "session:builder") | .estimate_bytes | numbers) // null) as $need
+    | ($plan.budget - $plan.reserved) as $free
+    | if $need == null then no("the costs give no builder's estimate")
+      elif $free < $need then no("\($free | queue_gib) free at \($plan | queue_at), a builder needs \($need | queue_gib)")
+      else
+        (queue_unstaffed($tasks) | first(.[]) // null) as $u
+        | if $u != null then
+            no("\($u.task), opened at \($u.ts | if .[:10] == $today then .[11:16] else "\(.[:10]) \(.[11:16])" end), has no worker yet")
+          else
+            {fits: true,
+             says: "room for one more task at \($plan | queue_at): \($free | queue_gib) of \($plan.budget | queue_gib) free, a builder needs \($need | queue_gib)"}
+          end
+      end
+  end;
+
+# An item as team-queue list --json gives it, its internal fields left out.
+def queue_list_item: {file, title, summary, project, priority, size, after, waits, from, opened, takes, alone, guarded, unblocks, rank};
+
+# team-sweep's queue findings, each with task, session and name null, from the room
+# (queue_room's), queue_view's object, the problems (queue_problems') and the events by task:
+# queue-ready while the room fits and an item is ready, naming the top one and the command that
+# opens it, and for an item that runs alone the project's other open tasks to hold first; queue
+# while there are problems, their count and the first two.
+def queue_findings($room; $view; $problems; $tasks):
+  (select($room.fits and $view.ready != []) | $view.ready[0]
+   | . as $top
+   | (queue_what | if length > 80 then .[:77] + "..." else . end) as $what
+   | ([select($top.alone) | $tasks | to_entries[] | .key as $t | .value
+       | select(IN((task_projects | .[$t] // [])[]; $top.project)) | select(is_open) | $t]
+      | sort_by(.[1:] | tonumber)) as $others
+   | "team-open --queued \(.file)" as $next
+   | {task: null, kind: "queue-ready", session: null, name: null, next: $next,
+      text: "queue: \($room.says): open \(.file) (\(.project), priority \(.priority), \(.size)): \($what)\(
+        if $others != [] then "; it runs alone: hold \(.project)'s other open tasks (\($others | join(", "))) first" else "" end); next: \($next)"}),
+  (select($problems != []) | "fix each file team-queue index --check names" as $next
+   | {task: null, kind: "queue", session: null, name: null, next: $next,
+      text: "queue: \($problems | length | queue_count("problem")) in tasks/queued/: \($problems[:2] | map(queue_problem_line) | join("; ")); next: \($next)"});
+
+# team-queue list's object, team-queue/1, from the items and the inputs queue_room and
+# queue_findings take: {schema, room, ready, waiting, opened, unranked, problems, findings}.
+def queue_list($plan; $costs; $events; $registry_error; $today):
+  ($events | by_task) as $tasks
+  | queue_view as $view
+  | queue_room($plan; $costs; $tasks; $today) as $room
+  | queue_problems($registry_error) as $problems
+  | {schema: "team-queue/1", room: $room,
+     ready: [$view.ready[] | queue_list_item],
+     waiting: [$view.waiting[] | queue_list_item],
+     opened: [$view.opened[] | queue_list_item],
+     unranked: [$view.unranked[] | {file, problems}],
+     problems: $problems,
+     findings: [queue_findings($room; $view; $problems; $tasks)]};
+
+# team-queue list's text from its object and queue_view's: the room's line, then the index's
+# sections, ending in a newline.
+def queue_list_text($view): [.room.says, ($view | queue_section_lines)] | join("\n") + "\n";

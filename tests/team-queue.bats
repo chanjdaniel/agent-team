@@ -554,5 +554,4 @@ $table:10: tasks/queued/unnamed.md: takes itself"
   run_bin -2 team-queue index --all
   run_bin -2 team-queue migrate
   AGENT_TEAM_ROLE=builder run_bin -1 team-queue set "$BATS_TEST_TMPDIR/none.tsv"
-  run_bin -2 team-queue list
 }
