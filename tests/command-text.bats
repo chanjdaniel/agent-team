@@ -80,6 +80,7 @@ walks() {
     '{"reached":"direct","assignments":[],"wrappers":[],"words":["run","x"]}'
   walks 'for ((i = 0; i < 3; i++)); do run $i; done' \
     '{"reached":"direct","assignments":[],"wrappers":[],"words":["for"]}' \
+    '{"reached":"direct","assignments":[],"wrappers":[],"words":["run","$i"]}' \
     '{"reached":"direct","assignments":[],"wrappers":[],"words":["run","$i"]}'
 }
 

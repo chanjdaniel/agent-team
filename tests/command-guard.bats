@@ -179,6 +179,27 @@ passes() {
   passes "echo 'team-worker T1 ops wt' | X[0]=1 cat" "echo 'team-worker T1 ops wt' | env X[ 0 ]=1 bash"
 }
 
+# A shell is read from the walk's own words, so a quoted value with a blank in it is one word, a
+# redirection before the shell's name is no word, and a compound command's body is part of the
+# segment that is piped into, as Bash runs it.
+@test "a guarded command a shell reads after a quoted assignment, a redirection, or in a compound command's body is refused" {
+  refuses "$OPS" "echo 'team-worker T1 ops wt' | X='a b' bash" "echo 'team-worker T1 ops wt' | X[0]='a b' bash" \
+    "echo 'team-worker T1 ops wt' | X=\"\$(echo a b)\" bash" "echo 'team-worker T1 ops wt' | env 'A=x y' bash" \
+    $'X=\'a b\' bash <<\'EOF\'\nteam-worker T1 ops wt\nEOF' \
+    "echo 'team-worker T1 ops wt' | 2>/dev/null bash" "echo 'team-worker T1 ops wt' | X=1 >/dev/null bash" \
+    "echo 'team-worker T1 ops wt' | 2>/dev/null X[0]=1 bash" $'2>/dev/null bash <<\'EOF\'\nteam-worker T1 ops wt\nEOF' \
+    "2>/dev/null bash <<<'team-worker T1 ops wt'" \
+    "echo 'team-worker T1 ops wt' | if true; then bash; fi" \
+    "echo 'team-worker T1 ops wt' | while :; do bash; break; done" \
+    "echo 'team-worker T1 ops wt' | until false; do bash; break; done" \
+    "echo 'team-worker T1 ops wt' | for i in 1; do bash; done" "echo 'team-worker T1 ops wt' | for i in 1; { bash; }" \
+    "echo 'team-worker T1 ops wt' | if true; then if false; then :; else bash; fi; fi" \
+    "echo 'team-worker T1 ops wt' | case x in x) bash;; esac" \
+    $'if true; then bash; fi <<\'EOF\'\nteam-worker T1 ops wt\nEOF'
+  passes "echo 'team-worker T1 ops wt' | if true; then cat; fi" "if true; then echo 'team-worker T1 ops wt'; fi | cat" \
+    "for f in bash sh; do echo \"\$f\"; done" "echo 'team-worker T1 ops wt' | X='a b' cat"
+}
+
 # What is piped into a shell is read as code in whichever pipeline it stands, and wherever the shell
 # starts in the command it is piped into: in a group, a substitution, behind a wrapper, its name
 # quoted in whole or in part; and a group ends after a compound command's end, as Bash reads it.
