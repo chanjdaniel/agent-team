@@ -150,6 +150,8 @@
 # TEAM_QUEUE_TODAY that is no YYYY-MM-DD).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/error-view.sh
+source "$TEAM_LIB/error-view.sh"
 
 usage="usage: team-queue index [--check] | set <table> | take T<n> <file>... [--part] | tidy | list [--json] [--plan <file>]"
 queued=$TEAM_HOME/tasks/queued
@@ -382,10 +384,8 @@ edit_tidy() {
 # team-capacity <sub> --json's object into <out>, or {error} with the last line it said on stderr
 # (~ for the home directory) when it fails: capacity_json <sub> <out>
 capacity_json() {
-  local line
   if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-capacity" "$1" --json >"$2" 2>"$2.err" </dev/null; then return 0; fi
-  line=$(grep . "$2.err" | tail -n 1) || line="team-capacity $1 failed with no reason given"
-  jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}' >"$2"
+  error_view "$2.err" "team-capacity $1 failed with no reason given" >"$2"
 }
 
 # Commit <path>... as <message> through commit_records, which runs records_edit first: a push that

@@ -65,6 +65,8 @@
 # unavailable". Exit 1 when the session list or the list of projects cannot be read.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/error-view.sh
+source "$TEAM_LIB/error-view.sh"
 
 json=''
 for arg in "$@"; do
@@ -104,16 +106,14 @@ production_status() {
 # {error} with the last line it said on stderr, its "team-queue: " cut and $HOME as ~; null with no
 # tasks/queued/: queue_status
 queue_status() {
-  local out err line
+  local out err
   if [[ ! -d $TEAM_HOME/tasks/queued ]]; then echo null; return; fi
   out=$(mktemp) err=$(mktemp)
   if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-queue" list --json >"$out" 2>"$err" </dev/null &&
     jq -ce 'select(type == "object" and .schema == "team-queue/1")' "$out" 2>/dev/null; then
     :
   else
-    line=$(grep . "$err" | tail -n 1) || line="team-queue list printed no team-queue/1 object"
-    line=${line#team-queue: }
-    jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
+    error_view "$err" "team-queue list printed no team-queue/1 object" "team-queue: "
   fi
   rm -f "$out" "$err"
 }

@@ -193,6 +193,8 @@
 # what it printed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/error-view.sh
+source "$TEAM_LIB/error-view.sh"
 
 # --wait: seconds between looks, how long a new finding must stand, how long one there at the
 # first look must, and how long the session list may stay unreadable.
@@ -290,18 +292,11 @@ health_view() {
 # with the last line it said on stderr (~ for the home directory): script_view <schema> <script>
 # <args>...
 script_view() {
-  local schema=$1 script=$2 out err rc=0 line
+  local schema=$1 script=$2 out err rc=0
   out=$(mktemp) err=$(mktemp)
   TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/$script" "${@:3}" >"$out" 2>"$err" </dev/null || rc=$?
   if ((rc > 1)) || ! jq -ce --arg schema "$schema" 'select(type == "object" and .schema == $schema)' "$out" 2>/dev/null; then
-    if line=$(grep . "$err" | tail -n 1); then
-      :
-    elif ((rc)); then
-      line="$script $3 exited $rc with no reason given"
-    else
-      line="$script $3 printed no $schema view"
-    fi
-    jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
+    error_view "$err" "$script $3 $(if ((rc)); then echo "exited $rc with no reason given"; else echo "printed no $schema view"; fi)"
   fi
   rm -f "$out" "$err"
 }
