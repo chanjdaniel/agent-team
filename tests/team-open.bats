@@ -656,7 +656,7 @@ From the queue: \`tasks/queued/fix-the-sign-in-limit.md\`: the summary of fix-th
   stub_reply curl '{"message":"Missing Access"}'
   run_bin -1 --separate-stderr team-open --queued half-open.md
   assert_contains "$stderr" "T1 is half open in $slots/1; finish it with: team-open --task T1 --queued half-open.md proj small fix half-open Half\\ open"
-  [[ -z $(grep '^opened:' "$TEAM_HOME/tasks/queued/half-open.md") ]]
+  assert_equal "$(grep -c '^opened:' "$TEAM_HOME/tasks/queued/half-open.md" || true)" 0
 
   local finish
   finish=$(sed -n 's/^team-open: T1 is half open in .*; finish it with: //p' <<<"$stderr")
