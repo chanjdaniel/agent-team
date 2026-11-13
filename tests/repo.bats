@@ -1713,14 +1713,16 @@ Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   if denied settings/reviewer.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
 }
 
-@test "the builder's allow rules are the local checks, as the briefs give them, the CI wait a worker may run by hand, and marking a PR ready" {
+@test "the builder's allow rules are the local checks, the CI wait a worker may run by hand, and marking a PR ready" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-checks *)
 Bash(@TEAM_CODE@/bin/team-ci-wait *)
 Bash(gh pr ready *)
 Bash(gh-axi pr ready *)'
   local brief
-  for brief in delivery/direct-pr builder-merge-base; do
-    grep -qF '`{{team_bin}}/team-checks {{project}} <full sha>`' "$REPO_ROOT/templates/briefs/$brief.md"
+  # A builder's brief runs the tests its change reaches; the reviewer's run the local checks.
+  for brief in builder-ticket delivery/direct-pr delivery/no-mistakes builder-merge-base builder-round; do
+    if grep -F -e team-checks -e '{{local_checks}}' "$REPO_ROOT/templates/briefs/$brief.md"; then return 1; fi
+    grep -qF '{{tests}}' "$REPO_ROOT/templates/briefs/$brief.md" || [[ $brief == builder-round ]]
   done
   for brief in reviewer rereview verify before-pr/rereview before-pr/verify; do
     grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"

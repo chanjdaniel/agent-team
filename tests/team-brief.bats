@@ -247,7 +247,8 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 1. Bring the branch up to date with the base: `git fetch origin`; if `git merge-base --is-ancestor origin/dev HEAD` fails, merge `origin/dev` with a merge commit (`git merge origin/dev`, never a rebase), resolve any conflict and re-run what the conflicts touched.
    A conflict whose resolution is a judgment call on behaviour goes to `coordinator` as `T12 QUESTION <the conflict> | options: ...`.
 2. Find what your branch made false: for each file, command, flag, setting and path it adds, renames or removes (`git diff --stat origin/dev...HEAD`), `git grep` its name in the repository's Markdown, `CLAUDE.md`, `AGENTS.md` and script headers, and fix every line that no longer holds, in the same PR.
-3. Push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send `T12 DONE review-ready <the full sha of HEAD>` to `coordinator`, then wait: the team reviews that head before the gate runs, so the gate runs once.
+3. Before you push: Nothing but you runs conv's whole suite, so run it once at your end, as the project's docs say, beside the tests your change reaches as you go.
+   Then push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send `T12 DONE review-ready <the full sha of HEAD>` to `coordinator`, then wait: the team reviews that head before the gate runs, so the gate runs once.
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
 4. Run `/no-mistakes` with the gate's ci step skipped for the run (`no-mistakes axi run --skip ci --intent "<the intent>"`), so the run ends with outcome `passed` once its pr step has opened or updated the PR, and CI is the coordinator's wait, as step 7 says; never wait for `checks-passed`, and never abort a run to end it.
    Give it an intent that says what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is "rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes.": on a phase, this phase's part of it alone), under a Disclosure section put in its terms, since the gate drafts the PR's title and body from it.
@@ -344,7 +345,7 @@ EOF
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
   # The PR body and the gate's intent open with what the PR changes, never the task's id and goal.
   assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-builder-deliver.md")" \
-    'its body opening with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, say this phase'"'"'s part of it alone and name the others as their own PRs), then'
+    'its body opening with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task'"'"'s goal is "value of goal": on a phase, say this phase'"'"'s part of it alone and name the others as their own PRs).'
   refute_grep -F '"T12: value of goal"' "$TEAM_HOME/tasks/T12/brief-builder-fix.md"
   refute_grep -F '"T14: value of goal"' "$TEAM_HOME/tasks/T14/brief-builder-deliver.md"
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
@@ -707,7 +708,7 @@ EOF
   run_bin -0 team-brief T12 builder-deliver --set "goal=the goal"
   local brief
   brief=$(<"$output")
-  assert_contains "$brief" "3. Push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send \`T12 DONE review-ready <the full sha of HEAD>\` to \`coordinator\`, then wait: the team reviews that head before the gate runs, so the gate runs once."
+  assert_contains "$brief" "   Then push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send \`T12 DONE review-ready <the full sha of HEAD>\` to \`coordinator\`, then wait: the team reviews that head before the gate runs, so the gate runs once."
   assert_contains "$brief" "once they are fixed, or the coordinator says the review passed, go on."
   # The review comes before the gate.
   [[ $(grep -n -m 1 'review-ready' <<<"$brief" | cut -d: -f1) -lt $(grep -n -m 1 '/no-mistakes' <<<"$brief" | cut -d: -f1) ]]
@@ -784,7 +785,7 @@ EOF
   done
 }
 
-@test "a direct-PR project's builder pushes nothing under a Disclosure section until the review passes, then pushes, checks and opens the PR" {
+@test "a direct-PR project's builder pushes nothing under a Disclosure section until the review passes, then pushes, tests and opens the PR" {
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
   local brief
@@ -792,11 +793,11 @@ EOF
   # Its first push, the base's merge, waits for the hold too.
   assert_contains "$brief" "re-run what the conflicts touched, and push (under a Disclosure section, not before step 3's review passes)."
   grep -qxF "3. Under a Disclosure section in a public repository, push nothing yet: send \`T14 DONE review-ready <the full sha of HEAD>\` to \`coordinator\`, then wait, since the reviewer reads your local head and the team reviews its wording before anything goes public." "$output"
-  grep -qxF "   Fix each finding the coordinator sends you on the branch, pushing nothing; once they are fixed, or the coordinator says the review passed, go on with the push, the checks and the PR." "$output"
-  # The hold comes before the local checks' push, the PR and its checks.
+  grep -qxF "   Fix each finding the coordinator sends you on the branch, pushing nothing; once they are fixed, or the coordinator says the review passed, go on with the push, the tests and the PR." "$output"
+  # The hold comes before the tests on the pushed head, the PR and its checks.
   local hold
   hold=$(grep -n 'review-ready' "$output" | cut -d: -f1)
-  [[ $hold -lt $(grep -n 'team-checks' "$output" | cut -d: -f1) ]]
+  [[ $hold -lt $(grep -n '^4\. On the head you push: ' "$output" | cut -d: -f1) ]]
   [[ $hold -lt $(grep -n 'gh pr create' "$output" | cut -d: -f1) ]]
   [[ $hold -lt $(grep -n '^6\. Send `T14 PR <full url>`' "$output" | cut -d: -f1) ]]
 }
@@ -2005,16 +2006,15 @@ after"
   assert_equal "$(task_files)" ""
 }
 
-@test "a project's local checks reach the builder's delivery, the review and the rereview" {
+@test "a project's local checks reach the review and the rereview, never the builder's delivery" {
   sed -i '/^\[home\]$/,/^\[home.pool\]$/s|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["tests/run", "make lint"]|' \
     "$TEAM_HOME/projects.toml"
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   open_t12
   local brief
+  # The reviewer and team-merge run them on the same head, so the builder leaves them be.
   run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
-  brief=$(<"$output")
-  assert_contains "$brief" "4. Run the project's local checks (\`tests/run\`, \`make lint\`) on the head you push with \`$REPO_ROOT/bin/team-checks home <full sha>\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; fix"
-  assert_contains "$brief" "then a line naming the local checks that passed and the head they passed on."
+  refute_grep -F -e team-checks -e 'local checks' -e 'make lint' "$output"
   reviewed_branch T14 main
   run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head="$head" --set "checks=the checks"
@@ -2028,6 +2028,56 @@ after"
   branch_head T12 dev
   run_bin -0 team-brief T12 reviewer --name review --set head="$head" --set "checks=the checks"
   assert_contains "$(<"$output")" "- Local checks: none."
+}
+
+# The tests a builder runs come from the project's changed_tests: with it, only those its change
+# reaches, since CI runs the whole suite; without it, the whole suite once, since nothing else does.
+@test "a builder runs only the tests its change reaches when the project names them, else the whole suite once at its end" {
+  sed -i '/^\[home\]$/,/^\[home.pool\]$/s|^toolkits = \[\]$|toolkits = []\nchanged_tests = "`make test-changed` on the packages you changed"|' \
+    "$TEAM_HOME/projects.toml"
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  open_t12
+  local changed="Run only the tests your change reaches, never the whole suite, which CI runs on every head you push: \`make test-changed\` on the packages you changed"
+  local whole="Nothing but you runs conv's whole suite, so run it once at your end, as the project's docs say, beside the tests your change reaches as you go."
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
+  # A direct-PR delivery runs them on the head it pushes, in place of team-checks, and its PR body
+  # names no local checks.
+  run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
+  grep -qxF "4. On the head you push: $changed" "$output"
+  grep -qxF "   Fix the branch and push again until they pass on one head." "$output"
+  refute_grep -F -e team-checks -e 'local checks' -e "$whole" "$output"
+  # A gated delivery runs them before its push for the review, with no changed_tests the whole suite.
+  run_bin -0 team-brief T12 builder-deliver --set "goal=the goal"
+  grep -qxF "3. Before you push: $whole" "$output"
+  grep -qF "   Then push the branch (under a Disclosure section, not before the review passes: the reviewer reads your local head) and send \`T12 DONE review-ready <the full sha of HEAD>\` to \`coordinator\`" "$output"
+  refute_grep -F -e team-checks -e 'local checks' -e 'CI runs' "$output"
+  # A fix round delivers the same way.
+  run_bin -0 team-brief T14 builder-round --name round-1 --set pr=$pr --set findings=5 \
+    --set findings_file=.work/task/review.md --set goal=g
+  grep -qxF "4. On the head you push: $changed" "$output"
+  refute_grep -F -e team-checks -e 'local checks' "$output"
+  # A merge-base round runs those the merge reaches.
+  run_bin -0 team-brief T14 builder-merge-base --name merge-base --set pr=$pr
+  grep -qxF "5. Run the tests the merge reaches, those of each file that conflicted and of step 4's fixes: $changed" "$output"
+  refute_grep -F -e team-checks -e 'local checks' "$output"
+  # A ticket's builder runs them before its DONE, ahead of its build note.
+  run_bin -0 team-brief T14 builder-ticket --set ticket=03 --name build-03
+  grep -qxF "3. Before your DONE: $changed" "$output"
+  grep -qxF '4. Write `.work/task/build-notes/03.md` for the next builder: what exists, the decisions to know, and how it is tested.' "$output"
+  run_bin -0 team-brief T12 builder-ticket --set ticket=03 --name build-03
+  grep -qxF "3. Before your DONE: $whole" "$output"
+  # The reviewer still runs the project's local checks through team-checks.
+  reviewed_branch T14 main
+  run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head="$head" --set "checks=the checks"
+  grep -qF "with \`$REPO_ROOT/bin/team-checks home $head\`" "$output"
+  refute_grep -F -e "$changed" "$output"
+}
+
+@test "a Conventioner ticket's builder brief from the registry shaped like the team home's names Conventioner's changed tests" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  open_task T30 conventioner feature feat/T30-badges .treehouse/Conventioner-d4c77a/3/Conventioner "badges"
+  run_bin -0 team-brief T30 builder-ticket --set ticket=02 --name build-02
+  grep -qxF '3. Before your DONE: Run only the tests your change reaches, never the whole suite, which CI runs on every head you push: back end `cd back-end && python -m pytest <the test files of the modules you changed>` (and `scripts/real-mongo-test.sh` when you changed what its suite covers); front end `cd front-end && npx vitest run --changed origin/dev` and `npm run type-check`; E2E on your worktree'"'"'s stack (`team-stack up`, then `team-stack seed`), `cd front-end && npx playwright test --only-changed=origin/dev` plus the spec files of each page and flow you changed; `python scripts/knowledge_graph.py check` when you changed `docs/`' "$output"
 }
 
 @test "a builder's delivery, fix round and merge-base round end at their report with no wait on CI, since a red check comes back as a fix round" {
@@ -2053,7 +2103,7 @@ after"
     esac
     # A round's own step 5 ends the delivery at its PR, the notes-only round's no different.
     if [[ $name == *:round ]]; then
-      assert_contains "$brief" "5. Then deliver as below; when the PR exists, push to it where a step opens one and bring the PR body's local checks line up to the head you pushed (\`gh pr edit <full url> --body-file <file>\`), and when it is none, the delivery opens it as it says."
+      assert_contains "$brief" "5. Then deliver as below; when the PR exists, push to it where a step opens one, and when it is none, the delivery opens it as it says."
       assert_contains "$brief" "   The delivery ends at the \`PR\` it sends (on a gated project, once the gate's run, its ci step skipped, or the base's merge after it has pushed), with no wait on the PR's GitHub checks and nothing more pushed: the next review reads the head you pushed, and a red check comes back to you from the coordinator as another fix round."
       refute_grep -F -e 'When every one of findings' -e 'skip the delivery' "$output"
     fi
@@ -2102,7 +2152,7 @@ There is no wait on the PR's GitHub checks in a review: read, and deliver on \`$
   refute_grep -F -e team-ci-wait -e 'roll-up:' -e 'infrastructure:' -e 'verify` reviewer waits' "$REPO_ROOT/roles/reviewer.md" "$REPO_ROOT/roles/builder.md"
 }
 
-@test "the merge-base brief merges the base, resolves, runs the local checks and names the conflicted files" {
+@test "the merge-base brief merges the base, resolves, runs the tests the merge reaches and names the conflicted files" {
   sed -i '/^\[home\]$/,/^\[home.pool\]$/s|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["tests/run"]|' \
     "$TEAM_HOME/projects.toml"
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
@@ -2129,8 +2179,9 @@ Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `t
    If `git merge-base --is-ancestor origin/main HEAD` already holds, there is nothing to merge or push: send step 7's message with no conflicts.
 4. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `T14 QUESTION <the conflict> | options: ...`; then commit the merge.
    Then find what the merge made false, a file, command, flag, setting or path that one side renames or removes and the other still names, and fix it in a commit of its own.
-5. Run the project's local checks (`tests/run`) on the merged head with `@CODE@/bin/team-checks home <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
-6. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
+5. Run the tests the merge reaches, those of each file that conflicted and of step 4's fixes: Nothing but you runs home's whole suite, so run it once at your end, as the project's docs say, beside the tests your change reaches as you go.
+   Fix the branch until they pass on one head.
+6. Push the branch.
    Run no gate: the merge and the fixes of step 4 are re-reviewed, not re-gated.
 7. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge, and stop: you start no wait on the PR's GitHub checks, since the coordinator's script waits on them once that review passes, and a red check comes back to you from the coordinator as a fix round.
 
@@ -2421,7 +2472,7 @@ ci_failed() {
 The team'"'"'s tooling runs on both machines.
 Daniel moves it with one command.'
   run_bin -0 team-brief T14 builder-deliver
-  assert_contains "$(<"$output")" "its body opening with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is \"The team's tooling runs on both machines.\": on a phase, say this phase's part of it alone and name the others as their own PRs), then"
+  assert_contains "$(<"$output")" "its body opening with what this PR changes, in words a reader of the repository can follow, with no task, ticket, phase or retro number (the task's goal is \"The team's tooling runs on both machines.\": on a phase, say this phase's part of it alone and name the others as their own PRs)."
   assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" '{"goal":"The team'"'"'s tooling runs on both machines.","tickets":"every ticket"}'
   # A goal written as a list: its first item, without the marker.
   plan_goal T14 '- The team home stays packed.
@@ -2633,7 +2684,7 @@ Task directory: '
   run_bin -0 team-brief T14 builder-fix --name fix --toolkit browser --set "goal=the goal" --set commits=feat \
     --set read=nothing
   brief=$(<"$output")
-  assert_contains "$brief" "then a line naming the local checks that passed and the head they passed on.
+  assert_contains "$brief" "name the others as their own PRs).
    $asks, on the worktree's own stack seeded with fixture data alone, never production's or any real person's data:"
   assert_contains "$brief" "at your head, and, where the screen exists on \`origin/main\`, before it, from there: commit everything, \`git switch --detach origin/main\`, capture, then \`git switch feat/T14-team-tooling\`"
   assert_contains "$brief" "keep them in the worktree's \`.scratch/shots/\`, outside the task directory, which \`team-close\` removes"

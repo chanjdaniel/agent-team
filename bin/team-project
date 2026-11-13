@@ -30,6 +30,10 @@
 #   local_checks     optional: shell commands, run from the root of a checkout of the PR's exact
 #                    head, that must all pass before team-merge merges it (default none);
 #                    team-checks runs them, for team-merge and for the workers alike
+#   changed_tests    optional: how a builder runs the tests its change reaches, one line of text
+#                    team-brief puts in each builder brief, its presence saying CI (or the
+#                    local_checks a reviewer and team-merge run) runs the whole suite (default
+#                    none: nothing but the builder runs the project's whole suite, once at its end)
 #   uptime           optional: the project's production checks, which the heartbeat's uptime
 #                    step runs (team-uptime), an array of tables ([[<name>.uptime]]), each with
 #                    exactly three strings (default none):
@@ -123,7 +127,7 @@ RESERVED = {
     "own": "the team's own project in bin/lib/guarded's @own lines",
 }
 # Optional keys, with the value a project without one has.
-PROJECT_OPTIONAL = {"local_checks": [], "models": {}, "uptime": [], "visibility": "public"}
+PROJECT_OPTIONAL = {"local_checks": [], "changed_tests": "", "models": {}, "uptime": [], "visibility": "public"}
 # Keys no project may hold any more, each with why and what to do, which --check names in place of
 # an unknown key.
 RETIRED = {"merge_with_plan": "retired by T276, since the approved plan is every project's merge word: remove the key"}
@@ -398,6 +402,10 @@ def check(registry):
             problems.append(f"{name}.local_checks: must be a list of strings")
         elif any(not command.strip() or "\n" in command for command in checks):
             problems.append(f"{name}.local_checks: each command must be one line, not empty")
+        if "changed_tests" in project:
+            tests = project["changed_tests"]
+            if not isinstance(tests, str) or not tests.strip() or "\n" in tests:
+                problems.append(f"{name}.changed_tests: must be one line of text, not empty")
         uptime_checks += check_uptime(name, project.get("uptime", []), problems)
         check_models(name, project.get("models", {}), problems)
         if project.get("visibility", "public") not in VISIBILITIES:

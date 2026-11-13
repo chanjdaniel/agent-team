@@ -378,6 +378,16 @@ home_setting() {
     '["test -z \"$(gofmt -l .)\"","make lint","go test -race ./...","bash scripts/e2e.sh"]'
   assert_equal "$(jq -c .pool.slots <<<"$output")" \
     "[\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/1\",\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/2\",\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/3\"]"
+
+  # Each project with CI, or the local checks a reviewer and team-merge run, names the tests a
+  # builder's change reaches.
+  local project
+  for project in conventioner agent-team no-mistakes; do
+    run_bin -0 team-project "$project" changed_tests
+    [[ -n $output ]]
+  done
+  run_bin -0 team-project agent-team changed_tests
+  assert_contains "$output" '`tests/run bats --changed`'
 }
 
 @test "local_checks is optional, defaults to none, and must be one-line commands" {
@@ -692,6 +702,26 @@ TOML
   sed -i 's|^visibility = "private"$|visibility = "internal"|' "$TEAM_HOME/projects.toml"
   run_bin -1 --separate-stderr team-project --check
   assert_contains "$stderr" "alpha.visibility: must be one of public, private"
+}
+
+@test "changed_tests is optional, empty by default, and one line of text" {
+  run_bin -0 team-project alpha changed_tests
+  assert_equal "$output" ''
+  run_bin -0 team-project alpha
+  assert_equal "$(jq -r .changed_tests <<<"$output")" ''
+  sed -i '0,/^toolkits = \[\]$/s||toolkits = []\nchanged_tests = "`make test-changed` on the packages you changed"|' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project alpha changed_tests
+  assert_equal "$output" '`make test-changed` on the packages you changed'
+  run_bin -0 team-project beta changed_tests
+  assert_equal "$output" ''
+
+  local bad
+  for bad in '""' '"  "' '"a\\nb"' '["make test"]' '1'; do
+    sed -i "s|^changed_tests = .*|changed_tests = $bad|" "$TEAM_HOME/projects.toml"
+    run_bin -1 --separate-stderr team-project --check
+    assert_contains "$stderr" "alpha.changed_tests: must be one line of text, not empty"
+  done
 }
 
 @test "--check refuses merge_with_plan as retired by T276, and every command with it" {

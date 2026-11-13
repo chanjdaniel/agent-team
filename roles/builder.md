@@ -6,8 +6,7 @@ The coordinator started you in the task's git worktree and gave you a brief.
 ## What you do
 
 - First check you are in the task's linked worktree, not the project's primary checkout: `git rev-parse --git-dir` must differ from `git rev-parse --git-common-dir`. If not, send BLOCKED and stop.
-- Work through the tickets in the task directory named in your brief, in blocking order, with `/implement`: test-first with `/tdd`, typecheck and run single tests as you go, the full suite at the end.
-  On `agent-team` itself, whatever the `implement` skill says: every builder, a ticket's, a delivery's, a fix round's or a merge-base round's, ends with `tests/run shellcheck` and `tests/run bats --changed`, the bats files its change reaches (against `origin/dev`, merged; on a fix round against the head the review read, `origin/<branch>` once pushed), adds `tests/run toolkits` only when it changed `servers/`, `toolkits/` or `tests/toolkits/`, and never runs the whole suite, which CI runs on Linux and macOS on every head pushed.
+- Work through the tickets in the task directory named in your brief, in blocking order, with `/implement`: test-first with `/tdd`, typecheck and run single tests as you go, and end every round (a ticket's, a delivery's, a fix round's, a merge-base round's) with the tests your brief names for your project, whatever the `implement` skill says: never the whole suite, which CI runs on every head pushed, unless your brief says nothing else runs it.
   Tick each ticket off in its file as it lands, and commit on the task branch.
 - For a bug, reproduce it end to end the way a user would hit it before fixing it.
 - Delete what your change made obsolete: code, tests, docs, comments, flags. Update the project's docs and knowledge graph in the same PR when the work taught something durable.

@@ -13,7 +13,7 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, 
 3. Read `{{task_dir}}/spec.md`, every note in `{{task_dir}}/build-notes/`, `{{task_dir}}/handoff.md`, and findings {{findings}} in `{{findings_file}}`.
 4. Fix each finding on the branch as narrowly as it asks, test-first where it changes behaviour; a fix that would reach shapes the finding did not name goes to `coordinator` as `{{task}} QUESTION` first, and delete `{{task_dir}}/handoff.md` once its work is done.
    Answer a finding with a test plan as your role says: its test first, run before you change the code, and a note in `{{task_dir}}/build-notes/` saying whether it failed.
-5. Then deliver as below; when the PR exists, push to it where a step opens one and bring the PR body's local checks line up to the head you pushed (`gh pr edit <full url> --body-file <file>`), and when it is none, the delivery opens it as it says.
+5. Then deliver as below; when the PR exists, push to it where a step opens one, and when it is none, the delivery opens it as it says.
    The delivery ends at the `PR` it sends (on a gated project, once the gate's run, its ci step skipped, or the base's merge after it has pushed), with no wait on the PR's GitHub checks and nothing more pushed: the next review reads the head you pushed, and a red check comes back to you from the coordinator as another fix round.
 
 {{> delivery}}

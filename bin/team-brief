@@ -35,8 +35,12 @@
 # worktree, task_dir, plan, thread, interview_thread (the task's latest interview-thread, unset
 # without one), team_home, team_code (this code checkout, where a brief points for code such as
 # sops/), team_bin, local_checks (the project's, each in backticks and joined with ", ", or
-# "none"), ui, task_branch and task_worktree (the task worktree's branch and path, the same as
-# branch and worktree without --ticket), parallel and captures, from the ledger and projects.toml.
+# "none"), tests (the tests a builder runs: with the project's changed_tests, "Run only the tests
+# your change reaches, never the whole suite, which CI runs on every head you push: " and its text;
+# without, "Nothing but you runs <project>'s whole suite, so run it once at your end, as the
+# project's docs say, beside the tests your change reaches as you go."), ui, task_branch and
+# task_worktree (the task worktree's branch and path, the same as branch and worktree without
+# --ticket), parallel and captures, from the ledger and projects.toml.
 # captures is empty unless the brief's session has the browser toolkit (--toolkit browser, else the
 # task's latest launch of the template's role, for rereview its latest reviewer launch else its
 # latest builder launch, as team-next's hand-off launches with): then, for builder-fix,
@@ -144,7 +148,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 code=$(dirname "$(dirname "$TEAM_LIB")")
 briefs=$code/templates/briefs
 usage="usage: team-brief T<n> <template> [--project <name>] [--ticket <NN>] [--toolkit <name>]... [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]"
-fact_keys=(task title path project repo base branch worktree task_dir plan thread interview_thread team_home team_code team_bin local_checks ui task_branch task_worktree parallel captures)
+fact_keys=(task title path project repo base branch worktree task_dir plan thread interview_thread team_home team_code team_bin local_checks tests ui task_branch task_worktree parallel captures)
 
 positionals=() project='' ticket='' name='' force='' toolkits=()
 declare -A sets=()
@@ -263,9 +267,10 @@ else
 fi
 facts=$(team_project "$project")
 # The project's facts and the chosen worktree's, in one jq run.
-repo='' base='' task_dir='' local_checks='' delivery='' branch='' chosen_wt=''
+repo='' base='' task_dir='' local_checks='' changed_tests='' delivery='' branch='' chosen_wt=''
 json_vars repo='.repo | tostring' base='.base | tostring' task_dir='.task_dir | tostring' \
   local_checks='.local_checks | if . == [] then "none" else map("`\(.)`") | join(", ") end' \
+  changed_tests='.changed_tests | tostring' \
   delivery='.delivery | tostring' branch='$chosen.branch | tostring' chosen_wt='$chosen.worktree | tostring' \
   -- --argjson chosen "$chosen" <<<"$facts"
 # The task worktree's branch and path; with --ticket, the brief's own are the ticket worktree's.
@@ -289,11 +294,16 @@ declare -A values=(
   [team_code]=$(tilde "$code")
   [team_bin]=$(dirname "$TEAM_LIB")
   [local_checks]=$local_checks
+  [tests]="Nothing but you runs $project's whole suite, so run it once at your end, as the project's docs say, beside the tests your change reaches as you go."
   [tickets]="every ticket"
   [task_branch]=$task_branch
   [task_worktree]=$(tilde "$task_worktree")
   [parallel]=''
 )
+# A project whose CI (or the local checks its reviewer and team-merge run) runs the whole suite
+# names the tests a builder's change reaches.
+[[ -z $changed_tests ]] ||
+  values[tests]="Run only the tests your change reaches, never the whole suite, which CI runs on every head you push: $changed_tests"
 # A ticket worktree's builder works beside other tickets' builders, and lands its ticket on the
 # task branch only as a tested fast-forward.
 if [[ -n $ticket ]]; then
