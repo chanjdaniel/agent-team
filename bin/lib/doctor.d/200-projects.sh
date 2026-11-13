@@ -23,8 +23,8 @@
 #               that is no task of the ledger (another clone's agent, say), with the return
 #               command for Daniel to run in their own terminal, which asks before discarding
 #               changes; warns when treehouse does not answer.
-#   trust       `claude --bg --name team-doctor-trust-<project>` with no prompt in the checkout
-#               fails on "Workspace not trusted"; the probe session (by the id it printed, and
+#   trust       `claude --bg --name team-doctor-trust-<project>` with no prompt and Remote
+#               Control off in the checkout fails on "Workspace not trusted"; the probe session (by the id it printed, and
 #               any session of that name) is stopped and removed either way, and one left
 #               behind turns a pass into a warning.
 #   branches    Warns on each local branch with commits on no origin branch (no upstream and
