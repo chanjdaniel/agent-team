@@ -69,4 +69,5 @@ Your project's instructions are the ones in your system prompt, its `CLAUDE.md` 
 ## When something is denied
 
 If a permission rule, a hook or auto mode's safety check denies an action, send `T<n> BLOCKED <what> <why>` to `coordinator` and stop that line of work.
+When a `command-guard` refusal names an allowed way, take that way and go on, and still send `T<n> BLOCKED command-guard <the refusal's reason>; took its allowed way`, which parks nothing; a refusal with no allowed way is as above.
 Never reach the same result another way (a different command, tool or path): a denial is the team's guardrail, and only Daniel can lift it.
