@@ -54,12 +54,13 @@
 # own checkout's team-capacity admit --kind session:builder --dry-run, after the arguments and the
 # registry are read and before the number is claimed or anything is taken, since every task soon
 # launches a builder, the largest worker it starts. With no room it exits 75,
-# "team-open: no room to open a task: <team-capacity's reason>", naming memory and the level; when
-# team-capacity cannot tell (no reading to size the budget by), exit 1,
+# "team-open: no room to open a task: <team-capacity's reason>", naming the level, and memory
+# when that is short; when team-capacity cannot tell (no reading to size the budget by), exit 1,
 # "team-open: cannot tell whether a task fits: <its reason>"; either way nothing is claimed. It
 # is skipped when a worktree already holds the task's branch (finishing a half-open task), and
-# never runs for --add, --ticket or --resume, whose task is open already. Each launch is still admitted on its own by team-worker, so two opens at
-# once may both pass the check while only one of their builders fits.
+# never runs for --add, --ticket or --resume, whose task is open already. Each launch is still
+# admitted on its own by team-worker, so two opens at once may both pass the check while only one
+# of their builders fits.
 # With --add, gives the open task T<n> a worktree in another project, on <type>/T<n>-<slug>: the
 # same pool steps, then worktree-added, with no plan, thread or opened. Refused for a task with
 # no opened event or with a closed one, and for a project the task already has an open worktree in.
