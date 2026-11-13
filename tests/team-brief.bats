@@ -93,6 +93,20 @@ run_fake() {
   run "$code/bin/team-brief" "$@"
 }
 
+# reviewer_app <on|off>: run_bin runs team-brief from CODE_CHECKOUT, a copy of this checkout's bin/
+# beside its templates, with the reviewer App on (review_app_on: bin/lib/review-app names App
+# 123456) or off (no bin/lib/review-app), whatever this checkout commits; home is the team's own
+# project, its repo the copy's origin.
+reviewer_app() {
+  export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  git init -q "$CODE_CHECKOUT"
+  git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
+  copy_bin "$CODE_CHECKOUT/bin"
+  ln -s "$REPO_ROOT/templates" "$CODE_CHECKOUT/templates"
+  if [[ $1 == on ]]; then review_app_on; else rm -f "$CODE_CHECKOUT/bin/lib/review-app"; fi
+}
+
 # Fail when grep finds a match, showing it.
 refute_grep() {
   if grep -n "$@"; then return 1; fi
@@ -599,6 +613,7 @@ EOF
 }
 
 @test "a direct-PR project's review reads the PR, comments on it and sets its status" {
+  reviewer_app off
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   branch_head T14 main
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
@@ -607,9 +622,41 @@ EOF
   run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head="$head" --set "checks=the checks"
   brief=$(<"$output")
   assert_contains "$brief" "branch \`feat/T14-team-tooling\`; review \`origin/main...$head\`."
-  assert_contains "$brief" "The comment on PR $pr is that file, posted with this exact command, the only comment your settings allow: \`$REPO_ROOT/bin/team-review-comment $pr .work/task/review.md\`."
-  assert_contains "$brief" "\`$REPO_ROOT/bin/team-review-status $pr $head <success|failure> \"<one line, at most 140 characters>\"\`."
+  assert_contains "$brief" "The comment on PR $pr is that file, posted with this exact command, the only comment your settings allow: \`$CODE_CHECKOUT/bin/team-review-comment $pr .work/task/review.md\`."
+  assert_contains "$brief" "\`$CODE_CHECKOUT/bin/team-review-status $pr $head <success|failure> \"<one line, at most 140 characters>\"\`."
+  refute_grep -F 'reviewer App' "$output"
   assert_contains "$brief" "- Send \`T14 DONE pass $pr findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>\` or \`T14 DONE findings .work/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>\` to \`coordinator\`, the counts, numbers and areas as \`.work/task/review.md\` gives them."
+}
+
+# Where the reviewer App posts agent-review, a reviewer sets no status: team-review-status
+# refuses there, and the coordinator posts the App's check from the verdict.
+@test "with the reviewer App on, the team's own project's review briefs set no status, and another project's still do" {
+  reviewer_app on
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  reviewed_branch T14 main
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 template line
+  line="- Set no status on home: its \`agent-review\` is the reviewer App's check run, which the coordinator posts from the verdict you send below, and \`team-review-status\` refuses it."
+  for template in reviewer rereview verify; do
+    local -a sets=(--set pr="$pr" --set head="$head")
+    case $template in
+      reviewer) sets+=(--set "checks=the checks") ;;
+      rereview) sets+=(--set "since=the fix") ;;
+      verify) sets+=(--set reviewed="$reviewed" --set findings=5) ;;
+    esac
+    run_bin -0 team-brief T14 "$template" --name "$template" "${sets[@]}"
+    grep -qxF -- "$line" "$output"
+    refute_grep -e 'team-review-status [^`]' -e 'review-status}}' "$output"
+    # The verdict and the comment are the reviewer's still.
+    grep -qF "$CODE_CHECKOUT/bin/team-review-comment $pr " "$output"
+    grep -qF -- "- Send \`T14 DONE pass $pr " "$output"
+  done
+  # A project not the team's own sets its agent-review status as before.
+  open_t12
+  reviewed_branch T12 dev
+  run_bin -0 team-brief T12 rereview --name rereview --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
+    --set head="$head" --set "since=the fix"
+  grep -qF "\`$CODE_CHECKOUT/bin/team-review-status https://github.com/chanjdaniel/Conventioner/pull/9 $head <success|failure> \"<one line, at most 140 characters>\"\`." "$output"
+  refute_grep -F 'reviewer App' "$output"
 }
 
 @test "each review brief gives every finding a number, a kind and a scope, so the notes sent back and queued follow it" {
@@ -1018,6 +1065,7 @@ EOF
 }
 
 @test "the verify brief re-reviews a notes-only fix from its diff alone, starting no wait on the checks" {
+  reviewer_app off
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local pr=https://github.com/chanjdaniel/agent-team/pull/9
   # It needs the PR, both heads and the notes sent back.
@@ -1080,7 +1128,7 @@ Read `@CODE@/sops/platform-gotchas.md` before your first command.
 Never the em dash; refer to Daniel with they/them.
 BRIEF
   )
-  expected=${expected//@CODE@/$REPO_ROOT} expected=${expected//abc1234/$reviewed} expected=${expected//def5678/$head}
+  expected=${expected//@CODE@/$CODE_CHECKOUT} expected=${expected//abc1234/$reviewed} expected=${expected//def5678/$head}
   local -a want got
   mapfile -t want <<<"$expected"
   mapfile -t got <"$TEAM_HOME/tasks/T14/brief-verify-2.md"
@@ -2136,6 +2184,7 @@ after"
 }
 
 @test "the first review, the rereview and verify start no wait on CI and deliver on the head they read, since the coordinator's script waits on the checks of a pass" {
+  reviewer_app off
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   notes_fix_branch
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 name brief
@@ -2156,7 +2205,7 @@ There is no wait on the PR's GitHub checks in a review: read, and deliver on \`$
       # Step 1 keeps only the local checks, and says who waits on CI.
       assert_contains "$brief" "## Check
 
-1. Run the project's local checks (none) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`"
+1. Run the project's local checks (none) on \`$head\` with \`$CODE_CHECKOUT/bin/team-checks home $head\`"
       grep -qxF "   Start no wait on the PR's GitHub checks: deliver on \`$head\`, the head you read, since the coordinator's script waits on the checks of a pass, and the merge needs every one green." "$output"
     fi
     # No head moves under a reviewer but by a round the coordinator hands on, so a refused status

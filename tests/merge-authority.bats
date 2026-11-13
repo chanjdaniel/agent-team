@@ -129,6 +129,7 @@ readers() {
 }
 
 @test "the queued note's case: the team's own project with the coordinator's approval is never due, and refused" {
+  review_app_off
   default_word coordinator
   as_project agent-team
   launches
@@ -137,6 +138,7 @@ readers() {
 }
 
 @test "Daniel's approval on the team's own project, with the reviewer App off: the default word does not hold" {
+  review_app_off
   default_word Daniel
   event T14 answered '{id: "plan-T14", answer: "yes", discord_message: "1562661774950400000"}'
   as_project agent-team
