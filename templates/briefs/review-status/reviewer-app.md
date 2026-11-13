@@ -1,0 +1,1 @@
+- Set no status on {{project}}: its `agent-review` is the reviewer App's check run, which the coordinator posts from the verdict you send below, and `team-review-status` refuses it.
