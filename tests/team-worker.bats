@@ -1099,6 +1099,23 @@ role_texts() {
   done
 }
 
+@test "every role's settings turn off Claude Code's built-in easel plugin, whose chart tool would be an MCP tool from outside the toolkits" {
+  open_task T7
+  ops_stub
+  local role settings
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$(generated settings "$role")
+    # Off in enabledPlugins, so the plugin never registers mcp__easel__chart, its prompt section
+    # or its automatic charts; a deny rule on the tool alone would leave the charts.
+    assert_equal "$(jq -c '.enabledPlugins["cc-plugin-easel@builtin"]' "$settings")" false
+  done
+}
+
 @test "every role's settings name its role in AGENT_TEAM_ROLE, print the gh-axi banner at session start and log each denial" {
   open_task T7
   ops_stub
@@ -1731,9 +1748,10 @@ assert_prod_write_gated() {
   # A skill's inline shell would run a command in a role that has no shell.
   assert_equal "$(jq -r .disableSkillShellExecution "$s")" true
   # disableBundledSkills leaves the built-in plugin that carries the plugin-authoring skill (T16
-  # ticket 09's second live check), which the worker settings turn off for every worker.
+  # ticket 09's second live check), which the worker settings turn off for every worker, as they
+  # do the built-in easel plugin and its chart tool.
   assert_equal "$(jq -c .enabledPlugins "$s")" \
-    '{"discord@claude-plugins-official":false,"mongodb-atlas@claude-plugins-official":false,"cc-plugin-plugin-authoring@builtin":false}'
+    '{"discord@claude-plugins-official":false,"mongodb-atlas@claude-plugins-official":false,"cc-plugin-plugin-authoring@builtin":false,"cc-plugin-easel@builtin":false}'
   # The shared hooks come first (lease-fence on Bash, a tool ops lacks), then the role's own.
   assert_equal "$(jq -r '.hooks.PreToolUse[] | "\(.matcher) \(.hooks[0].command)"' "$s" | sed -n 1,2p)" \
     "Bash $REPO_ROOT/bin/hooks/lease-fence

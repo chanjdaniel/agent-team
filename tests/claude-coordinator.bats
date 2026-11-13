@@ -167,6 +167,9 @@ assert_not_launched() {
   # a session to the Claude Docs connector the launch denies (Daniel's choice of 2026-10-27).
   assert_equal "$(jq -c '[.enabledPlugins["discord@claude-plugins-official"], .disableClaudeAiConnectors, .syncClaudeAiSkills,
     .syncClaudeAiPlugins, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" '[true,null,null,false,false]'
+  # Nor Claude Code's built-in easel plugin, whose chart tool is an MCP tool Daniel never added to
+  # the coordinator's toolkit.
+  assert_equal "$(jq -c '.enabledPlugins["cc-plugin-easel@builtin"]' "$settings")" false
   assert_equal "$(jq -r '.skillOverrides["anthropic-skills:docs"]' "$settings")" off
   for tool in Artifact ArtifactComments ArtifactData SendUserFile PushNotification CronCreate CronList CronDelete \
     ScheduleWakeup Monitor SendMessage ListAgents Agent WebFetch WebSearch; do
