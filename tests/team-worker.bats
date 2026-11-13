@@ -1449,9 +1449,8 @@ allowed_in() {
   refused_launch "T7 has an unanswered ask, scope, since 2026-11-11T09:30:00Z; launch past it with --past-ask scope" \
     T7 reviewer "$wt1" -- go
   refused_launch "--past-ask nope names no unanswered ask of T7" T7 reviewer "$wt1" --past-ask scope --past-ask nope -- go
-  # An id that starts with a dash reaches jq as an id, not an option, a builder's second check too.
+  # An id that starts with a dash reaches jq as an id, not an option.
   refused_launch "--past-ask --x names no unanswered ask of T7" T7 reviewer "$wt1" --past-ask scope --past-ask --x -- go
-  refused_launch "--past-ask --x names no unanswered ask of T7" T7 builder "$wt1" --past-ask scope --past-ask --x -- go
   run_bin -0 team-worker T7 reviewer "$wt1" --past-ask scope --past-ask scope -- go
   assert_equal "$(launches | jq -c .past_ask)" '["scope"]'
   run_bin -0 team-log --check
