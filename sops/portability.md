@@ -160,4 +160,4 @@ Taking the PC down for a while (an update, a restart, a night off) is a handoff 
 - Headless logins: `claude setup-token`, `gh auth login --with-token`, and secrets from the host's secret store instead of Daniel's terminal.
 - Supervision: the coordinator under a systemd service that checks the lease before it starts, since agent view does not restart sessions after a reboot.
 - Trust accepted once per root over SSH; the doctor's check is the same.
-- Sizing: each worker's treehouse slot has its own `node_modules` and Docker stack, so RAM and disk set the pool caps and the server's resource levels (`sops/resources.md`).
+- Sizing: worktrees are made on demand, and each worker's treehouse slot has its own `node_modules` and Docker stack, so the resource level and the machine's RAM and disk bound the worktrees (`sops/resources.md`), a treehouse pool's `max_trees` being its own cap.
