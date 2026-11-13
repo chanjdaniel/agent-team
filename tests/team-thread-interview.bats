@@ -110,7 +110,8 @@ say() {
 # The stand-in for Discord's CDN that the real curl fetches from, so its options and its handling
 # of each answer are checked, not assumed: a server on the loopback for <n> requests, each within
 # 30 s, of ok.png (an image), moved.png (a redirect to it), huge.png (one over the limit by its
-# Content-Length), endless.png (one over the limit with no length) or else a 404: real_cdn <n>
+# Content-Length), endless.png (one over the limit with no length) or else a 404; its pid is
+# real_server: real_cdn <n>
 real_cdn() {
   local real port=$BATS_TEST_TMPDIR/port
   real=$(type -ap curl | grep -vF "$BATS_TEST_TMPDIR/stubs/" | head -n 1)
@@ -154,6 +155,7 @@ os.rename(sys.argv[1] + ".new", sys.argv[1])
 for _ in range(int(sys.argv[2])):
     server.handle_request()
 PY
+  real_server=$!
   while [[ ! -s $port ]] && ((SECONDS < 30)); do :; done
   echo "$real $(<"$port")" >"$DISCORD_DIR/real-curl"
 }
@@ -347,7 +349,7 @@ channels/$THREAD/messages?after=1564000000000000002&limit=100"
     "$(attachment huge.png)" "$(attachment endless.png)"
   real_cdn 5
   run_bin -0 team-thread wait T7
-  wait
+  wait "$real_server"
   assert_equal "$(outcomes | sed -n 1,3p)" '{"url":"ok.png","saved":"ok.png"}
 {"url":"gone.png","error":"not saved: curl: (22) The requested URL returned error: 404"}
 {"url":"moved.png","error":"not saved: not a PNG, JPEG, GIF or WebP by its first bytes"}'

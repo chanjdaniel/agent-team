@@ -2363,6 +2363,29 @@ tests/run: tests/held.bats ran past 1 minute; the test after the last line above
 bats: 3 tests passed; 1 of 2 files failed"
 }
 
+@test "tests/run's per-test limit never holds a failing test, which ends at once, nor the file's tests after it" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
+  limits_checkout "$copy"
+  # Vendored bats-core 1.14.0 forgot a failing test's countdown (VENDOR.md's patch), so the file
+  # waited out the whole limit after it.
+  printf '%s\n' '@test "fails" { false; }' '@test "after it" { true; }' >"$copy/tests/fails.bats"
+  local start=$SECONDS
+  TEAM_JOBS=1 run -1 --separate-stderr "$copy/tests/run" bats
+  ((SECONDS - start < 60))
+  assert_equal "$(grep -E '^(not )?ok [0-9]+ ' <<<"$output")" "not ok 1 fails
+ok 2 after it"
+}
+
+# bats runs a test's time limit countdown as a background job of the test's own shell, so a bare
+# wait there waits out the limit too: a test waits on the processes it started, by their ids.
+@test "no test file runs a bare wait, which would wait for bats' own time limit countdown" {
+  local found
+  found=$(cd "$REPO_ROOT" && grep -nE '^[[:space:]]+wait([[:space:]]+-[nf])*([[:space:]]*($|[;&|)}])|[[:space:]]+[0-9]?>)' \
+    tests/*.bats tests/helpers/*.bash) || (($? == 1))
+  assert_equal "$found" ""
+}
+
 @test "tests/run refuses a TESTS_TEST_SECONDS or TESTS_FILE_MINUTES that is no whole number above 0" {
   local copy=$BATS_TEST_TMPDIR/copy value
   unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES

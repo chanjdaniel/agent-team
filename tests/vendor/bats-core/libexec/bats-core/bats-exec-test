@@ -338,7 +338,7 @@ bats_perform_test() {
 
   if [[ -n "${BATS_TEST_TIMEOUT:-}" ]]; then
     bats_start_timeout_countdown "$BATS_TEST_TIMEOUT"
-    declare -r BATS_killer_pid=$!
+    declare -gr BATS_killer_pid=$!
   fi
   BATS_TEST_COMPLETED=
   BATS_TEST_SKIPPED=${BATS_TEST_SKIPPED-}

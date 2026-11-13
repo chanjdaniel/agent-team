@@ -16,7 +16,21 @@ setup() {
 teardown() {
   # Let a holder a test left go, so bats does not wait on it.
   touch "$BATS_TEST_TMPDIR/release"
-  wait 2>/dev/null || true
+  wait_background
+}
+
+# Note the process just started in the background ($!), for wait_background.
+started() {
+  echo "$!" >>"$BATS_TEST_TMPDIR/background"
+}
+
+# Wait for each process started() noted, and forget them. Never a bare wait, which would wait for
+# bats' own time limit countdown too.
+wait_background() {
+  local pid
+  [[ -f $BATS_TEST_TMPDIR/background ]] || return 0
+  while read -r pid; do wait "$pid" 2>/dev/null || true; done <"$BATS_TEST_TMPDIR/background"
+  : >"$BATS_TEST_TMPDIR/background"
 }
 
 # Wait until <file> exists, up to 20 seconds.
@@ -39,6 +53,7 @@ hold() {
     touch "$0/held"
     until [[ -e $0/release ]]; do sleep 0.1; done
     echo "$1" >>"$0/order"' "$BATS_TEST_TMPDIR" "$1" >/dev/null 2>&1 3>&- &
+  started
   wait_for "$BATS_TEST_TMPDIR/held"
 }
 
@@ -58,6 +73,7 @@ hold() {
   run_bin -0 team-heavy status
   [[ $output =~ ^held\ by\ first\ \(pid\ [0-9]+\)\ since\ [0-9-]{10}\ [0-9:]{8}\ [+-][0-9]{4}$ ]]
   (sleep 1 && touch "$BATS_TEST_TMPDIR/release") &
+  started
   run_bin -0 --separate-stderr team-heavy run --wait 1 --label second -- bash -c 'echo second >>"$0/order"' "$BATS_TEST_TMPDIR"
   assert_equal "$(grep -c waiting <<<"$stderr")" 1
   assert_contains "$stderr" "team-heavy: waiting up to 1 minutes for the heavy-run lock, held by first (pid "
@@ -78,7 +94,7 @@ hold() {
   TEAM_HEAVY_HELD=1 run_bin -0 team-heavy run --wait 0 -- echo nested
   assert_equal "$output" nested
   touch "$BATS_TEST_TMPDIR/release"
-  wait
+  wait_background
   run_bin -0 team-heavy run -- bash -c 'sleep 30 >/dev/null 2>&1 & echo $! >"$0/left"' "$BATS_TEST_TMPDIR"
   run_bin -0 team-heavy status
   kill "$(cat "$BATS_TEST_TMPDIR/left")"
@@ -226,7 +242,7 @@ costs() {
   run_bin -0 team-heavy status
   [[ $output =~ ^held\ by\ first\ \(pid\ [0-9]+,\ T7\)\ since\ [0-9-]{10}\ [0-9:]{8}\ [+-][0-9]{4}$ ]]
   touch "$BATS_TEST_TMPDIR/release"
-  wait
+  wait_background
 
   # Conventioner's scripts/e2e-lock.sh: "<who> since <time>", on the same file.
   exec {held}<>"$HOME/.local/state/agent-team/heavy.lock"
@@ -358,6 +374,7 @@ stoppable() {
       while :; do sleep 0.1; done' "$BATS_TEST_TMPDIR" >/dev/null 2>"$BATS_TEST_TMPDIR/run.err" 3>&- || rc=$?
     echo "$rc" >"$BATS_TEST_TMPDIR/run.rc"
   ) 3>&- &
+  started
   wait_for "$BATS_TEST_TMPDIR/cmd"
 }
 
@@ -478,6 +495,7 @@ gone() {
     done
   done
     capacity_room $((16 * 1073741824)) full) &
+  started
   TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-heavy run --wait 1 --kind tests-run -- jq -c 'map(.kind)' "$ADMITTED"
   assert_equal "$output" '["heavy:tests-run"]'
   assert_equal "$(grep -c 'room' <<<"$stderr")" 1

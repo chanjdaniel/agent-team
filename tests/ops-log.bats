@@ -153,12 +153,13 @@ READ_INPUT='{"database":"conventioner","collection":"markets","filter":{"phase":
 }
 
 @test "two hooks at once never interleave a line, and the header is written once" {
-  local input
+  local input pids=() pid
   input=$(hook_input PreToolUse mcp__prod-read__aggregate "{\"pipeline\":[{\"\$match\":{\"pad\":\"$(head -c 100000 /dev/zero | tr '\0' x)\"}}]}")
   for _ in $(seq 1 30); do
     "$REPO_ROOT/bin/hooks/ops-log" "$taskdir" <<<"$input" &
+    pids+=("$!")
   done
-  wait
+  for pid in "${pids[@]}"; do wait "$pid"; done
   assert_equal "$(grep -c '^# Ops log of T7$' "$log")" 1
   assert_equal "$(grep -cE "^- $TIME requested \`prod-read\` \`aggregate\` \`\\{.*\\}\`\$" "$log")" 30
   assert_equal "$(wc -l <"$log")" 32
