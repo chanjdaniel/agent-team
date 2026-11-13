@@ -6,6 +6,7 @@
 # Usage: team-queue index [--check]
 #        team-queue set <table>
 #        team-queue take T<n> <file>... [--part]
+#        team-queue tidy
 #        team-queue list [--json] [--plan <file>]
 # An item is work Daniel approved: one Markdown file in tasks/queued/ but index.md, its first "# "
 # line its title. It opens with front matter, a "---" line, then "<key>: <value>" lines, each key
@@ -57,7 +58,7 @@
 # an item that takes others or one a task opened, an item whose task merged or closed over 15
 # minutes ago that is still queued (the heartbeat should have moved it), and an item two open
 # tasks' plans cite that either could take (its project one of the task's, its from not naming
-# the task, not opened and not taken); then "tasks/queued/: projects not checked: <why>" first
+# the task, not opened, not taken and waiting on nothing); then "tasks/queued/: projects not checked: <why>" first
 # when the registry cannot be read, and last "tasks/queued/index.md: not as team-queue index
 # writes it" when the index is stale.
 # set writes many files' front matter from one table, a tab-separated file whose header's first
@@ -86,6 +87,24 @@
 # of those files alone, "chore: queued take T<n>", and prints "took <file> for T<n>" (with --part
 # "T<n> builds part of <file>") for each; taking an item the task already opened again changes
 # nothing. team-open --queued runs it once the task is open.
+# tidy keeps the queue true, as the heartbeat's queue step runs it every 5 minutes, in three steps:
+# it links each item that is not opened, that no other item takes, that waits on nothing (no waits:,
+# every after: met: a plan cites a waiting item for what lands before or after it, so a task that
+# builds one takes it by hand) and whose front matter it can rewrite to the one open task whose
+# tasks/T<n>/plan.md cites tasks/queued/<file> (any path ending so), whose projects hold the item's
+# and whom its from: does not name, writing opened: T<n> as take does ("linked <file> to T<n>: its
+# plan cites it"; an item two such plans cite is linked to neither, which --check names); then it
+# moves each item whose opened task merged whole or closed into tasks/T<n>/queued/<file> ("moved
+# <file> to tasks/T<n>/queued/: T<n> merged", or "closed"), with each file it takes that is not
+# finished itself, that no task opened and that no item staying queued takes ("moved <file> to
+# tasks/T<n>/queued/: <taker> takes it"; a file two leaving items take goes with the first by name);
+# then it rewrites the index when it changed ("wrote tasks/queued/index.md: <n> files"). It prints
+# one line per change, in that order, and nothing when nothing changed, and with no tasks/queued/ it
+# does nothing. It judges the queue first, then again under the ledger's lock, where it makes the
+# changes, through temporary files, as one commit of the files it linked, moved and wrote alone,
+# "chore: queued tidy". An item whose task's queued/ holds its name already stays queued, with the
+# files it takes, said on stderr ("left <file> queued: tasks/T<n>/queued/<file> is there already"),
+# and tidy exits 1 once the rest is made.
 # list writes nothing. It says whether the level has room for one more task, read from
 # team-capacity plan --json (the file --plan names when the caller already holds one, as the
 # sweep does, which may be {error: <why>}, else its own run) and team-capacity costs --json: it
@@ -125,7 +144,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-queue index [--check] | set <table> | take T<n> <file>... [--part] | list [--json] [--plan <file>]"
+usage="usage: team-queue index [--check] | set <table> | take T<n> <file>... [--part] | tidy | list [--json] [--plan <file>]"
 queued=$TEAM_HOME/tasks/queued
 index_rel=tasks/queued/index.md
 index=$TEAM_HOME/$index_rel
@@ -307,6 +326,63 @@ edit_take() {
   edit_index
 }
 
+# tidy's judging (queue_tidy) into $plan, NUL-separated: "link", the file, the task and its front
+# matter for each link; "move", the file, the task and why for each move; then "index", whether
+# the index is as it is (true or false) and the index's text: tidy_judge
+tidy_judge() {
+  queue_jq -j 'queue_tidy($cards; $items; $left; $current; queue_items(.[0]; $events; $projects; .[1]; $cites; $today; now))
+    | (.links[] | "link\u0000\(.file)\u0000\(.task)\u0000\(.front)\u0000"),
+      (.moves[] | "move\u0000\(.file)\u0000\(.task)\u0000\(.why)\u0000"),
+      "index\u0000\(.same)\u0000\(.index)"' >"$plan"
+}
+
+# Make tidy's links and moves and write the index, under the lock commit_records holds, judged
+# afresh there, each change said on the descriptor $stdout names (commit_records' stdout is not the
+# command's). A move whose task's queued/ holds its name already is left, said on stderr, with the
+# files it would have taken, and sets tidy_failed; the index is then read from the files as they
+# are: edit_tidy
+edit_tidy() {
+  local -a out skipped=()
+  local i=0 target taker
+  tidy_judge || die "cannot judge the queue"
+  mapfile -d '' -t out <"$plan"
+  while [[ ${out[i]} == link ]]; do
+    if ! { give "$queued/${out[i + 1]}" "${out[i + 3]}" && mv -f "$queued/${out[i + 1]}.$$" "$queued/${out[i + 1]}"; }; then
+      rm -f "$queued/${out[i + 1]}.$$"
+      die "cannot write $queued/${out[i + 1]}"
+    fi
+    echo "linked ${out[i + 1]} to ${out[i + 2]}: its plan cites it" >&"$stdout"
+    i=$((i + 4))
+  done
+  while [[ ${out[i]} == move ]]; do
+    target=tasks/${out[i + 2]}/queued/${out[i + 1]}
+    taker=${out[i + 3]% takes it}
+    if [[ ${out[i + 3]} == *" takes it" ]] && printf '%s\n' "${skipped[@]}" | grep -qxF -- "$taker"; then
+      :
+    elif [[ -e $TEAM_HOME/$target ]]; then
+      echo "${0##*/}: left ${out[i + 1]} queued: $target is there already" >&2
+      skipped+=("${out[i + 1]}")
+      tidy_failed=1
+    else
+      { mkdir -p "${TEAM_HOME:?}/${target%/*}" && mv -- "$queued/${out[i + 1]}" "$TEAM_HOME/$target"; } ||
+        die "cannot move $queued/${out[i + 1]} to $TEAM_HOME/$target"
+      echo "moved ${out[i + 1]} to ${target%/*}/: ${out[i + 3]}" >&"$stdout"
+    fi
+    i=$((i + 4))
+  done
+  if ((${#skipped[@]})); then
+    index_text >"$index.$$" || { rm -f "$index.$$"; die "cannot write $index"; }
+  else
+    printf '%s' "${out[i + 2]}" >"$index.$$" || { rm -f "$index.$$"; die "cannot write $index"; }
+  fi
+  if cmp -s -- "$index.$$" "$index"; then
+    rm -f "$index.$$"
+  else
+    mv -f "$index.$$" "$index" || { rm -f "$index.$$"; die "cannot write $index"; }
+    echo "wrote $index_rel: $(counted)" >&"$stdout"
+  fi
+}
+
 # team-capacity <sub> --json's object into <out>, or {error} with the last line it said on stderr
 # (~ for the home directory) when it fails: capacity_json <sub> <out>
 capacity_json() {
@@ -417,6 +493,29 @@ case $command in
     for name in "${take_files[@]}"; do
       if [[ $part == true ]]; then echo "$take_task builds part of $name"; else echo "took $name for $take_task"; fi
     done
+    ;;
+  tidy)
+    (($# == 0)) || usage_error "$usage"
+    [[ -d $queued ]] || exit 0
+    NET_ERR=$(mktemp)
+    plan=$(mktemp)
+    trap 'rm -f "$NET_ERR" "$plan"' EXIT
+    # Judged first outside the lock, for the paths to commit and to take no lock when nothing
+    # changes; a change judged afresh under the lock that these paths miss is the checkpoint's.
+    tidy_judge || die "cannot judge the queue"
+    mapfile -d '' -t out <"$plan"
+    paths=("$index_rel") i=0
+    while [[ ${out[i]} == link ]]; do paths+=("tasks/queued/${out[i + 1]}") i=$((i + 4)); done
+    while [[ ${out[i]} == move ]]; do
+      paths+=("tasks/queued/${out[i + 1]}" "tasks/${out[i + 2]}/queued/${out[i + 1]}") i=$((i + 4))
+    done
+    ((${#paths[@]} > 1)) || [[ ${out[i + 1]} == false ]] || exit 0
+    tidy_failed=0
+    exec {stdout}>&1
+    # shellcheck disable=SC2034 # read by commit_records
+    records_edit=edit_tidy
+    commit "chore: queued tidy" "${paths[@]}"
+    exit "$tidy_failed"
     ;;
   list)
     json=false plan_file='' plan_given=''

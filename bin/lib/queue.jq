@@ -1,12 +1,12 @@
 # The queue of approved work, the team home's tasks/queued/: what each item's state is, when an
-# after: condition is met, how the items rank, the problems team-queue index --check names, the
-# text of the index, the judging of team-queue set's table and of team-queue take, whether the
-# level has room for one more task and team-queue list's object and findings. Used by team-queue as
-# jq -nR -L bin/lib 'include "queue"; include "ledger"; ...' over the ledger's lines, with the
-# items' cards (team-queue's one awk pass: {file, title, keys, problems}), the registry's project
-# names, the items that left the queue, the queued files the tasks' plans cite, today's UTC date,
-# the time now, and for list team-capacity's plan and costs; team-queue's header documents the
-# keys, the states and the words.
+# after: condition is met, how the items rank, the problems team-queue index --check names, the text
+# of the index, the judging of team-queue set's table, of team-queue take and of team-queue tidy's
+# links and moves, whether the level has room for one more task and team-queue list's object and
+# findings. Used by team-queue as jq -nR -L bin/lib 'include "queue"; include "ledger"; ...' over
+# the ledger's lines, with the items' cards (team-queue's one awk pass: {file, title, keys,
+# problems}), the registry's project names, the items that left the queue, the queued files the
+# tasks' plans cite, today's UTC date, the time now, and for list team-capacity's plan and costs;
+# team-queue's header documents the keys, the states and the words.
 include "ledger";
 
 # The front matter keys, in the order team-queue writes them.
@@ -167,7 +167,7 @@ def queue_items($cards; $events; $projects; $left; $cites; $today; $now):
            elif .opened != null then "takes \($t), which \(.opened) opened"
            else empty end
          | queue_fault("takes")),
-        (select($i.opened == null and $takers == [] and ($citing | length) > 1)
+        (select($i.opened == null and $takers == [] and $i.waits == null and all($i.after[]; .met) and ($citing | length) > 1)
          | "cited by \($citing | map("\(.)'s") | if length == 2 then join(" and ") else (.[:-1] | join(", ")) + " and " + .[-1] end) plans: link it to one with team-queue take and give the other --part"
          | queue_fault(null))]
     | .problems = [.faults[].problem]
@@ -448,3 +448,41 @@ def queue_take($task; $files; $part; $cards; $events; $items):
         | if $part then .from = ((.from // "" | if . == "" then [] else queue_parts end) | if IN(.[]; $task) then . else . + [$task] end | join(", "))
           else .opened = $task end
         | {file: $f, front: (queue_ordered | queue_front)}] end)};
+
+# team-queue tidy's judging, over the queued files' cards ($cards, in name order), their items
+# ($items, queue_items') and the files that left the queue ($left, [{task, file}]), items_over being
+# queue_items over its input [<cards>, <left>]: {links, moves, index, same}. links are each item
+# that is not opened, that no other item takes, that waits on nothing (no waits:, every after:
+# met, since a plan cites a waiting item for what lands before it or after it), whose front matter
+# take can rewrite and that exactly one open task may take by its plan's citing (queue_items'
+# citing), linked to that task, {file, task, front} in name order; moves, judged once the links are written, are each finished item,
+# {file, task, why: "T<n> merged" or "T<n> closed"}, followed by each file it takes that is queued,
+# not finished itself, opened by no task and taken by no item that stays nor by an earlier one
+# leaving, {file, task, why: "<taker> takes it"}; index is the index's text once the links and moves
+# are made, and same whether it is the index as it is ($current).
+def queue_tidy($cards; $items; $left; $current; items_over):
+  ($cards | map({key: .file, value: .}) | from_entries) as $by_card
+  | [$items[] | . as $i
+     | select(.opened == null and (.citing | length) == 1 and $by_card[.file].problems == [])
+     | select(.waits == null and all(.after[]; .met))
+     | select(any($items[]; .file != $i.file and IN(.takes[]; $i.file)) | not)
+     | {file, task: .citing[0],
+        front: ($by_card[.file].keys | .opened = $i.citing[0] | queue_ordered | queue_front)}] as $links
+  | ($links | map({key: .file, value: .task}) | from_entries) as $linked
+  | (if $links == [] then $cards else [$cards[] | if $linked[.file] then .keys.opened = $linked[.file] else . end] end) as $cards
+  | (if $links == [] then $items else [$cards, $left] | items_over end) as $items
+  | [$items[] | select(.finished != null)] as $leaving
+  | [$items[] | select(.finished == null)] as $staying
+  | ($items | map({key: .file, value: .}) | from_entries) as $by_file
+  | (reduce $leaving[] as $f ([];
+      . as $moves
+      | . + [{file: $f.file, task: $f.finished.task, why: "\($f.finished.task) \($f.finished.event)"}]
+          + [$f.takes[] | . as $t | $by_file[$t] // empty
+             | select(.finished == null and .opened == null)
+             | select(any($staying[]; IN(.takes[]; $t)) | not)
+             | select(any($moves[]; .file == $t) | not)
+             | {file: $t, task: $f.finished.task, why: "\($f.file) takes it"}])) as $moves
+  | (if $moves == [] then $items
+     else [[$cards[] | select(.file as $c | any($moves[]; .file == $c) | not)], $left + [$moves[] | {task, file}]] | items_over end) as $items
+  | ($items | queue_view | queue_index_text) as $index
+  | {links: [$links[] | {file, task, front}], moves: $moves, index: $index, same: ($index == $current)};

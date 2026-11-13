@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
-# team-queue take: linking queued items to the task that builds them, opened: T<n> or with --part
-# T<n> in from:, in one commit with the index, or refusing every file and writing nothing.
+# team-queue take and tidy: linking queued items to the task that builds them, opened: T<n> or with
+# --part T<n> in from:, in one commit with the index, or refusing every file and writing nothing;
+# and tidy, the heartbeat's, linking an item an open task's plan cites and moving an item whose
+# task merged whole or closed, with the files it takes, into tasks/T<n>/queued/, in one commit.
 
 load helpers/common
 
@@ -67,10 +69,11 @@ event() {
     >>"$TEAM_HOME/ledger.jsonl"
 }
 
-# The subject of the team home's last commit, and the paths it changed, on one line each.
+# The subject of the team home's last commit, and the paths it changed, on one line each, a move
+# as the path it left and the one it took.
 last_commit() {
   git -C "$TEAM_HOME" log -1 --format=%s
-  git -C "$TEAM_HOME" show --name-only --format= HEAD
+  git -C "$TEAM_HOME" show --name-only --no-renames --format= HEAD
 }
 
 # Commit what the test wrote, and note the head and the queued files' sum, for nothing_written.
@@ -115,11 +118,11 @@ tasks/queued/node-pin.md"
 - node-pin.md (proj, T5): pin Node 24"
   [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
   # Taking it again, a file named twice, changes nothing and says the same.
-  local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  local tip
+  tip=$(git -C "$TEAM_HOME" rev-parse HEAD)
   run_bin -0 --separate-stderr team-queue take T5 node-pin.md node-pin.md
   assert_equal "$output" "took node-pin.md for T5"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$tip"
 }
 
 @test "take --part adds T<n> to from: once, leaving opened and the taker alone, and an item another task opened or another item takes may be part-built" {
@@ -135,11 +138,11 @@ T5 builds part of opened.md"
   assert_equal "$(grep -E '^(from|opened):' "$queued/opened.md")" "from: T5
 opened: T6"
   assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued take T5"
-  local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  local tip
+  tip=$(git -C "$TEAM_HOME" rev-parse HEAD)
   run_bin -0 team-queue take T5 --part node-pin.md
   assert_equal "$(grep '^from:' "$queued/node-pin.md")" "from: T2, T5"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$tip"
 }
 
 @test "take refuses a file not queued, writing nothing" {
@@ -221,4 +224,273 @@ tasks/queued/broken.md: front matter has no closing ---, which take cannot rewri
   AGENT_TEAM_ROLE=builder run_bin -1 --separate-stderr team-queue take T5 node-pin.md
   assert_equal "$stderr" "team-queue: a builder session edits no records: that is the coordinator's; send it your message"
   [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+}
+
+# Append a merged of <task> to the ledger, with phases_left <json> when given: merged <task> [<phases_left>]
+merged() {
+  event "$1" merged "{url: \"https://github.com/owner/proj/pull/1\"}$([[ -z ${2:-} ]] || echo " + {phases_left: $2}")"
+}
+
+# The queued files and those in every task's queued/, one path a line under the team home.
+where() {
+  (cd "$TEAM_HOME" && find tasks -path '*/queued/*.md' ! -name index.md | LC_ALL=C sort)
+}
+
+@test "tidy moves an item into its task's queued/ once the task merged whole, in one commit with the index, and after a closed too" {
+  opened_task T6
+  ready closing.md 2 S "closed unmerged" "opened: T6"
+  ready node-pin.md 2 S "pin Node 24" "opened: T5"
+  # A merged with a phase left builds on: the item stays, and tidy says and commits nothing.
+  merged T5 '[2]'
+  run_bin -0 team-queue index
+  committed
+  run_bin -0 --separate-stderr team-queue tidy
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  nothing_written
+  merged T5 '[]'
+  committed
+  run_bin -0 --separate-stderr team-queue tidy
+  assert_equal "$output" "moved node-pin.md to tasks/T5/queued/: T5 merged
+wrote tasks/queued/index.md: 2 files"
+  assert_equal "$(where)" "tasks/T5/queued/node-pin.md
+tasks/queued/bootstrap-drill.md
+tasks/queued/closing.md"
+  assert_equal "$(head -n 2 "$TEAM_HOME/tasks/T5/queued/node-pin.md")" "---
+summary: pin Node 24"
+  assert_equal "$(last_commit)" "chore: queued tidy
+tasks/T5/queued/node-pin.md
+tasks/queued/index.md
+tasks/queued/node-pin.md"
+  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+  # A closed ends it too.
+  event T6 closed
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" "moved closing.md to tasks/T6/queued/: T6 closed
+wrote tasks/queued/index.md: 1 file"
+  assert_equal "$(where)" "tasks/T5/queued/node-pin.md
+tasks/T6/queued/closing.md
+tasks/queued/bootstrap-drill.md"
+  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued tidy"
+  # Once tidy, a second run changes nothing.
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" ""
+  nothing_written
+}
+
+@test "tidy moves a taken file with its taker unless another queued item still takes it or a task opened it" {
+  opened_task T6
+  opened_task T7
+  ready a.md 3 S "taken by bundle"
+  ready b.md 3 S "taken by both"
+  ready c.md 3 S "opened by T7" "opened: T7"
+  ready bundle.md 2 M "the bundle" "opened: T5" "takes: a.md, b.md, c.md"
+  ready second.md 2 M "the second" "opened: T6" "takes: b.md"
+  run_bin -0 team-queue index
+  committed
+  merged T5
+  run_bin -0 team-queue tidy
+  assert_equal "$output" "moved bundle.md to tasks/T5/queued/: T5 merged
+moved a.md to tasks/T5/queued/: bundle.md takes it
+wrote tasks/queued/index.md: 5 files"
+  assert_equal "$(where)" "tasks/T5/queued/a.md
+tasks/T5/queued/bundle.md
+tasks/queued/b.md
+tasks/queued/bootstrap-drill.md
+tasks/queued/c.md
+tasks/queued/node-pin.md
+tasks/queued/second.md"
+  # b.md leaves with its last taker.
+  merged T6
+  run_bin -0 team-queue tidy
+  assert_equal "$output" "moved second.md to tasks/T6/queued/: T6 merged
+moved b.md to tasks/T6/queued/: second.md takes it
+wrote tasks/queued/index.md: 3 files"
+  assert_equal "$(where)" "tasks/T5/queued/a.md
+tasks/T5/queued/bundle.md
+tasks/T6/queued/b.md
+tasks/T6/queued/second.md
+tasks/queued/bootstrap-drill.md
+tasks/queued/c.md
+tasks/queued/node-pin.md"
+  assert_equal "$(last_commit)" "chore: queued tidy
+tasks/T6/queued/b.md
+tasks/T6/queued/second.md
+tasks/queued/b.md
+tasks/queued/index.md
+tasks/queued/second.md"
+}
+
+@test "two takers that leave in one tidy take a file they share with the first of them" {
+  opened_task T6
+  ready b.md 3 S "taken by both"
+  ready bundle.md 2 M "the bundle" "opened: T6" "takes: b.md"
+  ready second.md 2 M "the second" "opened: T5" "takes: b.md"
+  merged T5
+  merged T6
+  run_bin -0 team-queue tidy
+  assert_equal "$output" "moved bundle.md to tasks/T6/queued/: T6 merged
+moved b.md to tasks/T6/queued/: bundle.md takes it
+moved second.md to tasks/T5/queued/: T5 merged
+wrote tasks/queued/index.md: 2 files"
+}
+
+@test "tidy links an item an open task's plan cites to that task, and moves it in the same run when the task merged whole" {
+  plan_md T5 "# T5 plan
+
+Builds \`~/agent-team-records/tasks/queued/node-pin.md\` and tasks/queued/bootstrap-drill.md."
+  run_bin -0 team-queue index
+  committed
+  run_bin -0 --separate-stderr team-queue tidy
+  assert_equal "$output" "linked bootstrap-drill.md to T5: its plan cites it
+linked node-pin.md to T5: its plan cites it
+wrote tasks/queued/index.md: 2 files"
+  assert_equal "$(cat "$queued/node-pin.md")" "---
+summary: pin Node 24
+project: proj
+priority: 2
+size: S
+from: T2
+opened: T5
+---
+# node-pin
+
+The body."
+  assert_equal "$(last_commit)" "chore: queued tidy
+tasks/queued/bootstrap-drill.md
+tasks/queued/index.md
+tasks/queued/node-pin.md"
+  # A task that merged whole and is not closed yet is still open: its cited item is linked and moved.
+  opened_task T6
+  plan_md T6 "Cites tasks/queued/late.md."
+  ready late.md 2 S "linked late"
+  merged T6
+  run_bin -0 team-queue tidy
+  # The index never listed late.md, so it is as it was.
+  assert_equal "$output" "linked late.md to T6: its plan cites it
+moved late.md to tasks/T6/queued/: T6 merged"
+  assert_equal "$(grep '^opened:' "$TEAM_HOME/tasks/T6/queued/late.md")" "opened: T6"
+}
+
+@test "tidy links no cited item that waits: one whose after: names a file the task builds, one after the task's merge, one with waits:" {
+  ready flakes.md 2 M "the flakes" "opened: T5"
+  ready split.md 1 L "the hot-file split, after the flakes" "after: flakes.md"
+  ready after-merge.md 3 S "what is left once T5 lands" "after: T5 merged"
+  ready ideas.md 4 M "ideas, each on its own incident" "waits: each idea's own incident"
+  plan_md T5 "It lands before the split (tasks/queued/split.md); the rest of tasks/queued/after-merge.md waits;
+it builds two of tasks/queued/ideas.md."
+  run_bin -0 team-queue index
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" ""
+  nothing_written
+  [[ -z $(grep -l '^opened:' "$queued/split.md" "$queued/after-merge.md" "$queued/ideas.md") ]]
+}
+
+@test "tidy links no cited item another item takes" {
+  ready bundle.md 2 M "the bundle" "takes: node-pin.md"
+  plan_md T5 "Cites tasks/queued/node-pin.md."
+  run_bin -0 team-queue index
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" ""
+  nothing_written
+}
+
+@test "tidy links no cited item whose from: names the citing task" {
+  ready notes.md 3 S "T5's notes" "from: T2, T5"
+  plan_md T5 "Cites tasks/queued/notes.md."
+  run_bin -0 team-queue index
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" ""
+  nothing_written
+}
+
+@test "tidy links no cited item whose project is none of the citing task's" {
+  item elsewhere.md "summary: in the other project" "project: other" "priority: 2" "size: S"
+  plan_md T5 "Cites tasks/queued/elsewhere.md."
+  run_bin -0 team-queue index
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" ""
+  nothing_written
+}
+
+@test "tidy links no item two open tasks' plans cite, which --check names, nor one only a closed task's plan cites" {
+  plan_md T2 "Cites tasks/queued/node-pin.md and tasks/queued/bootstrap-drill.md."
+  plan_md T5 "Cites tasks/queued/bootstrap-drill.md."
+  opened_task T6
+  event T6 closed
+  plan_md T6 "Cites tasks/queued/node-pin.md."
+  run_bin -0 team-queue index
+  committed
+  run_bin -0 team-queue tidy
+  # node-pin.md's from: names T2 and T6 is closed, so neither may take it.
+  assert_equal "$output" ""
+  nothing_written
+  run_bin -1 team-queue index --check
+  assert_equal "$output" "tasks/queued/bootstrap-drill.md: cited by T2's and T5's plans: link it to one with team-queue take and give the other --part"
+}
+
+@test "tidy rewrites a stale index alone, and does nothing with no tasks/queued/" {
+  committed
+  run_bin -0 team-queue tidy
+  assert_equal "$output" "wrote tasks/queued/index.md: 2 files"
+  assert_equal "$(last_commit)" "chore: queued tidy
+tasks/queued/index.md"
+  run_bin -0 team-queue index --check
+  git -C "$TEAM_HOME" rm -rq tasks/queued
+  git -C "$TEAM_HOME" commit -qm "chore: no queue"
+  local tip
+  tip=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-queue tidy
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  [[ ! -e $queued ]]
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$tip"
+}
+
+@test "tidy leaves an item queued whose task's queued/ holds its name already, says so and exits 1, moving the rest" {
+  opened_task T6
+  ready node-pin.md 2 S "pin Node 24" "opened: T5"
+  ready closing.md 2 S "closed unmerged" "opened: T6"
+  mkdir -p "$TEAM_HOME/tasks/T5/queued"
+  echo "an earlier copy" >"$TEAM_HOME/tasks/T5/queued/node-pin.md"
+  merged T5
+  event T6 closed
+  run_bin -0 team-queue index
+  committed
+  run_bin -1 --separate-stderr team-queue tidy
+  assert_equal "$output" "moved closing.md to tasks/T6/queued/: T6 closed
+wrote tasks/queued/index.md: 2 files"
+  assert_equal "$stderr" "team-queue: left node-pin.md queued: tasks/T5/queued/node-pin.md is there already"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T5/queued/node-pin.md")" "an earlier copy"
+  [[ -e $queued/node-pin.md ]]
+  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+}
+
+@test "a tidy the team home's hooks refuse leaves its change written for the checkpoint, and exits 1" {
+  ready node-pin.md 2 S "pin Node 24" "opened: T5"
+  run_bin -0 team-queue index
+  committed
+  merged T5
+  printf '#!/bin/sh\necho "refused by the test hook" >&2\nexit 1\n' >"$TEAM_HOME/.git/hooks/pre-commit"
+  chmod +x "$TEAM_HOME/.git/hooks/pre-commit"
+  run_bin -1 --separate-stderr team-queue tidy
+  assert_equal "$output" "moved node-pin.md to tasks/T5/queued/: T5 merged
+wrote tasks/queued/index.md: 1 file"
+  assert_equal "$stderr" "team-queue: team home: cannot commit the records: refused by the test hook
+team-queue: the change is written but not committed; the next checkpoint commits it"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(where)" "tasks/T5/queued/node-pin.md
+tasks/queued/bootstrap-drill.md"
+}
+
+@test "tidy takes no argument, and refuses a worker session" {
+  run_bin -2 team-queue tidy --all
+  AGENT_TEAM_ROLE=builder run_bin -1 --separate-stderr team-queue tidy
+  assert_equal "$stderr" "team-queue: a builder session edits no records: that is the coordinator's; send it your message"
 }

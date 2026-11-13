@@ -341,7 +341,7 @@ tasks/queued/b-closed.md: T6 closed at 2026-01-02T03:04:05Z but it is still queu
 - b-closed.md: T6 closed at 2026-01-02T03:04:05Z but it is still queued; the heartbeat's queue step moves it (team-queue tidy)"
 }
 
-@test "--check names an item two open tasks' plans cite, but not one only one of them may take" {
+@test "--check names an item two open tasks' plans cite, but not one only one of them may take, nor one that waits" {
   local t
   for t in T5 T6 T7; do opened_task "$t"; done
   closed T7
@@ -354,13 +354,17 @@ tasks/queued/b-closed.md: T6 closed at 2026-01-02T03:04:05Z but it is still queu
   ready d-taker.md 2 S "d" "takes: c-taken.md"
   ready e-closed.md 2 S "e"
   ready f-other.md 2 S "f"
+  # Waiting items, which tidy never links, so neither plan could take them.
+  ready g-waits.md 2 S "g" "waits: Daniel's word"
+  ready h-after.md 2 S "h" "after: T5 merged"
   plan_md T5 "# T5 plan
 
 Builds \`~/agent-team-records/tasks/queued/a-shared.md\`, tasks/queued/b-from.md, tasks/queued/c-taken.md,
-tasks/queued/e-closed.md and tasks/queued/f-other.md."
+tasks/queued/e-closed.md and tasks/queued/f-other.md, before tasks/queued/g-waits.md and tasks/queued/h-after.md."
   plan_md T6 "# T6 plan
 
-Builds tasks/queued/a-shared.md and tasks/queued/b-from.md and tasks/queued/c-taken.md."
+Builds tasks/queued/a-shared.md and tasks/queued/b-from.md and tasks/queued/c-taken.md, and cites
+tasks/queued/g-waits.md and tasks/queued/h-after.md."
   plan_md T7 "Cites tasks/queued/e-closed.md."
   plan_md T8 "Cites tasks/queued/f-other.md and tasks/queued/a-shared.md."
   run_bin -0 team-queue index

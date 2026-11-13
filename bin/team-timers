@@ -126,7 +126,18 @@
 #                     time of its last event that is not a denied, for the health record; a line
 #                     no reader can parse fails the step ("ledger: failed: 2 lines are not JSON
 #                     objects: line 3, 7").
-#              coordinator  On the holder, after the ledger step: one read of the live session list
+#              queue  On the holder, after the ledger step, so the sweep the coordinator step runs
+#                     reads a tidy queue: team-queue tidy, which links each queued item an open
+#                     task's plan cites to that task, moves each item whose task merged whole or
+#                     closed into tasks/T<n>/queued/ with the files it takes, and rewrites the
+#                     queue's index, in one commit (bin/team-queue's header says how). Each line it
+#                     prints is logged ("queue: moved node-pin.md to tasks/T5/queued/: T5 merged"),
+#                     and it logs nothing when nothing changed. It is stopped after 60 s, killed 10
+#                     s later ("queue: failed: timed out after 60 s"), and a tidy that fails (a
+#                     commit the team home's hooks refuse, a move its task's queued/ already holds
+#                     the name of) fails its own step alone, never the run, so a broken queue is
+#                     the step-queue alert after 12 runs in a row.
+#              coordinator  On the holder, after the queue step: one read of the live session list
 #                     (claude agents --json, 30 s and killed 10 s later) for a session named
 #                     coordinator, the test claude-coordinator makes before it launches one, so a
 #                     worker whose name merely holds the word is none. It logs nothing while one is
@@ -256,35 +267,35 @@
 #                     (~/.local/state/agent-team/janitor/<date>.md; a dry run's is none):
 #                     team-janitor, the daily Docker reap, report and alerts. A run of it that
 #                     failed still wrote the day's report, so it runs again the next day.
-#            The checkpoint, uptime, capacity, level, stacks and janitor steps log one line per line
-#            their command prints (a good capacity step prints only the sessions it placed, and a
-#            level step only a change); a step that is off logs nothing. A checkpoint, ledger,
+#            The checkpoint, queue, uptime, capacity, level, stacks and janitor steps log one line
+#            per line their command prints (a good capacity step prints only the sessions it placed,
+#            and a level step only a change); a step that is off logs nothing. A checkpoint, ledger,
 #            uptime, capacity, level, stacks, pack or janitor step that fails (a level step's post
 #            that Discord refused, kept for its next run, too), or whose stack.json (capacity.json
 #            for the capacity and level steps) is malformed, is logged as "<step>: failed:
 #            <reason>", the steps after it still run (the capacity step's place after its sample
 #            too), and the run exits 1 at its end. A hung GitHub, production or Docker never holds
-#            the run's lock for good: the checkpoint is stopped after 300 s, the uptime step after
-#            180 s, each reading and the place after 60 s, the level step, the sweep and the pack
-#            after 300 s and the janitor after 1200 s, each logged as "<step>: failed: timed out
-#            after <n> s" (a janitor stopped so wrote no report, so the next run starts it again),
-#            and a whole run, on Linux and macOS alike, after 70 minutes, with everything it
-#            started, logged as "run: failed: timed out after 4200 s" (exit 1), so the next run
-#            takes the lock; the systemd service's TimeoutStartSec=4500 stands behind that. The
-#            sweep, the janitor and the level step need docker on the PATH enable captured (the
-#            sweep and the capacity step claude too), and the reading counts the team's stacks as
-#            other programs without it: run enable again once it is there. A run that finds
-#            another still going skips. Posts go through discord_api; times in them are
-#            this machine's local time. On macOS, inside the job (TEAM_HEARTBEAT_JOB is
-#            agent-team.heartbeat) with the heartbeat's plist gone, the job was disabled while
-#            loaded: a run that starts so says "team-timers: the heartbeat was disabled, so this
-#            run unloads its job and does nothing else" on stderr, boots its job out and exits 0,
-#            before the lock or any step, with no log line or record; a run whose plist went while
-#            it ran (its own fence, or a handoff's disable) boots its job out as its very last act,
-#            after its log line, record and alerts, on the normal and the timed-out end alike (the
-#            timed-out end takes the lock back the moment the stopped run lets it go, and holds it
-#            to the end, so no disable from outside reads the run as over meanwhile). Outside the
-#            job, or with the plist there, a run is as above.
+#            the run's lock for good: the checkpoint is stopped after 300 s, the queue step (whose
+#            commit pushes) after 60 s, the uptime step after 180 s, each reading and the place
+#            after 60 s, the level step, the sweep and the pack after 300 s and the janitor after
+#            1200 s, each logged as "<step>: failed: timed out after <n> s" (a janitor stopped so
+#            wrote no report, so the next run starts it again), and a whole run, on Linux and macOS
+#            alike, after 70 minutes, with everything it started, logged as "run: failed: timed out
+#            after 4200 s" (exit 1), so the next run takes the lock; the systemd service's
+#            TimeoutStartSec=4500 stands behind that. The sweep, the janitor and the level step need
+#            docker on the PATH enable captured (the sweep and the capacity step claude too), and
+#            the reading counts the team's stacks as other programs without it: run enable again
+#            once it is there. A run that finds another still going skips. Posts go through
+#            discord_api; times in them are this machine's local time. On macOS, inside the job
+#            (TEAM_HEARTBEAT_JOB is agent-team.heartbeat) with the heartbeat's plist gone, the job
+#            was disabled while loaded: a run that starts so says "team-timers: the heartbeat was
+#            disabled, so this run unloads its job and does nothing else" on stderr, boots its job
+#            out and exits 0, before the lock or any step, with no log line or record; a run whose
+#            plist went while it ran (its own fence, or a handoff's disable) boots its job out as
+#            its very last act, after its log line, record and alerts, on the normal and the
+#            timed-out end alike (the timed-out end takes the lock back the moment the stopped run
+#            lets it go, and holds it to the end, so no disable from outside reads the run as over
+#            meanwhile). Outside the job, or with the plist there, a run is as above.
 #   watch    A stream for anyone watching the hold: checks the offline flag every 60 s until
 #            killed, and prints one line when it appears (at once if it is there) and one when it
 #            goes:
@@ -321,20 +332,21 @@
 # team-lease status, the fence hook, the doctor and the session digest; whether #coordinator was
 # told is the offline notice's), and on macOS heartbeat.err, the job's stderr (systemd keeps it in
 # the journal).
-# TEAM_TIMERS_CHECKPOINT_SECONDS, TEAM_TIMERS_FINISHED_SECONDS, TEAM_TIMERS_FINISHED_CALL_SECONDS,
-# TEAM_TIMERS_COORDINATOR_SWEEP_SECONDS, TEAM_TIMERS_UPTIME_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS,
-# TEAM_TIMERS_LEVEL_SECONDS, TEAM_TIMERS_SWEEP_SECONDS, TEAM_TIMERS_JANITOR_SECONDS,
-# TEAM_TIMERS_RUN_SECONDS, TEAM_TIMERS_LOCK_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the
-# checkpoint step's 300 s, the finished step's 90 s after which no stop starts, its 30 s for each
-# call (the back step's and the coordinator step's session lists' too), the coordinator step's 60 s
-# for its sweep, the uptime step's 180 s, the capacity step's 60 s for each of its commands, the
-# level step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s, enable's 60 s wait
-# for the run's lock and the 10 s after a time limit at which a command still running is killed,
-# TEAM_TIMERS_FAILURES_DAYS the failures log's 30 days, and
-# TEAM_TIMERS_HEALTH_RUNS, TEAM_TIMERS_HEALTH_STALE_MINUTES, TEAM_TIMERS_HEALTH_STEP_RUNS and
+# TEAM_TIMERS_CHECKPOINT_SECONDS, TEAM_TIMERS_QUEUE_SECONDS, TEAM_TIMERS_FINISHED_SECONDS,
+# TEAM_TIMERS_FINISHED_CALL_SECONDS, TEAM_TIMERS_COORDINATOR_SWEEP_SECONDS,
+# TEAM_TIMERS_UPTIME_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS,
+# TEAM_TIMERS_SWEEP_SECONDS, TEAM_TIMERS_JANITOR_SECONDS, TEAM_TIMERS_RUN_SECONDS,
+# TEAM_TIMERS_LOCK_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the checkpoint step's 300 s, the
+# queue step's 60 s, the finished step's 90 s after which no stop starts, its 30 s for each call
+# (the back step's and the coordinator step's session lists' too), the coordinator step's 60 s for
+# its sweep, the uptime step's 180 s, the capacity step's 60 s for each of its commands, the level
+# step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s, enable's 60 s wait for
+# the run's lock and the 10 s after a time limit at which a command still running is killed,
+# TEAM_TIMERS_FAILURES_DAYS the failures log's 30 days, and TEAM_TIMERS_HEALTH_RUNS,
+# TEAM_TIMERS_HEALTH_STALE_MINUTES, TEAM_TIMERS_HEALTH_STEP_RUNS and
 # TEAM_TIMERS_HEALTH_UNATTENDED_MINUTES the health view's and the alerts' 2 runs, 15 minutes, 12
-# runs and 60 minutes, and TEAM_NOTICES_LOCK_SECONDS the 10 s a write of the notice record waits
-# for its lock (the tests' seams).
+# runs and 60 minutes, and TEAM_NOTICES_LOCK_SECONDS the 10 s a write of the notice record waits for
+# its lock (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -354,26 +366,27 @@ POST_TIMEOUT=20
 # Seconds: the most team-inbox may take (its lock's wait and two calls).
 INBOX_TIMEOUT=120
 # Seconds: the most each step after the lease step may take on the holder, each command stopped then
-# and killed KILL_SECONDS later: the checkpoint 300 (CHECKPOINT_TIMEOUT), the coordinator step's
-# session list 30 (FINISHED_CALL_TIMEOUT) and sweep 60 (COORDINATOR_SWEEP_TIMEOUT), the uptime step
-# 180 (UPTIME_TIMEOUT), the inbox step 120 (INBOX_TIMEOUT above), the finished step 120 (its
-# session list and each stop 30 s, FINISHED_CALL_TIMEOUT, and no stop started once
-# FINISHED_TIMEOUT has passed, so at most 90 s and one last stop's 30), the capacity step's sample
-# and place 60 each, the level step 300, the sweep 300, the pack 300 and the janitor 1200. That is
-# 3030 s in all, 3150 s with the kills (10 s each for the other steps' eleven commands and the
-# finished step's last stop), about 53 minutes. The lease step leaves a lease unrenewed only under
-# 14 minutes old, so a run that hits every limit ends with it about 67 minutes old, past the
-# lease's hour (team-lease's TTL_MINUTES), and the next run starts at the next mark, up to
-# INTERVAL minutes and SLACK_SECONDS later, and renews behind its read of origin. A lease past its
-# ttl is stale, which changes only what team-lease take says on another machine (stale, not
-# fresh): the holder still holds it, and the renewal makes it fresh again.
-# RUN_TIMEOUT, 70 minutes, stops a run that outlasts all of that (a hang before the steps, or in a
-# command no step's limit reaches), so one hang never ends the renewals and checkpoints for good;
-# the systemd service's START_TIMEOUT, 75 minutes, is the backstop behind it.
+# and killed KILL_SECONDS later: the checkpoint 300 (CHECKPOINT_TIMEOUT), the queue step 60
+# (QUEUE_TIMEOUT), the coordinator step's session list 30 (FINISHED_CALL_TIMEOUT) and sweep 60
+# (COORDINATOR_SWEEP_TIMEOUT), the uptime step 180 (UPTIME_TIMEOUT), the inbox step 120
+# (INBOX_TIMEOUT above), the finished step 120 (its session list and each stop 30 s,
+# FINISHED_CALL_TIMEOUT, and no stop started once FINISHED_TIMEOUT has passed, so at most 90 s and
+# one last stop's 30), the capacity step's sample and place 60 each, the level step 300, the sweep
+# 300, the pack 300 and the janitor 1200. That is 3090 s in all, 3220 s with the kills (10 s each
+# for the other steps' twelve commands and the finished step's last stop), about 54 minutes. The
+# lease step leaves a lease unrenewed only under 14 minutes old, so a run that hits every limit ends
+# with it about 68 minutes old, past the lease's hour (team-lease's TTL_MINUTES), and the next run
+# starts at the next mark, up to INTERVAL minutes and SLACK_SECONDS later, and renews behind its
+# read of origin. A lease past its ttl is stale, which changes only what team-lease take says on
+# another machine (stale, not fresh): the holder still holds it, and the renewal makes it fresh
+# again. RUN_TIMEOUT, 70 minutes, stops a run that outlasts all of that (a hang before the steps, or
+# in a command no step's limit reaches), so one hang never ends the renewals and checkpoints for
+# good; the systemd service's START_TIMEOUT, 75 minutes, is the backstop behind it.
 CHECKPOINT_TIMEOUT=${TEAM_TIMERS_CHECKPOINT_SECONDS:-300}
 # Seconds past which the checkpoint begins no worktree, two fifths of its limit (120 of 300): one
 # begun by then makes at most two origin calls of 60 s, so its records commit begins in the limit.
 CHECKPOINT_DEADLINE=$((CHECKPOINT_TIMEOUT * 2 / 5))
+QUEUE_TIMEOUT=${TEAM_TIMERS_QUEUE_SECONDS:-60}
 FINISHED_TIMEOUT=${TEAM_TIMERS_FINISHED_SECONDS:-90}
 FINISHED_CALL_TIMEOUT=${TEAM_TIMERS_FINISHED_CALL_SECONDS:-30}
 COORDINATOR_SWEEP_TIMEOUT=${TEAM_TIMERS_COORDINATOR_SWEEP_SECONDS:-60}
@@ -1515,7 +1528,28 @@ ledger_step() {
   fi
 }
 
-# The coordinator step, on the holder after the ledger step: one read of the live session list
+# The queue step, on the holder after the ledger step and before the coordinator step, so the sweep
+# it runs reads a tidy queue: team-queue tidy (QUEUE_TIMEOUT, killed KILL_SECONDS later), each line
+# it prints logged; a tidy that fails or is stopped fails this step alone, never the run, so a
+# broken queue is the step-queue alert after 12 runs in a row.
+queue_step() {
+  local rc=0 out line why
+  out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$QUEUE_TIMEOUT" "$bin/team-queue" tidy \
+    2>"$err" </dev/null {run_fd}>&-) || rc=$?
+  while IFS= read -r line; do
+    [[ -z $line ]] || log queue "$line"
+  done <<<"$out"
+  case $rc in
+    0) step_ok queue ;;
+    124 | 137) why="timed out after $QUEUE_TIMEOUT s" ;;
+    *) why=$(grep -q . "$err" && first_error || echo "team-queue exited $rc") ;;
+  esac
+  ((rc)) || return 0
+  problem queue "failed: $why"
+  step_fail queue "$why"
+}
+
+# The coordinator step, on the holder after the queue step: one read of the live session list
 # (claude agents --json, FINISHED_CALL_TIMEOUT and killed KILL_SECONDS later) for a session named
 # coordinator, claude-coordinator's own test before it launches one. Logs nothing while one is
 # live, and a problem line each run with none, the health record keeping since when; a list that
@@ -1647,6 +1681,7 @@ run_heartbeat() {
   if ((holding)); then
     checkpoint_step
     ledger_step
+    queue_step
     coordinator_step
     write_record ''
     alerts_step
