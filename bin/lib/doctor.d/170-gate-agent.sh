@@ -50,7 +50,7 @@ gate_guarded() {
     case $command in
       \"*) word=${command#\"} && word=${word%%\"*} ;;
       \'*) word=${command#\'} && word=${word%%\'*} && [[ $word != *'$'* ]] || continue ;;
-      '~/'*) word=$HOME/${command#'~/'} && word=${word%%[[:space:]]*} ;;
+      \~/*) word=$HOME/${command#\~/} && word=${word%%[[:space:]]*} ;;
       *) word=${command%%[[:space:]]*} ;;
     esac
     case $word in
