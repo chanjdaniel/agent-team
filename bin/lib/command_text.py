@@ -59,8 +59,8 @@ bracket pair as Bash's lexer reads it there, blanks, quotes, nested brackets and
 kept as written: X[ 0 ]=1, X[;]=1) among them, since Bash runs the command after one it refuses;
 its words from the name of what runs on, past the wrappers env, command, builtin, exec, nohup,
 time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock with
-their options (env's lone - among them; command's and the reserved word time's take no value,
-so command -p source runs source), numbers and flock's file, parallel's inputs after its ::: or
+their options (env's lone - among them; command's, and time's -p and --, take no value, so
+command -p source runs source), numbers and flock's file, parallel's inputs after its ::: or
 :::: left out but for those with a scheme (https://host/u), read as URLs; the wrappers it ran
 behind, each its own words, the outermost first, with the command that ran its string, its find,
 or the shell or source that ran its file; and how it was reached: directly, in a string a tool
@@ -936,9 +936,11 @@ def _command(words):
     while i < n and os.path.basename(words[i]) in WRAPPERS:
         start, wrapper = i, os.path.basename(words[i])
         file_left, option = wrapper == "flock", False
-        # command's options (-p, -v, -V) and the reserved word time's (-p) take no value, and
-        # builtin takes none, so the word after one may be the builtin they run (source, ., trap).
-        valueless = wrapper in ("command", "builtin") or words[i] == "time"
+        # command's options (-p, -v, -V) take no value, and builtin takes none, so the word after
+        # one may be the builtin they run (source, ., trap); so does time's -p, the reserved word's
+        # only option, or --, but the external time's other options, as -o FILE, take a value.
+        valueless = wrapper in ("command", "builtin")
+        timeless = ("-p", "--") if wrapper == "time" else ()
         inputs = inputs or wrapper == "parallel"
         if wrapper in JOINING:
             joined = _joined(words[i + 1 :], wrapper == "parallel")
@@ -968,7 +970,7 @@ def _command(words):
                 # env's lone -, -i's other name, takes no value.
                 option = False
             elif word.startswith("-") and word != "-":
-                option = not valueless
+                option = not valueless and word not in timeless
             elif NUMBER.fullmatch(word):
                 option = False
             elif option:
