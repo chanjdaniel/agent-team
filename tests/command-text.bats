@@ -2,7 +2,10 @@
 # lib/command_text.py's walk: each simple command a Bash call runs, past its wrappers and into the
 # strings its tools run, as `python3 -I command_text.py --commands` prints it, one JSON line per
 # command: how it was reached, its assignments, the wrappers it ran behind (each its own words,
-# the outermost first) and its words from the name of what runs on.
+# the outermost first) and its words from the name of what runs on. And its code text, which keeps
+# as code a script the command writes to a file (a heredoc, a here-string, echo or printf, by >,
+# >> or tee) and runs (by a shell, source, . or its own name), so command-guard refuses a kill or a
+# recursive delete routed through one.
 
 load helpers/common
 
@@ -23,6 +26,57 @@ walks() {
   expected=$(printf '%s\n' "$@")
   [[ $status -eq 0 && $output == "$expected" && -z $stderr ]] ||
     { printf 'walk of: %s\nstatus %s, stderr: %s\nexpected:\n%s\ngot:\n%s\n' "$command" "$status" "$stderr" "$expected" "$output" >&2; return 1; }
+}
+
+# The code text of <command> holds each <line> as a line of its own: keeps <command> <line>...
+keeps() {
+  local command=$1 line
+  shift
+  run --separate-stderr python3 -I "$REPO_ROOT/bin/lib/command_text.py" < <(printf '%s' "$command")
+  [[ $status -eq 0 && -z $stderr ]] || { printf 'code text of: %s\nstatus %s, stderr: %s\n' "$command" "$status" "$stderr" >&2; return 1; }
+  for line; do
+    grep -qxF -- "$line" <<<"$output" ||
+      { printf 'no line %s in the code text of:\n%s\ngot:\n%s\n' "$line" "$command" "$output" >&2; return 1; }
+  done
+}
+
+# The code text of each <command> holds no line <line>: drops <line> <command>...
+drops() {
+  local line=$1 command
+  shift
+  for command; do
+    run --separate-stderr python3 -I "$REPO_ROOT/bin/lib/command_text.py" < <(printf '%s' "$command")
+    [[ $status -eq 0 && -z $stderr ]] || { printf 'code text of: %s\nstatus %s, stderr: %s\n' "$command" "$status" "$stderr" >&2; return 1; }
+    if grep -qxF -- "$line" <<<"$output"; then
+      printf 'line %s kept in the code text of:\n%s\ngot:\n%s\n' "$line" "$command" "$output" >&2
+      return 1
+    fi
+  done
+}
+
+# Each way the tests write "run a" to x.sh, and each way they run x.sh.
+WRITES=(
+  $'cat > x.sh <<\'EOF\'\nrun a\nEOF'
+  $'cat >>x.sh <<EOF\nrun a\nEOF'
+  $'tee x.sh <<\'EOF\'\nrun a\nEOF'
+  $'tee -a x.sh >/dev/null <<\'EOF\'\nrun a\nEOF'
+  $'cat <<\'EOF\' | tee x.sh\nrun a\nEOF'
+  $'{ cat <<\'EOF\'\nrun a\nEOF\n} > x.sh'
+  "printf 'run a\\n' > x.sh"
+  "printf '%s\\n' 'run a' >x.sh"
+  "echo 'run a' >> x.sh"
+  "echo -n 'run a' | tee x.sh"
+  "cat <<< 'run a' > x.sh"
+)
+RUNS=('bash x.sh' 'sh ./x.sh' './x.sh' '"./x.sh"' '. x.sh' 'source x.sh' 'sudo bash -x x.sh y' "bash -c 'bash x.sh'" 'x.sh')
+
+# The hook on a Bash call of <command>, from a worktree and job tmp of the test's own:
+# guard <status> <command>
+guard() {
+  local wt=$BATS_TEST_TMPDIR/worktree
+  mkdir -p "$wt" "$BATS_TEST_TMPDIR/job/tmp"
+  CLAUDE_PROJECT_DIR=$wt CLAUDE_JOB_DIR=$BATS_TEST_TMPDIR/job run_bin "$1" --separate-stderr hooks/command-guard \
+    <<<"$(jq -cn --arg c "$2" --arg d "$wt" '{hook_event_name: "PreToolUse", cwd: $d, tool_name: "Bash", tool_input: {command: $c}}')"
 }
 
 @test "each simple command of a list, a pipeline, a group and a substitution is reached directly" {
@@ -194,4 +248,73 @@ for command in command_text.commands("bash -c x"):
   [[ $status -eq 0 && -z $stderr ]]
   assert_equal "$output" "bash -c 'run x'
 run x'"
+}
+
+@test "a script written to a file and run as one in the same command is kept as code" {
+  local write runner
+  for write in "${WRITES[@]}"; do
+    for runner in "${RUNS[@]}"; do
+      keeps "$write"$'\n'"$runner" 'run a'
+      keeps "$write"$'\n'"chmod +x x.sh && $runner" 'run a'
+    done
+  done
+}
+
+@test "a written script's text is read as code in its turn, and each file it runs" {
+  # A heredoc a written script feeds to a shell, a string it runs and a script it writes and runs.
+  keeps $'printf \'bash <<EOF\\nrun b\\nEOF\\n\' > x.sh; bash x.sh' 'run b'
+  keeps "printf '%s\\n' \"bash -c 'run c'\" > x.sh; bash x.sh" "run c'"
+  keeps "printf 'run d\\n' > a.sh; printf 'bash a.sh\\n' > b.sh; bash b.sh" 'run d'
+  # printf's format is used again while its arguments last; echo -e and %b decode escapes.
+  keeps "printf '%s\\n' 'run e' 'run f' > x.sh; bash x.sh" 'run e' 'run f'
+  keeps "printf 'run %s\\n' g > x.sh; bash x.sh" 'run g'
+  keeps "echo -e 'run h\\nrun i' > x.sh; bash x.sh" 'run h' 'run i'
+  keeps "printf '%b' 'run j\\nrun k' > x.sh; bash x.sh" 'run j' 'run k'
+  # Pieces written to one file are read together, in order.
+  keeps "printf 'run ' > x.sh; printf 'l\\n' >> x.sh; bash x.sh" 'run l'
+  # echo without -e writes a backslash as it is, which sh's echo would decode: both are read.
+  keeps "echo 'run m\\nrun n' > x.sh; sh x.sh" 'run m\nrun n' 'run n'
+}
+
+@test "a written file never run, or run under another name, keeps its text out of the code text" {
+  local write
+  for write in "${WRITES[@]}"; do
+    drops 'run a' "$write" "$write"$'\n''bash y.sh' "$write"$'\n''cat x.sh; ./x.sh.bak; bash sub/x.sh' \
+      "$write"$'\n''printf -v s x.sh'
+  done
+  # A printf into a variable writes no file; neither does a redirection of another fd.
+  drops 'run a' "printf -v x.sh 'run a'; bash x.sh" "echo 'run a' 2> x.sh; bash x.sh" "echo 'run a' >&2; bash x.sh"
+}
+
+@test "a script written 20 deep is read, and one deeper fails, so a guard refuses" {
+  local command='run z' k
+  for k in {1..20}; do command="cat > x$k.sh <<'E$k'"$'\n'"$command"$'\n'"E$k"$'\n'"bash x$k.sh"; done
+  keeps "$command" 'run z'
+  command="cat > x21.sh <<'E21'"$'\n'"$command"$'\n'"E21"$'\n'"bash x21.sh"
+  run --separate-stderr python3 -I "$REPO_ROOT/bin/lib/command_text.py" < <(printf '%s' "$command")
+  [[ $status -eq 1 ]]
+  [[ $stderr == *"ValueError: a written script nested deeper than 20" ]]
+}
+
+@test "command-guard refuses a kill or a recursive delete in a script written and run in the same command" {
+  local body runner command
+  for body in 'pkill -f vite' 'rm -rf /tmp/x'; do
+    for command in \
+      $'cat > x.sh <<\'EOF\'\n'"$body"$'\nEOF\nbash x.sh' \
+      $'cat > x.sh <<EOF\n'"$body"$'\nEOF\nsh ./x.sh' \
+      $'tee x.sh <<EOF\n'"$body"$'\nEOF\n./x.sh' \
+      $'cat > x.sh <<\'EOF\'\n'"$body"$'\nEOF\n. x.sh' \
+      $'cat > x.sh <<\'EOF\'\n'"$body"$'\nEOF\nsource x.sh' \
+      "printf '$body\\n' > x.sh; bash x.sh"; do
+      guard -2 "$command"
+      case $body in
+        pkill*) [[ $stderr == "Blocked by command-guard: a kill by name or pattern (pkill), "* ]] ;;
+        rm*) [[ $stderr == "Blocked by command-guard: a recursive delete of /tmp/x"* ]] ;;
+      esac || { printf 'command: %s\nstderr: %s\n' "$command" "$stderr" >&2; return 1; }
+    done
+    for runner in 'bash y.sh' 'cat x.sh'; do
+      guard -0 $'cat > x.sh <<\'EOF\'\n'"$body"$'\nEOF\n'"$runner"
+      [[ -z $stderr ]] || { printf 'runner: %s\nstderr: %s\n' "$runner" "$stderr" >&2; return 1; }
+    done
+  done
 }

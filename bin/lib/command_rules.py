@@ -7,8 +7,10 @@ bin/hooks/command-guard runs this file once per Bash call it does not pass at on
 the call when it prints a line. It reads tool_input.command from the hook's input, takes its code
 text in parts as command_text.code_parts gives them (the command with each heredoc's body left
 out unless a shell may read it, then each string a shell, eval, env -S and find -exec run, and
-what is piped into a shell, a part of its own, so a quote one leaves open hides no other), each
-heredoc a part still opens blanked so that every line of it is code, and walks each simple
+what is piped into a shell, a part of its own, so a quote one leaves open hides no other, then the
+parts of each script the command writes to a file and runs, by a heredoc, a here-string, echo or
+printf, as its header says), each heredoc a part still opens blanked (blank_heredocs) so that
+every line of it is code, and walks each simple
 command each part runs, then each one the command's own text runs (its heredocs'
 bodies left out as Bash reads them, so a substitution a body leaves open in the code text hides
 no line after it), as command_text.commands yields them: past the wrappers env, nohup, command,
@@ -68,8 +70,9 @@ it; only the kill and delete rows use it, so a call with neither reads no proces
 A row reads every command the walk yields, a shell's script file and a sourced one among them (a
 file named team-worker that bash runs is team-worker), but for the upload row, which reads no
 file's name as curl.
-Not seen: a name built by a substitution or held in a variable; a script or function of one's
-own, or a copy or link of a guarded one; a string another interpreter runs (python3 -c, node -e,
+Not seen: a name built by a substitution or held in a variable; a function of one's own, a
+script of one's own written by an earlier call or the Write tool (one this call writes and runs is
+read), or a copy or link of a guarded one; a string another interpreter runs (python3 -c, node -e,
 perl -e, a require of the capture script); a file a shell reads on stdin (cat x | bash); what
 command_text.commands does not walk (its header lists it: ssh's remote command, nsenter, chroot,
 unshare, systemd-run, tmux send-keys, git rebase's --exec); each under an emptied environment
@@ -93,7 +96,7 @@ from typing import Callable
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from command_text import (  # noqa: E402
-    ASSIGNMENT, code_parts, command_name, commands, from_wrappers, has_blank, heads, leads, read_command,
+    ASSIGNMENT, blank_heredocs, code_parts, command_name, commands, from_wrappers, has_blank, heads, leads,
 )
 import delete_rules  # noqa: E402
 import kill_rules  # noqa: E402
@@ -381,18 +384,6 @@ ROWS = (
 ) + tuple(Row(id, test, None, allowed) for id, test, allowed in kill_rules.ROWS + delete_rules.ROWS)
 
 
-def _code(part):
-    """A part of the command's code text, with the operator and marker of each heredoc it still
-    opens blanked, so the walk reads every line of it as code: a body a shell reads, kept whole,
-    and the lines after a heredoc whose body is left out."""
-    out, start = [], 0
-    for heredoc in sorted(read_command(part).heredocs, key=lambda heredoc: heredoc.marker[0]):
-        begin, end = heredoc.marker
-        out += [part[start:begin], " " * (end - begin)]
-        start = end
-    return "".join(out) + part[start:]
-
-
 class RowError(Exception):
     """A row that raised, named."""
 
@@ -403,7 +394,7 @@ def refusal(command, context=None):
     # The command's own text too, whose heredoc bodies the walk leaves out as Bash reads them: a
     # line of the code text that an unquoted body keeps from its first $( or backtick on may open
     # a substitution that never closes (an escaped backtick), which would hide the lines after it.
-    walked = [found for part in code_parts(command) for found in commands(_code(part))]
+    walked = [found for part in code_parts(command) for found in commands(blank_heredocs(part))]
     walked += commands(command)
     for row in ROWS:
         for found in walked:
