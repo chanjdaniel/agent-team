@@ -36,8 +36,9 @@
 # An item's state, the first that holds: unranked (it has a problem, below), finished (opened by a
 # task that merged whole, or closed: a research or retro task's close, or a feature, bug or small
 # task's once it merged whole), opened (opened by a task still building it), taken (another
-# item takes it; it is listed under each taker, never alone), waiting (a waits line, or an after
-# condition not met), else ready.
+# item takes it; it is listed under each taker, never alone, but for a taken item with a problem
+# of its own, which is unranked and so listed under "## Unranked" too), waiting (a waits line, or
+# an after condition not met), else ready.
 # Ready items rank across every project: by priority (1 first), then by how many queued items'
 # after names them (more first), then by size (S, M, L), then by file name; waiting items list in
 # the same order, opened and finished ones by task number, unranked ones by name.

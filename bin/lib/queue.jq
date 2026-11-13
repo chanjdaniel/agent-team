@@ -2,11 +2,10 @@
 # after: condition is met, how the items rank, the problems team-queue index --check names, the text
 # of the index, the judging of team-queue set's table, of team-queue take and of team-queue tidy's
 # links and moves, whether the level has room for one more task and team-queue list's object and
-# findings. Used by team-queue as jq -nR -L bin/lib 'include "queue"; include "ledger"; ...' over
-# the ledger's lines, with the items' cards (team-queue's one awk pass: {file, title, keys,
-# problems}), the registry's project names, the items that left the queue, the queued files the
-# tasks' plans cite, today's UTC date, the time now, and for list team-capacity's plan and costs;
-# team-queue's header documents the keys, the states and the words.
+# findings. Used by team-queue over the ledger's lines (jq -nR), with the items' cards (team-queue's
+# one awk pass: {file, title, keys, problems}), the registry's project names, the items that left
+# the queue, the queued files the tasks' plans cite, today's UTC date, the time now, and for list
+# team-capacity's plan and costs; team-queue's header documents the keys, the states and the words.
 include "ledger";
 
 # The front matter keys, in the order team-queue writes them.
@@ -199,8 +198,9 @@ def queue_items($cards; $events; $projects; $left; $cites; $today; $now):
 def queue_order: sort_by([.priority, -.unblocks, (.size as $s | queue_sizes | index($s)), .file]);
 
 # The items by section: ready (ranked, rank 1 first), waiting (in the same order), opened (an
-# opened or finished item, by task number), unranked (by name), and every item by file, taken
-# ones included: {ready, waiting, opened, unranked, items}.
+# opened or finished item, by task number), unranked (by name, a taken one too, which the index
+# also lists under its takers), and every item by file, taken ones included: {ready, waiting,
+# opened, unranked, items}.
 def queue_view:
   {ready: ([.[] | select(.state == "ready")] | queue_order | to_entries | map(.value + {rank: (.key + 1)})),
    waiting: ([.[] | select(.state == "waiting")] | queue_order),
