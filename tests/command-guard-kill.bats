@@ -34,7 +34,7 @@ started() {
   "${2:-sleep}" 300 </dev/null >/dev/null 2>&1 3>&- &
   STARTED=$!
   PIDS+=("$STARTED")
-  cd -- "$here"
+  cd -- "$here" || return
 }
 
 # The PID of a process that has ended, as GONE.
