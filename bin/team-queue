@@ -5,6 +5,7 @@
 #
 # Usage: team-queue index [--check]
 #        team-queue set <table>
+#        team-queue take T<n> <file>... [--part]
 #        team-queue list [--json] [--plan <file>]
 # An item is work Daniel approved: one Markdown file in tasks/queued/ but index.md, its first "# "
 # line its title. It opens with front matter, a "---" line, then "<key>: <value>" lines, each key
@@ -73,6 +74,18 @@
 # those files alone, "chore: queued set", and prints "set <n> files" ("1 file") and the index's
 # line, then each line --check still names (a file the table leaves alone, a key it has no column
 # for, a finished item, an item two plans cite), exiting 1 when it prints any.
+# take links queued items to the task that builds them: it writes opened: T<n> into each file
+# given, or with --part, for a task that builds only part of an item, adds T<n> to its from: once.
+# It judges every file first and writes nothing on any refusal, printing each and exiting 1: a
+# task with no opened in the ledger or with a closed ("T<n> has no opened in the ledger", "T<n>
+# closed at <ts>"), a file not queued ("<file> is not queued"), and as "tasks/queued/<file>:
+# <reason>" a file whose front matter it cannot rewrite without losing a line (as set), an item
+# whose project is none of the task's (its opened's and worktree-added's projects), and, but with
+# --part, an item another task opened or another item takes. Else it writes each file, its keys in
+# the order above, and the index, through temporary files, under the ledger's lock, as one commit
+# of those files alone, "chore: queued take T<n>", and prints "took <file> for T<n>" (with --part
+# "T<n> builds part of <file>") for each; taking an item the task already opened again changes
+# nothing. team-open --queued runs it once the task is open.
 # list writes nothing. It says whether the level has room for one more task, read from
 # team-capacity plan --json (the file --plan names when the caller already holds one, as the
 # sweep does, which may be {error: <why>}, else its own run) and team-capacity costs --json: it
@@ -112,7 +125,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-queue index [--check] | set <table> | list [--json] [--plan <file>]"
+usage="usage: team-queue index [--check] | set <table> | take T<n> <file>... [--part] | list [--json] [--plan <file>]"
 queued=$TEAM_HOME/tasks/queued
 index_rel=tasks/queued/index.md
 index=$TEAM_HOME/$index_rel
@@ -266,6 +279,34 @@ edit_set() {
   edit_index
 }
 
+# Write opened: T<n> (or with --part T<n> in from:) into each file take names, and the index,
+# under the lock commit_records holds, or print take's refusals on the descriptor $stdout names and
+# exit 1, writing nothing: edit_take
+edit_take() {
+  local -a out temps=() targets=()
+  local i
+  queue_jq -j --arg task "$take_task" --argjson files "$(printf '%s\n' "${take_files[@]}" | jq -Rnc '[inputs]')" \
+    --argjson part "$part" \
+    'queue_take($task; $files; $part; $cards; $events; $items)
+    | if .refusals != [] then "refuse\u0000", (.refusals[] | "\(.)\u0000")
+      else "write\u0000", (.writes[] | "\(.file)\u0000\(.front)\u0000") end' >"$plan" ||
+    die "cannot judge the take"
+  mapfile -d '' -t out <"$plan"
+  if [[ ${out[0]:-} != write ]]; then
+    printf '%s\n' "${out[@]:1}" >&"$stdout"
+    die "nothing is taken"
+  fi
+  for ((i = 1; i < ${#out[@]}; i += 2)); do
+    targets+=("$queued/${out[i]}")
+    temps+=("$queued/${out[i]}.$$")
+    give "${targets[-1]}" "${out[i + 1]}" || { rm -f "${temps[@]}"; die "cannot write ${targets[-1]}"; }
+  done
+  for i in "${!temps[@]}"; do
+    mv -f "${temps[i]}" "${targets[i]}" || { rm -f "${temps[@]}"; die "cannot write ${targets[i]}"; }
+  done
+  edit_index
+}
+
 # team-capacity <sub> --json's object into <out>, or {error} with the last line it said on stderr
 # (~ for the home directory) when it fails: capacity_json <sub> <out>
 capacity_json() {
@@ -342,6 +383,40 @@ case $command in
     [[ -n $problems ]] || exit 0
     printf '%s\n' "$problems"
     exit 1
+    ;;
+  take)
+    (($# >= 2)) || usage_error "$usage"
+    take_task=$1 part=false
+    shift
+    [[ $take_task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$take_task'"
+    take_files=()
+    for arg; do
+      if [[ $arg == --part ]]; then
+        [[ $part == false ]] || usage_error "$usage"
+        part=true
+      elif [[ $arg == -* ]]; then
+        usage_error "$usage"
+      else
+        take_files+=("$arg")
+      fi
+    done
+    ((${#take_files[@]})) || usage_error "$usage"
+    NET_ERR=$(mktemp)
+    plan=$(mktemp)
+    trap 'rm -f "$NET_ERR" "$plan"' EXIT
+    # Only a name that may be queued is a path to commit; any other is refused before the commit.
+    paths=("$index_rel")
+    for name in "${take_files[@]}"; do
+      [[ ! $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.md$ ]] || paths+=("tasks/queued/$name")
+    done
+    exec {stdout}>&1
+    # shellcheck disable=SC2034 # read by commit_records
+    records_edit=edit_take
+    commit "chore: queued take $take_task" "${paths[@]}"
+    mapfile -t take_files < <(printf '%s\n' "${take_files[@]}" | awk '!seen[$0]++')
+    for name in "${take_files[@]}"; do
+      if [[ $part == true ]]; then echo "$take_task builds part of $name"; else echo "took $name for $take_task"; fi
+    done
     ;;
   list)
     json=false plan_file='' plan_given=''

@@ -1,7 +1,7 @@
 # The queue of approved work, the team home's tasks/queued/: what each item's state is, when an
 # after: condition is met, how the items rank, the problems team-queue index --check names, the
-# text of the index, the judging of team-queue set's table, whether the level has room for one
-# more task and team-queue list's object and findings. Used by team-queue as
+# text of the index, the judging of team-queue set's table and of team-queue take, whether the
+# level has room for one more task and team-queue list's object and findings. Used by team-queue as
 # jq -nR -L bin/lib 'include "queue"; include "ledger"; ...' over the ledger's lines, with the
 # items' cards (team-queue's one awk pass: {file, title, keys, problems}), the registry's project
 # names, the items that left the queue, the queued files the tasks' plans cite, today's UTC date,
@@ -243,6 +243,18 @@ def queue_problem_lines($registry_error): queue_problems($registry_error)[] | qu
 # "<n> <word>s", or "1 <word>": queue_count($word)
 def queue_count($word): "\(.) \($word)\(if . == 1 then "" else "s" end)";
 
+# A front matter's keys in the order team-queue writes them: queue_keys' order, then the others
+# in theirs.
+def queue_ordered:
+  . as $k
+  | [(queue_keys[] | select(. as $q | $k | has($q)) | {key: ., value: $k[.]}),
+     ($k | to_entries[] | select(IN(queue_keys[]; .key) | not))]
+  | from_entries;
+
+# A front matter as written, from its keys in their order: "---", a "<key>: <value>" line each,
+# "---", a newline after each line.
+def queue_front: "---\n" + ([to_entries[] | "\(.key): \(.value)\n"] | add // "") + "---\n";
+
 # team-queue set's judging of a table, $table its text and $name its path as given, against the
 # queued files' cards ($cards), items being queue_items over the cards given as its input:
 # {refusals, writes}. The table is tab-separated, a carriage return ending a line dropped and each
@@ -281,10 +293,7 @@ def queue_set($table; $name; $cards; items):
          | ($card.keys | del(.task)
             | reduce ($header | to_entries | .[1:][]) as $c (.;
                 if $r.cells[$c.key] == "" then del(.[$c.value]) else .[$c.value] = $r.cells[$c.key] end)
-            | . as $k
-            | [(queue_keys[] | select(. as $q | $k | has($q)) | {key: ., value: $k[.]}),
-               ($k | to_entries[] | select(IN(queue_keys[]; .key) | not))]
-            | from_entries) as $keys
+            | queue_ordered) as $keys
          | {file, card: ($card + {keys: $keys})}] as $sets
       | ($sets | map({key: .file, value: .card}) | from_entries) as $new
       | ([$cards[] | $new[.file] // .] | items | map({key: .file, value: .}) | from_entries) as $result
@@ -295,7 +304,7 @@ def queue_set($table; $name; $cards; items):
             | "\($name):\($n): tasks/queued/\($f): \(.problem)")] as $refusals
       | {refusals: $refusals,
          writes: (if $refusals != [] then [] else
-           [$sets[] | {file, front: ("---\n" + ([.card.keys | to_entries[] | "\(.key): \(.value)\n"] | add // "") + "---\n")}] end)}
+           [$sets[] | {file, front: (.card.keys | queue_front)}] end)}
     end
   end;
 
@@ -398,3 +407,44 @@ def queue_list($plan; $costs; $events; $registry_error; $today):
 # team-queue list's text from its object and queue_view's: the room's line, then the index's
 # sections, ending in a newline.
 def queue_list_text($view): [.room.says, ($view | queue_section_lines)] | join("\n") + "\n";
+
+# team-queue take's judging of T<n> ($task) taking the queued files $files (names, as given),
+# or with $part building part of each, against the cards ($cards), the ledger's events and the
+# items (queue_items'): {refusals, writes}. It refuses a task with no opened or with a closed, and
+# each file not queued, whose front matter it cannot rewrite without losing a line (a form
+# problem), whose project is none of the task's (its opened's and worktree-added's; not judged
+# for a task with no opened), and, but with
+# $part, one another task opened or another item takes. refusals are lines in that order, the
+# task's first; writes, only when there is none, are each file's {file, front}: its keys with
+# opened set to the task, or with $part the task added to from once, written in queue_keys' order.
+def queue_take($task; $files; $part; $cards; $events; $items):
+  ($events | by_task | .[$task] // []) as $te
+  | ($events | task_projects | .[$task] // []) as $projects
+  | ($cards | map({key: .file, value: .}) | from_entries) as $by_file
+  | ($items | map({key: .file, value: .}) | from_entries) as $item
+  | ($files | reduce .[] as $f ([]; if IN(.[]; $f) then . else . + [$f] end)) as $files
+  | any($te[]; .event == "opened") as $opened
+  | [(if $opened | not then "\($task) has no opened in the ledger"
+      else (last($te[] | select(.event == "closed")) // null | select(. != null) | "\($task) closed at \(.ts)") end),
+     ($files[] | . as $f | $item[$f] as $i
+      | if $by_file[$f] == null then "\($f) is not queued"
+        else
+          ($by_file[$f].problems[] | "tasks/queued/\($f): \(.), which take cannot rewrite: fix the file by hand first"),
+          (if $opened | not then empty
+           elif $i.project == null then "tasks/queued/\($f): it has no project, so it is none of \($task)'s"
+           elif IN($projects[]; $i.project) | not then
+             "tasks/queued/\($f): its project \($i.project) is none of \($task)'s (\($projects | if . == [] then "none" else join(", ") end))"
+           else empty end),
+          (select($part | not)
+           | (select($i.opened != null and $i.opened != $task)
+              | "tasks/queued/\($f): \($i.opened) opened it; give --part when \($task) builds part of it"),
+             ([$items[] | select(.file != $f and IN(.takes[]; $f)) | .file] as $takers
+              | select($takers != [])
+              | "tasks/queued/\($f): \($takers | join(", ")) \(if ($takers | length) == 1 then "takes" else "take" end) it; give --part when \($task) builds part of it"))
+        end)] as $refusals
+  | {refusals: $refusals,
+     writes: (if $refusals != [] then [] else
+       [$files[] | . as $f | $by_file[$f].keys
+        | if $part then .from = ((.from // "" | if . == "" then [] else queue_parts end) | if IN(.[]; $task) then . else . + [$task] end | join(", "))
+          else .opened = $task end
+        | {file: $f, front: (queue_ordered | queue_front)}] end)};
