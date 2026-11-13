@@ -102,9 +102,11 @@ shared_stubs() {
 }
 
 # copy_bin <dest>: a copy of this checkout's bin/ at <dest>, its files linked to the run's shared
-# copy (link_shared).
+# copy (link_shared), but for bin/lib/review-app: a copy has the reviewer App off until the test
+# turns it on (review_app_on), whatever this checkout commits.
 copy_bin() {
   link_shared bin "$REPO_ROOT/bin" "$1"
+  rm -f "$1/lib/review-app"
 }
 
 # Build the test's sandbox and point TEAM_HOME, HOME and PATH into it, untraced. A sandbox runs
@@ -315,6 +317,19 @@ review_app_on() {
   shared_make stub "$REPO_ROOT/tests/helpers/stub"
   ln "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-review-check"
   stub_reply team-review-check 4242
+}
+
+# review_app_off: the reviewer App off for the scripts run_bin runs, whatever this checkout's
+# bin/lib/review-app says: CODE_CHECKOUT (a copy of bin/ made here when the test made none, which
+# copy_bin makes with the App off) has no bin/lib/review-app. A test that makes its own code
+# checkout (code_checkout) makes it first, since that copies bin/ with the App off too.
+review_app_off() {
+  if [[ -z ${CODE_CHECKOUT:-} ]]; then
+    export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+  fi
+  rm -f "$CODE_CHECKOUT/bin/lib/review-app"
 }
 
 # plan_md T<n> [<text>]: write the task's plan, tasks/T<n>/plan.md in the sandbox's team home,
