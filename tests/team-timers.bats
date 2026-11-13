@@ -29,6 +29,49 @@ setup() {
   notices=$HOME/.local/state/agent-team/notices.json
   inbox_discord alerts
   inbox_guild_kept
+  # Every run here ends in seconds, so a run that hangs is stopped at 120 s, never the 70
+  # minutes of the default; a test of the time limit itself sets its own.
+  export TEAM_TIMERS_RUN_SECONDS=120
+}
+
+# The most seconds a test here waits on another process: for a file to be written, or for a
+# background run to end.
+WAIT_SECONDS=30
+
+# The run limit of a test whose run must reach its hung session list (claude agents) before the
+# limit stops it: three times the slowest a run took to reach it on a loaded CI runner, 6.5 s on
+# macOS and 1.8 s on Linux (T313), rounded up. The 2 and 3 s limits before it were below what a
+# macOS run took.
+HANG_RUN_SECONDS=20
+
+# Wait until the file <file> holds something, polling every 0.1 s, and fail past WAIT_SECONDS
+# naming <what> (the process that writes it): wait_for_file <file> <what>
+wait_for_file() {
+  local end=$((SECONDS + WAIT_SECONDS))
+  until [[ -s $1 ]]; do
+    if ((SECONDS >= end)); then
+      echo "timed out after $WAIT_SECONDS s waiting for $2" >&2
+      return 1
+    fi
+    command -p sleep 0.1
+  done
+}
+
+# Wait for the background process <pid>, a child of the test's shell, and set rc to its exit
+# status; past WAIT_SECONDS kill it and fail naming <what>: wait_for_pid <pid> <what>
+wait_for_pid() {
+  local end=$((SECONDS + WAIT_SECONDS))
+  while kill -0 "$1" 2>/dev/null; do
+    if ((SECONDS >= end)); then
+      kill -KILL "$1" 2>/dev/null || true
+      wait "$1" 2>/dev/null || true
+      echo "timed out after $WAIT_SECONDS s waiting for $2" >&2
+      return 1
+    fi
+    command -p sleep 0.1
+  done
+  rc=0
+  wait "$1" || rc=$?
 }
 
 # The failures log's lines, each without its time.
@@ -344,11 +387,12 @@ SH
 rm -f '$agents/agent-team.heartbeat.plist'
 trap '' TERM
 echo "\$\$" >>'$hung'
-command -p sleep 300
+command -p sleep 30
 SH
   forget_launchctl
-  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
-  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=$HANG_RUN_SECONDS TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after $HANG_RUN_SECONDS s"$ ]]
+  [[ -s $hung ]]
   assert_equal "$(still_running "$hung")" ""
   jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
   assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
@@ -360,26 +404,29 @@ SH
   local uid hung=$BATS_TEST_TMPDIR/hung pid rc
   uid=$(id -u)
   run_bin -0 team-timers enable
+  # A session list deaf to SIGTERM that marks it in $hung.term, its sleep deaf to it too: the time
+  # limit's stop TERMs both, then kills both KILL_SECONDS later.
   stub_script claude <<SH
 [[ \$1 == agents ]] || exit 0
-trap '' TERM
+trap "echo TERM >>'$hung.term'" TERM
 echo "\$\$" >>'$hung'
-command -p sleep 300
+(trap '' TERM; command -p sleep 30) &
+echo "\$!" >>'$hung'
+while kill -0 "\$!" 2>/dev/null; do wait "\$!" || true; done
 SH
   forget_launchctl
-  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=2 TEAM_TIMERS_KILL_SECONDS=4 \
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=$HANG_RUN_SECONDS TEAM_TIMERS_KILL_SECONDS=4 \
     "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/run.out" 2>&1 &
   pid=$!
-  until [[ -s $hung ]]; do command -p sleep 0.1; done
+  wait_for_file "$hung" "the run's session list (claude agents) to hang"
+  wait_for_file "$hung.term" "the run's time limit to stop its session list"
   # The time limit has stopped the run, whose lock went with it, and bounded_run is still in its
   # wait before the timed-out log line and record.
-  command -p sleep 3
   run_bin -0 --separate-stderr team-timers disable
   assert_equal "$output" "the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends"
-  rc=0
-  wait "$pid" || rc=$?
+  wait_for_pid "$pid" "team-timers run to end once its time limit stopped it"
   assert_equal "$rc" 1
-  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 2 s"$ ]]
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after $HANG_RUN_SECONDS s"$ ]]
   assert_equal "$(still_running "$hung")" ""
   jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
   assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
@@ -807,7 +854,7 @@ SH
   fake_checkpoint <<SH
 trap '' TERM
 echo "a line before it hangs"
-command -p sleep 300 &
+command -p sleep 30 &
 echo "\$!" >>'$hung'
 echo "\$\$" >>'$hung'
 wait
@@ -861,13 +908,13 @@ SH
 [[ \$1 == agents ]] || exit 0
 trap '' TERM
 echo "\$\$" >>'$hung'
-command -p sleep 300
+command -p sleep 30
 SH
   local start=$SECONDS
-  TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
-  ((SECONDS - start < 20))
+  TEAM_TIMERS_RUN_SECONDS=$HANG_RUN_SECONDS TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  ((SECONDS - start < HANG_RUN_SECONDS + 17))
   assert_equal "$output" "$(cat "$log")"
-  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" run: failed: timed out after $HANG_RUN_SECONDS s"$ ]]
   (($(grep -c . "$hung") >= 1))
   assert_equal "$(still_running "$hung")" ""
   flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
@@ -1542,7 +1589,7 @@ GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker 
   stub_script claude <<SH
 if [[ ! -e '$BATS_TEST_TMPDIR/hung' ]]; then
   touch '$BATS_TEST_TMPDIR/hung'
-  command -p sleep 300
+  command -p sleep 30
 fi
 echo '$COORDINATOR'
 SH

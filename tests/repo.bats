@@ -2314,6 +2314,67 @@ changed_rebase() {
   done
 }
 
+# tests/run in a checkout of its own with the vendored bats, whose bats files are given in each
+# test: limits_checkout <copy>
+limits_checkout() {
+  mkdir -p "$1/tests/vendor"
+  copy_bin "$1/bin"
+  link_shared tests-run "$REPO_ROOT/tests/run" "$1/tests/run"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$1/tests/shards"
+  link_shared bats-core "$REPO_ROOT/tests/vendor/bats-core" "$1/tests/vendor/bats-core"
+  cp "$REPO_ROOT/tests/timings.tsv" "$1/tests/timings.tsv"
+}
+
+@test "tests/run fails a bats test past TESTS_TEST_SECONDS by its name and the limit, and the other tests of its file still run" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
+  limits_checkout "$copy"
+  printf '%s\n' '@test "hangs" { sleep 30; }' '@test "after it" { true; }' >"$copy/tests/hangs.bats"
+  echo '@test "quick" { true; }' >"$copy/tests/quick.bats"
+  local start=$SECONDS
+  TEAM_JOBS=2 TESTS_TEST_SECONDS=2 run -1 --separate-stderr "$copy/tests/run" bats
+  ((SECONDS - start < 25))
+  assert_contains "$output" "ok tests/quick.bats ("
+  assert_equal "$(grep -E '^(not )?ok [0-9]+ ' <<<"$output")" "not ok 1 hangs # timeout after 2s
+ok 2 after it"
+  [[ $(grep '^not ok tests/hangs.bats' <<<"$output") =~ ^"not ok tests/hangs.bats ("[0-9]+"s)"$ ]]
+  assert_contains "$output" "bats: 2 tests passed; 1 of 2 files failed"
+}
+
+@test "tests/run stops a bats file still running after TESTS_FILE_MINUTES, printing its output so far and what held it" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
+  limits_checkout "$copy"
+  # A test that passes but leaves a process holding bats' output (fd 3) open, deaf to TERM, so
+  # bats never ends after its last test until the kill 30 s after the TERM.
+  printf '%s\n' '@test "first" { true; }' \
+    '@test "leaves a process behind" { bash -c '"'"'trap "" TERM; sleep 300'"'"' & }' >"$copy/tests/held.bats"
+  echo '@test "quick" { true; }' >"$copy/tests/quick.bats"
+  local start=$SECONDS
+  TEAM_JOBS=2 TESTS_FILE_MINUTES=1 run -1 --separate-stderr "$copy/tests/run" bats
+  ((SECONDS - start >= 60 && SECONDS - start < 120))
+  assert_contains "$output" "ok tests/quick.bats ("
+  [[ $(grep '^not ok tests/held.bats' <<<"$output") =~ ^"not ok tests/held.bats ("(6[0-9]|[7-9][0-9]|1[01][0-9])"s): stopped at its 1-minute limit"$ ]]
+  assert_equal "$(sed -n '/^--- tests\/held.bats$/,/^bats: /p' <<<"$output")" "--- tests/held.bats
+1..2
+ok 1 first
+ok 2 leaves a process behind
+tests/run: tests/held.bats ran past 1 minute; the test after the last line above was still running, or a process it left held the file's output open
+bats: 3 tests passed; 1 of 2 files failed"
+}
+
+@test "tests/run refuses a TESTS_TEST_SECONDS or TESTS_FILE_MINUTES that is no whole number above 0" {
+  local copy=$BATS_TEST_TMPDIR/copy value
+  unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
+  limits_checkout "$copy"
+  for value in '' x 0 -1 1.5 ' 1' 01; do
+    TESTS_TEST_SECONDS=$value run -1 --separate-stderr "$copy/tests/run" bats
+    assert_equal "$stderr" "run: TESTS_TEST_SECONDS is the seconds a bats test may run, a whole number above 0, not '$value'"
+    TESTS_FILE_MINUTES=$value run -1 --separate-stderr "$copy/tests/run" bats
+    assert_equal "$stderr" "run: TESTS_FILE_MINUTES is the minutes a bats file may run, a whole number above 0, not '$value'"
+  done
+}
+
 # tests/shards in a checkout of three bats files, a.bats and b.bats timed and c.bats not.
 @test "tests/shards weighs a file by its seconds on this platform, an untimed one by its bytes at the timed rate, and every bytes without timings" {
   local copy=$BATS_TEST_TMPDIR/copy column=2
