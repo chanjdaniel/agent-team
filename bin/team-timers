@@ -1418,19 +1418,27 @@ step_on() {
 }
 
 # Run the step <step>'s sibling command, stopped (with all it started) after <seconds>:
-# run_step <step> <seconds> <command> [<argument>...]; one log line per line it prints, and a
-# failure logged with its first error.
+# run_step [--fails-no-run] <step> <seconds> <command> [<argument>...]; one log line per line it
+# prints, and a failure logged with its first error, which fails the run (step_failed) unless
+# --fails-no-run is given, when it fails the step alone.
 run_step() {
-  local rc=0 out line
+  local rc=0 out line why fails_run=1
+  [[ $1 != --fails-no-run ]] || { fails_run='' && shift; }
   out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$2" "$bin/$3" "${@:4}" 2>"$err" {run_fd}>&-) || rc=$?
   while IFS= read -r line; do
     [[ -z $line ]] || log "$1" "$line"
   done <<<"$out"
   case $rc in
-    0) step_ok "$1" ;;
-    124 | 137) step_failed "$1" "timed out after $2 s" ;;
-    *) step_failed "$1" "$(grep -q . "$err" && first_error || echo "$3 exited $rc")" ;;
+    0) step_ok "$1" && return 0 ;;
+    124 | 137) why="timed out after $2 s" ;;
+    *) why=$(grep -q . "$err" && first_error || echo "$3 exited $rc") ;;
   esac
+  if [[ -n $fails_run ]]; then
+    step_failed "$1" "$why"
+  else
+    problem "$1" "failed: $why"
+    step_fail "$1" "$why"
+  fi
 }
 
 # A step that failed, logged as "<step>: failed: <reason>": the steps after it still run, and the
@@ -1534,20 +1542,7 @@ ledger_step() {
 # it prints logged; a tidy that fails or is stopped fails this step alone, never the run, so a
 # broken queue is the step-queue alert after 12 runs in a row.
 queue_step() {
-  local rc=0 out line why
-  out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$QUEUE_TIMEOUT" "$bin/team-queue" tidy \
-    2>"$err" </dev/null {run_fd}>&-) || rc=$?
-  while IFS= read -r line; do
-    [[ -z $line ]] || log queue "$line"
-  done <<<"$out"
-  case $rc in
-    0) step_ok queue ;;
-    124 | 137) why="timed out after $QUEUE_TIMEOUT s" ;;
-    *) why=$(grep -q . "$err" && first_error || echo "team-queue exited $rc") ;;
-  esac
-  ((rc)) || return 0
-  problem queue "failed: $why"
-  step_fail queue "$why"
+  run_step --fails-no-run queue "$QUEUE_TIMEOUT" team-queue tidy
 }
 
 # The coordinator step, on the holder after the queue step: one read of the live session list

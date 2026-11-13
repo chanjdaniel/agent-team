@@ -278,7 +278,7 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
 - Both run only where the checkpoint runs: on the lease holder, after the lease step (or the back step, after an outage), never on a fenced machine, while GitHub is unreachable, on a machine that does not hold the lease, or while another run holds the heartbeat's lock.
   The checkpoint is the first step after the lease step, so no slower step widens the window of records not yet on origin; the ledger, queue, coordinator, alert, uptime, inbox, finished, capacity, level, stacks, pack and janitor steps follow it in that order.
 - Each logs one line in `~/.local/state/agent-team/heartbeat.log` per line its command prints, and nothing while it is off.
-  A step that fails, or whose `stack.json` is malformed, is logged as `<step>: failed: <reason>`; the steps after it still run, and the run exits 1.
+  A step that fails, or whose `stack.json` is malformed, is logged as `<step>: failed: <reason>`; the steps after it still run, and the run exits 1, but for the queue, coordinator and inbox steps, whose failure fails the step alone.
   That line, like every heartbeat line that reports a problem, goes to `heartbeat-failures.log` beside it too, which keeps 30 days, while the heartbeat log keeps its last 1000 to 2000 lines.
   The checkpoint is such a step too: one that fails, is stopped at its limit or exits 75 (GitHub unreachable, or another checkpoint still running) leaves the sweep and the janitor to run as usual.
 - A hung Docker never holds the heartbeat's lock past the lease's renewals: the sweep is stopped after 5 minutes and the janitor after 20, each with every command it started, and logged as `<step>: failed: timed out after <seconds> s`.
