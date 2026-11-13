@@ -1592,8 +1592,9 @@ EOF
   looks '["x"]'
   run_bin -1 --separate-stderr team-sweep --wait
   assert_equal "$output" ""
-  assert_equal "${stderr//"$TEAM_HOME/ledger.jsonl"/<the ledger>}" \
-    'team-sweep: jq: error (at <the ledger>:1): Cannot index string with string "name", for 5 minutes running'
+  # jq 1.8.2, Homebrew's on macOS, quotes the key as ("name"), which jq before it wrote "name".
+  local said='^team-sweep: jq: error \(at <the ledger>:1\): Cannot index string with string ("name"|\("name"\)), for 5 minutes running$'
+  [[ ${stderr//"$TEAM_HOME/ledger.jsonl"/<the ledger>} =~ $said ]] || { echo "stderr: $stderr" >&2; false; }
   assert_equal "$(waits)" 10
 
   # A look that fails with nothing on stderr is named by its exit code.
