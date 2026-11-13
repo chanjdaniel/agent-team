@@ -337,7 +337,7 @@ read 3 of 3 transcripts; wrote 1 day file"
   assert_equal "$(jq -r '.source' "$prices")" "https://platform.claude.com/docs/en/about-claude/pricing"
   [[ $(jq -r '.read' "$prices") =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
   assert_equal "$(jq -r '.models | keys[]' "$prices" | paste -sd ' ')" \
-    "<synthetic> claude-fable-5-1 claude-haiku-5-5 claude-opus-4-8 claude-opus-5 claude-opus-5-5 claude-sonnet-5-5"
+    "<synthetic> claude-fable-5-1 claude-fable-5-2 claude-haiku-5-5 claude-opus-4-8 claude-opus-5 claude-opus-5-5 claude-sonnet-5-5"
   assert_equal "$(jq '[.models[] | ., (.above // empty) | del(.tokens, .above) | keys == ["cache_read", "cache_write_1h", "cache_write_5m", "input", "output"] and all(.[]; type == "number")] | all' "$prices")" true
   assert_equal "$(jq -c '.models["<synthetic>"] | [.[]] | unique' "$prices")" "[0]"
 }
@@ -535,6 +535,21 @@ read 3 of 3 transcripts; wrote 1 day file"
   sed -i 's/claude-sonnet-5-5/claude-opus-4-8/' "$TEAM_HOME/usage/home-pc/2026-10-20.jsonl"
   report_json
   assert_equal "$(q '.models[] | select(.model == "claude-opus-4-8") | [.replies, .w]')" '[1,0.625]'
+}
+
+@test "a Fable 5.2 reply is weighed at its own price on every token type, with no warning" {
+  report_fixture
+  # r1's reply on Fable 5.2, with every type: 10k input at $8 a million (0.08), 50k one-hour writes
+  # at $16 (0.8), 20k five-minute writes at $10 (0.2), 100k reads at $0.20 (0.02) and 5k output at
+  # $40 (0.2); at Opus 5.5's prices it would weigh 0.66.
+  local day=$TEAM_HOME/usage/home-pc/2026-10-20.jsonl fable
+  fable=$(jq -c 'select(.request == "req_r1_1")
+    | .model = "claude-fable-5-2" | .input = 10000 | .cache_write_5m = 20000 | .cache_read = 100000' "$day")
+  jq -c 'select(.request != "req_r1_1")' "$day" >"$day.rest"
+  { cat "$day.rest" && echo "$fable"; } >"$day"
+  rm "$day.rest"
+  report_json
+  assert_equal "$(q '.models[] | select(.model == "claude-fable-5-2") | [.replies, .w]')" '[1,1.3]'
 }
 
 @test "a model with no price is weighed as Opus 5.5, with a warning" {
