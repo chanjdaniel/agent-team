@@ -77,12 +77,16 @@ index_of() {
 }
 
 @test "with every index within the cap it passes, naming the fullest" {
-  # 200 lines and 25,000 characters exactly is within it: 200 lines of 124 characters and their
-  # newlines, the last trimmed, is 24,999.
+  # 200 lines is within it (200 of 124 characters and their newlines, the last trimmed, is 24,999),
+  # and so is one line of 25,000 characters; the first as full, by name, is the fullest.
   index_of conventioner 200 124
-  index_of coordinator 20 50
+  index_of coordinator 1 25000
+  index_of intone 20 50
   run_bin -0 team-doctor
-  assert_equal "$output" "PASS memory index: 2 memory indexes, each within Claude Code's load cap of 200 lines and 25,000 characters; the fullest, conventioner's, is 200 lines and 24,999 characters"
+  assert_equal "$output" "PASS memory index: 3 memory indexes, each within Claude Code's load cap of 200 lines and 25,000 characters; the fullest, conventioner's, is 200 lines and 24,999 characters"
+  rm -r "$TEAM_HOME/memory/conventioner" "$TEAM_HOME/memory/coordinator"
+  run_bin -0 team-doctor
+  assert_equal "$output" "PASS memory index: 1 memory index, within Claude Code's load cap of 200 lines and 25,000 characters; intone's is 20 lines and 1,019 characters"
 }
 
 @test "with no memory directory, or none holding an index, it passes and says there is none" {

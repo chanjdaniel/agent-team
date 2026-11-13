@@ -51,7 +51,7 @@ else
       memory_reasons+=("$memory_project's MEMORY.md is $memory_counts, $memory_cap, so its sessions load $memory_load")
       memory_fixes+=("$memory_path")
     elif [[ -z $memory_fullest ]] || jq -ne --argjson a "$memory_fill" --argjson b "$memory_fullest_fill" '$a > $b' >/dev/null; then
-      memory_fullest="$memory_project's, is $memory_counts" memory_fullest_fill=$memory_fill
+      memory_fullest=$memory_project memory_fullest_counts=$memory_counts memory_fullest_fill=$memory_fill
     fi
   done
   if ((${#memory_reasons[@]} + ${#memory_unread[@]})); then
@@ -71,9 +71,9 @@ else
   elif ((memory_count == 0)); then
     report "memory index" PASS "the team home has no memory/*/MEMORY.md, so no index to load"
   else
-    memory_indexes="$memory_count memory indexes, each"
-    ((memory_count > 1)) || memory_indexes="1 memory index,"
-    report "memory index" PASS \
-      "$memory_indexes within Claude Code's load cap of 200 lines and 25,000 characters; the fullest, $memory_fullest"
+    memory_indexes="$memory_count memory indexes, each within"
+    memory_named="; the fullest, $memory_fullest's, is $memory_fullest_counts"
+    ((memory_count > 1)) || memory_indexes="1 memory index, within" memory_named="; $memory_fullest's is $memory_fullest_counts"
+    report "memory index" PASS "$memory_indexes Claude Code's load cap of 200 lines and 25,000 characters$memory_named"
   fi
 fi
