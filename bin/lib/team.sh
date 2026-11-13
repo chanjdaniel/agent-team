@@ -483,7 +483,8 @@ local_path() {
 #                      names) to 200 at most: its crowded subdirectories by this same rule, then
 #                      its largest other subdirectories, the largest first and a research
 #                      task's work/probes/ last, at most ten of them, or else the directory
-#                      whole, so the probes are kept beside the work/tmp/ their runs filled
+#                      whole; at work/ beside probes, as many as it takes, so the probes are kept
+#                      beside the work/tmp/ their runs filled or many small notes
 #   link               a symbolic link
 #   video              a file named .webm, .mp4, .m4v, .mov, .mkv or .avi, in any case (a
 #                      Playwright sweep's video.webm)
@@ -596,32 +597,34 @@ archive_left_out() {
     # crowded <dir>: when <dir> holds over 200 files, leave out its crowded subdirectories by this
     # same rule, then its largest other subdirectories, the largest first (the first by name of
     # those as large) and work/probes last, until the rest holds at most 200; when that takes
-    # more than ten of them, or they are not enough, leave out <dir> itself in their place.
+    # more than ten of them, or they are not enough, leave out <dir> itself in their place. The
+    # ten bound none at work/ while work/probes holds files, so its siblings go one by one, as many
+    # as it takes, and the probes stay.
     crowded() {
-      local crowd_at=$1 crowd_sub crowd_subs=() crowd_largest crowd_most crowd_left crowd_picked=()
-      local -A crowd_taken=()
+      local crowd_at=$1 crowd_sub crowd_subs=() crowd_most crowd_left crowd_picked=() crowd_cap=10
       ((${crowd_count[$crowd_at]:-0} > 200)) || return 0
       for crowd_sub in "${!crowd_count[@]}"; do
         [[ $crowd_sub != "$crowd_at"/* || $crowd_sub == "$crowd_at"/*/* ]] || crowd_subs+=("$crowd_sub")
       done
       ((${#crowd_subs[@]} == 0)) || mapfile -d '' -t crowd_subs < <(printf '%s\0' "${crowd_subs[@]}" | sort -z)
       for crowd_sub in "${crowd_subs[@]}"; do crowded "$crowd_sub"; done
-      crowd_left=${crowd_count[$crowd_at]}
-      while ((crowd_left > 200 && ${#crowd_picked[@]} <= 10)); do
-        crowd_largest='' crowd_most=0
+      [[ $crowd_at != work ]] || ((${crowd_count[work/probes]:-0} == 0)) || crowd_cap=${#crowd_subs[@]}
+      # The subdirectories still holding files, in the order they are taken, sorted once.
+      ((${#crowd_subs[@]} == 0)) || mapfile -d '' -t crowd_subs < <(
         for crowd_sub in "${crowd_subs[@]}"; do
-          [[ $crowd_sub == work/probes || -n ${crowd_taken[$crowd_sub]:-} ]] || ((${crowd_count[$crowd_sub]} <= crowd_most)) ||
-            crowd_largest=$crowd_sub crowd_most=${crowd_count[$crowd_sub]}
-        done
-        if [[ -z $crowd_largest && $crowd_at == work && -z ${crowd_taken[work/probes]:-} ]] && ((${crowd_count[work/probes]:-0} > 0)); then
-          crowd_largest=work/probes crowd_most=${crowd_count[work/probes]}
-        fi
-        [[ -n $crowd_largest ]] || break
-        crowd_taken[$crowd_largest]=1
-        crowd_picked+=("$crowd_largest")
-        crowd_left=$((crowd_left - crowd_most))
+          crowd_most=${crowd_count[$crowd_sub]}
+          ((crowd_most > 0)) || continue
+          [[ $crowd_sub != work/probes ]] || crowd_most=-1
+          printf '%s\t%s\0' "$crowd_most" "$crowd_sub"
+        done | sort -z -t $'\t' -k1,1nr -k2 | cut -z -f 2-
+      )
+      crowd_left=${crowd_count[$crowd_at]}
+      for crowd_sub in "${crowd_subs[@]}"; do
+        ((crowd_left > 200 && ${#crowd_picked[@]} <= crowd_cap)) || break
+        crowd_picked+=("$crowd_sub")
+        crowd_left=$((crowd_left - ${crowd_count[$crowd_sub]}))
       done
-      if ((crowd_left > 200 || ${#crowd_picked[@]} > 10)); then
+      if ((crowd_left > 200 || ${#crowd_picked[@]} > crowd_cap)); then
         crowd_cut "$crowd_at"
       else
         for crowd_sub in "${crowd_picked[@]}"; do crowd_cut "$crowd_sub"; done

@@ -711,6 +711,27 @@ $TEAM_HOME/tasks/T1/scratch/work/findings.md
 $TEAM_HOME/tasks/T1/scratch/work/probes"
 }
 
+@test "a research task's work/probes/ is kept beside more than ten small siblings that crowd work/" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task n
+  # Per-topic notes, thirty directories of five files each beside 150 probes: bringing work/ to
+  # 200 takes twenty of them, past the ten that elsewhere leave a directory out whole.
+  mkdir -p "$dir/work/probes"
+  touch "$dir/work/probes/"{1..150}.py
+  for n in {01..30}; do
+    mkdir "$dir/work/n$n"
+    touch "$dir/work/n$n/"{1..5}.md
+  done
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" ""
+  local expected=''
+  for n in {01..20}; do expected+="T1 home: left out of tasks/T1/scratch: work/n$n (over 200 files)"$'\n'; done
+  assert_contains "$output" "${expected}T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/work/probes" -type f | wc -l)" "150"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/work" -type f | wc -l)" "200"
+}
+
 @test "a directory left out once its own crowded subdirectory was trimmed is named alone" {
   run_bin -0 team-open home feature feat work "Do the work"
   local dir=$HOME/slots/home/1/.scratch/task
