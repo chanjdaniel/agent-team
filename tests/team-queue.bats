@@ -2,9 +2,8 @@
 # team-queue: the ranked index of queued work, tasks/queued/index.md, written from each file's
 # front matter and the ledger (bin/lib/queue.jq) and committed alone; --check naming each
 # malformed file, each item the heartbeat should have moved, each item two open tasks' plans cite,
-# and a stale index; each after: condition met and unmet; and migrate, moving tasks/current.md's
-# queued lines into their files' front matter once, idempotent, keeping a line it cannot match to
-# a file.
+# and a stale index; each after: condition met and unmet; and set, writing many files' front matter
+# from one table in one commit, or refusing the whole table, naming each row, and writing nothing.
 
 load helpers/common
 
@@ -363,64 +362,143 @@ Builds tasks/queued/a-shared.md and tasks/queued/b-from.md and tasks/queued/c-ta
   [[ $(cat "$queued/index.md") == *"zz-crlf.md (proj, priority 2, S): item"$'\r'* ]]
 }
 
-@test "migrate moves each queued line into its file's front matter, joining two for one file, and a second run changes nothing" {
-  local tilde='~'
-  ln -s "$TEAM_HOME" "$HOME/team"
-  cat >>"$TEAM_HOME/tasks/current.md" <<EOF
-- next T4 once it merges, open the Node pin task | tasks/queued/node-pin.md
-- queued - pin Node, after the release | tasks/queued/node-pin.md
-- queued T258 rerun the drill on macOS | $tilde/team/tasks/queued/bootstrap-drill.md
-- queued T260 and on Arch | tasks/queued/bootstrap-drill.md
-EOF
-  run_bin -0 --separate-stderr team-queue migrate
-  assert_equal "$output" "migrated 3 lines into 2 files
-wrote tasks/queued/index.md: 2 files"
-  assert_equal "$(cat "$TEAM_HOME/tasks/current.md")" "# Current items
-- next T4 once it merges, open the Node pin task | tasks/queued/node-pin.md"
+@test "set writes each row's keys in team-queue's order, an empty cell removing one, keeps the other keys and the body, drops task:, and commits the rows' files with the index" {
+  opened_task T5
+  printf -- '---\ntask: T5\nguarded: ci\nsummary: old words\n---\n# legacy\n\nThe body stays.\n---\n' >"$queued/legacy.md"
+  printf '# no front matter\n\nBody only.\n' >"$queued/bare.md"
+  item node-pin.md "summary: pin Node 24" "waits: the release" "project: proj" "priority: 2" "size: S"
+  git -C "$TEAM_HOME" add -A
+  git -C "$TEAM_HOME" commit -q -m "chore: queue three"
+  item untouched.md "summary: not in the table" "project: proj"
+  local table=$BATS_TEST_TMPDIR/table.tsv
+  printf '%s\n' $'file\tsummary\tproject\tpriority\tsize\tfrom\twaits' \
+    $'legacy.md\tthe legacy item\tproj\t2\tM\tT5\t' \
+    $'bare.md\ta bare item \tother\t4\tS\t\tDaniel\'s word' \
+    '' \
+    $'node-pin.md\tpin Node 24\tproj\t1\tS\t\t' >"$table"
+  run_bin -1 --separate-stderr team-queue set "$table"
+  assert_equal "$output" "set 3 files
+wrote tasks/queued/index.md: 5 files
+tasks/queued/untouched.md: it has no priority (1, 2, 3 or 4)
+tasks/queued/untouched.md: it has no size (S, M or L)"
+  assert_equal "$stderr" ""
+  assert_equal "$(cat "$queued/legacy.md")" "---
+summary: the legacy item
+project: proj
+priority: 2
+size: M
+from: T5
+guarded: ci
+---
+# legacy
+
+The body stays.
+---"
+  assert_equal "$(cat "$queued/bare.md")" "---
+summary: a bare item
+project: other
+priority: 4
+size: S
+waits: Daniel's word
+---
+# no front matter
+
+Body only."
   assert_equal "$(cat "$queued/node-pin.md")" "---
-summary: pin Node, after the release
-task: -
+summary: pin Node 24
+project: proj
+priority: 1
+size: S
 ---
 # node-pin"
-  # The file's old front matter is replaced, its body kept.
-  assert_equal "$(cat "$queued/bootstrap-drill.md")" "---
-summary: rerun the drill on macOS; and on Arch
-task: T258, T260
----
-# bootstrap-drill"
-  assert_equal "$(last_commit | sort)" "chore: queued migrate
-tasks/current.md
-tasks/queued/bootstrap-drill.md
+  assert_equal "$(last_commit | LC_ALL=C sort)" "chore: queued set
+tasks/queued/bare.md
 tasks/queued/index.md
+tasks/queued/legacy.md
 tasks/queued/node-pin.md"
-  local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
-  run_bin -0 team-queue migrate
-  assert_equal "$output" "migrated 0 lines into 0 files
-wrote tasks/queued/index.md: 2 files"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  # A file the table does not name is left out of the commit.
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain -- tasks/queued)" "?? tasks/queued/untouched.md"
+  [[ -z $(find "$queued" -name '*.md.*') ]]
+  # A table of one row, written with CRLF line ends, sets one file, and with nothing left to name it exits 0.
+  printf 'file\tpriority\tsize\r\nuntouched.md\t3\tS\r\n' >"$table"
+  run_bin -0 --separate-stderr team-queue set "$table"
+  assert_equal "$output" "set 1 file
+wrote tasks/queued/index.md: 5 files"
+  assert_equal "$(cat "$queued/untouched.md")" "---
+summary: not in the table
+project: proj
+priority: 3
+size: S
+---
+# untouched"
+  run_bin -0 team-queue index --check
 }
 
-@test "migrate keeps a line whose where names no file in tasks/queued/, naming it, after migrating the rest" {
-  mkdir -p "$TEAM_HOME/tasks/T4"
-  echo "# Plan" >"$TEAM_HOME/tasks/T4/plan.md"
-  cat >>"$TEAM_HOME/tasks/current.md" <<'EOF'
-- queued - pin Node | tasks/queued/node-pin.md
-- queued - an old one | ledger 2026-10-29T00:00:00Z
-- queued T4 the plan's | tasks/T4/plan.md
-- queued - gone | tasks/queued/gone.md
-EOF
-  run_bin -1 --separate-stderr team-queue migrate
-  assert_equal "$output" "migrated 1 line into 1 file
-wrote tasks/queued/index.md: 2 files
-tasks/current.md:3: ledger 2026-10-29T00:00:00Z is no file in tasks/queued/
-tasks/current.md:4: tasks/T4/plan.md is no file in tasks/queued/
-tasks/current.md:5: tasks/queued/gone.md is no file in tasks/queued/"
-  assert_equal "$(cat "$TEAM_HOME/tasks/current.md")" "# Current items
-- queued - an old one | ledger 2026-10-29T00:00:00Z
-- queued T4 the plan's | tasks/T4/plan.md
-- queued - gone | tasks/queued/gone.md"
-  assert_equal "$(sed -n 2p "$queued/node-pin.md")" "summary: pin Node"
+@test "set refuses a table whose header is not file and front matter keys, writing nothing" {
+  local table=$BATS_TEST_TMPDIR/table.tsv head
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  printf '%s\n' $'name\tpriority\towner\tsize\tsize\tfile' $'node-pin.md\t1\tkim\tS\tS\tx' >"$table"
+  run_bin -1 --separate-stderr team-queue set "$table"
+  assert_equal "$output" "$table:1: the header's first column is \"name\", not file
+$table:1: column \"owner\" is no front matter key (team-queue --help)
+$table:1: column \"size\" is given twice
+$table:1: column \"file\" is no front matter key (team-queue --help)"
+  assert_equal "$stderr" "team-queue: the table is refused whole, so nothing is written"
+  : >"$table"
+  run_bin -1 team-queue set "$table"
+  assert_equal "$output" "$table:1: the table has no header line
+team-queue: the table is refused whole, so nothing is written"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  [[ ! -e $queued/index.md ]]
+}
+
+@test "set refuses the whole table, naming each row, on a file not queued, a row's cells, a malformed file and a value --check refuses, writing nothing" {
+  printf -- '---\nsummary: broken\nproject: proj\n# broken\n' >"$queued/broken.md"
+  printf -- '---\nsummary: twice\nsummary: again\nproject: proj\npriority: 2\nsize: S\n---\n# twice\n' >"$queued/twice.md"
+  ready fine.md 2 S "fine"
+  item unnamed.md "summary: not in the table"
+  git -C "$TEAM_HOME" add -A
+  git -C "$TEAM_HOME" commit -q -m "chore: queue four"
+  local table=$BATS_TEST_TMPDIR/table.tsv head before
+  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  before=$(cat "$queued"/*.md | cksum)
+  printf '%s\n' $'file\tproject\tpriority\tsize\tafter\ttakes' \
+    $'gone.md\tproj\t2\tS\t\t' \
+    $'index.md\tproj\t2\tS\t\t' \
+    $'node-pin.md\tnope\t5\tXL\tsoon\tnowhere.md' \
+    $'bootstrap-drill.md\t\t3\tM\t\t' \
+    $'fine.md\tproj\t2' \
+    $'broken.md\tproj\t2\tS\t\t' \
+    $'twice.md\tproj\t2\tS\t\t' \
+    $'node-pin.md\tproj\t2\tS\t\t' \
+    $'unnamed.md\tproj\t2\tS\t\tunnamed.md' >"$table"
+  run_bin -1 --separate-stderr team-queue set "$table"
+  assert_equal "$output" "$table:2: gone.md is not queued
+$table:3: index.md is not queued
+$table:4: tasks/queued/node-pin.md: project \"nope\" is not in projects.toml
+$table:4: tasks/queued/node-pin.md: priority \"5\" is not 1, 2, 3 or 4
+$table:4: tasks/queued/node-pin.md: size \"XL\" is not S, M or L
+$table:4: tasks/queued/node-pin.md: after \"soon\" is not T<n> merged, T<n> phase <k> merged, T<n> closed, a YYYY-MM-DD date or a queued file
+$table:4: tasks/queued/node-pin.md: takes nowhere.md, which is not queued
+$table:5: tasks/queued/bootstrap-drill.md: it has no project
+$table:6: it has 3 cells and the header 6
+$table:7: tasks/queued/broken.md: front matter line \"# broken\" is no <key>: <value>, which set cannot rewrite: fix the file by hand first
+$table:7: tasks/queued/broken.md: front matter has no closing ---, which set cannot rewrite: fix the file by hand first
+$table:8: tasks/queued/twice.md: summary given twice, which set cannot rewrite: fix the file by hand first
+$table:9: node-pin.md is on line 4 too
+$table:10: tasks/queued/unnamed.md: takes itself"
+  assert_equal "$stderr" "team-queue: the table is refused whole, so nothing is written"
+  assert_equal "$(cat "$queued"/*.md | cksum)" "$before"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+  [[ -z $(find "$queued" -name '*.md.*') ]]
+}
+
+@test "set takes one table that exists" {
+  run_bin -2 team-queue set
+  run_bin -2 team-queue set a.tsv b.tsv
+  run_bin -1 --separate-stderr team-queue set "$BATS_TEST_TMPDIR/none.tsv"
+  assert_equal "$stderr" "team-queue: no table at $BATS_TEST_TMPDIR/none.tsv"
 }
 
 @test "a worker session is refused, and a malformed command line is a usage error" {
@@ -429,6 +507,7 @@ tasks/current.md:5: tasks/queued/gone.md is no file in tasks/queued/"
   [[ ! -e $queued/index.md ]]
   run_bin -2 team-queue
   run_bin -2 team-queue index --all
-  run_bin -2 team-queue migrate now
+  run_bin -2 team-queue migrate
+  AGENT_TEAM_ROLE=builder run_bin -1 team-queue set "$BATS_TEST_TMPDIR/none.tsv"
   run_bin -2 team-queue list
 }
