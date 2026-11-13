@@ -33,6 +33,22 @@
       "marker": "upload to a host outside the team's own"
     },
     {
+      "id": "broad-kill",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Bash",
+      "input": "killall load-check-probe-no-such-process",
+      "expect": "hook",
+      "marker": "a kill by name or pattern"
+    },
+    {
+      "id": "delete-outside",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Bash",
+      "input": "rm -r /load-check-probe-no-such-dir",
+      "expect": "hook",
+      "marker": "a recursive delete of"
+    },
+    {
       "id": "sessions",
       "roles": ["planner", "builder", "reviewer"],
       "tool": "Bash",

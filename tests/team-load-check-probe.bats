@@ -172,6 +172,39 @@ launched() { stub_calls claude | jq -r 'select(.[0] == "--bg") | .[index("--name
   [[ ! -e $TEAM_HOME/tasks/T0/inventory.txt ]]
 }
 
+@test "each role's broad kill and delete outside pass on command-guard's own block, which no other hook makes first, and fail when one ran or another hook refused it" {
+  local role attempt call
+  # The other hooks a role holds let both calls through, so the guard's block is the one each role
+  # meets: the planner's and the reviewer's scratch-only-edits, and every role's lease-fence.
+  for attempt in broad-kill delete-outside; do
+    call=$(jq -c --arg id "$attempt" '.attempts[] | select(.id == $id) | {command: .input, description: "probe"}' "$(data)")
+    run hook_result toolu_x1 scratch-only-edits Bash "$call" "$wt"
+    assert_equal "$status" 1
+    run hook_result toolu_x1 lease-fence Bash "$call" "$wt"
+    assert_equal "$status" 1
+  done
+  run_bin -0 team-load-check --probe
+  for role in planner builder reviewer; do
+    assert_contains "$output" "PASS $role broad-kill: hook refused it"
+    assert_contains "$output" "PASS $role delete-outside: hook refused it"
+    # The transcripts hold command-guard's real block of each.
+    assert_contains "$(cat "$STUB_FIXTURES/$role.jsonl")" "bin/hooks/command-guard]: Blocked by command-guard: a kill by name or pattern (killall)"
+    assert_contains "$(cat "$STUB_FIXTURES/$role.jsonl")" "bin/hooks/command-guard]: Blocked by command-guard: a recursive delete of /load-check-probe-no-such-dir"
+  done
+
+  probe_transcript planner broad-kill=ran
+  probe_transcript builder delete-outside=other-hook
+  probe_transcript reviewer broad-kill=automode delete-outside=rule
+  rm "$STUB_FIXTURES"/launched-* "$STUB_FIXTURES"/removed-*
+  run_bin -1 team-load-check --probe
+  assert_contains "$output" "FAIL planner broad-kill: expected hook, got ran"
+  assert_contains "$output" "PASS planner delete-outside: hook refused it"
+  assert_contains "$output" "PASS builder broad-kill: hook refused it"
+  assert_contains "$output" "FAIL builder delete-outside: expected hook, got other-hook"
+  assert_contains "$output" "FAIL reviewer broad-kill: expected hook, got automode"
+  assert_contains "$output" "FAIL reviewer delete-outside: expected hook, got rule"
+}
+
 @test "each session's prompt is the probe's text, then its role's attempts as numbered lines in the data file's order" {
   run_bin -0 team-load-check --probe
   local role prompt i attempt tool input
