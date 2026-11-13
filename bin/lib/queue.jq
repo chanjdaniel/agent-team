@@ -46,13 +46,14 @@ def queue_seconds: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 
 # What the ledger says of one task's events: whole, whether it is merged whole, which is the
 # ledger's own lifecycle (bin/lib/ledger.jq) left in its merged phase, so a merge logged with no
-# phases_left (before team-merge logged them) that a builder launch, a later PR or a merged part
-# follows is none, or, once the task closed, any merged that names no phase left (phases_left []
-# or absent, as team-merge logs a task with no tickets), whatever followed it; each merged's phases_left where it names them; and the events that
-# end it, its last merged when it is merged whole and its closed, the earliest first; and unmerged,
-# its last closed's {ts} when a feature, bug or small task (its latest opened's path) closed not
-# merged whole, which leaves its work unbuilt, else null (a research or retro task finishes by
-# closing, and a task with no path is read as one).
+# phases_left (a task with no tickets, or a merge from before team-merge logged them) that a builder
+# launch, a later PR or a merged part follows is none, or, once the task closed, any merged that
+# names no phase left (phases_left [] or absent, as team-merge logs a task with no tickets),
+# whatever followed it; each merged's phases_left where it names them; and the events that end it,
+# its last merged when it is merged whole and its closed, the earliest first; and unmerged, its last
+# closed's {ts} when a feature, bug or small task (its latest opened's path) closed not merged
+# whole, which leaves its work unbuilt, else null (a research or retro task finishes by closing, and
+# a task with no path is read as one).
 def queue_task_facts:
   (lifecycle.phase == "merged"
    or (any(.[]; .event == "closed") and any(.[]; .event == "merged" and (.phases_left // []) == []))) as $whole
