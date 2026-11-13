@@ -1713,9 +1713,8 @@ Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   if denied settings/reviewer.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
 }
 
-@test "the builder's allow rules are the local checks, the CI wait a worker may run by hand, and marking a PR ready" {
-  assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-checks *)
-Bash(@TEAM_CODE@/bin/team-ci-wait *)
+@test "the builder's allow rules are the CI wait a worker may run by hand and marking a PR ready" {
+  assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-ci-wait *)
 Bash(gh pr ready *)
 Bash(gh-axi pr ready *)'
   local brief
@@ -1730,7 +1729,6 @@ Bash(gh-axi pr ready *)'
   # No brief starts a wait on CI, which the coordinator's checks wait takes after a pass; the rule
   # stays for a worker's wait by hand.
   if git -C "$REPO_ROOT" grep -n team-ci-wait -- templates; then return 1; fi
-  allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
   allows builder "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
   allows builder "$REPO_ROOT/bin/team-ci-wait --no-agent-review https://github.com/me/shop/pull/5"
   if allows builder "team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
