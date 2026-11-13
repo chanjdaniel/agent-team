@@ -20,14 +20,27 @@ The rows, in order:
   kill-group: kill with a PID word 0, 1, -1 or -<digits>, a process group, every process or PID 0
     or 1; a kill with no PID word whose signal is given as -<digits> (kill -1) is read as naming
     that word as its PID, since it sends nothing to anything else.
+  kill-literal-pid: kill with a literal PID above 1 that proof() does not prove the session's to
+    stop.
 kill's words are read as Bash's builtin reads them: -l and -L list, and pass; -s <signal>, -n
 <number>, -s<name>, -n<digits> and one -<signal> set the signal; -- ends the options; after the
 signal, a word starting with - is a PID. A signal of 0 (-0, -s 0, -n 0) only checks, and passes
-for any PID. A literal PID above 1 passes here.
+for any PID.
+A literal PID's proof, proof(pid, roots), reads the process table at the time of the call, in
+order: a process that is gone (os.kill(pid, 0) finds none) passes; one os.kill may not signal, or
+whose real uid (/proc/<pid>/status on Linux, ps -o ruid= on macOS) is not the user's, is another
+user's; one that is the guard's own process, its parent or any ancestor, walked by parent PID
+(/proc/<pid>/stat, ps -o ppid=) to PID 1, is the session's own or its shell; then its working
+directory (/proc/<pid>/cwd, lsof -a -p <pid> -d cwd -Fn), resolved, passes when it is a root or
+inside one (the worktree and the job tmp), and is outside otherwise. A fact it cannot read (a
+permission error, no lsof, a process that ends mid-check) and a PID too large for a process id are
+unproven, and refused. Its command line is never read: its working directory is the proof.
 """
 
+import functools
 import os
 import re
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
@@ -50,6 +63,10 @@ ALLOWED_KILL = (
     "find your own process's PID (pgrep -af <pattern>, or the $! you noted when you started it) and kill that"
     " literal PID in a call of its own, which passes when the process is yours and its working directory is"
     " inside your worktree or your job's tmp"
+)
+ALLOWED_LITERAL = (
+    "kill only a process you started whose working directory is inside your worktree or your job's tmp, and"
+    " leave the rest to their owner"
 )
 ALLOWED_READ = (
     "read the PID first (pgrep -af, ps -o pid,args), then kill that literal PID in a call of its own; your own"
@@ -168,6 +185,125 @@ def _group(command, context):
     return None
 
 
+# The process table's readings: /proc on Linux, ps and lsof on macOS; a test may set either.
+PLATFORM = sys.platform
+PROC = "/proc"
+# The largest process id: a larger PID word is no process's.
+MAX_PID = 2**31 - 1
+# How long ps or lsof may take, in seconds.
+READ_SECONDS = 5
+OTHER_USER = "another user's"
+OWN_SESSION = "your own session or its shell"
+UNPROVEN = "its owner or working directory cannot be read, so it is not proven yours"
+
+
+class Unread(Exception):
+    """A fact of a process that cannot be read."""
+
+
+def _ps(pid, field):
+    """One numeric field of ps -o for pid, as macOS's ps reads it."""
+    try:
+        found = subprocess.run(
+            ["ps", "-o", f"{field}=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=READ_SECONDS, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise Unread from error
+    value = found.stdout.strip()
+    if found.returncode != 0 or not value.isdigit():
+        raise Unread
+    return int(value)
+
+
+def _uid(pid):
+    """The process's real uid."""
+    if PLATFORM == "darwin":
+        return _ps(pid, "ruid")
+    with open(os.path.join(PROC, str(pid), "status"), encoding="utf-8") as status:
+        for line in status:
+            if line.startswith("Uid:"):
+                return int(line.split()[1])
+    raise Unread
+
+
+def _parent(pid):
+    """The process's parent PID."""
+    if PLATFORM == "darwin":
+        return _ps(pid, "ppid")
+    with open(os.path.join(PROC, str(pid), "stat"), encoding="utf-8") as stat:
+        # Its name, in parentheses, may hold anything: the fields after its last ) are its state,
+        # then its parent PID.
+        return int(stat.read().rpartition(")")[2].split()[1])
+
+
+@functools.cache
+def _ancestors():
+    """The guard's own PID, its parent's and every ancestor's, walked by parent PID to PID 1."""
+    found, pid = {os.getpid()}, os.getppid()
+    while pid > 1 and pid not in found:
+        found.add(pid)
+        pid = _parent(pid)
+    return frozenset(found)
+
+
+def _cwd(pid):
+    """The process's working directory, resolved."""
+    if PLATFORM == "darwin":
+        try:
+            found = subprocess.run(
+                ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+                capture_output=True, text=True, timeout=READ_SECONDS, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise Unread from error
+        names = [line[1:] for line in found.stdout.splitlines() if line.startswith("n")]
+        if found.returncode != 0 or len(names) != 1 or not names[0].startswith("/"):
+            raise Unread
+        return os.path.realpath(names[0])
+    return os.path.realpath(os.readlink(os.path.join(PROC, str(pid), "cwd")))
+
+
+def _inside(path, root):
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def proof(pid, roots):
+    """None when the kill of pid is the session's to send (its process gone, or the user's, not
+    the session's own, working inside a root), else why not."""
+    if pid > MAX_PID:
+        return UNPROVEN
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return OTHER_USER
+    except OSError:
+        return UNPROVEN
+    try:
+        if _uid(pid) != os.getuid():
+            return OTHER_USER
+        if pid in _ancestors():
+            return OWN_SESSION
+        cwd = _cwd(pid)
+    except (Unread, OSError, ValueError, IndexError):
+        return UNPROVEN
+    if any(_inside(cwd, root) for root in roots):
+        return None
+    return f"its working directory, {cwd}, is outside your worktree and your job's tmp"
+
+
+def _literal(command, context):
+    for pids, _ in _kill_pids(command):
+        for pid in pids:
+            if DIGITS.fullmatch(pid) and int(pid) > 1:
+                why = proof(int(pid), context.roots)
+                if why:
+                    return f"a kill of PID {pid}, which is not yours to stop: {why}"
+    return None
+
+
 # The rows, in order: each its id, its test and its allowed way.
 ROWS = (
     ("kill-by-name", _by_name, ALLOWED_KILL),
@@ -175,4 +311,5 @@ ROWS = (
     ("kill-from-input", _from_input, ALLOWED_READ),
     ("kill-unread-pid", _unread, ALLOWED_READ),
     ("kill-group", _group, ALLOWED_KILL),
+    ("kill-literal-pid", _literal, ALLOWED_LITERAL),
 )

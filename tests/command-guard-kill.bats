@@ -4,13 +4,44 @@
 # process group, every process or PID 0 or 1 are refused wherever a command runs (behind a
 # wrapper, in a string a shell or eval runs, in a heredoc or here-string a shell reads, piped into
 # a shell), each naming its allowed way with a worker's suffix or a gate agent's; the session's own
-# jobs, signal 0, kill -l, a literal PID and the reads, commits and data that only name a kill
-# pass.
+# jobs, signal 0, kill -l and the reads, commits and data that only name a kill pass; and a literal
+# PID passes only when its process is gone, or is the user's, is not the hook's own session or an
+# ancestor of it, and works inside the worktree or the job's tmp, each proven on real processes.
 
 load helpers/common
 
+# Each test's worktree (CLAUDE_PROJECT_DIR), job tmp ($CLAUDE_JOB_DIR/tmp), a directory outside
+# both and a sibling of the worktree whose name starts with the worktree's, and the PIDs it started.
 setup() {
   sandbox
+  WT=$BATS_TEST_TMPDIR/worktree JOB=$BATS_TEST_TMPDIR/job OUT=$BATS_TEST_TMPDIR/outside
+  mkdir -p "$WT/src" "$JOB/tmp" "$OUT" "$WT-other"
+  export CLAUDE_PROJECT_DIR=$WT CLAUDE_JOB_DIR=$JOB
+  PIDS=()
+}
+
+# Each process a test started, killed by the PID it noted.
+teardown() {
+  local pid
+  for pid in "${PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
+}
+
+# Start <program> (sleep by default) for 300 seconds with <dir> as its working directory, its
+# output and bats' fd 3 closed, noting its PID as STARTED and in PIDS: started <dir> [<program>]
+started() {
+  local here=$PWD
+  cd -- "$1" || return
+  "${2:-sleep}" 300 </dev/null >/dev/null 2>&1 3>&- &
+  STARTED=$!
+  PIDS+=("$STARTED")
+  cd -- "$here"
+}
+
+# The PID of a process that has ended, as GONE.
+ended() {
+  (exit 0) &
+  GONE=$!
+  wait "$GONE"
 }
 
 KILL_WAY="find your own process's PID (pgrep -af <pattern>, or the \$! you noted when you started it) and kill that literal PID in a call of its own, which passes when the process is yours and its working directory is inside your worktree or your job's tmp"
@@ -123,11 +154,12 @@ refuses_wrapped() {
   refuses "a kill of 1, $GROUP" "$KILL_WAY" "kill -9 4242 1"
 }
 
-@test "the session's own jobs, signal 0, kill -l and a literal PID pass, and so does what only names a kill" {
+@test "the session's own jobs, signal 0, kill -l and an ended PID pass, and so does what only names a kill" {
+  ended
   passes "kill \$!" "kill -9 \${!}" "kill \"\$!\"" "P=\$!; kill \$P" "sleep 300 & P=\"\$!\"; kill \"\${P}\"" \
     "sleep 1 & local P=\$!; kill -TERM \$P" "kill %1" "kill -9 %%" "kill \$(jobs -p)" "kill -- \"\$(jobs -p)\"" \
     "kill \`jobs -p\`" "kill \$\$" "kill -0 \$X" "kill -0 1" "kill -s 0 \$(pgrep x)" "kill -n 0 -1" "kill -l" "kill -l 9" \
-    "kill -L" "kill 4242" "kill -9 4242" "kill -s TERM -- 4242" "kill" "kill -TERM"
+    "kill -L" "kill $GONE" "kill -9 $GONE" "kill -s TERM -- $GONE" "kill" "kill -TERM"
   passes "pgrep -af vite" "ps -o pid,args" "tmux ls" "tmux new-session -d -s work" "fuser 5173/tcp" \
     "fuser -v -n tcp 8080" "git rm -r old" "rm -f x"
   passes 'git commit -m "fix: refuse pkill -f and kill -9 -1"' "grep -rn 'pkill -f' docs" \
@@ -153,4 +185,127 @@ refuses_wrapped() {
   assert_equal "$stderr" "Blocked by command-guard: the coordinator's commands (team-ask, team-answer, team-inbox, team-thread T<n> and team-run-approved); a guardrail, so report it as BLOCKED and do not reach it another way."
   guard -2 "kill \$P; pkill x"
   assert_equal "$stderr" "Blocked by command-guard: a kill by name or pattern (pkill), $BY_NAME; the allowed way: $KILL_WAY. A guardrail: do not reach it another way."
+}
+
+NOT_YOURS="which is not yours to stop"
+LITERAL_WAY="kill only a process you started whose working directory is inside your worktree or your job's tmp, and leave the rest to their owner"
+UNPROVEN="its owner or working directory cannot be read, so it is not proven yours"
+
+@test "a literal PID passes when its process works inside the worktree or the job's tmp, or has ended" {
+  started "$WT"
+  local root=$STARTED
+  started "$WT/src"
+  local sub=$STARTED
+  started "$JOB/tmp"
+  local job=$STARTED
+  ended
+  passes "kill $root" "kill -9 $sub" "kill -TERM $job" "kill -s KILL -- $root $sub $job" "kill $GONE" \
+    "sleep 1; kill $sub" "bash -c 'kill $job'" "kill -9 0$root"
+}
+
+@test "a literal PID whose process works outside the worktree and the job's tmp is refused, naming its directory" {
+  started "$OUT"
+  local out=$STARTED
+  started "$WT-other"
+  local sibling=$STARTED
+  started "$WT"
+  refuses_wrapped "a kill of PID $out, $NOT_YOURS: its working directory, $OUT, is outside your worktree and your job's tmp" \
+    "$LITERAL_WAY" "kill $out"
+  refuses "a kill of PID $out, $NOT_YOURS: its working directory, $OUT, is outside your worktree and your job's tmp" \
+    "$LITERAL_WAY" "kill $STARTED $out" "kill -9 -- $out" "/bin/kill -s TERM $out"
+  refuses "a kill of PID $sibling, $NOT_YOURS: its working directory, $WT-other, is outside your worktree and your job's tmp" \
+    "$LITERAL_WAY" "kill $sibling"
+  AGENT_TEAM_ROLE=builder guard -2 "kill $out"
+  assert_equal "$stderr" "Blocked by command-guard: a kill of PID $out, $NOT_YOURS: its working directory, $OUT, is outside your worktree and your job's tmp; the allowed way: $LITERAL_WAY. A guardrail: report it as BLOCKED, saying you took the allowed way, and go on only by that way."
+}
+
+@test "with no worktree and no job tmp, a live literal PID of the user's is refused as outside" {
+  unset CLAUDE_PROJECT_DIR CLAUDE_JOB_DIR
+  started "$WT"
+  refuses "a kill of PID $STARTED, $NOT_YOURS: its working directory, $WT, is outside your worktree and your job's tmp" \
+    "$LITERAL_WAY" "kill $STARTED"
+}
+
+@test "the hook's own session and the shells it runs in are refused, wherever they work" {
+  cd -- "$WT"
+  refuses "a kill of PID $$, $NOT_YOURS: your own session or its shell" "$LITERAL_WAY" "kill $$" "kill -9 $$"
+  refuses "a kill of PID $BASHPID, $NOT_YOURS: your own session or its shell" "$LITERAL_WAY" "kill $BASHPID"
+  refuses "a kill of PID $PPID, $NOT_YOURS: your own session or its shell" "$LITERAL_WAY" "kill $PPID"
+}
+
+@test "another user's process is refused, and PID 1 as PID 1" {
+  refuses "a kill of 1, a process group, every process or PID 0 or 1" \
+    "find your own process's PID (pgrep -af <pattern>, or the \$! you noted when you started it) and kill that literal PID in a call of its own, which passes when the process is yours and its working directory is inside your worktree or your job's tmp" \
+    "kill 1" "kill -9 -- 1"
+  [[ $(id -u) != 0 ]] || skip "run as root, every process is the user's"
+  local root
+  root=$(ps -A -o pid=,uid= | awk '$2 == 0 && $1 > 1 { print $1; exit }')
+  [[ -n $root ]] || skip "no process of root's but PID 1 to try"
+  refuses "a kill of PID $root, $NOT_YOURS: another user's" "$LITERAL_WAY" "kill $root" "kill -TERM $root"
+}
+
+@test "a PID too large for a process id is refused as unproven" {
+  refuses "a kill of PID 4294967297, $NOT_YOURS: $UNPROVEN" "$LITERAL_WAY" "kill 4294967297" "/bin/kill -9 4294967297"
+  refuses "a kill of PID 2147483648, $NOT_YOURS: $UNPROVEN" "$LITERAL_WAY" "kill 2147483648"
+}
+
+@test "on Linux, a process whose working directory cannot be read is refused as unproven" {
+  [[ $(uname) == Linux ]] || skip "Linux reads /proc; the macOS case is lsof's"
+  # A program the user may run but not read makes its process undumpable, so its /proc/<pid>/cwd
+  # is the kernel's to read, not the user's.
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  cp "$(command -v sleep)" "$BATS_TEST_TMPDIR/bin/sleep"
+  chmod 111 "$BATS_TEST_TMPDIR/bin/sleep"
+  started "$WT" "$BATS_TEST_TMPDIR/bin/sleep"
+  local tries=0
+  while readlink "/proc/$STARTED/cwd" >/dev/null 2>&1 && ((tries++ < 100)); do sleep 0.05; done
+  refuses "a kill of PID $STARTED, $NOT_YOURS: $UNPROVEN" "$LITERAL_WAY" "kill $STARTED"
+}
+
+@test "on macOS, a process lsof cannot read the working directory of is refused as unproven" {
+  [[ $(uname) == Darwin ]] || skip "macOS reads a working directory with lsof; Linux reads /proc"
+  started "$WT"
+  stub_command lsof
+  stub_reply lsof "" 1
+  refuses "a kill of PID $STARTED, $NOT_YOURS: $UNPROVEN" "$LITERAL_WAY" "kill $STARTED"
+}
+
+# kill_rules.proof(<pid>, the worktree and job tmp) as macOS reads it (ps and lsof), on any OS,
+# with PATH holding only the machine's ps and <dir>: proof_as_macos <pid> <dir>
+proof_as_macos() {
+  run --separate-stderr env PATH="$2" python3 -I -B -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import kill_rules
+kill_rules.PLATFORM = "darwin"
+print(kill_rules.proof(int(sys.argv[2]), (sys.argv[3], sys.argv[4])))
+' "$REPO_ROOT/bin/lib" "$1" "$WT" "$JOB/tmp"
+}
+
+@test "macOS's reading, ps and lsof, proves a process inside, refuses one outside and one lsof cannot read, on any OS" {
+  local bin=$BATS_TEST_TMPDIR/macos-bin
+  mkdir "$bin"
+  ln -s "$(command -v ps)" "$bin/ps"
+  ln -s "$(command -v python3)" "$bin/python3"
+  started "$OUT"
+  local out=$STARTED
+  started "$WT/src"
+  # lsof's -Fn fields for the asked PID: p<pid>, fcwd, n<directory>, the directory each test's
+  # started process has, by its PID.
+  printf '%s\n' "#!$BASH" 'pid=${3:?}' 'echo "p$pid"' 'echo fcwd' \
+    "[[ \$pid == $out ]] && echo n$OUT || echo n$WT/src" >"$bin/lsof"
+  chmod +x "$bin/lsof"
+  proof_as_macos "$STARTED" "$bin"
+  assert_equal "$output" "None"
+  proof_as_macos "$out" "$bin"
+  assert_equal "$output" "its working directory, $OUT, is outside your worktree and your job's tmp"
+  ended
+  proof_as_macos "$GONE" "$bin"
+  assert_equal "$output" "None"
+  printf '%s\n' "#!$BASH" "exit 1" >"$bin/lsof"
+  proof_as_macos "$STARTED" "$bin"
+  assert_equal "$output" "$UNPROVEN"
+  rm "$bin/lsof"
+  proof_as_macos "$STARTED" "$bin"
+  assert_equal "$output" "$UNPROVEN"
 }

@@ -58,7 +58,9 @@ The rows, in order:
     which flags and hosts); a host held in a variable is not seen.
   The kill rows, bin/lib/kill_rules.py's (its header holds their wording): a kill by name or
     pattern, tmux's kill-*, a kill of PIDs read from input, of a PID the guard cannot read before
-    it runs, and of a process group, every process or PID 0 or 1, each naming its allowed way.
+    it runs, of a process group, every process or PID 0 or 1, and of a literal PID not proven the
+    session's to stop (gone, or the user's, not the session's own and working inside a root, as
+    the process table says at the time of the call), each naming its allowed way.
   The delete rows, bin/lib/delete_rules.py's: none yet.
 Each row is given the call's context (Context): the command's text, the hook input's cwd, the
 worktree, the job tmp, the roots, the kept paths and the role, each read on a row's first use of
