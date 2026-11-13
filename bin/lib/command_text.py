@@ -58,21 +58,21 @@ line may leave a quote open (find -exec's string to its line's end, its closing 
 a fed string's apostrophe), which in the joined text would hide every line after it, so a reader
 walks each part alone; blank_heredocs(part) blanks the operator and marker of each heredoc a part
 still opens, so a walk of it reads the lines after it, and a body a shell reads, as code.
-A script the command writes to a file and runs is code too, its parts after the command's, read
-by code_parts in its turn, a script it writes and runs among them, to 20 scripts deep, past which
-it raises. Written are a heredoc's body, a here-string, and what echo and printf print (echo's
-text as written and again with its escapes decoded, as echo -e or sh's echo writes it; printf's
-format used again while its arguments last, %b decoded; printf -v writes no file), when the output
-of their pipeline segment, of a later segment it is piped into, or of the segment holding a group
-or compound command they stand in, goes to a file: > f, >> f, >| f, &> f, >& f or 1> f, or tee's
-files (tee f, tee -a f). The pieces one file is written are read joined, in the order found. It
-is run when, anywhere in the command, its text, an added part or a script read so, a Command of
-the walk (below) has the file as its first word, its path normalized: a shell's script file or a
-sourced one (bash x.sh, sh ./x.sh, source x.sh, . x.sh) or a command word naming it (./x.sh, or
-x.sh itself); a run before the write counts too, since a loop may run it later. A file never run
-so keeps its text out, as do a file a shell reads on stdin (bash < x.sh), a variable's value
-(x=...; echo "$x" > f), a script written by an earlier call or by the Write tool, and a file run
-under another name (a copy, a link, a path through a cd).
+A script the command writes to a file and runs is code too, its parts after the command's, read by
+code_parts in its turn, a script it writes and runs among them, to 20 scripts deep, past which it
+raises. Written are a heredoc's body, a here-string, and what echo and printf print (echo's text as
+written and again with its escapes decoded, as sh's echo writes it, or only decoded under -e;
+printf's format used again while its arguments last, %b decoded; printf -v writes no file), when
+the output of their pipeline segment, of a later segment it is piped into, or of the segment
+holding a group or compound command they stand in, goes to a file: > f, >> f, >| f, &> f, >& f or
+1> f, or tee's files (tee f, tee -a f). The pieces one file is written are read joined, in the
+order found. It is run when, anywhere in the command, its text, an added part or a script read so,
+a Command of the walk (below) has the file as its first word, its path normalized: a shell's script
+file or a sourced one (bash x.sh, sh ./x.sh, source x.sh, . x.sh) or a command word naming it
+(./x.sh, or x.sh itself); a run before the write counts too, since a loop may run it later. A file
+never run so keeps its text out, as do a file a shell reads on stdin (bash < x.sh), a variable's
+value (x=...; echo "$x" > f), a script written by an earlier call or by the Write tool, and a file
+run under another name (a copy, a link, a path through a cd).
 
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
