@@ -4,7 +4,8 @@
 // the guarded ones the PR proposes; and its ui-check skill, whose every chrome-devtools-axi command
 // runs here on the client servers/ pins, headless, against a fixture site, in a named axi session
 // of its own; it fails when the skill names a command it does not run, or when its budget table's
-// token figures do not match its image sizes.
+// token figures do not match its image sizes. A bridge that never becomes ready fails the suite
+// once, in the test of its start, and skips every step after it.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
@@ -293,7 +294,12 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
   const home = tempDir("axi-home");
   const out = tempDir("axi-out");
   const axiBin = join(repoRoot, "servers", "node_modules", ".bin", "chrome-devtools-axi");
-  let site, env;
+  let site, env, started, notReady;
+
+  // A step that needs the bridge: skipped once its start has failed, so a bridge that never
+  // started fails the run once, in the test of its start below, not again in every step.
+  const step = (name, fn) =>
+    test(name, (t) => (notReady ? t.skip("the axi bridge never became ready") : fn(t)));
 
   // One command, as a session runs it in its own named session: its output, or a failure with it.
   async function axi(...args) {
@@ -321,23 +327,33 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
       CHROME_DEVTOOLS_AXI_CHROME_ARGS: "--use-mock-keychain --password-store=basic",
       CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1",
       CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1",
+      // How long the bridge may take to answer its deep health check. axi's default, 30 s, is
+      // below what a loaded CI runner needs: a healthy first open there took about 14.5 s, and run
+      // 42599355955's ran past 33 s, which axi reported as "the attached CDP target appears to have
+      // gone away". 110 s stays under axi()'s 120 s limit, so a slow start ends as axi's own error,
+      // never as the command's kill.
+      CHROME_DEVTOOLS_AXI_BRIDGE_TIMEOUT_MS: "110000",
     };
-    // A port another socket took after bridgePort's check refuses the bridge's bind: try another,
-    // 3 tries in all.
-    const tried = [];
-    for (;;) {
-      const port = await bridgePort();
-      tried.push(port);
-      env.CHROME_DEVTOOLS_AXI_PORT = String(port);
-      try {
-        await axi("start");
-        break;
-      } catch (error) {
-        if (!portInUse.test(error.message)) throw error;
-        if (tried.length === 3) {
-          throw new Error(`the axi bridge's ports ${tried.join(", ")} were each already in use:\n${error.message}`);
+    try {
+      // A port another socket took after bridgePort's check refuses the bridge's bind: try
+      // another, 3 tries in all.
+      const tried = [];
+      for (;;) {
+        const port = await bridgePort();
+        tried.push(port);
+        env.CHROME_DEVTOOLS_AXI_PORT = String(port);
+        try {
+          started = await axi("start");
+          break;
+        } catch (error) {
+          if (!portInUse.test(error.message)) throw error;
+          if (tried.length === 3) {
+            throw new Error(`the axi bridge's ports ${tried.join(", ")} were each already in use:\n${error.message}`);
+          }
         }
       }
+    } catch (error) {
+      notReady = `the axi bridge never became ready:\n${error.message}`;
     }
   });
   after(async () => {
@@ -345,7 +361,13 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
     await site?.close();
   });
 
-  test("signs in with open, fill and click, each taking its refs from the last output", async () => {
+  test("starts its bridge on the port it chose, within its readiness deadline", () => {
+    if (notReady) assert.fail(notReady);
+    assert.match(started, /^status: ready$/m);
+    assert.match(started, new RegExp(`^port: ${env.CHROME_DEVTOOLS_AXI_PORT}$`, "m"));
+  });
+
+  step("signs in with open, fill and click, each taking its refs from the last output", async () => {
     const form = await axi("open", site.url);
     const email = await axi("fill", ref(form, "textbox", "Email"), "user@example.com");
     const password = await axi("fill", ref(email, "textbox", "Password"), "fixture-password");
@@ -353,7 +375,7 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
     assert.match(await axi("wait", "Home"), /^waited: Home$/m);
   });
 
-  test("navigates with eval and wait, with no snapshot", async () => {
+  step("navigates with eval and wait, with no snapshot", async () => {
     const nav = await axi("eval", skillEval(evalKinds.navigate, { path: "/two.html" }));
     assert.doesNotMatch(nav, /uid=/);
     assert.match(await axi("wait", "Second page"), /^waited: Second page$/m);
@@ -361,7 +383,7 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
     await go("/home.html", "Home");
   });
 
-  test("opens a menu, a dialog and an empty state by selector, each printing a line", async () => {
+  step("opens a menu, a dialog and an empty state by selector, each printing a line", async () => {
     for (const [selector, text] of [["#menu", "Profile"], ["#open-dialog", "Confirm order"], ["#clear", "No orders yet"]]) {
       const opened = await axi("eval", skillEval(evalKinds.open, { selector }));
       assert.doesNotMatch(opened, /uid=/);
@@ -370,7 +392,7 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
     await go("/home.html", "Home");
   });
 
-  test("captures one element from a snapshot's ref at its own size", async () => {
+  step("captures one element from a snapshot's ref at its own size", async () => {
     await axi("emulate", "--viewport", "1920x1080x1");
     const snapshot = await axi("snapshot");
     assert.match(snapshot, /button "Submit" .*\bdisabled\b/);
@@ -379,7 +401,7 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
     assert.deepEqual(pngSize(tile), [120, 48]);
   });
 
-  test("captures a viewport tile of the size the skill gives at each of its viewports", async () => {
+  step("captures a viewport tile of the size the skill gives at each of its viewports", async () => {
     for (const [viewport, size] of Object.entries(viewports)) {
       await axi("emulate", "--viewport", viewport);
       const tile = join(out, `home-${size.join("x")}.png`);
@@ -391,25 +413,25 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
     }
   });
 
-  test("scrolls a tall state one window at a time", async () => {
+  step("scrolls a tall state one window at a time", async () => {
     await axi("emulate", "--viewport", "1920x1080x1");
     await go("/home.html", "Home");
     assert.match(await axi("eval", skillEval(evalKinds.scroll)), /^result: "1080"$/m);
     assert.match(await axi("eval", skillEval(evalKinds.scroll)), /^result: "2160"$/m);
   });
 
-  test("the phone probe counts the overflow and the small targets at phone width", async () => {
+  step("the phone probe counts the overflow and the small targets at phone width", async () => {
     await axi("emulate", "--viewport", "390x844x1,mobile,touch");
     await go("/home.html", "Home");
     const result = (await axi("eval", skillEval(evalKinds.probe))).match(/^result: (.*)$/m)[1];
     assert.deepEqual(JSON.parse(JSON.parse(result)), { overflow: 210, small: 1 });
   });
 
-  test("console lists the page's errors", async () => {
+  step("console lists the page's errors", async () => {
     assert.match(await axi("console"), /fixture-error: the orders failed to load/);
   });
 
-  test("Lighthouse's snapshot audit and the skill's jq filter name the fixture's accessibility fault", async () => {
+  step("Lighthouse's snapshot audit and the skill's jq filter name the fixture's accessibility fault", async () => {
     await axi("emulate", "--viewport", "1920x1080x1");
     await go("/home.html", "Home");
     const reports = join(out, "lighthouse");
@@ -421,7 +443,7 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
     assert.doesNotMatch(failing, /meta-description/, "the filter reads audits outside accessibility");
   });
 
-  test("a throttled trace gives the LCP breakdown", async () => {
+  step("a throttled trace gives the LCP breakdown", async () => {
     assert.match(await axi("emulate", "--network", "Slow 4G", "--cpu", "4"), /networkConditions: Slow 4G/);
     assert.match(await axi("perf-start", "--no-auto-stop"), /^trace: started$/m);
     await axi("wait", "Home");
@@ -431,13 +453,13 @@ describe("every chrome-devtools-axi command ui-check names, run headless on a fi
     assert.match(await axi("perf-insight", set, "LCPBreakdown"), /## Insight Title: LCP breakdown/);
   });
 
-  test("stop ends the session's bridge and its browser", async () => {
+  step("stop ends the session's bridge and its browser", async () => {
     const { pid } = JSON.parse(readFileSync(join(home, ".chrome-devtools-axi", "sessions", env.CHROME_DEVTOOLS_AXI_SESSION, "bridge.pid"), "utf8"));
     assert.match(await axi("stop"), /^status: stopped$/m);
     assert.throws(() => process.kill(pid, 0), "the bridge still runs");
   });
 
-  test("the skill names no command or flag the test has not run", () => {
+  step("the skill names no command or flag the test has not run", () => {
     const missing = [...new Set(invocations.map(signature))].filter((s) => !ran.has(s));
     assert.deepEqual(missing, []);
   });
