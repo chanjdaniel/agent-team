@@ -1091,8 +1091,11 @@ role_texts() {
       "$(jq -c .permissions.deny "$worker")"
     assert_equal "$(jq -c --slurpfile w "$worker" --slurpfile r "$REPO_ROOT/settings/$role.json" \
       '.skillOverrides == ($w[0].skillOverrides * ($r[0].skillOverrides // {}))' "$settings")" true
-    assert_equal "$(jq -c '[.syncClaudeAiPlugins, .syncClaudeAiSkills, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" \
-      '[false,false,false]'
+    # The built-in easel plugin is off in enabledPlugins, so it never registers mcp__easel__chart,
+    # an MCP tool from outside the toolkits, nor its prompt section or automatic charts; a deny
+    # rule on the tool alone would leave the charts.
+    assert_equal "$(jq -c '[.syncClaudeAiPlugins, .syncClaudeAiSkills, .enabledPlugins["cc-plugin-plugin-authoring@builtin"],
+      .enabledPlugins["cc-plugin-easel@builtin"]]' "$settings")" '[false,false,false,false]'
     mapfile -t texts < <(role_texts "$role")
     ((${#texts[@]} > 1)) || { echo "no brief template found for $role" >&2; return 1; }
     keeps_named "$settings" "${texts[@]}" || { echo "in $role's settings" >&2; return 1; }
@@ -1736,9 +1739,10 @@ assert_prod_write_gated() {
   # A skill's inline shell would run a command in a role that has no shell.
   assert_equal "$(jq -r .disableSkillShellExecution "$s")" true
   # disableBundledSkills leaves the built-in plugin that carries the plugin-authoring skill (T16
-  # ticket 09's second live check), which the worker settings turn off for every worker.
+  # ticket 09's second live check), which the worker settings turn off for every worker, as they
+  # do the built-in easel plugin and its chart tool.
   assert_equal "$(jq -c .enabledPlugins "$s")" \
-    '{"discord@claude-plugins-official":false,"mongodb-atlas@claude-plugins-official":false,"cc-plugin-plugin-authoring@builtin":false}'
+    '{"discord@claude-plugins-official":false,"mongodb-atlas@claude-plugins-official":false,"cc-plugin-plugin-authoring@builtin":false,"cc-plugin-easel@builtin":false}'
   # The shared hooks come first (lease-fence on Bash, a tool ops lacks), then the role's own.
   assert_equal "$(jq -r '.hooks.PreToolUse[] | "\(.matcher) \(.hooks[0].command)"' "$s" | sed -n 1,2p)" \
     "Bash $REPO_ROOT/bin/hooks/lease-fence
