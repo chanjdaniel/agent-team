@@ -95,9 +95,8 @@ PACK_LOOSE=200
 # hook follows with a command's name: at the start, after a separator, a parenthesis (a subshell's
 # or a case pattern's), a brace (a group's or a function's body), a backtick or a line break, past
 # the reserved words a command may follow there ({, !, if, then, else, elif, do, while, until,
-# time and coproc), any variable assignments and a directory. bin/hooks/lease-fence and
-# bin/hooks/command-guard read it.
-# shellcheck disable=SC2034 # read by the hooks
+# time and coproc), any variable assignments and a directory. bin/hooks/lease-fence reads it.
+# shellcheck disable=SC2034 # read by the hook
 COMMAND_START=$'(^|[;&|(){`\n])[[:space:]]*((\\{|!|if|then|else|elif|do|while|until|time|coproc)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?'
 
 # Refuse with a reason on stderr.
