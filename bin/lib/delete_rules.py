@@ -72,7 +72,7 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from command_text import (  # noqa: E402
-    FIND_EXEC, SCRIPT, SOURCE, code_parts, command_name, commands, heads_behind, long_options, read_command,
+    FIND_EXEC, SCRIPT, SOURCE, blank_heredocs, code_parts, command_name, commands, heads_behind, long_options,
     short_cluster, simple_commands,
 )
 
@@ -139,22 +139,11 @@ def _rebound(name, text):
     return any(not used for used, _ in _mentions(name, text))
 
 
-def _blanked(part):
-    """A part of the code text with the operator and marker of each heredoc it still opens blanked,
-    as command_rules reads it, so every line of it is code."""
-    out, start = [], 0
-    for heredoc in sorted(read_command(part).heredocs, key=lambda heredoc: heredoc.marker[0]):
-        begin, end = heredoc.marker
-        out += [part[start:begin], " " * (end - begin)]
-        start = end
-    return "".join(out) + part[start:]
-
-
 @functools.lru_cache(maxsize=None)
 def _walked(context):
     """Each command the call runs, as command_rules walks it: its code text's parts, then its own
     text."""
-    found = [command for part in code_parts(context.text) for command in commands(_blanked(part))]
+    found = [command for part in code_parts(context.text) for command in commands(blank_heredocs(part))]
     return tuple(found + list(commands(context.text)))
 
 
