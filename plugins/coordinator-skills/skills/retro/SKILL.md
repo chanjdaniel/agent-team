@@ -25,5 +25,6 @@ The retro itself changes nothing; what Daniel approves becomes its own work.
    Right after opening it, log what it builds, a project's own task too: `team-log T<new> retro-change retro=T<n> proposals="<their numbers>"`.
    `team-retro digest` reads these to tell the next retro when each change landed, so it can judge what each did.
    A rejected proposal needs nothing more: the `answered` event and the archived report keep the next retro from proposing it again.
+   Then read `team-queue list`'s waiting items: delete each whose work is no longer wanted, for the checkpoint to commit, and end the `waits:` of each whose wait no longer stands.
 6. **Close.** Run `team-close T<n>`: it archives the report to `tasks/T<n>/scratch/report.md`, where the next retro reads it.
    Post the outcome in the thread: what Daniel approved, and the follow-up task.

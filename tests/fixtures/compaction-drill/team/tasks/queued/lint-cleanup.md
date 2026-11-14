@@ -1,6 +1,8 @@
 ---
-summary: the drill project's lint cleanup, approved by Daniel, mine to open
-task: -
+summary: the drill project's lint cleanup, approved by Daniel
+project: drill
+priority: 2
+size: M
 ---
 # Queued: the drill project's lint cleanup
 

@@ -11,7 +11,8 @@
 # tests/fixtures/compaction-drill/team, a team home with one project, drill, whose GitHub is never
 # reached; four open tasks, T91 on an unanswered ask, T92 waiting on Daniel, T93 blocked on T92
 # and T94 with its builder at work; tasks/current.md with an owe and a next item; and one piece of
-# queued work in tasks/queued/, with its front matter and index.
+# queued work in tasks/queued/, ready, with the front matter team-queue reads (summary, project,
+# priority and size) and its index, so the digest's queue line names it.
 # stubs/ goes first on the session's PATH, as TEAM_PATH_FIRST, which keeps it ahead of the tool
 # directories the hooks' library puts first (the machine's own claude among them), so its hooks
 # see the fixture's live sessions (claude agents --json) and no open PRs (gh pr list), never this

@@ -4,15 +4,21 @@
 # Usage: team-current add <kind> <task or -> <text> --where <detail>
 #        team-current done <id>
 #        team-current list
-#        team-current check
+#        team-current check [--json]
 # The file is "# Current items", then one line per item, "- <kind> <task or -> <text> | <where>".
 # An item's id is the first 6 hex digits of the sha256 of its line without the leading "- ".
 # add appends the item's line (making the file, with its title, when there is none) and prints its
 # id; the text is the words between the task and --where, joined by spaces. done removes the one
 # item whose id is <id> or starts with it (at least 4 hex digits), and prints it. list prints each
 # item as "<id> <its line without "- ">". check prints each line that add would refuse, as
-# "tasks/current.md:<n>: <reasons>", and every line that is neither the title, blank nor an item,
-# exiting 1 when there is any; it never writes.
+# "tasks/current.md:<n>: <reasons>", and every line that is neither the title, blank nor an item;
+# and each item whose task (T<n>) is closed in the ledger, as "tasks/current.md:<n>: T<n> closed
+# at <its last closed's ts>; done it (team-current done <id>) or add it again under an open task",
+# after that line's reasons, if any. It exits 1 when it names any line, and never writes. With
+# --json it prints instead {schema: "team-current-check/1", problems: [{line, id, item,
+# reasons}], closed: [{line, id, item, task, closed_at}]}, exiting the same: line is the line's
+# number, id its item id (null for a line that is not an item), item the line without "- ",
+# reasons each reason as a string, and closed_at the task's last closed's ts.
 # add refuses: a kind other than ask, owe, next or watch (queued work is a file in tasks/queued/,
 # with front matter, which team-queue index lists, and a queued line is refused saying so); a task
 # that is not T<n> or -; text holding " | " or a newline; a line over 300 characters; a line already in the file; and a
@@ -31,7 +37,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-current add <kind> <task or -> <text> --where <detail> | done <id> | list | check"
+usage="usage: team-current add <kind> <task or -> <text> --where <detail> | done <id> | list | check [--json]"
 current=$TEAM_HOME/tasks/current.md
 rel=tasks/current.md
 title="# Current items"
@@ -258,36 +264,64 @@ case $command in
     true
     ;;
   check)
-    (($# == 0)) || usage_error "$usage"
+    json=''
+    if (($# == 1)) && [[ $1 == --json ]]; then
+      json=1
+    elif (($#)); then
+      usage_error "$usage"
+    fi
     read_lines
-    bad=0
+    # One JSON row per line that has reasons or names a task: {line, id, item, task, reasons}.
+    rows=''
     for i in "${!lines[@]}"; do
       item=${lines[i]}
-      problems=''
+      reasons=() task='' id=''
       if [[ -z $item || $item == "$title" ]]; then
         continue
       elif [[ $item != '- '* ]]; then
-        problems="not an item line (- <kind> <task or -> <text> | <where>)"
+        reasons=("not an item line (- <kind> <task or -> <text> | <where>)")
       else
+        id=$(item_id "$item")
         body=${item#- }
         bars=${body//' | '/$'\x1f'}
         bars=${bars//[!$'\x1f']/}
+        head=${body%% | *}
+        read -r kind task text <<<"$head" || true
         if ((${#bars} == 0)); then
-          problems="the line has no ' | <where>'"
+          reasons=("the line has no ' | <where>'")
         elif ((${#bars} > 1)); then
-          problems="the line holds ' | ' more than once"
+          reasons=("the line holds ' | ' more than once")
         else
-          head=${body%% | *} where=${body#* | }
-          read -r kind task text <<<"$head" || true
-          problems=$(problems_line "$kind" "${task:-}" "${text:-}" "$where" "$item" lines "$i")
+          where=${body#* | }
+          mapfile -t reasons < <(item_problems "$kind" "${task:-}" "${text:-}" "$where" "$item" lines "$i")
         fi
+        [[ ${task:-} =~ ^T[1-9][0-9]*$ ]] || task=''
       fi
-      if [[ -n $problems ]]; then
-        echo "$rel:$((i + 1)): $problems"
-        bad=1
-      fi
+      ((${#reasons[@]})) || [[ -n $task ]] || continue
+      rows+=$(jq -cn --argjson line "$((i + 1))" --arg id "$id" --arg item "${item#- }" --arg task "$task" \
+        '{line: $line, id: (if $id == "" then null else $id end), item: $item, task: $task, reasons: $ARGS.positional}' \
+        --args "${reasons[@]}")$'\n'
     done
-    exit "$bad"
+    # The rows, with each closed task's last closed from the ledger (none when there is no ledger).
+    report=$(jq -nR -L "$TEAM_LIB" --arg rows "$rows" '
+      include "ledger";
+      (ledger_events | by_task) as $tasks
+      | [$rows | split("\n")[] | select(. != "") | fromjson] as $rows
+      | {schema: "team-current-check/1",
+         problems: [$rows[] | select(.reasons != []) | {line, id, item, reasons}],
+         closed: [$rows[] | select(.task != "") | ($tasks[.task] // null) as $te
+                  | select($te != null and ($te | task_status) == "closed")
+                  | {line, id, item, task, closed_at: (last($te[] | select(.event == "closed")) | .ts)}]}' \
+      < <(cat "$TEAM_HOME/ledger.jsonl" 2>/dev/null || true))
+    if [[ -n $json ]]; then
+      printf '%s\n' "$report"
+    else
+      jq -r --arg rel "$rel" '
+        [(.problems[] | {line, text: (.reasons | join("; "))}),
+         (.closed[] | {line, text: "\(.task) closed at \(.closed_at); done it (team-current done \(.id)) or add it again under an open task"})]
+        | sort_by(.line)[] | "\($rel):\(.line): \(.text)"' <<<"$report"
+    fi
+    jq -e '.problems == [] and .closed == []' <<<"$report" >/dev/null || exit 1
     ;;
   *) usage_error "$usage" ;;
 esac

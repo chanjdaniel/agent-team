@@ -177,6 +177,72 @@ tasks/current.md:11: not an item line (- <kind> <task or -> <text> | <where>)"
   assert_equal "$output" ""
 }
 
+# Close task <T<n>> at <ts> in the sandbox's ledger, after its opened: closed_task <T<n>> <ts>
+closed_task() {
+  opened_task "$1"
+  jq -cn --arg task "$1" --arg ts "$2" '{ts: $ts, task: $task, event: "closed"}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "check names each item whose task closed, with its id, and exits 1; an open task's item and a - item pass" {
+  closed_task T181 2026-11-02T01:31:49Z
+  opened_task T4
+  closed_task T9 2026-11-05T10:00:00Z
+  local a="- next T181 open the rest of the refactor | tasks/queued/node-pin.md"
+  local b="- watch T4 the CI wait on PR 7 | ledger 2026-11-01T07:08:11Z"
+  local c="- owe - a reply | 1563000000000000045"
+  local d="- watch T9 the scratch | /tmp/watch.log"
+  local e="- ask T77 a task the ledger does not hold | 1563000000000000045"
+  printf '%s\n' "# Current items" "" "$a" "$b" "$c" "$d" "$e" >"$current"
+  git -C "$TEAM_HOME" add -A
+  git -C "$TEAM_HOME" commit -q -m "chore: items"
+  run_bin -1 team-current check
+  assert_equal "$output" "tasks/current.md:3: T181 closed at 2026-11-02T01:31:49Z; done it (team-current done $(id_of "$a")) or add it again under an open task
+tasks/current.md:6: the where '/tmp/watch.log' is a temp path
+tasks/current.md:6: T9 closed at 2026-11-05T10:00:00Z; done it (team-current done $(id_of "$d")) or add it again under an open task"
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  # With no closed task named, the file passes.
+  printf '%s\n' "# Current items" "$b" "$c" "$e" >"$current"
+  run_bin -0 team-current check
+  assert_equal "$output" ""
+  # With no ledger at all, no task is closed.
+  rm "$TEAM_HOME/ledger.jsonl"
+  printf '%s\n' "# Current items" "$a" >"$current"
+  run_bin -0 team-current check
+}
+
+@test "check --json prints team-current-check/1, its problems and closed items, exiting as the text form does" {
+  closed_task T181 2026-11-02T01:31:49Z
+  opened_task T4
+  local a="- next T181 open the rest of the refactor | tasks/queued/node-pin.md"
+  local b="- todo T4 something | tasks/queued/node-pin.md"
+  printf '%s\n' "# Current items" "$a" "$b" "Not an item." "- ask - no where" >"$current"
+  git -C "$TEAM_HOME" add -A
+  git -C "$TEAM_HOME" commit -q -m "chore: items"
+  run_bin -1 --separate-stderr team-current check --json
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg a "${a#- }" --arg ida "$(id_of "$a")" \
+    --arg b "${b#- }" --arg idb "$(id_of "$b")" --arg e "ask - no where" --arg ide "$(id_of "- ask - no where")" '
+    {schema: "team-current-check/1",
+     problems: [
+       {line: 3, id: $idb, item: $b, reasons: ["kind '\''todo'\'' is not ask, owe, next or watch"]},
+       {line: 4, id: null, item: "Not an item.", reasons: ["not an item line (- <kind> <task or -> <text> | <where>)"]},
+       {line: 5, id: $ide, item: $e, reasons: ["the line has no '\'' | <where>'\''"]}],
+     closed: [{line: 2, id: $ida, item: $a, task: "T181", closed_at: "2026-11-02T01:31:49Z"}]}')"
+  # Two reasons on one line are two entries of its reasons.
+  printf '%s\n' "# Current items" "- todo T4a something | /etc/hosts" >"$current"
+  run_bin -1 team-current check --json
+  assert_equal "$(jq -c '.problems[0].reasons' <<<"$output")" \
+    "[\"kind 'todo' is not ask, owe, next or watch\",\"task 'T4a' is not T<n> or -\",\"the where '/etc/hosts' is not a file in the team home\"]"
+  # A clean file, and no file, print empty lists and exit 0.
+  printf '%s\n' "# Current items" "- next T4 open the Node pin task | tasks/queued/node-pin.md" >"$current"
+  run_bin -0 team-current check --json
+  assert_equal "$(jq -c . <<<"$output")" '{"schema":"team-current-check/1","problems":[],"closed":[]}'
+  rm "$current"
+  run_bin -0 team-current check --json
+  assert_equal "$(jq -c . <<<"$output")" '{"schema":"team-current-check/1","problems":[],"closed":[]}'
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" " D tasks/current.md"
+}
+
 @test "add and done commit tasks/current.md alone and push it, another changed record left uncommitted" {
   echo "# Plan, changed" >"$TEAM_HOME/tasks/T4/plan.md"
   echo "a staged note" >"$TEAM_HOME/README.md"
@@ -265,6 +331,8 @@ Current items (1):
   run_bin -2 team-current "done" 123456 7890
   run_bin -2 team-current list extra
   run_bin -2 team-current check extra
+  run_bin -2 team-current check --json extra
+  run_bin -2 team-current check --frob
 }
 
 @test "an ask or owe item added or done brings waiting.md up to date, and a next or watch item leaves it" {
