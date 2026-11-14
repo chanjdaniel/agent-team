@@ -21,8 +21,14 @@ quoted name, sudo, env, nohup, timeout and the rest are no way around a row:
     checked as well when it is recursive.
   rm or find behind xargs or parallel deletes what they read from input (and parallel's :::
     inputs), which the guard cannot read: its word is "xargs's input" or "parallel's input".
-  Every rm or find above, in a call whose text names extglob and holds a pattern's opening (@(,
-    !(, +(, ?( or *(), which the walk reads as a subshell, deletes "an extglob pattern", unread.
+  Every rm or find above, in a call that names extglob (below) and whose text holds a pattern's
+    opening (@(, !(, +(, ?( or *(), which the walk reads as a subshell, deletes "an extglob
+    pattern", unread.
+A call names a variable or a shell option when its text does, or that text unquoted (its line
+continuations dropped, its $'...' strings decoded, its quotes and backslashes removed), or a word,
+assignment or wrapper word of a command its walk reads that the text does not hold as it is; so
+I""FS=, C\\DPATH=, CD{PATH,X}= and shopt -s cdable_v''ars name them. A shopt with a word, or a shell with an -O or +O value, holding
+a $ or a backtick names every option.
 Each operand is resolved without running anything, from the walk's word (its quotes removed, its
 unquoted brace lists expanded):
   - a backslash left in it (a quoted backslash), or a word the walk decoded from a $'...' escape
@@ -32,11 +38,11 @@ unquoted brace lists expanded):
   - $HOME and $CLAUDE_JOB_DIR (each also as ${...}) are the hook's environment, an unset one
     empty; $CLAUDE_PROJECT_DIR is both the hook's value and empty, every one of which must pass,
     since the Bash tool's shell does not set it, though hooks get it; $PWD is each candidate
-    directory below; any of them is unread when the command's text names it otherwise than as a
-    use ($X, ${X}, ${X:-y}), as an assignment, read, unset or a word of prose does;
+    directory below; any of them is unread when the call names it (above) otherwise than as a use
+    ($X, ${X}, ${X:-y}), as an assignment, read, unset or a word of prose does;
   - a variable the command assigns is each value it is given, every one of which must pass: its
-    first mention in the command's text is an assignment (X=...) and every other one an assignment
-    or a use, and each value comes from a bare assignment or one of export, local, declare,
+    first mention in the command's text is an assignment (X=...) and every other one the call
+    names (above) an assignment or a use, and each value comes from a bare assignment or one of export, local, declare,
     typeset or readonly (not declare -n); a value that is $(mktemp ...) or `mktemp ...` alone is
     the new path mktemp makes: its template under -p <dir> or --tmpdir=<dir>; its template's name
     under $TMPDIR (/tmp when it is empty) with -t, --tmpdir alone or no template (tmp.XXXXXXXXXX);
@@ -44,7 +50,7 @@ unquoted brace lists expanded):
     starts with (, an array, is unread, and so is a variable assigned before a command on its line
     (X=1 rm -rf "$X", env X=1 ...), which the shell expands before the assignment;
   - any other $, a backtick, $( or <( or >( left in it makes it unread, and so does a variable
-    while the command's text names IFS otherwise than as a use, since that may split its value;
+    while the call names IFS otherwise than as a use, since that may split its value;
   - a path under /proc or /dev is unread, since /proc/self and /dev/fd name the guard's own
     process there.
 A relative operand is checked against every candidate directory: the input's cwd and each cd or
@@ -52,14 +58,17 @@ pushd target anywhere in the command (cd alone is HOME), resolved the same way, 
 against every candidate so far, both as the shell's logical cd reads it and as the file system
 does; a cd -, popd, pushd with no directory or a +N or -N, a cd to an unread target, a relative cd
 target while CDPATH is set or named, env's -C or --chdir and sudo's -D or --chdir make every
-relative operand unread, and so do a call with no cwd and one whose text names cdable_vars, under
-which cd follows a variable of the name it is given.
+relative operand unread, and so do a call with no cwd and one that names cdable_vars, under which
+cd follows a variable of the name it is given.
 Each path is made absolute, and its symlinks are followed (os.path.realpath), so a link never
 launders a delete. A glob (*, ? or [ in a component) passes when the literal directory before its
 first glob component passes, which holds no kept path then, and that component does not start
-with a dot (which may match ..); when a component follows its last glob component, the path
-normalized as written must pass too, and so must each directory the glob matches now (to 256)
-joined to the rest and resolved, so a .. or a link after a glob climbs nowhere unseen. An empty
+with a dot (which may match ..); when a component follows its first glob component, the path
+normalized as written must pass too, and so must each directory that glob matches now joined to
+the rest, resolved, or when the rest holds a glob judged so in turn (to 256 matches in all), so a
+.. or a link after a glob climbs nowhere unseen. Such a path is unread in a call that names
+dotglob, GLOBIGNORE (which turns it on), nocaseglob or globstar, under which Bash's glob matches
+hidden entries, another case or across directories, which the guard's match skips. An empty
 operand deletes nothing.
 With no root at all (no worktree and no job tmp found), every recursive delete is refused as
 outside, naming its first operand.
@@ -82,8 +91,8 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from command_text import (  # noqa: E402
-    FIND_EXEC, SCRIPT, SOURCE, blank_heredocs, code_parts, command_name, commands, heads_behind, long_options,
-    short_cluster, simple_commands,
+    FIND_EXEC, SCRIPT, SHELLS, SOURCE, blank_heredocs, code_parts, command_name, commands, heads_behind, long_options,
+    short_cluster, simple_commands, unquoted,
 )
 
 ALLOWED_DELETE = (
@@ -120,6 +129,9 @@ GLOB = re.compile(r"[*?\[]")
 # An extglob pattern's opening, which the walk reads as a subshell's (, as Bash does while extglob
 # is off.
 EXTGLOB = re.compile(r"[?*+@!]\(")
+# The shell options and the variable under which Bash's glob matches what glob.iglob skips: hidden
+# entries (dotglob, and GLOBIGNORE, which turns it on), another case, and ** across directories.
+GLOB_OPTIONS = ("dotglob", "nocaseglob", "globstar", "GLOBIGNORE")
 # The trees whose links name the process that reads them.
 LIVE = ("/proc/", "/dev/")
 # What a word may still hold that the shell expands at run time.
@@ -149,9 +161,46 @@ def _mentions(name, text):
         yield used, not used and not braced and text[end : end + 1] == "=" and text[end + 1 : end + 2] != "="
 
 
-def _rebound(name, text):
-    """Whether the text names the variable otherwise than as a use."""
-    return any(not used for used, _ in _mentions(name, text))
+def _rebound(name, context):
+    """Whether the command names the variable otherwise than as a use, as _spelled reads it."""
+    return any(not used for used, _ in _mentions(name, _spelled(context)))
+
+
+@functools.lru_cache(maxsize=None)
+def _spelled(context):
+    """The command's text as Bash reads the names in it: the text, then a line of it unquoted
+    (command_text.unquoted), then a line for each word, assignment and wrapper word of every
+    command the walk reads (its quotes removed, its escapes decoded, its brace lists expanded) that
+    the text does not hold as it is, since only such a word may spell a name otherwise (a word the
+    text holds is read in it, as ${T}'s T is a use); so a name spelled with quotes, an escape, a
+    line continuation or a brace list is named in it."""
+    lines = [context.text, unquoted(context.text)]
+    for command in _walked(context):
+        words = list(command.assignments + command.words)
+        words += [word for wrapper in command.wrappers for word in wrapper]
+        lines += [word for word in words if word not in context.text]
+    return "\n".join(lines)
+
+
+@functools.lru_cache(maxsize=None)
+def _named(name, context):
+    """Whether the command names a shell option or variable, as _spelled reads it, or runs a
+    shopt with a word, or a shell with an -O or +O option, the guard cannot read (a $ or a
+    backtick left in it), which may set any option."""
+    if re.search(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", _spelled(context)):
+        return True
+    for command in _walked(context):
+        words = list(command.words)
+        ran = command_name(words[0]) if words else ""
+        if ran == "shopt":
+            options = words[1:]
+        elif ran in SHELLS:
+            options = [value for option, value in zip(words[1:], words[2:]) if option in ("-O", "+O")]
+        else:
+            continue
+        if any(UNREAD_TEXT.search(word) for word in options):
+            return True
+    return False
 
 
 @functools.lru_cache(maxsize=None)
@@ -167,7 +216,7 @@ def _assigned(name, context):
     """The values the command gives the variable, or None when it may hold another: its first
     mention not an assignment, a mention that is neither a use nor an assignment, an assignment
     before a command on its line, a nameref, or no value found."""
-    mentions = list(_mentions(name, context.text))
+    mentions = list(_mentions(name, _spelled(context)))
     if not mentions or not mentions[0][1] or any(not used and not assigns for used, assigns in mentions):
         return None
     prefix, values = name + "=", []
@@ -225,7 +274,7 @@ def _braces(word):
 
 def _environment(name, context):
     """A variable's value from the hook's environment, unread when the command rebinds it."""
-    if _rebound(name, context.text):
+    if _rebound(name, context):
         raise Unread
     return context.environ.get(name, "")
 
@@ -245,7 +294,7 @@ def _values(name, context, depth):
         value = _environment(name, context)
         return [value, ""] if name in HOOK_ONLY and value else [value]
     if name == "PWD":
-        if _rebound(name, context.text):
+        if _rebound(name, context):
             raise Unread
         return list(_candidates(context))
     values = _assigned(name, context)
@@ -304,7 +353,7 @@ def _mktemp(text, context, depth):
     if directory is not None and directory != "":
         bases = _substitute(_tilde(directory, context), context, depth)
     elif under_tmpdir or not templates:
-        if _rebound("TMPDIR", context.text):
+        if _rebound("TMPDIR", context):
             raise Unread
         bases = [context.environ.get("TMPDIR") or "/tmp"]
     else:
@@ -325,7 +374,7 @@ def _substitute(text, context, depth):
     results, at = [""], 0
     for reference in REFERENCE.finditer(text):
         # An IFS the command sets may split a value where a blank would not.
-        if _rebound("IFS", context.text):
+        if _rebound("IFS", context):
             raise Unread
         values = _values(reference.group(1) or reference.group(2), context, depth)
         if any(re.search(r"\s", value) for value in values):
@@ -389,7 +438,7 @@ def _candidates(context):
     """Each directory the command may be in when it runs a relative delete, resolved: its cwd and
     each cd target; Unread when one cannot be followed."""
     # cdable_vars makes cd follow a variable of the name it is given.
-    if context.cwd is None or "cdable_vars" in context.text:
+    if context.cwd is None or _named("cdable_vars", context):
         raise Unread
     targets = [target for command in _walked(context) for target in _cd_targets(command)]
     if None in targets:
@@ -402,7 +451,7 @@ def _candidates(context):
             raise Unread
         for path in _expand(target, context):
             (absolute if path.startswith("/") else relative).append(path)
-    if relative and (context.environ.get("CDPATH") or "CDPATH" in context.text):
+    if relative and (context.environ.get("CDPATH") or _named("CDPATH", context)):
         raise Unread
 
     def add(path):
@@ -421,21 +470,31 @@ def _candidates(context):
     return tuple(found)
 
 
-def _verdicts(path, context):
+def _verdicts(path, context, matched=None):
     """An absolute path's verdicts, each OUTSIDE, KEPT or None (it passes) and how it is named: the
     path's own, and for a glob a component follows, where its .. or a link may climb from each
-    directory the glob matches, the path normalized as written and each such match's."""
+    directory the glob matches, the path normalized as written and each such match's, joined to
+    the rest, whose own globs are followed so in turn; Unread past MAX_MATCHES matches in all, or
+    under an option by which Bash matches what glob.iglob skips (GLOB_OPTIONS)."""
+    matched = [0] if matched is None else matched
     yield _verdict(path, context)
     parts = path.split("/")
-    last = max((k for k, part in enumerate(parts) if GLOB.search(part)), default=None)
-    if last is None or last == len(parts) - 1:
+    first = next((k for k, part in enumerate(parts) if GLOB.search(part)), None)
+    if first is None or first == len(parts) - 1:
         return
+    if any(_named(option, context) for option in GLOB_OPTIONS):
+        raise Unread
     yield _verdict(os.path.normpath(path), context)
-    rest = "/".join(parts[last + 1 :])
-    for k, match in enumerate(glob.iglob("/".join(parts[: last + 1]))):
-        if k >= MAX_MATCHES:
+    rest = "/".join(parts[first + 1 :])
+    for match in glob.iglob("/".join(parts[: first + 1])):
+        matched[0] += 1
+        if matched[0] > MAX_MATCHES:
             raise Unread
-        yield _verdict(os.path.realpath(os.path.join(match, rest)), context)
+        joined = os.path.join(match, rest)
+        if GLOB.search(rest):
+            yield from _verdicts(joined, context, matched)
+        else:
+            yield _verdict(os.path.realpath(joined), context)
 
 
 def _verdict(path, context):
@@ -469,16 +528,16 @@ def _judge(word, opening, context):
         # /proc/self, /dev/fd and the rest name the guard's own process, not the command's.
         if any(path.startswith(LIVE) for path in paths):
             raise Unread
+        found = []
+        for path in paths:
+            for kind, shown in _verdicts(path, context):
+                if kind:
+                    found.append((kind, opening.format(shown) + WHY[kind]))
     except Unread:
         written = getattr(word, "written", None) or word
         if not context.roots:
             return [(OUTSIDE, opening.format(written) + WHY[OUTSIDE])]
         return [(UNREAD, opening.format(written) + WHY[UNREAD])]
-    found = []
-    for path in paths:
-        for kind, shown in _verdicts(path, context):
-            if kind:
-                found.append((kind, opening.format(shown) + WHY[kind]))
     return found
 
 
@@ -571,7 +630,7 @@ def _judgments(command, context):
         feeder = next((ran for ran in reversed(behind) if ran in FEEDERS), None)
         if feeder:
             found.append((kind, opening.format(f"{feeder}'s input") + WHY[kind]))
-        if "extglob" in context.text and EXTGLOB.search(context.text):
+        if _named("extglob", context) and EXTGLOB.search(context.text):
             found.append((kind, opening.format("an extglob pattern") + WHY[kind]))
     return tuple(found)
 

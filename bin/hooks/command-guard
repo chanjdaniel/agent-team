@@ -69,10 +69,13 @@ tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<
 [[ $tool == Bash ]] || exit 0
 command=$(jq -er '.tool_input.command | strings' <<<"$input" 2>/dev/null) ||
   block "it could not read the Bash call's command (tool_input.command, a string)"
-# The trigger words are matched on the command and on it with its quotes and backslashes removed,
-# so a name split by them (pk''ill, r\m) is read; a call that may spell a name otherwise, by a
-# $'...' escape, a brace list or a script printf or echo writes, always goes to Python.
-text=$command$'\n'${command//[\'\"\\]/}
+# The trigger words are matched on the command and on it with its line continuations, the $ of
+# each $"...", its quotes and its backslashes removed, so a name split by them (pk''ill, r\m, pk$""ill,
+# a backslash-newline) is read; a call that may spell a name otherwise, by a $'...' escape, a brace
+# list or a script printf or echo writes or pipes, always goes to Python.
+stripped=${command//\\$'\n'/}
+stripped=${stripped//\$\"/\"}
+text=$command$'\n'${stripped//[\'\"\\]/}
 [[ $text == *team-worker* || $text == *team-load-check* || $text == *ui-capture* ||
   $text == *AGENT_TEAM_* || $text == *--steal* || $text == *team-ask* || $text == *team-answer* ||
   $text == *team-inbox* || $text == *team-thread* || $text == *team-run-approved* ||
@@ -81,7 +84,8 @@ text=$command$'\n'${command//[\'\"\\]/}
   (($text == *env*[[:space:]]-* || $text == *exec*[[:space:]]-*) &&
   ($text == *team-* || $text == *claude-coordinator*)) ||
   $command == *"\$'"* || $command == *\{*,*\}* || $command == *\{*..*\}* ||
-  (($text == *printf* || $text == *echo*) && ($command == *'>'* || $text == *tee*)) ]] || exit 0
+  (($text == *printf* || $text == *echo*) && ($command == *'>'* || $command == *'|'* || $text == *tee*)) ]] ||
+  exit 0
 
 # The rule table's one line names the first row that refuses; an error of its own, or a row's,
 # is its last line, the upload row's naming outbound.py.

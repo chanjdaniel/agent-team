@@ -8,8 +8,8 @@ bin/lib/command_rules.py, the rule table bin/hooks/command-guard runs, imports c
 blank_heredocs and commands, the walk of each simple command, from it, with heads and the other
 readings of where a command's name may stand; its kill rows, kill_rules.py, import command_name
 and heads_behind, and its delete rows, delete_rules.py, those with the walk, simple_commands,
-find's FIND_EXEC and the option readers; outbound.py imports commands and the option readers
-long_options and short_cluster, and team-tokens without_heredocs.
+find's FIND_EXEC, SHELLS, the option readers and unquoted; outbound.py imports commands and the
+option readers long_options and short_cluster, and team-tokens without_heredocs.
 It reads the command far enough to know its quotes ('...', "..." and $'...'), backslashes, comments,
 arithmetic ($[, and $(( or (( whose two closing parentheses are adjacent, matched as Bash's
 parse_matched_pair does, past quotes, backticks and a $(...) read by this scan: ((cmd) ) is two
@@ -44,7 +44,9 @@ The text it prints is the command with:
     dropped, and so for each such string inside another (its later lines already start lines);
   - a shell's here-string, or one in a command piped into a shell, its quotes removed; and for
     each command piped into a shell, the text of each of its quoted strings and of each of its
-    simple commands' words after the first, quotes dropped; each added on a line of its own.
+    simple commands' words after the first, quotes dropped, and what each of its echo and printf
+    commands prints, as written and decoded as for a file written (below); each added on a line of
+    its own.
 A shell here is a pipeline segment one of whose simple commands, as the walk below reads it (its
 assignments, redirections and the wrappers' options passed, its words' quotes removed, its
 $'...' escapes decoded and its braces expanded), or a command that one runs (its string, its find -exec),
@@ -75,10 +77,11 @@ never run so keeps its text out, as do a file a shell reads on stdin (bash < x.s
 value (x=...; echo "$x" > f), a script written by an earlier call or by the Write tool, and a file
 run under another name (a copy, a link, a path through a cd).
 
-A word of the walk is the one Bash makes of it: its quotes removed, a $'...' string's escapes
-decoded (\\x70, \\160, \\u, \\cX), and, but for an assignment before a command's name, its unquoted
-brace lists and ranges expanded into words ({pkill,-f,x} is pkill -f x; an empty one dropped; past
-4096 words it raises); one a $'...' escape or a range made is a Word, whose written keeps its
+A word of the walk is the one Bash makes of it: its quotes removed (a $"..." locale string one,
+its text as written), a backslash-newline dropped, a $'...' string's escapes decoded (\\x70,
+\\160, \\u, \\cX), and, but for an assignment before a command's name, its unquoted brace lists
+and ranges expanded into words ({pkill,-f,x} is pkill -f x; an empty one dropped; past 4096 words
+it raises); one a $'...' escape or a range made is a Word, whose written keeps its
 escapes and its range as they are written.
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
@@ -688,6 +691,9 @@ def _code_parts(command, depth):
                 for simple in SIMPLE.split(piped.replace("'", "").replace('"', "")):
                     words = simple.split(None, 1)
                     added += words[1:]
+                # What echo or printf prints into the pipe, decoded, as _writes reads it for a file.
+                for words in _segment_commands(command, s, e, bodies, reading.subscripts):
+                    added += list(_printed(words))
     parts = [text] + [inner for inner in added if inner]
     return parts + _scripts(command, reading, parts, depth)
 
@@ -916,9 +922,10 @@ def _command_word(text, i, end):
     as _word reads them, but for a quote's text holding $ or a backtick and a substitution, $(...),
     `...`, ${...}, $((...)) or $[...], which are kept as written, so a word built by one still holds
     its $ or backtick (in a double quote holding one, an escaped double quote or backslash is
-    undone all the same, an escaped $ or backtick kept); a $'...' string's escapes are decoded as
-    Bash decodes them, and a word one changed is a Word whose written keeps them; a quote that does
-    not close before end ends the word, and the segment with it (end is where it returns):
+    undone all the same, an escaped $ or backtick kept), a $"..." read as a double quote; a $'...'
+    string's escapes are decoded as Bash decodes them, and a word one changed is a Word whose
+    written keeps them; a quote that does not close before end ends the word, and the segment with
+    it (end is where it returns):
     code_text adds a -c string's line with its closing quote left on, and what follows that quote
     is the outer command's, never the string's."""
     out, kept = [], []
@@ -944,15 +951,17 @@ def _command_word(text, i, end):
             j = _pair_end(text, i + 2, "[", "]")
         elif c == "`":
             j = _pair_end(text, i + 1, "`", "`")
-        elif c in "'\"" or text.startswith("$'", i):
-            ansi = c == "$"
-            mark = "'" if ansi else c
-            j = _pair_end(text, i + 1 + ansi, mark, mark, "esc" if ansi else "")
-            if not _closed(text, i + ansi, j, end):
+        elif c in "'\"" or text.startswith(("$'", '$"'), i):
+            # A $"..." locale string is a double quote, its text as written in the C locale.
+            dollar = c == "$"
+            mark = text[i + 1] if dollar else c
+            ansi = dollar and mark == "'"
+            j = _pair_end(text, i + 1 + dollar, mark, mark, "esc" if ansi else "")
+            if not _closed(text, i + dollar, j, end):
                 i = end
                 break
-            inner = text[i + 1 + ansi : j - 1]
-            if c == '"':
+            inner = text[i + 1 + dollar : j - 1]
+            if mark == '"':
                 # One holding $ or a backtick keeps its escaped ones, so it still holds one.
                 escaped = r"\\([\\\"])" if "$" in inner or "`" in inner else r"\\([\\\"$`])"
                 inner = re.sub(escaped, r"\1", inner).replace("\\\n", "")
@@ -1013,6 +1022,19 @@ def _ansi(text):
             code = int(hex_ or short or long_, 16)
             out.append(chr(code) if code < 0x110000 else found.group())
     return "".join(out) + text[i:]
+
+
+# A $'...' string in a command's text, its escaped characters inside it.
+ANSI_STRING = re.compile(r"\$'((?:[^'\\]|\\.)*)'", re.S)
+
+
+def unquoted(text):
+    """The text as Bash reads the names in it: its line continuations (a backslash-newline)
+    dropped, each $'...' string's escapes decoded, the $ of each $"..." dropped, and its quotes and
+    backslashes removed; so a name spelled with them (cdable_v''ars, C\\DPATH, $'\\x65xtglob') is
+    the name, though the text's words may run together."""
+    text = ANSI_STRING.sub(lambda found: _ansi(found.group(1)), text.replace("\\\n", ""))
+    return re.sub(r"['\"\\]", "", text.replace('$"', '"'))
 
 
 # The most words one word's brace expansion may give; past it the walk raises, so a guard refuses.

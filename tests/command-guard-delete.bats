@@ -303,3 +303,89 @@ refuses_wrapped() {
   refuses "$FIND an extglob pattern, $UNREAD" "$UNREAD_WAY" $'shopt -s extglob\nfind @(.scratch) -delete'
   passes "shopt -s cdable_vars; rm -rf $WT/build" $'shopt -s extglob\nrm -rf build/x' "rm -rf build/x; (cd src)"
 }
+
+# Bash drops a backslash-newline, a line continuation, and reads $"..." as a quote, in the C locale
+# its text as written, so a name split by either is the name Bash runs.
+@test "a recursive delete split by a line continuation or a locale string is refused" {
+  refuses "a recursive delete of $TMP/x, $OUTSIDE" "$DELETE_WAY" $'r\\\nm -rf /tmp/x' 'r$""m -rf /tmp/x' \
+    '$"rm" -rf /tmp/x' 'rm -rf $"/tmp/x"'
+  refuses "$FIND $TMP, $OUTSIDE" "$DELETE_WAY" $'find /tmp -del\\\nete' 'find /tmp -del$""ete'
+}
+
+# A script printf or echo prints and a shell reads from the pipe is read decoded, as one written to
+# a file is.
+@test "a recursive delete in a decoded script piped into a shell is refused" {
+  refuses "a recursive delete of $TMP/x, $OUTSIDE" "$DELETE_WAY" "printf '\\x72m -rf /tmp/x\\n' | bash" \
+    "printf '%sm -rf /tmp/x\\n' r | bash" "echo -e '\\x72m -rf /tmp/x' | sh"
+  passes "printf '\\x72m -rf build\\n' | bash" "printf '\\x72m -rf /tmp/x\\n' | cat"
+}
+
+# shopt and bash -O read the option's name after its quotes and escapes, so an option spelled with
+# them is the option.
+@test "cdable_vars and extglob spelled with quotes, a backslash, ANSI-C quoting or a brace list are read" {
+  refuses "a recursive delete of x, $UNREAD" "$UNREAD_WAY" $'T=/tmp\nshopt -s cdable_v\'\'ars\ncd T; rm -rf x' \
+    $'T=/tmp\nshopt -s $\'cdable_vars\'\ncd T; rm -rf x' $'T=/tmp\nshopt -s cdable_\\vars\ncd T; rm -rf x' \
+    $'T=/tmp\nshopt -s $"cdable_vars"\ncd T; rm -rf x' $'T=/tmp\nshopt -s {cdable_vars,x}\ncd T; rm -rf x' \
+    $'T=/tmp\nshopt -s cdable\\\n_vars\ncd T; rm -rf x'
+  refuses "a recursive delete of an extglob pattern, $UNREAD" "$UNREAD_WAY" $'shopt -s ext\\glob\nrm -rf @(.scratch)' \
+    $'shopt -s "ext"glob\nrm -rf @(.scratch)' $'shopt -s $\'\\x65xtglob\'\nrm -rf @(.scratch)'
+}
+
+# dotglob (and a GLOBIGNORE, which turns it on), nocaseglob and globstar make a glob match what
+# the guard's own match skips, so a glob followed by more of the path is unread under them.
+@test "a glob followed by more of the path is unread after dotglob, GLOBIGNORE, nocaseglob or globstar" {
+  mkdir -p "$WT/build/d" "$WT/build/c" "$WT/src/a/b"
+  ln -s "$OUT" "$WT/build/d/.l"
+  ln -s "$OUT" "$WT/build/c/L"
+  ln -s "$OUT" "$WT/src/a/b/l"
+  refuses "a recursive delete of build/d/*/x, $UNREAD" "$UNREAD_WAY" $'shopt -s dotglob\nrm -rf build/d/*/x' \
+    $'GLOBIGNORE=x\nrm -rf build/d/*/x' $'shopt -s dot\'\'glob\nrm -rf build/d/*/x'
+  refuses "a recursive delete of build/c/l*/x, $UNREAD" "$UNREAD_WAY" $'shopt -s nocaseglob\nrm -rf build/c/l*/x'
+  refuses "a recursive delete of src/**/x, $UNREAD" "$UNREAD_WAY" $'shopt -s globstar\nrm -rf src/**/x'
+  passes "rm -rf build/d/*/x" "rm -rf build/c/l*/x" $'shopt -s dotglob\nrm -rf build/*' $'shopt -s globstar\nrm -rf src/x'
+}
+
+# A variable the guard reads from its environment, or one that changes how a path is read, is
+# rebound when the command names it otherwise than as a use, whatever its spelling.
+@test "a variable rebound by a name spelled with quotes, a backslash or a brace list makes a delete unread" {
+  # shellcheck disable=SC2016
+  refuses 'a recursive delete of $CLAUDE_JOB_DIR/tmp/x, '"$UNREAD" "$UNREAD_WAY" \
+    'export C""LAUDE_JOB_DIR=/; rm -rf "$CLAUDE_JOB_DIR/tmp/x"' 'export CLAUDE_JOB_\DIR=/; rm -rf "$CLAUDE_JOB_DIR/tmp/x"'
+  # shellcheck disable=SC2016
+  refuses 'a recursive delete of $PWD/x, '"$UNREAD" "$UNREAD_WAY" 'declare P""WD=/tmp; rm -rf "$PWD/x"'
+  # shellcheck disable=SC2016
+  refuses 'a recursive delete of $X, '"$UNREAD" "$UNREAD_WAY" 'export I""FS=:; X=build:/tmp/x; rm -rf $X' \
+    'export {IFS=:,Y}; X=build:/tmp/x; rm -rf $X'
+  refuses "a recursive delete of y, $UNREAD" "$UNREAD_WAY" 'export C""DPATH=/tmp; cd x; rm -rf y' \
+    'export C\DPATH=/tmp; cd x; rm -rf y' 'export CD{PATH,X}=/tmp; cd x; rm -rf y'
+  # shellcheck disable=SC2016
+  refuses 'a recursive delete of ~/x, '"$UNREAD" "$UNREAD_WAY" 'export H""OME=/tmp; rm -rf ~/x'
+  # shellcheck disable=SC2016
+  refuses 'a recursive delete of $X, '"$UNREAD" "$UNREAD_WAY" 'X=build; export "X"=/tmp; rm -rf "$X"' \
+    'X=build; read "X" < f; rm -rf "$X"'
+  # shellcheck disable=SC2016
+  refuses "a recursive delete of $TMP, $OUTSIDE" "$DELETE_WAY" 'X=build; declare X=/tmp; rm -rf "$X"'
+  refuses "a recursive delete of y, $UNREAD" "$UNREAD_WAY" "export \$'CDPATH'=/tmp; cd x; rm -rf y"
+  # shellcheck disable=SC2016
+  refuses 'a recursive delete of $T, '"$UNREAD" "$UNREAD_WAY" 'declare T""MPDIR=/; T=$(mktemp -d -t x.XXXX); rm -rf "$T"'
+  # shellcheck disable=SC2016
+  passes 'rm -rf "$CLAUDE_JOB_DIR/tmp/check"' 'X=build; rm -rf "$X"' 'cd src; rm -rf sub'
+}
+
+# shopt's word, or a shell's -O value, that the guard cannot read may name any option.
+@test "a shopt or a shell -O option the guard cannot read makes a relative delete unread" {
+  # shellcheck disable=SC2016
+  refuses "a recursive delete of x, $UNREAD" "$UNREAD_WAY" $'T=/tmp\nshopt -s "$o"\ncd T; rm -rf x' \
+    $'bash -O "$o" -c \'T=/tmp; cd T; rm -rf x\''
+  # shellcheck disable=SC2016
+  passes 'bash "$CLAUDE_JOB_DIR/tmp/x.sh"; rm -rf build'
+}
+
+# Each glob more of the path follows is followed to what it matches, a glob after it in turn.
+@test "a glob before another glob is followed to what each matches" {
+  mkdir -p "$WT/src/a/b"
+  ln -s "$OUT" "$WT/src/a/b/l"
+  refuses "a recursive delete of $OUT/*, $OUTSIDE" "$DELETE_WAY" "rm -rf src/a/b/*/*" "rm -rf src/*/*/*/*"
+  refuses "a recursive delete of $OUT/x, $OUTSIDE" "$DELETE_WAY" "rm -rf src/*/b/*/x"
+  passes "rm -rf src/*/*" "rm -rf src/a/*/*"
+}

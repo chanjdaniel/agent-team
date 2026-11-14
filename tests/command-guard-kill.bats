@@ -342,3 +342,18 @@ print(kill_rules.proof(int(sys.argv[2]), (sys.argv[3], sys.argv[4])))
     "find /proc -maxdepth 1 -name 1 -exec kill -0 {} +"
   passes "echo 9 | xargs kill -l" "xargs kill -L < x"
 }
+
+# Bash drops a backslash-newline, a line continuation, and reads $"..." as a quote, in the C locale
+# its text as written, so a name split by either is the name Bash runs.
+@test "a kill by name split by a line continuation or a locale string is refused" {
+  refuses "a kill by name or pattern (pkill), $BY_NAME" "$KILL_WAY" $'pk\\\nill -f vite' 'pk$""ill -f vite' \
+    '$"pkill" -f vite' $'"pk\\\nill" -f vite'
+}
+
+# A script printf or echo prints and a shell reads from the pipe is read decoded, as one written to
+# a file is.
+@test "a kill by name in a decoded script piped into a shell is refused" {
+  refuses "a kill by name or pattern (pkill), $BY_NAME" "$KILL_WAY" "printf 'pk%sll -f vite\\n' i | bash" \
+    "echo -e '\\x70kill -f vite' | sh" "printf '\\x70kill -f vite\\n' | bash -s"
+  passes "printf 'pk%sll -f vite\\n' i | cat" "echo -e '\\x70kill' | grep x"
+}
