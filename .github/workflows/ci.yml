@@ -4,6 +4,9 @@
 # renaming a job changes a required check, and team-merge merges only with every one passed on the
 # PR's head; test and macos pass only when every shard of test-shards and macos-shards did, so a
 # shard job is never a required check itself.
+# Each job has a time limit (timeout-minutes), about twice its longest recent run, so a hang ends
+# long before GitHub's 6-hour default; each that runs bats has one above tests/run's file limit
+# (TESTS_FILE_MINUTES), so tests/run names a hung file before the job is stopped.
 # Each macos shard runs one run per PR at a time: a re-push cancels the run it replaces. The toolkits
 # job runs the toolkits' servers over stdio against a throwaway MongoDB in Docker. The data job
 # refuses what the PR adds that the public repository never takes: a secret (gitleaks, over its
@@ -23,6 +26,7 @@ permissions:
 jobs:
   shellcheck:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       SHELLCHECK_VERSION: v0.11.0
       SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
@@ -42,6 +46,7 @@ jobs:
   # The bats suite in three shards (tests/run bats --shard), each on a runner of its own.
   test-shards:
     runs-on: ubuntu-24.04
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix: {shard: [1, 2, 3]}
@@ -67,6 +72,7 @@ jobs:
 
   test:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     needs: test-shards
     if: always()
     steps:
@@ -79,6 +85,7 @@ jobs:
   # (bin/lib/platform.sh).
   macos-shards:
     runs-on: macos-26
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix: {shard: [1, 2, 3]}
@@ -110,6 +117,7 @@ jobs:
 
   macos:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     needs: macos-shards
     if: always()
     steps:
@@ -121,6 +129,7 @@ jobs:
   # The toolkits' servers over stdio, against a throwaway MongoDB in Docker.
   toolkits:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       JQ_VERSION: 1.8.1
       JQ_SHA256: 020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
@@ -151,6 +160,7 @@ jobs:
   # By hand, what the ref adds since origin/dev.
   data:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       GITLEAKS_VERSION: 8.28.0
       GITLEAKS_SHA256: a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb
@@ -183,6 +193,7 @@ jobs:
   # zizmor-online.yml runs the same zizmor online, never required: bump the pin in both.
   zizmor:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       ZIZMOR_VERSION: 1.31.1
       ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99

@@ -1975,6 +1975,24 @@ YAML
   done
 }
 
+# A hung job ends long before GitHub's 6-hour default, and one that runs bats outlives tests/run's
+# file limit, so tests/run names the hung file before the job dies.
+@test "every CI job sets a whole-number timeout-minutes, above tests/run's file limit wherever it runs bats" {
+  local ci=$REPO_ROOT/.github/workflows/ci.yml file_limit id ids limits
+  job_block() { sed -n "/^jobs:\$/,\$p" "$ci" | sed -n "/^  $1:\$/,/^  [a-z_-]*:\$/p" | sed '$d'; }
+  file_limit=$(sed -n 's/.*file_minutes=\${TESTS_FILE_MINUTES:-\([0-9]*\)}.*/\1/p' "$REPO_ROOT/tests/run")
+  [[ $file_limit =~ ^[1-9][0-9]*$ ]] || { echo "tests/run names no default file limit" >&2; return 1; }
+  ids=$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$ci")
+  [[ -n $ids ]]
+  for id in $ids; do
+    limits=$(job_block "$id" | sed -n 's/^    timeout-minutes: \(.*\)$/\1/p')
+    [[ $limits =~ ^[1-9][0-9]*$ ]] || { echo "$id sets no one whole-number timeout-minutes: '$limits'" >&2; return 1; }
+    if job_block "$id" | grep -v '^ *#' | grep -q 'tests/run bats'; then
+      ((limits > file_limit)) || { echo "$id runs bats with a $limits-minute limit, not above tests/run's $file_limit" >&2; return 1; }
+    fi
+  done
+}
+
 # Every tests/*.bats file lands in exactly one shard, tests/run's shard is tests/shards' own, and
 # the shards' weights stay within the heaviest file's of each other.
 @test "tests/run's bats shards split every file once, evenly by tests/shards' weights" {
