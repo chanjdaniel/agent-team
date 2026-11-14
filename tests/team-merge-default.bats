@@ -582,7 +582,9 @@ file_reasons() {
   local path paths=() expected=()
   for path in bin/team-merge bin/team-checks bin/team-heavy bin/team-review-status bin/team-ask bin/team-run-approved \
     bin/team-worker bin/team-lease bin/claude-coordinator bin/lib/guarded bin/lib/ledger-contract.json bin/lib/data-check \
-    bin/lib/records bin/lib/code bin/lib/command_rules.py bin/lib/command_text.py bin/lib/outbound.py bin/hooks/git/pre-push \
+    bin/lib/records bin/lib/code bin/lib/command_rules.py bin/lib/command_text.py bin/lib/outbound.py bin/lib/kill_rules.py \
+    bin/lib/delete_rules.py bin/lib/gate-claude-settings.json bin/lib/opencode-gate bin/lib/opencode-guard.js \
+    bin/hooks/git/pre-push \
     bin/hooks/records-git/pre-commit bin/hooks/lease-fence settings/worker.json settings/reviewer.json coordinator.settings.json \
     bin/lib/team.sh bin/lib/platform.sh bin/lib/ledger.jq bin/lib/messages.jq bin/lib/review-app bin/team-next \
     bin/team-catch-up bin/team-review-check bin/team-log bin/team-project bin/lib/lifecycle.json roles/reviewer.md \

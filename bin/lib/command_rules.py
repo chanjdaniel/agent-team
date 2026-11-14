@@ -5,10 +5,13 @@ Usage: python3 -I command_rules.py   (the hook's input JSON on stdin)
 
 bin/hooks/command-guard runs this file once per Bash call it does not pass at once, and refuses
 the call when it prints a line. It reads tool_input.command from the hook's input, takes its code
-text as command_text.code_text prints it (each heredoc's body left out unless a shell may read it,
-and the strings a shell, eval, env -S and find -exec run, and what is piped into a shell, added as
-code), each heredoc that text still opens blanked so that every line of it is code, and walks
-each simple command that text runs, then each one the command's own text runs (its heredocs'
+text in parts as command_text.code_parts gives them (the command with each heredoc's body left
+out unless a shell may read it, then each string a shell, eval, env -S and find -exec run, and
+what is piped into a shell, a part of its own, so a quote one leaves open hides no other, then the
+parts of each script the command writes to a file and runs, by a heredoc, a here-string, echo or
+printf, as its header says), each heredoc a part still opens blanked (blank_heredocs) so that
+every line of it is code, and walks each simple
+command each part runs, then each one the command's own text runs (its heredocs'
 bodies left out as Bash reads them, so a substitution a body leaves open in the code text hides
 no line after it), as command_text.commands yields them: past the wrappers env, nohup, command,
 builtin, exec, time, nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch
@@ -19,7 +22,8 @@ reads among them, by its name.
 For each row of the table in order, and each command in the walk's order, the first command a
 row refuses ends the walk: it prints one JSON line, {"rule": <id>, "reason": <text>, "allowed":
 <text or null>}, the reason being the text command-guard puts after "Blocked by command-guard: ",
-and the allowed way null for every row here. It prints nothing when no row refuses, and exits 0
+and the allowed way the row's, null for every row but the kill and delete rows. It prints nothing
+when no row refuses, and exits 0
 either way. Any error of its own exits 1 with one line on stderr, "command_rules.py: <ErrorType>:
 <message>", or "<row id>: <ErrorType>: <message>" when a row raised, so the hook refuses: a guard
 that cannot decide refuses.
@@ -54,21 +58,41 @@ The rows, in order:
   upload: a curl or wget sending a file or body to a literal host outside the team's own,
     directly or through a proxy, as bin/lib/outbound.py decides each command (its header says
     which flags and hosts); a host held in a variable is not seen.
+  The kill rows, bin/lib/kill_rules.py's (its header holds their wording): a kill by name or
+    pattern, tmux's kill-*, a kill of PIDs read from input, of a PID the guard cannot read before
+    it runs, of a process group, every process or PID 0 or 1, and of a literal PID not proven the
+    session's to stop (gone, or the user's, not the session's own and working inside a root, as
+    the process table says at the time of the call), each naming its allowed way.
+  The delete rows, bin/lib/delete_rules.py's (its header holds their wording and how a path is
+    resolved): a recursive delete (rm -r, find -delete or find -exec rm) of a path outside the
+    worktree and the job tmp, of either of them, the worktree's .scratch/task or a directory
+    holding one, and of a path the guard cannot read before it runs, each naming its allowed way.
+Each row is given the call's context (Context): the command's text, the hook input's cwd, the
+worktree, the job tmp, the roots, the kept paths and the role, each read on a row's first use of
+it; only the kill and delete rows use it, so a call with neither reads no process or file for it.
 A row reads every command the walk yields, a shell's script file and a sourced one among them (a
-file named team-worker that bash runs is team-worker), but for the upload row, which reads no
-file's name as curl.
-Not seen: a name built by a substitution or held in a variable; a script or function of one's
-own, or a copy or link of a guarded one; a string another interpreter runs (python3 -c, node -e,
+file named team-worker that bash runs is team-worker), but for the upload and delete rows, which
+read no file's name as curl or rm.
+Not seen: a name built by a substitution or held in a variable; a function of one's own, a
+script of one's own written by an earlier call or the Write tool (one this call writes and runs is
+read), or a copy or link of a guarded one; a string another interpreter runs (python3 -c, node -e,
 perl -e, a require of the capture script); a file a shell reads on stdin (cat x | bash); what
 command_text.commands does not walk (its header lists it: ssh's remote command, nsenter, chroot,
 unshare, systemd-run, tmux send-keys, git rebase's --exec); each under an emptied environment
-too, so a team script one of those runs there goes unseen. It is a speed bump, as a deny rule is,
-which the role's rule against reaching a refused thing another way holds.
+too, so a team script one of those runs there goes unseen. Of a kill or a delete, not seen: one in
+a script file written by an earlier call or the Write tool, a package script (npm run, make), an
+interpreter's own code (python3 -c "os.kill(...)"), systemctl, launchctl, docker kill or docker
+rm, ssh's remote command, a single file's rm, git clean (which the worker settings deny); of a
+delete, a link or a move the same command makes before it (ln -s /tmp l && rm -rf l/x).
+It is a speed bump, as a deny rule is, which the role's rule against reaching a refused thing
+another way holds.
 """
 
+import functools
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Callable
@@ -76,8 +100,10 @@ from typing import Callable
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from command_text import (  # noqa: E402
-    ASSIGNMENT, NUMBER, SHELLS, WRAPPERS, Command, code_text, commands, read_command,
+    ASSIGNMENT, blank_heredocs, code_parts, command_name, commands, from_wrappers, has_blank, heads, leads,
 )
+import delete_rules  # noqa: E402
+import kill_rules  # noqa: E402
 import outbound  # noqa: E402
 
 ROLE_VARIABLES = ("AGENT_TEAM_ROLE", "AGENT_TEAM_TASK")
@@ -86,9 +112,6 @@ DECLARERS = frozenset("export declare typeset local readonly let read mapfile re
 INTERPRETERS = frozenset(("node", "deno", "bun", "npx", "source", "."))
 COORDINATOR = frozenset(("team-ask", "team-answer", "team-inbox", "team-run-approved"))
 TASK_ID = re.compile(r"T[0-9]+")
-# What runs the command after it, past its options, as a reading of where a command starts takes
-# it: the wrappers and the shells.
-RUNNERS = WRAPPERS | SHELLS
 # env's -u, alone or ending a short cluster, with its value joined (-uAGENT_TEAM_ROLE) or next.
 ENV_UNSET = re.compile(r"-[A-Za-z0-9]*u")
 # The options that empty the environment of what a command runs, each with the form of it whose
@@ -108,73 +131,81 @@ EMPTIES = {
 
 @dataclass(frozen=True)
 class Row:
-    """A rule: its id, its test over one Command and the call's context, its reason and its
-    allowed way (None: the refusal names none)."""
+    """A rule: its id, its test over one Command and the call's context, which refuses by
+    returning True (the row's reason) or a reason of its own, its reason and its allowed way
+    (None: the refusal names none)."""
 
     id: str
     test: Callable
-    reason: str
+    reason: str | None
     allowed: str | None = None
 
 
-def _name(word):
-    """A word's name as a command: its basename."""
-    return os.path.basename(word)
+# A session id's first 8 characters, which name a background session's job directory.
+JOB_ID = re.compile(r"[A-Za-z0-9-]{8}")
 
 
-def _blank(word):
-    """Whether a word holds a blank, so a reading of the command's text as written took it as
-    more than one word."""
-    return re.search(r"\s", word) is not None
+class Context:
+    """The call's context, each part read on a row's first use of it, so only a call with a kill
+    or a recursive delete in it reads the process table or the file system: the command's text;
+    cwd, the hook input's, resolved; the worktree, CLAUDE_PROJECT_DIR when it is a directory, else
+    the git top level of cwd; the job tmp, $CLAUDE_JOB_DIR/tmp when it is a directory, else
+    ~/.claude/jobs/<the session id's first 8 characters>/tmp when that is one; the roots, those of
+    the two that exist, resolved; the kept paths, each root and the worktree's .scratch/task; and
+    the role, AGENT_TEAM_ROLE, empty in a gate agent."""
 
+    def __init__(self, call, environ=None):
+        self.call = call
+        self.environ = os.environ if environ is None else environ
+        self.text = call["tool_input"]["command"]
 
-def _leads(words, starts=(0,), wrappers=True):
-    """Where a command's name may stand among words, from the starts on, as a reading of where a
-    command starts takes them: past options (each with or without the next word as its value,
-    when that word is no option), numbers and assignments, and, with wrappers, past a wrapper or
-    a shell (flock with its options and file); a word holding a blank ends the reading.
-    It is a second reader of the wrappers' options beside command_text._command, which knows
-    which option takes a value and so reads one name; this one reads each name an option's value
-    may hide, as the regexes did. A wrapper or option _command learns may need reading here too."""
-    reach, n = set(starts), len(words)
-    for k, word in enumerate(words):
-        if k not in reach:
-            continue
-        yield k
-        if _blank(word):
-            continue
-        if word.startswith("-"):
-            reach.add(k + 1)
-            if k + 1 < n and not words[k + 1].startswith("-") and not _blank(words[k + 1]):
-                reach.add(k + 2)
-        elif NUMBER.fullmatch(word) or ASSIGNMENT.match(word):
-            reach.add(k + 1)
-        elif wrappers and _name(word) == "flock":
-            j = k + 1
-            while j < n and words[j].startswith("-") and not _blank(words[j]):
-                j += 1
-            reach.add(j + 1)
-        elif wrappers and _name(word) in RUNNERS:
-            reach.add(k + 1)
+    @functools.cached_property
+    def cwd(self):
+        cwd = self.call.get("cwd")
+        return os.path.realpath(cwd) if isinstance(cwd, str) and cwd else None
 
+    @functools.cached_property
+    def worktree(self):
+        project = self.environ.get("CLAUDE_PROJECT_DIR")
+        if project and os.path.isdir(project):
+            return os.path.realpath(project)
+        if self.cwd is None:
+            return None
+        try:
+            found = subprocess.run(
+                ["git", "-C", self.cwd, "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        top = found.stdout.strip()
+        return os.path.realpath(top) if found.returncode == 0 and top and os.path.isdir(top) else None
 
-def _from_wrappers(command: Command):
-    """Each of the command's wrappers (a shell's too) with the words after it: its own, the later
-    wrappers' and the command's."""
-    for t, wrapper in enumerate(command.wrappers):
-        if wrapper and _name(wrapper[0]) in RUNNERS:
-            yield wrapper + tuple(word for words in command.wrappers[t + 1 :] for word in words) + command.words
+    @functools.cached_property
+    def job_tmp(self):
+        job = self.environ.get("CLAUDE_JOB_DIR")
+        if job and os.path.isdir(os.path.join(job, "tmp")):
+            return os.path.realpath(os.path.join(job, "tmp"))
+        session = self.call.get("session_id")
+        home = self.environ.get("HOME")
+        if isinstance(session, str) and JOB_ID.match(session) and home:
+            tmp = os.path.join(home, ".claude", "jobs", session[:8], "tmp")
+            if os.path.isdir(tmp):
+                return os.path.realpath(tmp)
+        return None
 
+    @functools.cached_property
+    def roots(self):
+        return tuple(root for root in (self.worktree, self.job_tmp) if root)
 
-def _heads(command: Command):
-    """Each way of reading the command's words from its name on: the walk's own, and from each word
-    after a wrapper that may be the name of what it runs, where the walk took it as an option's
-    value; a word holding a blank, or an option, is never a name."""
-    yield command.words
-    for words in _from_wrappers(command):
-        for k in _leads(words):
-            if k and not words[k].startswith("-") and not _blank(words[k]):
-                yield words[k:]
+    @functools.cached_property
+    def kept(self):
+        task = (os.path.realpath(os.path.join(self.worktree, ".scratch", "task")),) if self.worktree else ()
+        return self.roots + task
+
+    @functools.cached_property
+    def role(self):
+        return self.environ.get("AGENT_TEAM_ROLE", "")
 
 
 def _before_end(args):
@@ -186,8 +217,8 @@ def _named(names, test=None):
     """A test refusing a command named one of names, whose words after the name pass test."""
 
     def named(command, context):
-        for words in _heads(command):
-            if words and _name(words[0]) in names and (test is None or test(list(words[1:]))):
+        for words in heads(command):
+            if words and command_name(words[0]) in names and (test is None or test(list(words[1:]))):
                 return True
         return False
 
@@ -199,17 +230,18 @@ def _ops(args):
 
 
 def _capture(command, context):
-    for words in _heads(command):
+    for words in heads(command):
         if not words:
             continue
-        name = _name(words[0])
+        name = command_name(words[0])
         if name == "ui-capture":
             return True
         if name in INTERPRETERS:
             args = list(words[1:])
             if name in ("deno", "bun") and args[:1] == ["run"]:
                 args = args[1:]
-            if any(_name(args[k]) == "ui-capture" and not _blank(args[k]) for k in _leads(args, wrappers=False)):
+            reached = leads(args, wrappers=False)
+            if any(command_name(args[k]) == "ui-capture" and not has_blank(args[k]) for k in reached):
                 return True
     return False
 
@@ -228,10 +260,10 @@ def _role_word(word, ends):
 def _assigned(command, context):
     if any(_role_word(word, "=+[") and ASSIGNMENT.match(word) for word in command.assignments):
         return True
-    for words in _heads(command):
+    for words in heads(command):
         if not words:
             continue
-        name, args = _name(words[0]), list(words[1:])
+        name, args = command_name(words[0]), list(words[1:])
         if name in DECLARERS and any(_role_word(word, "=+[<) \t\n'\";&|") for word in args):
             return True
         if name == "printf":
@@ -259,18 +291,18 @@ def _env_unsets(words):
 
 
 def _unset(command, context):
-    for words in _heads(command):
-        if words and _name(words[0]) == "unset" and any(_role_word(word, "[") for word in words[1:]):
+    for words in heads(command):
+        if words and command_name(words[0]) == "unset" and any(_role_word(word, "[") for word in words[1:]):
             return True
-        if words and _name(words[0]) == "env" and _env_unsets(list(words[1:])):
+        if words and command_name(words[0]) == "env" and _env_unsets(list(words[1:])):
             return True
-    return any(_name(words[0]) == "env" and _env_unsets(list(words[1:])) for words in _from_wrappers(command))
+    return any(command_name(words[0]) == "env" and _env_unsets(list(words[1:])) for words in from_wrappers(command))
 
 
 def _team_script(word):
     """Whether a word names a team script: team-<anything> or claude-coordinator, by any path."""
-    name = _name(word)
-    if _blank(word) or word.startswith("-"):
+    name = command_name(word)
+    if has_blank(word) or word.startswith("-"):
         return False
     return name == "claude-coordinator" or (name.startswith("team-") and len(name) > len("team-"))
 
@@ -278,7 +310,7 @@ def _team_script(word):
 def _empties(wrapper):
     """Whether a wrapper's words empty the environment of what it runs: env -i, env
     --ignore-environment, env - or exec -c."""
-    pattern = EMPTIES.get(_name(wrapper[0])) if wrapper else None
+    pattern = EMPTIES.get(command_name(wrapper[0])) if wrapper else None
     return pattern is not None and any(pattern[0].fullmatch(word) for word in wrapper[1:])
 
 
@@ -287,19 +319,19 @@ def _emptied(command, context):
     if command.words and _team_script(command.words[0]) and any(_empties(w) for w in command.wrappers):
         return True
     # A team script past env's or exec's options where the walk took it as an option's value.
-    for words in _from_wrappers(command):
-        for k in _leads(words):
-            pattern = EMPTIES.get(_name(words[k]))
+    for words in from_wrappers(command):
+        for k in leads(words):
+            pattern = EMPTIES.get(command_name(words[k]))
             if pattern is None:
                 continue
             empties, valued = pattern
             rest = words[k + 1 :]
-            for e in _leads(rest, wrappers=False):
+            for e in leads(rest, wrappers=False):
                 if not empties.fullmatch(rest[e]):
                     continue
                 after = rest[e + 1 :]
                 starts = (0, 1) if valued.fullmatch(rest[e]) else (0,)
-                if any(_team_script(after[j]) for j in _leads(after, starts)):
+                if any(_team_script(after[j]) for j in leads(after, starts)):
                     return True
     return False
 
@@ -353,20 +385,7 @@ ROWS = (
         "the coordinator's commands (team-ask, team-answer, team-inbox, team-thread T<n> and team-run-approved)",
     ),
     Row("upload", _upload, outbound.REASON),
-)
-
-
-def _code(command):
-    """The command's code text, with the operator and marker of each heredoc it still opens
-    blanked, so the walk reads every line of it as code: a body a shell reads, kept whole, and the
-    lines after a heredoc whose body is left out."""
-    code = code_text(command)
-    out, start = [], 0
-    for heredoc in sorted(read_command(code).heredocs, key=lambda heredoc: heredoc.marker[0]):
-        begin, end = heredoc.marker
-        out += [code[start:begin], " " * (end - begin)]
-        start = end
-    return "".join(out) + code[start:]
+) + tuple(Row(id, test, None, allowed) for id, test, allowed in kill_rules.ROWS + delete_rules.ROWS)
 
 
 class RowError(Exception):
@@ -375,11 +394,12 @@ class RowError(Exception):
 
 def refusal(command, context=None):
     """The first row, in table order, that refuses any command the text runs, with its reason and
-    allowed way, or None."""
+    allowed way, or None; each row is given the call's context."""
     # The command's own text too, whose heredoc bodies the walk leaves out as Bash reads them: a
     # line of the code text that an unquoted body keeps from its first $( or backtick on may open
     # a substitution that never closes (an escaped backtick), which would hide the lines after it.
-    walked = list(commands(_code(command))) + list(commands(command))
+    walked = [found for part in code_parts(command) for found in commands(blank_heredocs(part))]
+    walked += commands(command)
     for row in ROWS:
         for found in walked:
             try:
@@ -387,7 +407,8 @@ def refusal(command, context=None):
             except Exception as error:  # noqa: BLE001 - named, then refused by the caller
                 raise RowError(f"{row.id}: {type(error).__name__}: {error}") from error
             if refused:
-                return {"rule": row.id, "reason": row.reason, "allowed": row.allowed}
+                reason = refused if isinstance(refused, str) else row.reason
+                return {"rule": row.id, "reason": reason, "allowed": row.allowed}
     return None
 
 
@@ -400,7 +421,7 @@ def main():
         command = call["tool_input"]["command"]
         if not isinstance(command, str):
             raise TypeError("tool_input.command is not a string")
-        found = refusal(command)
+        found = refusal(command, Context(call))
     except RowError as error:
         sys.stderr.write(f"{error}\n")
         return 1

