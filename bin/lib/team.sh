@@ -1046,7 +1046,9 @@ docker_silence() {
 }
 
 # Whether Claude Code trusts the root <path>, from a promptless background session named <name>
-# started there, which it refuses in an untrusted root with "Workspace not trusted". The probe
+# started there, which it refuses in an untrusted root with "Workspace not trusted". The session
+# starts with Remote Control off, its --settings remoteControlAtStartup false outranking the user
+# settings' true, since claude rm leaves a session's Remote Control row on claude.ai. The probe
 # goes either way: the session it printed, and any session of its name (one an earlier probe
 # left), are stopped and removed. Sets trust_verdict (trusted, untrusted, or unknown when the
 # start printed no session id), trust_left (the sessions claude rm left), trust_rc and trust_out
@@ -1056,7 +1058,8 @@ trust_probe() {
   local name=$2 id line probe_ids=() probe_kept=()
   local -A probe_seen=()
   trust_rc=0 trust_left=()
-  trust_out=$(cd "$1" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || trust_rc=$?
+  trust_out=$(cd "$1" && bounded 60 claude --bg --name "$name" --settings '{"remoteControlAtStartup":false}' 2>&1 </dev/null) ||
+    trust_rc=$?
   # The first 8 hex digits of the start's output that stand as a word, then each live session of
   # the probe's name, read with builtins but for the session list's jq; each kept once, no blank.
   if [[ $trust_out != *"Workspace not trusted"* &&
