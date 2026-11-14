@@ -75,7 +75,8 @@ fake_timers() {
 
 @test "checkpoint-stale: a heartbeat with no run for 15 minutes on the holder is the same kind, saying when it last ran" {
   health_record 'ago(20) as $t | .written = $t | .last_run.start = $t | .last_run.end = $t'
-  jq '.written_at = (now - 20 * 60 | floor | todate)' "$state/lease.json" >"$state/lease.json.new"
+  # The lease takes the record's own time, so a second boundary between the two jq runs moves neither.
+  jq --arg t "$(jq -r .last_run.start "$record")" '.written_at = $t' "$state/lease.json" >"$state/lease.json.new"
   mv "$state/lease.json.new" "$state/lease.json"
   run_bin -1 team-sweep --json
   assert_equal "$(jq -c 'map(.kind)' <<<"$output")" '["checkpoint-stale"]'

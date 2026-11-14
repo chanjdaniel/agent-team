@@ -21,7 +21,7 @@ For each decision, answer, wait and lesson in it, write it to its one home:
 | A worker's progress the ledger does not hold (its tickets done, PRs and reviews are there, which `team-state` reads), a plan change, a task's notes | `tasks/T<n>/`: the plan, the brief's "Progress so far", or a note file |
 | A step only Daniel can take | `manual-steps.md` |
 | A fact about a project | A ticket for that project's task, so it lands in its docs or knowledge graph through a PR |
-| A lesson about how the team works | A ticket in `tasks/` for a team-home task that changes the manual, a role, a template or a script |
+| A lesson about how the team works | A ticket in `tasks/` for an `agent-team` task that changes the manual, a role, a template or a script through its PR |
 | Daniel's own preference | A one-line proposal to Daniel for `~/.claude/CLAUDE.md`, which only Daniel changes |
 
 Write notes that point at the source of truth (the ledger, a PR URL, a file), never temp paths, versions or ids that rot.
