@@ -157,6 +157,7 @@ On top of it, each reading says each task's use:
 - A gate stack is in use (`in_use`) while a process works in its worktree, the gate run's repository root its `worktree` label names (with no label, while the gate runs a pipeline).
 
 `team-capacity status` says the newest reading, taking one first when the newest is over 10 minutes old.
+Its last line is the newest quota reading of Claude's plan limits, `team-quota status`'s (`quota: week 72% (resets Mon 09:00), 5h 23%, read 12 min ago`), and its JSON carries that object as `quota`; a `team-quota` that fails is said on that line and changes nothing else.
 A user manager or a session list that does not answer is said in the reading (`"systemd": false`, `"sessions": false`), and the reading still goes in.
 `team-doctor`'s `resources` line warns on the lease holder when the newest reading is over 15 minutes old.
 

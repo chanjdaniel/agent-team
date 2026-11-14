@@ -141,10 +141,15 @@
 #          it run. seconds runs from the first reading that saw it to the last. A session list or
 #          Docker that did not answer ends nothing.
 # status   The newest reading: a line with what other programs and the team use, then one per
-#          task with its use, its sessions and its stacks, and the gate while it runs a pipeline.
-#          With no reading of the last 10 minutes (no heartbeat takes them) it first takes one as
-#          sample does, a reading it cannot take said on stderr; with --stored never, so it
-#          writes nothing. With --json one object: {schema: "team-capacity/1", machine (null
+#          task with its use, its sessions and its stacks, and the gate while it runs a pipeline;
+#          then the quota line, from team-quota status --json (Claude's own reading of the plan's
+#          limits, never this machine's): "quota: week <n>% (resets <ddd HH:MM>), 5h <n>%, read
+#          <n> min ago", a window the reading lacks left out, "quota: no reading" with none, or
+#          "quota: could not be read (<why>)" when team-quota fails, prints no team-quota/1 object
+#          or takes over 30 seconds, which changes nothing else. With no reading of the last 10
+#          minutes (no heartbeat takes them) it first takes one as sample does, a reading it
+#          cannot take said on stderr; with --stored never, so it writes nothing (team-quota
+#          status only reads). With --json one object: {schema: "team-capacity/1", machine (null
 #          without a name), settings (every key below, and from: each key's source,
 #          "capacity.json" or "default"), stale (true with no reading, or the newest more than 15
 #          minutes old), reading (the newest, as sample writes it, or null), reserved: {bytes (the
@@ -154,7 +159,9 @@
 #          stack or heavy run an admission names, admission: its id, null for one with none}]},
 #          room: {mode, level (the team home's level.jsonl's, manual full with none), share,
 #          budget_bytes (the memory budget, as team-level says it), bytes (the budget less what is
-#          reserved, below 0 when over it); both null with no reading}}. What is reserved,
+#          reserved, below 0 when over it); both null with no reading}, quota (team-quota status
+#          --json's object, or null when it could not be read), quota_error (why, or null)}. What
+#          is reserved,
 #          by part (the estimates are costs'):
 #            sessions_use     each live team session of the newest reading past its admission
 #                             window, at its use (its scope's working set, RAM only);
@@ -327,6 +334,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 source "$TEAM_LIB/reading.sh"
 
 USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--name <stack name>] [--seed-bytes <n>] [--freed <session id>]... | release <admission id> | plan [--json] [--sessions <file>] | jobs [--verbose]"
+# How long status waits for team-quota status, which reads a few files, before it says the quota
+# could not be read.
+QUOTA_SECONDS=30
 [[ $# -ge 1 ]] || usage_error "$USAGE"
 command=$1
 shift
@@ -1066,10 +1076,32 @@ status_program() {
 }
 
 status() {
+  local quota quota_error
   read_settings
   ((stored)) || fresh_reading
   read_level_and_admitted || die "$(level_error)"
-  status_program '' "$stacks_seen" 'if $json == 1 then $status else $status | capacity_status_text end' -r --argjson json "$json"
+  read_quota
+  LC_ALL=C status_program '' "$stacks_seen" '
+    ($status + {quota: $quota, quota_error: (if $quota_error == "" then null else $quota_error end)}) as $status
+    | if $json == 1 then $status else ($status | capacity_status_text), ($quota | capacity_quota_line($quota_error)) end' \
+    -r --argjson json "$json" --argjson quota "$quota" --arg quota_error "$quota_error"
+}
+
+# The newest quota reading, team-quota status --json's object, into the caller's quota, and
+# quota_error empty; or quota null and quota_error why: team-quota's first line on stderr, its
+# silence, its timeout (QUOTA_SECONDS), or output that is no team-quota/1 object.
+read_quota() {
+  local out rc=0
+  out=$(TEAM_HOME=$TEAM_HOME timeout "$QUOTA_SECONDS" "${TEAM_LIB%/*}/team-quota" status --json 2>"$work/quota.err" </dev/null) || rc=$?
+  quota=null quota_error=''
+  if ((rc == 124)); then
+    quota_error="team-quota status did not answer in $QUOTA_SECONDS seconds"
+  elif ((rc != 0)); then
+    quota_error=$(sed -n 1p "$work/quota.err")
+    quota_error=${quota_error:-team-quota status failed with no message}
+  elif ! quota=$(jq -ce 'select(type == "object" and .schema == "team-quota/1")' <<<"$out" 2>/dev/null); then
+    quota=null quota_error="team-quota status printed no team-quota/1 object"
+  fi
 }
 
 # The estimates, team-capacity-costs/1, into $work/costs.json: the roles and, with no argument or
