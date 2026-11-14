@@ -545,7 +545,7 @@ queued_item() {
 # Nothing taken since the test began: no task number, slot, thread or event.
 nothing_taken() {
   [[ -z $(find "$TEAM_HOME/tasks" -mindepth 1 -maxdepth 1 -name 'T*') ]]
-  assert_equal "$(git -C "$primary" worktree list | wc -l)" "1"
+  assert_equal "$(git -C "${primary:?}" worktree list | wc -l)" "1"
   assert_equal "$(stub_calls curl | wc -l)" "0"
   assert_equal "$(wc -c <"$TEAM_HOME/ledger.jsonl")" "0"
 }
@@ -565,7 +565,7 @@ From the queue: \`tasks/queued/fix-the-sign-in-limit.md\`: the summary of fix-th
 
 ## Scope"
   assert_equal "$(grep '^opened:' "$TEAM_HOME/tasks/queued/fix-the-sign-in-limit.md")" "opened: T1"
-  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued take T1"
+  assert_equal "$(git -C "${TEAM_HOME:?}" log -1 --format=%s)" "chore: queued take T1"
   assert_contains "$stderr" "team-open: took fix-the-sign-in-limit.md for T1"
   run_bin -0 team-log --check
 }
@@ -625,7 +625,7 @@ From the queue: \`tasks/queued/fix-the-sign-in-limit.md\`: the summary of fix-th
   run_bin -1 --separate-stderr team-open --queued opened.md
   assert_equal "$stderr" "team-open: opened.md is opened by T4, which builds it"
   [[ -z $(find "$TEAM_HOME/tasks" -mindepth 1 -maxdepth 1 -name 'T*') ]]
-  assert_equal "$(git -C "$primary" worktree list | wc -l)" "1"
+  assert_equal "$(git -C "${primary:?}" worktree list | wc -l)" "1"
   assert_equal "$(stub_calls curl | wc -l)" "0"
   cmp "$BATS_TEST_TMPDIR/t4.jsonl" "$TEAM_HOME/ledger.jsonl"
   assert_equal "$(grep -c '^opened:' "$TEAM_HOME/tasks/queued/ready.md")" "0"

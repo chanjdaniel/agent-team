@@ -72,23 +72,23 @@ event() {
 # The subject of the team home's last commit, and the paths it changed, on one line each, a move
 # as the path it left and the one it took.
 last_commit() {
-  git -C "$TEAM_HOME" log -1 --format=%s
-  git -C "$TEAM_HOME" show --name-only --no-renames --format= HEAD
+  git -C "${TEAM_HOME:?}" log -1 --format=%s
+  git -C "${TEAM_HOME:?}" show --name-only --no-renames --format= HEAD
 }
 
 # Commit what the test wrote, and note the head and the queued files' sum, for nothing_written.
 committed() {
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q --allow-empty -m "chore: the test's queue"
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q --allow-empty -m "chore: the test's queue"
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   before=$(cat "$queued"/*.md | cksum)
 }
 
 # Nothing changed since committed: the head, the files, a clean status and no temporary file.
 nothing_written() {
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
   assert_equal "$(cat "$queued"/*.md | cksum)" "$before"
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain) ]]
   [[ -z $(find "$queued" -name '*.md.*') ]]
 }
 
@@ -116,13 +116,13 @@ tasks/queued/node-pin.md"
 
 - bootstrap-drill.md (proj, T5): drill the bootstrap
 - node-pin.md (proj, T5): pin Node 24"
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain) ]]
   # Taking it again, a file named twice, changes nothing and says the same.
   local tip
-  tip=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  tip=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-queue take T5 node-pin.md node-pin.md
   assert_equal "$output" "took node-pin.md for T5"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$tip"
 }
 
 @test "take --part adds T<n> to from: once, leaving opened and the taker alone, and an item another task opened or another item takes may be part-built" {
@@ -137,12 +137,12 @@ T5 builds part of opened.md"
   assert_equal "$(grep -E '^(from|opened):' "$queued/bootstrap-drill.md")" "from: T5"
   assert_equal "$(grep -E '^(from|opened):' "$queued/opened.md")" "from: T5
 opened: T6"
-  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued take T5"
+  assert_equal "$(git -C "${TEAM_HOME:?}" log -1 --format=%s)" "chore: queued take T5"
   local tip
-  tip=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  tip=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   run_bin -0 team-queue take T5 --part node-pin.md
   assert_equal "$(grep '^from:' "$queued/node-pin.md")" "from: T2, T5"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$tip"
 }
 
 @test "take refuses a file not queued, writing nothing" {
@@ -223,7 +223,7 @@ tasks/queued/broken.md: front matter has no closing ---, which take cannot rewri
   run_bin -2 team-queue take T5 --all node-pin.md
   AGENT_TEAM_ROLE=builder run_bin -1 --separate-stderr team-queue take T5 node-pin.md
   assert_equal "$stderr" "team-queue: a builder session edits no records: that is the coordinator's; send it your message"
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain) ]]
 }
 
 # Append a merged of <task> to the ledger, with phases_left <json> when given: merged <task> [<phases_left>]
@@ -262,7 +262,7 @@ summary: pin Node 24"
 tasks/T5/queued/node-pin.md
 tasks/queued/index.md
 tasks/queued/node-pin.md"
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain) ]]
   # A closed ends it too.
   event T6 closed
   committed
@@ -272,7 +272,7 @@ wrote tasks/queued/index.md: 1 file"
   assert_equal "$(where)" "tasks/T5/queued/node-pin.md
 tasks/T6/queued/closing.md
 tasks/queued/bootstrap-drill.md"
-  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued tidy"
+  assert_equal "$(git -C "${TEAM_HOME:?}" log -1 --format=%s)" "chore: queued tidy"
   # Once tidy, a second run changes nothing.
   committed
   run_bin -0 team-queue tidy
@@ -500,15 +500,15 @@ it builds two of tasks/queued/ideas.md."
   assert_equal "$(last_commit)" "chore: queued tidy
 tasks/queued/index.md"
   run_bin -0 team-queue index --check
-  git -C "$TEAM_HOME" rm -rq tasks/queued
-  git -C "$TEAM_HOME" commit -qm "chore: no queue"
+  git -C "${TEAM_HOME:?}" rm -rq tasks/queued
+  git -C "${TEAM_HOME:?}" commit -qm "chore: no queue"
   local tip
-  tip=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  tip=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-queue tidy
   assert_equal "$output" ""
   assert_equal "$stderr" ""
   [[ ! -e $queued ]]
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$tip"
 }
 
 @test "tidy leaves an item queued whose task's queued/ holds its name already, says so and exits 1, moving the rest" {
@@ -527,7 +527,7 @@ wrote tasks/queued/index.md: 2 files"
   assert_equal "$stderr" "team-queue: left node-pin.md queued: tasks/T5/queued/node-pin.md is there already"
   assert_equal "$(cat "$TEAM_HOME/tasks/T5/queued/node-pin.md")" "an earlier copy"
   [[ -e $queued/node-pin.md ]]
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain) ]]
 }
 
 @test "a tidy the team home's hooks refuse leaves its change written for the checkpoint, and exits 1" {
@@ -542,7 +542,7 @@ wrote tasks/queued/index.md: 2 files"
 wrote tasks/queued/index.md: 1 file"
   assert_equal "$stderr" "team-queue: team home: cannot commit the records: refused by the test hook
 team-queue: the change is written but not committed; the next checkpoint commits it"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
   assert_equal "$(where)" "tasks/T5/queued/node-pin.md
 tasks/queued/bootstrap-drill.md"
 }

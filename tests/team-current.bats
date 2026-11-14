@@ -193,13 +193,13 @@ closed_task() {
   local d="- watch T9 the scratch | /tmp/watch.log"
   local e="- ask T77 a task the ledger does not hold | 1563000000000000045"
   printf '%s\n' "# Current items" "" "$a" "$b" "$c" "$d" "$e" >"$current"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: items"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: items"
   run_bin -1 team-current check
   assert_equal "$output" "tasks/current.md:3: T181 closed at 2026-11-02T01:31:49Z; done it (team-current done $(id_of "$a")) or add it again under an open task
 tasks/current.md:6: the where '/tmp/watch.log' is a temp path
 tasks/current.md:6: T9 closed at 2026-11-05T10:00:00Z; done it (team-current done $(id_of "$d")) or add it again under an open task"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" ""
   # With no closed task named, the file passes.
   printf '%s\n' "# Current items" "$b" "$c" "$e" >"$current"
   run_bin -0 team-current check
@@ -216,8 +216,8 @@ tasks/current.md:6: T9 closed at 2026-11-05T10:00:00Z; done it (team-current don
   local a="- next T181 open the rest of the refactor | tasks/queued/node-pin.md"
   local b="- todo T4 something | tasks/queued/node-pin.md"
   printf '%s\n' "# Current items" "$a" "$b" "Not an item." "- ask - no where" >"$current"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: items"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: items"
   run_bin -1 --separate-stderr team-current check --json
   assert_equal "$stderr" ""
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg a "${a#- }" --arg ida "$(id_of "$a")" \
@@ -240,7 +240,7 @@ tasks/current.md:6: T9 closed at 2026-11-05T10:00:00Z; done it (team-current don
   rm "$current"
   run_bin -0 team-current check --json
   assert_equal "$(jq -c . <<<"$output")" '{"schema":"team-current-check/1","problems":[],"closed":[]}'
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" " D tasks/current.md"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" " D tasks/current.md"
 }
 
 @test "add and done commit tasks/current.md alone and push it, another changed record left uncommitted" {

@@ -850,7 +850,7 @@ queued() {
   assert_equal "${lines[-1]}" "Queue: nothing ready; 1 waiting, 1 opened; no room: no reading of the machine's load, so no budget"
 
   # No tasks/queued/: no line, and queue null.
-  rm -r "$TEAM_HOME/tasks/queued"
+  rm -r "${TEAM_HOME:?}/tasks/queued"
   run_bin -0 team-snapshot
   [[ ${lines[-1]} != Queue* ]]
   run_bin -0 team-snapshot --json

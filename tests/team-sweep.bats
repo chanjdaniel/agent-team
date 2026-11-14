@@ -2322,7 +2322,7 @@ current: team-current: the ledger is not JSON: fix what team-current names"
   run_bin -1 team-sweep
   assert_equal "$(sed -n '2,$p' <<<"$output")" "queue: team-queue list printed no team-queue/1 view: fix what team-queue names"
   # Neither runs when there is nothing for it to read.
-  rm -r "$TEAM_HOME/tasks/queued" "$TEAM_HOME/tasks/current.md"
+  rm -r "${TEAM_HOME:?}/tasks/queued" "${TEAM_HOME:?}/tasks/current.md"
   : >"$STUB_CALLS/team-queue.log"
   : >"$STUB_CALLS/team-current.log"
   run_bin -1 team-sweep

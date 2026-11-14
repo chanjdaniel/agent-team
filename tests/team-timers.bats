@@ -1070,8 +1070,8 @@ queue_lines() {
   agent_team_task T5
   mkdir -p "$TEAM_HOME/tasks/queued"
   printf -- '---\nsummary: pin Node 24\nproject: agent-team\npriority: 2\nsize: S\n---\n# Pin Node\n' >"$TEAM_HOME/tasks/queued/node-pin.md"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -qm "chore: queue node-pin.md"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -qm "chore: queue node-pin.md"
   # team-open --queued takes the item for the task it opens.
   run_bin -0 team-queue take T5 node-pin.md
   run_bin -0 team-timers run
@@ -1081,8 +1081,8 @@ queue_lines() {
   assert_equal "$(queue_lines "$output")" "moved node-pin.md to tasks/T5/queued/: T5 merged
 wrote tasks/queued/index.md: 0 files"
   [[ ! -e $TEAM_HOME/tasks/queued/node-pin.md && -f $TEAM_HOME/tasks/T5/queued/node-pin.md ]]
-  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued tidy"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$(git -C "$origin" rev-parse dev)"
+  assert_equal "$(git -C "${TEAM_HOME:?}" log -1 --format=%s)" "chore: queued tidy"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$(git -C "${origin:?}" rev-parse dev)"
   run_bin -0 team-queue index --check
   run_bin -0 team-timers run
   assert_equal "$(queue_lines "$output")" ""
