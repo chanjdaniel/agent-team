@@ -66,8 +66,8 @@ USAGE="usage: team-quota line | status [--json]"
 # How long the line waits for its input to end: Claude Code writes the whole JSON at once and
 # closes it, so input still open is a caller's mistake, and the line must answer within 200 ms.
 QUOTA_READ_SECONDS=0.15
-# A reading read at most this many minutes ago is fresh: older, a busy week's use has moved on
-# (a critique run's sizing and the heartbeat's posts read it, in later tickets).
+# A reading read at most this many minutes ago is fresh: in three hours a busy session's use has
+# moved on far enough that an older one is no number to act on.
 QUOTA_FRESH_MINUTES=180
 # The percentages each window is judged against: the week warns at 70 and again at 90, the
 # 5-hour window and each model's week at 90, when sessions are about to stall.
