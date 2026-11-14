@@ -1022,15 +1022,16 @@ release_stopped_admissions() {
   mapfile -t -O "${#freed[@]}" freed < <(jq -r '.[].session' <<<"$stopped")
 }
 
-# The roles in roles/ but the coordinator's into roles, and with <read> true the registry
-# (read_registry, whose failure leaves out what it could not read) into registry, else [].
+# The worker roles, those in roles/ but the coordinator's and the assistant's, into roles, and
+# with <read> true the registry (read_registry, whose failure leaves out what it could not read)
+# into registry, else [].
 costs_inputs() {
   local file
   roles=()
   for file in "${TEAM_LIB%/*}"/../roles/*.md; do
     [[ -f $file ]] || continue
     file=${file##*/}
-    [[ $file == coordinator.md ]] || roles+=("${file%.md}")
+    [[ $file == coordinator.md || $file == assistant.md ]] || roles+=("${file%.md}")
   done
   registry='[]'
   [[ $1 == false ]] || read_registry || true

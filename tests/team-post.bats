@@ -207,6 +207,9 @@ run_of() {
     AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-post T7 --thread interview --file "$IMAGES/q.md"
     assert_equal "$output" "team-post: a $role session posts to Discord: that is the coordinator's; send it your message"
   done
+  # The assistant is refused as a worker is, with the article its name takes.
+  AGENT_TEAM_ROLE=assistant run_bin -1 team-post --coordinator --file "$IMAGES/q.md"
+  assert_equal "$output" "team-post: an assistant session posts to Discord: that is the coordinator's; send it your message"
   assert_equal "$(channels)" "5555"
 
   # The coordinator posts anywhere, as Daniel's own shell does.

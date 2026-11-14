@@ -17,5 +17,6 @@ README.md
 SETUP.md
 LICENSE
 coordinator.settings.json
+assistant.settings.json
 .gitignore
 .shellcheckrc

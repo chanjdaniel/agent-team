@@ -17,7 +17,7 @@
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, own_projects, own_bar, review_app, base64url, review_app_jwt, review_app_api, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
 # discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_merge_authority, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
-# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, OPS_REQUEST_MAX_AGE, and
+# DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL, INTERVIEW_CHANNEL, ASSISTANT_CHANNEL, OPS_REQUEST_MAX_AGE, and
 # LEDGER_TASKS, LEDGER_KINDS and LEDGER_PUSH_DUE for ledger_push, and LEDGER_INBOX_DUE for refresh_inbox.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
 # that sets team_guard (below) exits 2 for every exit of its but 0.
@@ -889,8 +889,8 @@ lease_refusal() {
 }
 
 # Print why this session may not <does>, which is the coordinator's, or fail when it may: a worker session (its
-# settings' AGENT_TEAM_ROLE names a role other than the coordinator; Daniel's own shell and the
-# heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
+# settings' AGENT_TEAM_ROLE names a role other than the coordinator, the assistant's included, its
+# article "an" for a role starting with a vowel; Daniel's own shell and the heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
 # when the caller passes --interview, for the interview thread's post and wait. Worker settings
 # deny most of the same commands by their bare name, and command-guard refuses team-ask,
 # team-answer, team-inbox, team-thread T<n> and team-run-approved by any path where a command
@@ -903,7 +903,9 @@ worker_refusal() {
     [[ -z $1 || $1 != "$own" ]] || return 1
     echo "a planner session of ${own:-no task} $2 for $1: a planner talks with Daniel only in its own task's interview thread"
   else
-    echo "a $role session $2: that is the coordinator's; send it your message"
+    local article=a
+    [[ $role != [aeiouAEIOU]* ]] || article=an
+    echo "$article $role session $2: that is the coordinator's; send it your message"
   fi
 }
 
@@ -1601,6 +1603,13 @@ OPS_REQUEST_MAX_AGE=3600
 # included, which the scripts refuse as none set.
 # shellcheck disable=SC2034 # read by the scripts that source this library
 INTERVIEW_CHANNEL=${TEAM_INTERVIEW_CHANNEL-1565336720998928556}
+
+# The Discord channel #assistant, the one the assistant session (claude-assistant) hears, with
+# the threads it opens under it: kept out of the coordinator's access.json groups, so the
+# coordinator never hears it. TEAM_ASSISTANT_CHANNEL overrides it, an empty one included, which
+# the scripts that need it refuse as none set, naming the variable.
+# shellcheck disable=SC2034 # read by the scripts that source this library
+ASSISTANT_CHANNEL=${TEAM_ASSISTANT_CHANNEL-1570965039278596199}
 
 # Print the type of the image whose bytes are on stdin, by its first 16, png, jpeg, gif, webp, bmp,
 # tiff, ico or heif, or nothing: the images the data rules refuse (data-check) and the archive leaves

@@ -239,8 +239,8 @@ run_bin() {
 # fast-forwards its code checkout never touches this one: <checkout> when given (a clone with an
 # origin), else a clone on dev of a bare origin standing in for GitHub, CODE_ORIGIN
 # ($BATS_TEST_TMPDIR/code-origin.git), with one commit. Either way it gets a copy of the code the
-# scripts read from their checkout (bin/, roles/, settings/, templates/, plugins/, toolkits/ and
-# coordinator.settings.json), which git ignores there: code_checkout [<checkout>]
+# scripts read from their checkout (bin/, roles/, settings/, templates/, plugins/, toolkits/,
+# coordinator.settings.json and assistant.settings.json), which git ignores there: code_checkout [<checkout>]
 code_checkout() {
   export CODE_CHECKOUT CODE_ORIGIN
   if [[ -n ${1:-} ]]; then
@@ -259,10 +259,10 @@ code_checkout() {
   local path exclude
   exclude=$(git -C "$CODE_CHECKOUT" rev-parse --path-format=absolute --git-path info/exclude)
   copy_bin "$CODE_CHECKOUT/bin"
-  for path in roles settings templates plugins toolkits coordinator.settings.json; do
+  for path in roles settings templates plugins toolkits coordinator.settings.json assistant.settings.json; do
     cp -R "$REPO_ROOT/$path" "$CODE_CHECKOUT/$path"
   done
-  printf '/%s\n' bin roles settings templates plugins toolkits coordinator.settings.json >>"$exclude"
+  printf '/%s\n' bin roles settings templates plugins toolkits coordinator.settings.json assistant.settings.json >>"$exclude"
 }
 
 # with_lifecycle_from <time|null>: run_bin runs from a code checkout of the test's own whose

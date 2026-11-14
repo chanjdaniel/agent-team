@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Start the assistant: the long-lived session Daniel talks to in #assistant on Discord, beside the
+# coordinator, which keeps the tasks, the workers, the ledger and the merges.
+#
+# It hears only #assistant (ASSISTANT_CHANNEL in bin/lib/team.sh) and the threads under it,
+# through a Discord state directory of its own, ~/.claude/channels/discord-assistant/ (mode 700),
+# which its settings name to the Discord plugin as DISCORD_STATE_DIR, with DISCORD_ACCESS_MODE
+# static, so the access file is pinned at boot and no pairing or /discord:access edit changes it.
+# Each launch writes it: .env, a symlink to ../discord/.env, so the one bot token is never copied;
+# and access.json, written whole, with no DM reaching the assistant (dmPolicy allowlist, an empty
+# top-level allowFrom) and one group, #assistant, heard without a mention from Daniel's ids alone
+# (the top-level allowFrom of the coordinator's ~/.claude/channels/discord/access.json).
+#
+# Bypass mode, by Daniel's choice. Its settings are assistant.settings.json with @TEAM_CODE@
+# naming this checkout, @TEAM_HOME@ the team home and @DISCORD_STATE_DIR@ that directory, written
+# to ~/.local/state/agent-team/assistant.settings.json: every deny rule of the coordinator's, so
+# deny rules stop the plain spelling of a force push, a push to dev or main, git reset --hard,
+# git clean, git branch -D, a Docker prune and a merge outside team-merge, by the workers' own
+# rules (tests/repo.bats holds the three together), and besides them the Discord token and both
+# access files, any git push and git commit, GitHub's writes, the team's scripts that would act
+# as the coordinator, and starting or stopping a session. Its memory is the team home's
+# memory/assistant/ (autoMemoryDirectory), not the coordinator's, though both run in the team
+# home. Its role prompt is roles/assistant.md, appended to the system prompt. Its MCP config,
+# ~/.local/state/agent-team/assistant.mcp.json, names no server, and its settings deny every
+# server `claude mcp list` names in the team home but the Discord plugin's, as
+# claude-coordinator's do (bin/lib/launch.sh). It runs on the user settings' model at their
+# effort, with their Remote Control, as the coordinator does, and compacts at 200k tokens by the
+# launch's --autocompact flag, idle from 100k.
+#
+# It refuses (exit 1), in this order: while another launch holds the non-blocking flock on
+# ~/.local/state/agent-team/assistant-launch.lock; while `claude agents --json --all` lists a
+# session named assistant in any state but stopped, naming its id, so two sessions never answer
+# one message; unless `team-lease check` confirms against origin that this machine holds the
+# lease, naming the holder, or saying an assistant never starts offline when GitHub is
+# unreachable; with no ASSISTANT_CHANNEL (an empty TEAM_ASSISTANT_CHANNEL); with no bot token in
+# ~/.claude/channels/discord/.env; with no Daniel's id readable from the coordinator's
+# access.json; and while that file has a group for #assistant, since the coordinator would hear
+# it too.
+#
+# Usage: claude-assistant [--prompt <text>]   (always in the team home)
+#   --prompt  the session's first prompt, in place of "You are the assistant. Daniel talks to you
+#             in #assistant on Discord. Wait for their messages."
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/launch.sh
+source "$TEAM_LIB/launch.sh"
+
+usage="usage: claude-assistant [--prompt <text>]"
+prompt="You are the assistant. Daniel talks to you in #assistant on Discord. Wait for their messages."
+if [[ ${1:-} == --prompt ]]; then
+  [[ $# -ge 2 && -n $2 ]] || usage_error "$usage"
+  prompt=$2
+  shift 2
+fi
+(($# == 0)) || usage_error "$usage"
+# The role, the settings and the hooks are code: they come from this checkout, beside bin/.
+code=$(dirname "$(dirname "$TEAM_LIB")")
+cd "$TEAM_HOME"
+
+launch_lock assistant
+launch_singleton assistant
+launch_unlocked lease_gate "an assistant"
+[[ -n $ASSISTANT_CHANNEL ]] ||
+  die "no assistant channel is set (TEAM_ASSISTANT_CHANNEL is empty), so the assistant would hear nothing: unset it to use ASSISTANT_CHANNEL in bin/lib/team.sh"
+
+# The coordinator's Discord state, whose token the assistant's links to and whose ids it hears.
+discord=$HOME/.claude/channels/discord
+state=$HOME/.claude/channels/discord-assistant
+discord_token >/dev/null ||
+  die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env, which the assistant's Discord state links to: run team-secrets check"
+daniel=$(jq -ce '.allowFrom | select(type == "array") | map(tostring | select(test("^[0-9]+$"))) | select(length > 0)' \
+  "$discord/access.json" 2>/dev/null) ||
+  die "cannot read Daniel's Discord ids from the allowFrom of ~/.claude/channels/discord/access.json, so the assistant would hear nobody"
+if jq -e --arg c "$ASSISTANT_CHANNEL" '(.groups // {}) | has($c)' "$discord/access.json" >/dev/null; then
+  die "the coordinator would hear #assistant too: remove that group with /discord:access group rm $ASSISTANT_CHANNEL in the coordinator"
+fi
+
+mkdir -p "$state"
+chmod 700 "$state"
+ln -sfn ../discord/.env "$state/.env"
+jq -n --arg channel "$ASSISTANT_CHANNEL" --argjson daniel "$daniel" \
+  '{dmPolicy: "allowlist", allowFrom: [],
+    groups: {($channel): {requireMention: false, allowFrom: $daniel}},
+    pending: {}, ackReaction: "👀", replyToMode: "first", textChunkLimit: 2000, chunkMode: "newline"}' \
+  >"$state/access.json.$$"
+chmod 600 "$state/access.json.$$"
+mv -f "$state/access.json.$$" "$state/access.json"
+
+mcp=$LAUNCH_STATE/assistant.mcp.json
+settings=$LAUNCH_STATE/assistant.settings.json
+# Its MCP template names no server and has no connectors.json beside it, so no connector is kept.
+template=$(mktemp -d)
+trap 'rm -rf "$template"' EXIT
+echo '{"mcpServers": {}}' >"$template/.mcp.json"
+launch_settings "$code/assistant.settings.json" "$template/.mcp.json" "$settings" "$mcp" \
+  "@TEAM_HOME@=$TEAM_HOME" "@DISCORD_STATE_DIR@=$state"
+
+# Not exec: this shell keeps the lock until claude returns, and the session it starts does not
+# inherit the lock's file, so a running assistant never holds the next launch's lock.
+claude --bg --name assistant \
+  --autocompact 200k \
+  --mcp-config "$mcp" \
+  --channels plugin:discord@claude-plugins-official \
+  --dangerously-skip-permissions \
+  --append-system-prompt-file "$code/roles/assistant.md" \
+  --settings "$settings" \
+  "$prompt" \
+  {LAUNCH_LOCK_FD}>&-
