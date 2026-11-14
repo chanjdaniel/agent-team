@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # team-snapshot: everything open across the team in one view: every open task's state, the live
 # team sessions and strays, open PRs in every registered project, the asks waiting on Daniel, and
-# the coordinator's current items (tasks/current.md).
+# the coordinator's current items (tasks/current.md) and the queue (team-queue list).
 
 load helpers/common
 
@@ -176,7 +176,7 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","default_withdrawn","production","sessions","strays","prs","pending_asks","waiting","items","queued"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","default_withdrawn","production","sessions","strays","prs","pending_asks","waiting","items","queued","queue"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
@@ -636,7 +636,7 @@ EOF
   assert_equal "$(section "Current items")" "Current items (2):
   - next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md
   - watch - the CI wait on PR 7 | ledger 2026-11-01T07:08:11Z"
-  assert_equal "${lines[-1]}" "Queued work: 2 files, listed in tasks/queued/index.md"
+  assert_equal "${lines[-1]}" "Queue: nothing ready; 0 waiting, 0 opened; no room: no reading of the machine's load, so no budget"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c '.waiting | [(.lines | length), .total, .owed]' <<<"$output")" '[5,7,["T4 the weekly report"]]'
   assert_equal "$(jq -c '[(.items | length), .queued]' <<<"$output")" '[5,2]'
@@ -816,4 +816,69 @@ $line"
   run_bin -2 team-snapshot --text
   run_bin -2 team-snapshot T3
   assert_equal "$(stub_calls claude)$(stub_calls gh)" ""
+}
+
+# queued <name> [<key>: <value>]...: tasks/queued/<name>, its front matter the lines given, then
+# its title.
+queued() {
+  mkdir -p "$TEAM_HOME/tasks/queued"
+  { echo ---; printf '%s\n' "${@:2}"; echo ---; echo "# ${1%.md}"; } >"$TEAM_HOME/tasks/queued/$1"
+}
+
+@test "the queue's line counts the ready, waiting and opened items, with the room and the top item, and the JSON adds queue beside queued" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  launch T3 builder 59709d99
+  queued second.md "summary: the approved work" "project: conv" "priority: 2" "size: M"
+  queued top.md "summary: the fix that matters most, Daniel asked for it next" "project: proj" "priority: 1" "size: S"
+  queued later.md "summary: after the word" "project: proj" "priority: 1" "size: S" "waits: Daniel's word on the baselines"
+  queued building.md "summary: in T3's hands" "project: proj" "priority: 2" "size: M" "opened: T3"
+  queued bad.md "summary: no priority" "project: proj" "size: S"
+  run_bin -0 team-snapshot
+  assert_equal "${lines[-1]}" "Queue: 2 ready, 1 waiting, 1 opened; no room: no reading of the machine's load, so no budget; next: top.md (proj, priority 1, S): the fix that matters most, Daniel asked for it next"
+  run_bin -0 team-snapshot --json
+  local snapshot=$output
+  assert_equal "$(jq .queued <<<"$snapshot")" 5
+  run_bin -0 team-queue list --json
+  assert_equal "$(jq -c .queue <<<"$snapshot")" "$(jq -c 'del(.findings)' <<<"$output")"
+  assert_equal "$(jq -c '.queue | keys_unsorted' <<<"$snapshot")" '["schema","room","ready","waiting","opened","unranked","problems"]'
+
+  # Nothing ready: the counts and the room, no next.
+  rm "$TEAM_HOME/tasks/queued/top.md" "$TEAM_HOME/tasks/queued/second.md"
+  run_bin -0 team-snapshot
+  assert_equal "${lines[-1]}" "Queue: nothing ready; 1 waiting, 1 opened; no room: no reading of the machine's load, so no budget"
+
+  # No tasks/queued/: no line, and queue null.
+  rm -r "$TEAM_HOME/tasks/queued"
+  run_bin -0 team-snapshot
+  [[ ${lines[-1]} != Queue* ]]
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c '[.queued, .queue]' <<<"$output")" '[0,null]'
+}
+
+@test "a team-queue that fails is the queue unreadable, naming why, and the snapshot still shows the rest" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  queued top.md "summary: the fix" "project: proj" "priority: 1" "size: S"
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  copy_bin "$CODE_CHECKOUT/bin"
+  shared_make stub "$REPO_ROOT/tests/helpers/stub"
+  ln -f "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-queue"
+  stub_script team-queue <<SH
+echo "team-queue: something went first" >&2
+echo "team-queue: cannot read $HOME/queue" >&2
+exit 1
+SH
+  run_bin -0 team-snapshot
+  assert_equal "${lines[-1]}" "Queue unreadable: cannot read ~/queue"
+  assert_contains "$output" "Open tasks: none"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c '[.queued, .queue]' <<<"$output")" '[1,{"error":"cannot read ~/queue"}]'
+  assert_equal "$(stub_calls team-queue | sort -u)" '["list","--json"]'
+  # Exit 0 with no team-queue/1 object is unreadable too.
+  stub_script team-queue <<<'echo "[]"'
+  run_bin -0 team-snapshot
+  assert_equal "${lines[-1]}" "Queue unreadable: team-queue list printed no team-queue/1 object"
 }

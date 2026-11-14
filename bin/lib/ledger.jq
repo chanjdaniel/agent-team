@@ -1858,6 +1858,28 @@ def sweep($sessions; $plan; $activity; $own; $health; $self):
     + [$events | retro_status | retro_due_finding]
     + [$health | health_findings];
 
+# The findings team-sweep adds after sweep's, from the views it reads beside the ledger: team-queue
+# list --json's object ($queue), its findings (queue-ready, queue) as team-queue made them, then
+# team-current check --json's ($current), one current-stale finding naming each item whose task
+# closed; each view null when there is nothing to read, and {error} when its script failed, which
+# is one finding of kind queue or current naming the error and "fix what <script> names". Each
+# finding has task, session and name null.
+def sweep_views($queue; $current):
+  def failed($kind; $script):
+    "fix what \($script) names" as $next
+    | {task: null, kind: $kind, session: null, name: null, next: $next, text: "\($kind): \(.error): \($next)"};
+  ($queue | if . == null then [] elif .error != null then [failed("queue"; "team-queue")] else .findings // [] end)
+  + ($current
+     | if . == null then []
+       elif .error != null then [failed("current"; "team-current")]
+       elif (.closed // []) == [] then []
+       else (.closed | length) as $n
+         | "team-current done <id> for each that is done, or add it again under an open task" as $next
+         | [{task: null, kind: "current-stale", session: null, name: null, next: $next,
+             text: "current: \($n) item\(if $n == 1 then " names" else "s name" end) a closed task: \(
+               [.closed[] | "\(.id) (\(.task), closed \(.closed_at[:10]))"] | join(", ")); next: \($next)"}]
+       end);
+
 # What team-capacity plan reads of the ledger, over every ledger event as one array, with the
 # session list <sessions>: one {task, opened (its opened's time, else its first event's),
 # finished ([{session, role}]: the idle live sessions whose work is handed on, handed_on_launches
@@ -1907,8 +1929,9 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # registered project's open PRs ($prs), the current items ($items) and the production checks' last
 # results ($production, team-uptime status --json's object or {error}). It carries $level as level,
 # the open tasks stowed, waiting to resume, as awaiting_resume, the resources_line as resources
-# (null when $level is {error}), and $production as production.
-def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production; $waiting; $queued):
+# (null when $level is {error}), $production as production, and $queue (team-queue list --json's
+# object, {error}, or null with no queue) as queue, less its findings.
+def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $production; $waiting; $queued; $queue):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed
   | {schema: "team-snapshot/1",
@@ -1924,7 +1947,8 @@ def snapshot($tasks; $states; $level; $withdrawn; $sessions; $prs; $items; $prod
      pending_asks: [$states[] | .task as $task | (.pending_asks // [])[] | {task: $task} + .],
      waiting: $waiting,
      items: $items,
-     queued: $queued};
+     queued: $queued,
+     queue: ($queue | if type == "object" then del(.findings) else null end)};
 
 # The current items of tasks/current.md, over its lines (-R): each line starting "- ", without it.
 def current_items: [inputs | rtrimstr("\r") | select(startswith("- ")) | .[2:]];
@@ -1950,7 +1974,10 @@ def checks_waits_to_arm:
 # "Checks waits to arm unless running: team-next T<n> --ci (<url> at <short>, since <ts>)", none
 # when there is none. After the resources line, one line per withdrawal of the default merge word
 # that stands. The Production line, after them, is team-uptime's status line, or "Production
-# unreadable: <error>", and there is none when no project has a check.
+# unreadable: <error>", and there is none when no project has a check. The queue's line ends it,
+# cut at 200: "Queue: <r> ready, <w> waiting, <o> opened; <the room's line>; next: <the top ready
+# item> (<project>, priority <p>, <size>): <its summary>", "Queue: nothing ready; <w> waiting, <o>
+# opened; <the room's line>", or "Queue unreadable: <error>", and none with no queue.
 def snapshot_text:
   def section($title; $lines; $columns):
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
@@ -1995,7 +2022,16 @@ def snapshot_text:
      else "Current items (\($items | length)):", ($items[:40][] | "  - " + . | clip(200)),
        if $items | length > 40 then "  and \($items | length - 40) more in tasks/current.md" else empty end
      end),
-  (.queued // 0 | if . > 0 then "Queued work: \(.) file\(if . == 1 then "" else "s" end), listed in tasks/queued/index.md" else empty end);
+  (.queue // null
+   | if . == null then empty
+     elif .error != null then "Queue unreadable: \(.error)" | clip(200)
+     else "\(.waiting | length) waiting, \(.opened | length) opened; \(.room.says)" as $rest
+       | if .ready == [] then "Queue: nothing ready; \($rest)"
+         else .ready[0] as $top
+           | "Queue: \(.ready | length) ready, \($rest); next: \($top.file) (\($top.project), priority \($top.priority), \($top.size)): \($top.summary // $top.title)"
+         end
+       | clip(200)
+     end);
 
 # Whether the default word may hold for some PR, over every ledger event as an array: an open task
 # awaits merge with its plan approved. team-sweep and team-inbox read the registry for own_in only
