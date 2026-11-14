@@ -269,7 +269,7 @@ Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sud
 ## Rules
 
 Read `@CODE@/sops/platform-gotchas.md` before your first command.
-Never the em dash in docs; refer to Daniel with they/them.
+Never the em dash; refer to Daniel with they/them.
 EOF
   )
   # The code checkout is this one, written whole: it is outside the sandbox HOME.
@@ -468,7 +468,7 @@ the checks
 - Local checks: none.
   Run them on `@HEAD@` with `@CODE@/bin/team-checks conv @HEAD@`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and say in `.scratch/task/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
 - There is no PR yet: the builder stopped before the no-mistakes gate, which runs once this review passes or its findings are fixed, and reviews the code line by line after you.
-- Write your findings to `.scratch/task/review.md`, numbered, each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and one scope, `change` (a line the PR adds or changes) or `before` (code it did not change).
+- Write your findings to `.scratch/task/review.md`, numbered, each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and one scope, `change` (a line the branch adds or changes) or `before` (code it did not change).
   End it with the count of each kind, the plain notes as `note-change` and `note-before` (0 for none), the numbers of the `before` notes, and the guarded areas the change touches, of `ci`, `migrations`, `deploy`, `permissions`, `secrets` and `guardrails`, by the paths `@CODE@/bin/lib/guarded` lists for the project or by what the code does in a file of any name (CI or the checks a PR must pass, a migration of production data, the deploy, auth or permission checks, secrets handling and, on agent-team, the team's guards), or none.
   Post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
 - Send `T12 DONE pass @HEAD@ findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` or `T12 DONE findings .scratch/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` to `coordinator`, the counts, numbers and areas as `.scratch/task/review.md` gives them.
@@ -551,8 +551,9 @@ EOF
   heads[T14]=$head
   local each='each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and one scope, `change` (a line the PR adds or changes) or `before` (code it did not change)'
   local kinds="numbered, $each."
+  # Before its PR, a review's change scope is a line the branch adds or changes.
   run_bin -0 team-brief T12 reviewer --name review --set head="${heads[T12]}" --set "checks=the checks"
-  assert_contains "$(<"$output")" "$kinds"
+  assert_contains "$(<"$output")" "numbered, ${each/the PR adds/the branch adds}."
   run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head="${heads[T14]}" --set "checks=the checks"
   assert_contains "$(<"$output")" "$kinds"

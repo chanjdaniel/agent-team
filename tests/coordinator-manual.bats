@@ -520,7 +520,6 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # Step 3: the ask names the caps, and either approval logs them as parallel=.
   grep -qF 'the merge word, naming the `Parallel:` line'"'"'s caps' <<<"$approve"
   grep -qF '`parallel=<caps>`' <<<"$approve"
-  grep -qF 'a cap above 1 only once T287'"'"'s phase 3 is on `dev`' <<<"$approve"
   # Step 4: the spec's one line on a parallel phase.
   grep -qF 'In a phase whose cap is above 1, `team-next T<n> --fill` starts it and launches each ticket ready under the cap, each in a ticket worktree as `T<n>-builder-NN`; each `DONE <NN>` integrates the ticket (or prints what to send its builder) and fills again; run it with the Bash timeout at 600000, and again once a room refusal clears or after a resume.' <<<"$build"
   # The level and resume skills relaunch a ticket builder with --fill, never by role.

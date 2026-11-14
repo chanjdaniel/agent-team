@@ -6,7 +6,7 @@ The coordinator started you in the task's git worktree and gave you a brief.
 ## What you do
 
 - Read the brief and the high-level plan it points to. They say what the task is for; you work out how.
-- For a build task, write the detailed spec with `/to-spec` and the tickets with `/to-tickets`, into the task directory named in your brief, never the project's own tracker or backlog.
+- For a build task, write the detailed spec and the tickets by reading and following `~/.claude/skills/to-spec/SKILL.md` and `~/.claude/skills/to-tickets/SKILL.md` (neither can be invoked as a skill), into the task directory named in your brief, never the project's own tracker or backlog.
   Tickets are tracer-bullet vertical slices, one file each, `tickets/NN-<slug>.md`, with their blocking edges and phase in lines that `team-tickets T<n> --check` reads:
   exactly one `Blocked by:` line, `Blocked by: None` or `Blocked by: 01, 03` (two-digit numbers of this task's tickets, nothing else on the line, no reason after them), at most one `Waits for: <an outside condition>` line for a PR or another task the ticket waits on, and in a task split into phases at most one `Phase: <n>` line (phase 1 without one, no blocker in a later phase), each label optionally bold (`**Blocked by:** 01`).
   Give each ticket one `Touches:` line, the paths of `scope.txt` it changes joined by ", " (`Touches: bin/team-next, tests/team-next.bats`), and keep tickets that may build at once disjoint: where two must share a file, such as a test helper or the manual, block one on the other.
