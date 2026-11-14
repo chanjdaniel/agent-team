@@ -43,6 +43,12 @@
 #                    that started in the window
 #   context          the main conversations' replies by their context, 0-50k to 700k-2,000k:
 #                    replies, $w, $w per reply, and the share of it in cache reads
+#   long sessions    per worker role, its main conversations whose largest context (as the
+#                    sessions table measures it) passed 250k, against the role's: how many, their
+#                    $w and its share of the role's, and the $w of their replies past 250k; then
+#                    per task and role those sessions, their $w and that of their replies past
+#                    250k, their largest context and the task's tickets done in the window, by $w,
+#                    the top 15 (--json gives every one)
 #   cache rebuilds   per role, a reply after a session's first writing over half of a context
 #                    above 50k anew, and the extra $w (each write's price minus a read's); a
 #                    compaction, a context below half of the reply before's, from over 100k; and
@@ -103,6 +109,8 @@
 # filters {task, machine}, sources {machine: last day file, or null}, live (this machine's
 # replies read from its transcripts), totals {replies, sessions, tokens, w}, ledger_events (in
 # the window), token_types, models, machines, roles, projects, tasks, days, sessions, context,
+# long_sessions {threshold (250000), roles [{role, sessions, long, w, role_w, past_w}], tasks
+# [{task, project, role, sessions, w, past_w, max_context, tickets_done}] (every one, by w)},
 # rebuilds {roles, gap_minutes}, outcomes {sessions, counts, complete_tasks, measures,
 # reviewer_models, builder_toolkits [{project, toolkits, launches, with_replies, tickets_done, w,
 # w_per_ticket}], reviewer_toolkits [{project, toolkits, launches, with_replies, reviews, findings,
@@ -991,6 +999,10 @@ WORKERS = ("planner", "builder", "reviewer", "ops")
 # The roles the sessions, days and rebuild tables show.
 SESSION_ROLES = ("coordinator", "planner", "builder", "reviewer", "ops")
 CONTEXT_EDGES = (0, 50e3, 100e3, 200e3, 400e3, 700e3, 2e6)
+# The context past which a session ran long, as the long sessions table counts it.
+LONG = 250e3
+# The rows of the long sessions table's tasks the Markdown report prints.
+LONG_TASKS_SHOWN = 15
 FIVE_HOURS = timedelta(hours=5)
 WEEK = timedelta(days=7)
 TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z")
@@ -1602,12 +1614,14 @@ def build_report(opts):
         {"project": key, "w": r6(total(rs))} for key, rs in sorted(group(rows, project_of).items(), key=lambda x: (-total(x[1]), x[0]))
     ]
     by_task_events = group(events, lambda e: e.get("task"))
+    # Each task's events by kind, which the tasks and long sessions tables both count from.
+    kinds_by_task = {name: collections.Counter(e.get("event") for e in evs) for name, evs in by_task_events.items()}
     closed = {e.get("task") for e in ledger if e.get("event") == "closed" and e["_t"] <= until}
     report["tasks"] = []
     by_task = group([r for r in rows if r["task"]], lambda r: r["task"])
     for name, rs in sorted(by_task.items(), key=lambda x: (-total(x[1]), x[0])):
         evs = by_task_events.get(name, [])
-        kinds = collections.Counter(e.get("event") for e in evs)
+        kinds = kinds_by_task.get(name, collections.Counter())
         report["tasks"].append(
             {
                 "task": name,
@@ -1670,6 +1684,47 @@ def build_report(opts):
             report["context"].append(
                 {"from": int(low), "to": int(high), "replies": len(rs), "w": r6(total(rs)), "cache_read_w": r6(sum(r["wt"]["cache_read"] for r in rs))}
             )
+
+    # Each worker role's main conversations whose largest context in the window passed LONG, and
+    # per task and role those sessions, their largest context and the task's tickets done.
+    long_roles, long_tasks = [], collections.defaultdict(list)
+    for role in WORKERS:
+        ss = [v for k, v in sessions.items() if classes[k][0] == role]
+        if not ss:
+            continue
+        long = [v for v in ss if max(map(ctx, v)) > LONG]
+        long_roles.append(
+            {
+                "role": role,
+                "sessions": len(ss),
+                "long": len(long),
+                "w": r6(sum(total(v) for v in long)),
+                "role_w": r6(sum(total(v) for v in ss)),
+                "past_w": r6(sum(r["w"] for v in long for r in v if ctx(r) > LONG)),
+            }
+        )
+        for v in long:
+            long_tasks[(v[0]["task"], role)].append(v)
+    report["long_sessions"] = {
+        "threshold": int(LONG),
+        "roles": long_roles,
+        "tasks": sorted(
+            (
+                {
+                    "task": name,
+                    "project": project.get(name, "(unknown)"),
+                    "role": role,
+                    "sessions": len(vs),
+                    "w": r6(sum(total(v) for v in vs)),
+                    "past_w": r6(sum(r["w"] for v in vs for r in v if ctx(r) > LONG)),
+                    "max_context": max(ctx(r) for v in vs for r in v),
+                    "tickets_done": kinds_by_task.get(name, collections.Counter())["ticket-done"],
+                }
+                for (name, role), vs in long_tasks.items()
+            ),
+            key=lambda x: (-x["w"], str(x["task"]), x["role"]),
+        ),
+    }
 
     rebuilds, gaps = [], []
     for role in SESSION_ROLES:
@@ -1960,6 +2015,18 @@ def render(report):
     P(table(["Context", "Replies", "$w", "Share", "m$w per reply", "Of it cache reads"],
             [[f"{fk(x['from'])}-{fk(x['to'])}", x["replies"], fd(x["w"]), share(x["w"], main_w), f"{1000 * x['w'] / x['replies']:.1f}",
               share(x["cache_read_w"], x["w"])] for x in report["context"]]))
+
+    P("\n## Long sessions\n")
+    longs = report["long_sessions"]
+    P(f"Each worker role's main conversations whose largest context passed {fk(longs['threshold'])}, their $w and that of their replies past it:\n")
+    P(table(["Role", "Sessions past it", "Of sessions", "$w", "Share of the role's $w", "$w of replies past it"],
+            [[x["role"], x["long"], x["sessions"], fd(x["w"]), share(x["w"], x["role_w"]), fd(x["past_w"])] for x in longs["roles"]]))
+    P("\nPer task and role, those sessions, their largest context and the task's tickets done in the window:\n")
+    P(table(["Task", "Project", "Role", "Sessions past it", "$w", "$w of replies past it", "Largest context", "Tickets done"],
+            [[x["task"], x["project"], x["role"], x["sessions"], fd(x["w"]), fd(x["past_w"]), fk(x["max_context"]), x["tickets_done"]]
+             for x in longs["tasks"][:LONG_TASKS_SHOWN]]))
+    if len(longs["tasks"]) > LONG_TASKS_SHOWN:
+        P(f"\nThe {LONG_TASKS_SHOWN} of {len(longs['tasks'])} rows with the most $w; --json gives every one.")
 
     P("\n## Cache rebuilds\n")
     P("A rebuild is a reply after a session's first writing over half of a context above 50k anew; a compaction, a context "

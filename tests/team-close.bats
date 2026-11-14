@@ -421,6 +421,7 @@ team-close: left out of tasks/T1/scratch: .env.local (may hold a secret)"
   mkdir -p "$dir/node_modules/a" "$dir/trial/front-end" "$dir/py/__pycache__" "$dir/kept"
   touch "$dir/node_modules/a/1.js" "$dir/node_modules/a/2.js" "$dir/node_modules/3.js" "$dir/py/__pycache__/m.pyc"
   touch "$dir/trial/front-end/"{1..201}.ts "$dir/kept/"{1..200}.txt
+  echo "trial notes" >"$dir/trial/notes.md"
   ln -s ../../front-end/node_modules "$dir/deps"
   work_and_push "$slot" feature.txt
 
@@ -428,12 +429,40 @@ team-close: left out of tasks/T1/scratch: .env.local (may hold a secret)"
   assert_equal "$stderr" "team-close: left out of tasks/T1/scratch: scan.git (nested repository)
 team-close: left out of tasks/T1/scratch: node_modules (dependencies)
 team-close: left out of tasks/T1/scratch: py/__pycache__ (dependencies)
-team-close: left out of tasks/T1/scratch: trial (over 200 files)
+team-close: left out of tasks/T1/scratch: trial/front-end (over 200 files)
 team-close: left out of tasks/T1/scratch: deps (link)"
+  # The innermost crowded directory is left out, so trial/ keeps what else it holds.
   assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 -not -path './kept/*' | sort)" "./kept
 ./notes.md
-./py"
+./py
+./trial
+./trial/notes.md"
   assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/kept" -type f | wc -l)" "200"
+}
+
+@test "the archive leaves out videos, Playwright output and build output, each named, and keeps a research task's probes" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  local dir=$slot/.scratch/task
+  mkdir -p "$dir/work/probes" "$dir/work/tmp/pytest-of-u" "$dir/sweep-out/login" "$dir/test-results/login" \
+    "$dir/baseline/dist/assets"
+  # The probes the report's tickets cite, beside the files a test's TMPDIR left in work/tmp/.
+  echo "def test_half_state(): pass" >"$dir/work/probes/acct_test_import_halfstate.py"
+  echo "# Report" >"$dir/report.md"
+  touch "$dir/work/tmp/pytest-of-u/"{1..201}
+  printf '\x1a\x45\xdf\xa3webm' >"$dir/sweep-out/login/video.webm"
+  echo "zip" >"$dir/test-results/login/trace.zip"
+  echo "var a=1" >"$dir/baseline/dist/assets/index-Bgg7i7NB.js"
+  echo "font" >"$dir/baseline/dist/assets/Inter.ttf"
+  work_and_push "$slot" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$stderr" "team-close: left out of tasks/T1/scratch: work/tmp/pytest-of-u (over 200 files)
+team-close: left out of tasks/T1/scratch: sweep-out/login/video.webm (video)
+team-close: left out of tasks/T1/scratch: test-results (Playwright output)
+team-close: left out of tasks/T1/scratch: baseline/dist (build output)"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -type f | sort)" "./report.md
+./work/probes/acct_test_import_halfstate.py"
 }
 
 @test "the archive leaves out every image anywhere in the task directory, named, and keeps the text beside it" {

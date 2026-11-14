@@ -2,7 +2,8 @@
   "enabledPlugins": {
     "discord@claude-plugins-official": false,
     "mongodb-atlas@claude-plugins-official": false,
-    "cc-plugin-plugin-authoring@builtin": false
+    "cc-plugin-plugin-authoring@builtin": false,
+    "cc-plugin-easel@builtin": false
   },
   "syncClaudeAiPlugins": false,
   "syncClaudeAiSkills": false,
@@ -31,6 +32,7 @@
       "ScheduleWakeup",
       "SendFeedback",
       "SendUserFile",
+      "Workflow",
       "Bash(git push --force*)",
       "Bash(git push -f*)",
       "Bash(git push * --force*)",
