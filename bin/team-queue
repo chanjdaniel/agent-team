@@ -1,53 +1,173 @@
 #!/usr/bin/env bash
-# Keep the index of queued work, the team home's tasks/queued/index.md, from the files beside it.
+# Keep the queue of approved work, the team home's tasks/queued/, and its ranked index,
+# tasks/queued/index.md, from the files' front matter and the ledger (bin/lib/queue.jq), and say
+# what is ready to open and whether the level has room for it.
 #
 # Usage: team-queue index [--check]
-#        team-queue migrate
-# Queued work is work Daniel approved and no task has opened yet: one file per piece of work in
-# tasks/queued/, its first line its "# <title>". The file may open with front matter, a "---" line,
-# then "summary: <one line>" and "task: <T<n> or ->" lines (each at most once, any order), then a
-# "---" line; the summary says what the work is and what it waits on, and task names the task it
-# came from or waits on.
-# index writes tasks/queued/index.md: its title "# Queued work", a line saying it is written by
-# team-queue index from the files' front matter, then one line per file but index.md, in name order:
-# "- <file>: <summary>", "- <file> (<task>): <summary>" with a task other than -, the summary its
-# front matter's, else its title. It writes through a temporary file, under the ledger's lock, and
-# commits the index alone (commit_records), as "chore: queued index", then pushes the team home's
-# branch; an index already as written commits nothing. It prints "wrote tasks/queued/index.md: <n>
-# files" ("1 file"). --check writes nothing, and prints, as "tasks/queued/<file>: <reason>", each
-# file whose front matter is malformed (no closing "---", a line that is no "summary:" or "task:",
-# either twice, an empty summary, a task that is not T<n> or -) or that has neither a summary nor a
-# title, and whether the index is stale ("tasks/queued/index.md: not as team-queue index writes
-# it"), exiting 1 when it prints any.
-# migrate moves the queued lines of tasks/current.md (team-current's, "- queued <task> <text> |
-# <where>") into front matter, once, after which team-current takes no queued line: each line whose
-# where names a file in tasks/queued/ (relative to the team home, in full, or under ~/) gives that
-# file's front matter its text as the summary and its task, the lines naming one file joined in
-# their order ("; " between texts, ", " between tasks other than -, else -); a file's other front
-# matter is replaced, its body kept. Those lines leave current.md, the index is written, and all is
-# one commit, "chore: queued migrate", under the ledger's lock. A line whose where names no file in
-# tasks/queued/ stays in current.md and is printed, "tasks/current.md:<n>: <where> is no file in
-# tasks/queued/", and the exit is 1, after the rest is migrated. With no queued line it migrates
-# nothing, writes the index and exits 0, so a second run changes nothing. It prints "migrated <n>
-# lines into <m> files" and the index's line.
+#        team-queue set <table>
+#        team-queue take T<n> <file>... [--part]
+#        team-queue tidy
+#        team-queue list [--json] [--plan <file>]
+# An item is work Daniel approved: one Markdown file in tasks/queued/ but index.md, its first "# "
+# line its title. It opens with front matter, a "---" line, then "<key>: <value>" lines, each key
+# at most once, then a "---" line. Required keys:
+#   summary   one non-empty line saying what the work is
+#   project   a project team-project --list names
+#   priority  1 fixes something failing now or Daniel asked for it next; 2 approved work with a
+#             clear payoff (the default for Daniel's approvals); 3 follow-ups and polish (the
+#             default for a review's notes); 4 someday
+#   size      S (one small PR), M (a ticketed task of 2 to 5 tickets) or L (several phases)
+# Optional keys:
+#   after     conditions joined by ", ", every one of which must hold first: "T<n> merged" (T<n>
+#             merged whole: the ledger's lifecycle left in its merged phase, so a merge logged
+#             with no phases_left that a builder launch, a PR or a merged part followed is none
+#             while T<n> is open; once T<n> closed, a merged with phases_left [] or none is,
+#             whatever followed it), "T<n> phase <k> merged" (a merged of T<n> whose phases_left
+#             does not hold k, or T<n> merged whole), "T<n> closed", a YYYY-MM-DD date (today's
+#             UTC date is that day or later; TEAM_QUEUE_TODAY stands for today), or "<name>.md"
+#             (that item left the queue: it is in some tasks/T<m>/queued/, not here)
+#   waits     one line naming what outside the ledger and the calendar it waits on; removed by
+#             hand when the wait ends
+#   from      the tasks it came from, T<n> joined by ", "
+#   opened    the one task that builds it, T<n>
+#   takes     other queued items it carries, <name>.md joined by ", ", which leave with it
+#   alone     yes, for work that runs with the project's other tasks held
+#   guarded   the short-list areas (bin/lib/guarded) the work touches, shown and never ranked
+# An item's state, the first that holds: unranked (it has a problem, below), finished (opened by a
+# task that merged whole, or closed: a research or retro task's close, or a feature, bug or small
+# task's once it merged whole), opened (opened by a task still building it), taken (another
+# item takes it; it is listed under each taker, never alone, but for a taken item with a problem
+# of its own, which is unranked and so listed under "## Unranked" too), waiting (a waits line, or
+# an after condition not met), else ready.
+# Ready items rank across every project: by priority (1 first), then by how many queued items'
+# after names them (more first), then by size (S, M, L), then by file name; waiting items list in
+# the same order, opened and finished ones by task number, unranked ones by name.
+# index writes tasks/queued/index.md: "# Queued work", a line saying team-queue index writes it,
+# then the sections "## Ready, ranked" ("<rank>. <file> (<project>, priority <p>, <size>):
+# <summary>"), "## Waiting" (the same as a "- " line, then "; waits for <the waits line and each
+# condition not met, joined by ", ">"), "## Opened" ("- <file> (<project>, <task>): <summary>") and
+# "## Unranked" ("- <file>: <its problems, joined by "; ">"), a section with no item left out,
+# ", guarded: <text>" and ", alone" after the size when given, and under each item a
+# "   - takes <file>: <summary>" line for each queued item it takes; an item with no summary shows
+# its title. It writes through a temporary file, under the ledger's lock, and commits the index
+# alone (commit_records), as "chore: queued index", then pushes the team home's branch; an index
+# already as written commits nothing. It prints "wrote tasks/queued/index.md: <n> files" ("1 file").
+# --check writes nothing, and prints each problem as "tasks/queued/<file>: <reason>", exiting 1 when
+# it prints any: first "tasks/queued/: projects not checked: <why>" when the registry cannot be
+# read; then each file's: a front matter with no closing "---", a key given twice, a line that is no
+# "<key>: <value>", a key it does not read, task: (now from:), no summary (or no summary and no
+# title), an empty summary or waits, a required key missing or a value not as above (a project not
+# in projects.toml), an after, from or opened naming a task the ledger does not hold, an opened
+# naming a feature, bug or small task that closed with no whole merge (its work unbuilt: remove
+# opened: to queue it again, or delete the file), an after naming a file neither queued nor in a
+# task's queued/, a takes naming a file not queued, itself, an item that takes others or one a task
+# opened, an item whose task merged whole or closed over 15 minutes ago that is still queued (the
+# heartbeat should have moved it), and an item two open tasks' plans cite that either could take
+# (its project one of the task's, its from not naming the task, not opened, not taken and waiting on
+# nothing); and last "tasks/queued/index.md: not as team-queue index writes it" when the index is
+# stale.
+# set writes many files' front matter from one table, a tab-separated file whose header's first
+# column is file and whose others are front matter keys, each once; each line after it but a blank
+# one is a row, a cell per column, naming a queued file. A row sets each column's key on its file
+# to its cell, trimmed, or removes the key for an empty cell, keeps the file's other keys and its
+# body, drops task:, and writes the keys in the order above, then the file's others. It judges the
+# whole table first and writes nothing on any refusal, printing each as "<table>:<line>: <reason>"
+# and exiting 1: a header not as above, a row of more or fewer cells, a file not queued or on two
+# rows, a file whose front matter it cannot rewrite without losing a line (no closing "---", a key
+# twice, a line that is no "<key>: <value>"), and a row whose result --check refuses for a key the
+# table has a column for, as "<table>:<line>: tasks/queued/<file>: <problem>". Else it writes every
+# row's file and the index, through temporary files, under the ledger's lock, as one commit of
+# those files alone, "chore: queued set", and prints "set <n> files" ("1 file") and the index's
+# line, then each line --check still names (a file the table leaves alone, a key it has no column
+# for, a finished item, an item two plans cite), exiting 1 when it prints any.
+# take links queued items to the task that builds them: it writes opened: T<n> into each file
+# given, or with --part, for a task that builds only part of an item, adds T<n> to its from: once.
+# It judges every file first and writes nothing on any refusal, printing each and exiting 1: a
+# task with no opened in the ledger or with a closed ("T<n> has no opened in the ledger", "T<n>
+# closed at <ts>"), a file not queued ("<file> is not queued"), and as "tasks/queued/<file>:
+# <reason>" a file whose front matter it cannot rewrite without losing a line (as set), an item
+# whose project is none of the task's (its opened's and worktree-added's projects), and, but with
+# --part, an item another task opened or another item takes. Else it writes each file, its keys in
+# the order above, and the index, through temporary files, under the ledger's lock, as one commit
+# of those files alone, "chore: queued take T<n>", and prints "took <file> for T<n>" (with --part
+# "T<n> builds part of <file>") for each; taking an item the task already opened again changes
+# nothing. team-open --queued runs it once the task is open.
+# tidy keeps the queue true, as the heartbeat's queue step runs it every 5 minutes, in three steps:
+# it links each item that is not opened, that no other item takes, that waits on nothing (no waits:,
+# every after: met: a plan cites a waiting item for what lands before or after it, so a task that
+# builds one takes it by hand) and whose front matter it can rewrite to the one open task whose
+# tasks/T<n>/plan.md cites tasks/queued/<file> (any path ending so), whose projects hold the item's
+# and whom its from: does not name, writing opened: T<n> as take does ("linked <file> to T<n>: its
+# plan cites it"; an item two such plans cite is linked to neither, which --check names); then it
+# moves each finished item (its opened task merged whole or closed, as above) into
+# tasks/T<n>/queued/<file> ("moved <file> to tasks/T<n>/queued/: T<n> merged", or "closed"), with
+# each file it takes that is not finished itself, that no task opened and that no item staying
+# queued takes ("moved <file> to tasks/T<n>/queued/: <taker> takes it"; a file two leaving items
+# take goes with the first by name), leaving queued an item an unmerged close left unbuilt, which
+# --check names; then it rewrites the index when it changed ("wrote tasks/queued/index.md: <n>
+# files"). It prints one line per change, in that order, and nothing when nothing changed, and with
+# no tasks/queued/ it does nothing. It judges the queue first, then again under the ledger's lock,
+# where it makes the changes, through temporary files, as one commit of the files it linked, moved
+# and wrote alone, "chore: queued tidy". An item whose task's queued/ holds its name already stays
+# queued, with the files it takes, said on stderr ("left <file> queued: tasks/T<n>/queued/<file> is
+# there already"), and tidy exits 1 once the rest is made.
+# list writes nothing. It says whether the level has room for one more task, read from
+# team-capacity plan --json (the file --plan names when the caller already holds one, as the
+# sweep does, which may be {error: <why>}, else its own run) and team-capacity costs --json: it
+# fits when the level is not none, the plan has a budget and is not over it, its resume and launch
+# lists hold no entry with a null hold (stowed and refused work comes first, but for work
+# something holds, which the plan will not relaunch), the budget less what is reserved is at
+# least the session:builder estimate (every task soon launches a builder, the largest worker a
+# task starts), and no open task has an opened with no launch after it (a task just opened gets
+# its first worker before the next is named). Its line, the first that holds: "no room: the plan
+# cannot be read: <why>" (team-capacity's last line on stderr, ~ for the home directory, "no plan
+# at <file>", or "<file> is no team-capacity-plan/1 object"), "no room: the level is none", "no
+# room: no reading of the machine's load, so no budget", "no room: over budget", "no room: T171
+# waits to resume", "no room: T5 waits to launch", "no room: the costs cannot be read: <why>",
+# "no room: the costs give no builder's estimate", "no room: 0.9 GiB free at minor (30%), a
+# builder needs 1.7 GiB", "no room: T312, opened at 14:05, has no worker yet" (the first by task
+# number; "at 2026-11-12 14:05" when not opened today, UTC), else "room for one more task at full
+# (90%): 11.7 GiB of 16.9 GiB free, a builder needs 1.7 GiB". The text is that line, then the
+# index's sections as index writes them. --json prints one line, {schema: "team-queue/1", room:
+# {fits, says}, ready, waiting, opened (each [item], in the index's order), unranked: [{file,
+# problems}], problems: [{file (null for the registry's), problem}] (every line --check names but
+# the stale index's), findings}, an item being {file, title, summary, project, priority, size,
+# after: [{condition, met}], waits, from, opened, takes, alone, guarded, unblocks (how many queued
+# items' after names it), rank (null but for a ready one)}. findings are team-sweep's, each {task:
+# null, kind, session: null, name: null, next, text}: queue-ready while the room fits and an item
+# is ready, "queue: <the room's line>: open <file> (<project>, priority <p>, <size>): <summary,
+# cut to 80 characters, the last three dots>; next: team-open --queued <file>", for an item that
+# runs alone "...; it runs alone: hold <project>'s other open tasks (T<a>, T<b>) first; next: ..."
+# while any is open; and queue while there are problems, "queue: <n> problem(s) in tasks/queued/:
+# <the first two, as --check prints them, joined by "; ">; next: fix each file team-queue index
+# --check names". A plan or costs that cannot be read is no room, never a failure: list exits 0.
 # A push that fails keeps the commit for the next checkpoint to push, saying so on stderr, and
 # exits 0; a commit that fails (the team home's hooks refuse it) leaves the change written for the
 # next checkpoint to commit, saying so on stderr, and exits 1.
-# It refuses in a worker session (worker_refusal in bin/lib/team.sh).
-# Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
+# It refuses in a worker session (worker_refusal in bin/lib/team.sh), list too, which only the
+# coordinator, the sweep and the snapshot read.
+# Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line (or a
+# TEAM_QUEUE_TODAY that is no YYYY-MM-DD).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/error-view.sh
+source "$TEAM_LIB/error-view.sh"
 
-usage="usage: team-queue index [--check] | migrate"
+usage="usage: team-queue index [--check] | set <table> | take T<n> <file>... [--part] | tidy | list [--json] [--plan <file>]"
 queued=$TEAM_HOME/tasks/queued
 index_rel=tasks/queued/index.md
 index=$TEAM_HOME/$index_rel
-current_rel=tasks/current.md
-current=$TEAM_HOME/$current_rel
 
-# A file's front matter and title as JSON, {summary, task, title, problems}, every control
-# character escaped, so a carriage return of a CRLF file never makes jq reject it: card <file>
-card() {
+# Every queued file's card, one JSON object a line in name order, {file, title, keys, problems}:
+# its first "# " line, its front matter's "<key>: <value>" lines (a key twice kept once) and the
+# problems of its form (no closing "---", a key twice, a line that is no "<key>: <value>"), every
+# control character escaped, so a carriage return of a CRLF file never makes jq reject it, in one
+# awk pass over all the files: cards
+cards() {
+  local -a paths=()
+  local name
+  while IFS= read -r name; do paths+=("$queued/$name"); done < <(files)
+  ((${#paths[@]})) || return 0
   awk '
     BEGIN { for (i = 1; i < 32; i++) ctl[sprintf("%c", i)] = sprintf("\\u%04x", i) }
     function esc(s,  out, c, i) {
@@ -60,42 +180,78 @@ card() {
       }
       return out
     }
-    function add(p) { problems = problems (problems == "" ? "" : "\t") p }
-    NR == 1 && $0 == "---" { in_front = 1; next }
-    in_front && $0 == "---" { in_front = 0; closed = 1; next }
+    function add(p) { problems = problems (problems == "" ? "" : ",") "\"" esc(p) "\"" }
+    function flush(  name) {
+      if (file == "") return
+      if (in_front) add("front matter has no closing ---")
+      name = file
+      sub(/.*\//, "", name)
+      card[file] = "{\"file\":\"" esc(name) "\",\"title\":\"" esc(title) "\",\"keys\":{" keys "},\"problems\":[" problems "]}"
+    }
+    FNR == 1 { flush(); file = FILENAME; in_front = 0; title = ""; keys = ""; problems = ""; split("", seen) }
+    FNR == 1 && $0 == "---" { in_front = 1; next }
+    in_front && $0 == "---" { in_front = 0; next }
     in_front {
-      if (match($0, /^summary:[ ]*/)) { if (has_summary++) add("summary given twice"); summary = substr($0, RLENGTH + 1) }
-      else if (match($0, /^task:[ ]*/)) { if (has_task++) add("task given twice"); task = substr($0, RLENGTH + 1) }
-      else add("front matter line \"" $0 "\" is no summary: or task:")
+      if (match($0, /^[a-z_]+:/)) {
+        key = substr($0, 1, RLENGTH - 1)
+        value = substr($0, RLENGTH + 1)
+        sub(/^ +/, "", value)
+        if (key in seen) add(key " given twice")
+        else { seen[key] = 1; keys = keys (keys == "" ? "" : ",") "\"" key "\":\"" esc(value) "\"" }
+      } else add("front matter line \"" $0 "\" is no <key>: <value>")
       next
     }
     title == "" && /^# / { title = substr($0, 3) }
     END {
-      if (in_front) add("front matter has no closing ---")
-      if (has_summary && summary == "") add("its summary is empty")
-      if (has_task && task !~ /^(T[0-9]+|-)$/) add("task \"" task "\" is not T<n> or -")
-      if (summary == "" && title == "") add("it has no summary and no title")
-      printf "{\"summary\":\"%s\",\"task\":\"%s\",\"title\":\"%s\",\"problems\":\"%s\"}\n", esc(summary), esc(task), esc(title), esc(problems)
-    }' "$1"
+      flush()
+      for (i = 1; i < ARGC; i++) {
+        if (ARGV[i] in card) { print card[ARGV[i]]; continue }
+        name = ARGV[i]
+        sub(/.*\//, "", name)
+        print "{\"file\":\"" esc(name) "\",\"title\":\"\",\"keys\":{},\"problems\":[]}"
+      }
+    }' "${paths[@]}" </dev/null
 }
 
-# The queued files but the index, by name, one path a line: files
+# The queued files but the index, by name, one name a line: files
 files() {
   find "$queued" -mindepth 1 -maxdepth 1 -type f -name '*.md' ! -name index.md -printf '%f\n' 2>/dev/null | LC_ALL=C sort
 }
 
+# Run one queue.jq program over every item, the ledger and what the items need: the registry's
+# project names, the files that left the queue (tasks/T<n>/queued/<file>), the queued files each
+# task's plan cites, today and now; the program sees $items (queue_items'), queue_items_of(<cards>)
+# (queue_items over other cards), $cards, $registry_error and $current (the index as it is, ""
+# when missing). jq's options come first: queue_jq <option>... <program>
+queue_jq() {
+  local names registry_error='' program=${*: -1}
+  local -a plans opts=("${@:1:$#-1}")
+  if ! names=$(team_project --list 2>&1); then
+    registry_error=${names##*$'\n'} registry_error=${registry_error#team-project: } names=''
+  fi
+  shopt -s nullglob
+  plans=("$TEAM_HOME"/tasks/T*/plan.md)
+  shopt -u nullglob
+  jq -nR -L "$TEAM_LIB" "${opts[@]}" \
+    --slurpfile cards <(cards) \
+    --arg names "$names" --arg registry_error "$registry_error" \
+    --rawfile left <(find "$TEAM_HOME/tasks" -mindepth 3 -maxdepth 3 -type f -path "$TEAM_HOME/tasks/T*/queued/*.md" 2>/dev/null) \
+    --rawfile cites <( ((${#plans[@]} == 0)) || grep -oHE 'tasks/queued/[A-Za-z0-9][A-Za-z0-9._-]*\.md' -- "${plans[@]}" || true) \
+    --rawfile current <(cat "$index" 2>/dev/null || true) \
+    --arg today "$today" \
+    'include "queue"; include "ledger";
+    (if $registry_error == "" then $names | split("\n") | map(select(. != "")) else null end) as $projects
+    | [$left | split("\n")[] | capture("/(?<task>T[1-9][0-9]*)/queued/(?<file>[^/]+)$")] as $left
+    | [$cites | split("\n")[] | capture("/(?<task>T[1-9][0-9]*)/plan\\.md:tasks/queued/(?<file>[^/]+)$")] as $cites
+    | ledger_events as $events
+    | def queue_items_of($c): queue_items($c; $events; $projects; $left; $cites; $today; now);
+    queue_items_of($cards) as $items
+    | '"$program" "$TEAM_HOME/ledger.jsonl"
+}
+
 # The index as team-queue index writes it, on stdout: index_text
 index_text() {
-  local name entry
-  echo "# Queued work"
-  echo
-  echo "Written by \`team-queue index\` from each file's front matter (its title when it has none); edit the files, never this index."
-  echo
-  while IFS= read -r name; do
-    entry=$(card "$queued/$name")
-    jq -r --arg name "$name" '(if .summary != "" then .summary else .title end) as $what
-      | "- \($name)" + (if .task != "" and .task != "-" then " (\(.task))" else "" end) + ": \($what)"' <<<"$entry"
-  done < <(files)
+  queue_jq -j '$items | queue_view | queue_index_text'
 }
 
 # Write the index, under the lock commit_records holds: edit_index
@@ -114,68 +270,122 @@ counted() {
   if ((n == 1)); then echo "1 file"; else echo "$n files"; fi
 }
 
-# The resolved path a where names, as team-current reads one: where_path <where>
-where_path() {
-  local path=$1
-  # shellcheck disable=SC2088 # a literal ~/, as the coordinator writes it
-  [[ $path != '~/'* ]] || path=$HOME/${path#'~/'}
-  [[ $path == /* ]] || path=$TEAM_HOME/$path
-  realpath -m -- "$path"
-}
-
-# The front matter a file is given, its body kept, through a temporary file: give <file> <summary> <task>
+# The front matter and body a file is given, into a temporary file beside it, <file>.<pid>: the
+# body is the file less its front matter (a first line "---" to the next): give <file> <front>
 give() {
-  local file=$1
   {
-    printf -- '---\nsummary: %s\ntask: %s\n---\n' "$2" "$3"
-    awk 'NR == 1 && $0 == "---" { skip = 1; next } skip && $0 == "---" { skip = 0; next } !skip' "$file"
-  } >"$file.$$" || { rm -f "$file.$$"; die "cannot write $file"; }
-  mv -f "$file.$$" "$file" || { rm -f "$file.$$"; die "cannot write $file"; }
+    printf '%s' "$2"
+    awk 'NR == 1 && $0 == "---" { skip = 1; next } skip && $0 == "---" { skip = 0; next } !skip' "$1"
+  } >"$1.$$"
 }
 
-# Move the queued lines into front matter, under the lock commit_records holds; sets moved,
-# touched and left (the unmatched lines' reports): edit_migrate
-edit_migrate() {
-  local -a lines kept=()
-  local -A texts=() tasks=() order=()
-  local i line body head where text task name resolved real_queued
-  moved=0 touched=0 left=''
-  [[ ! -e $current ]] || mapfile -t lines <"$current"
-  real_queued=$(realpath -m -- "$queued")
-  for i in "${!lines[@]}"; do
-    line=${lines[i]}
-    if [[ $line != '- queued '* || $line != *' | '* ]]; then
-      kept+=("$line")
-      continue
-    fi
-    body=${line#- queued }
-    head=${body% | *} where=${body##* | }
-    task=${head%% *} text=${head#* }
-    resolved=$(where_path "$where")
-    if [[ $(dirname -- "$resolved") != "$real_queued" || ! -f $resolved || $resolved == "$real_queued/index.md" ]]; then
-      left+="$current_rel:$((i + 1)): $where is no file in tasks/queued/"$'\n'
-      kept+=("$line")
-      continue
-    fi
-    name=${resolved##*/}
-    [[ -v order[$name] ]] || order[$name]=${#order[@]}
-    texts[$name]+="${texts[$name]:+; }$text"
-    if [[ $task != - && ", ${tasks[$name]:-}, " != *", $task, "* ]]; then
-      tasks[$name]+="${tasks[$name]:+, }$task"
-    fi
-    moved=$((moved + 1))
-  done
-  for name in "${!texts[@]}"; do
-    give "$queued/$name" "${texts[$name]}" "${tasks[$name]:--}"
-    touched=$((touched + 1))
-  done
-  if ((moved)); then
-    if ! { printf '%s\n' "${kept[@]}" >"$current.$$" && mv -f "$current.$$" "$current"; }; then
-      rm -f "$current.$$"
-      die "cannot write $current"
-    fi
+# Judge with one queue.jq program, whose result is {refusals, writes: [{file, front}]}, then write
+# each file's front matter (give) and the index under the lock commit_records holds, every file
+# through a temporary one moved into place once all are written, or print the refusals on the
+# descriptor $stdout names (commit_records' stdout is not the command's) and exit 1 saying
+# <refused>, writing nothing; sets write_count to the files written:
+# write_judged <refused> <what is judged> <jq option>... <program>
+write_judged() {
+  local refused=$1 judged=$2 i
+  local -a out temps=() targets=()
+  shift 2
+  queue_jq -j "${@:1:$#-1}" "${!#}"'
+    | if .refusals != [] then "refuse\u0000", (.refusals[] | "\(.)\u0000")
+      else "write\u0000", (.writes[] | "\(.file)\u0000\(.front)\u0000") end' >"$plan" ||
+    die "cannot judge $judged"
+  mapfile -d '' -t out <"$plan"
+  if [[ ${out[0]:-} != write ]]; then
+    printf '%s\n' "${out[@]:1}" >&"$stdout"
+    die "$refused"
   fi
+  for ((i = 1; i < ${#out[@]}; i += 2)); do
+    targets+=("$queued/${out[i]}")
+    temps+=("$queued/${out[i]}.$$")
+    give "${targets[-1]}" "${out[i + 1]}" || { rm -f "${temps[@]}"; die "cannot write ${targets[-1]}"; }
+  done
+  for i in "${!temps[@]}"; do
+    mv -f "${temps[i]}" "${targets[i]}" || { rm -f "${temps[@]}"; die "cannot write ${targets[i]}"; }
+  done
+  write_count=${#temps[@]}
   edit_index
+}
+
+# Write the table's rows into their files and the index, or refuse the table whole: edit_set
+edit_set() {
+  write_judged "the table is refused whole, so nothing is written" "$table" --rawfile table "$table" --arg name "$table" \
+    'queue_set($table; $name; $cards; queue_items_of(.))'
+}
+
+# Write opened: T<n> (or with --part T<n> in from:) into each file take names, and the index, or
+# refuse the take: edit_take
+edit_take() {
+  write_judged "nothing is taken" "the take" --arg task "$take_task" \
+    --argjson files "$(printf '%s\n' "${take_files[@]}" | jq -Rnc '[inputs]')" --argjson part "$part" \
+    'queue_take($task; $files; $part; $cards; $events; $items)'
+}
+
+# tidy's judging (queue_tidy) into $plan, NUL-separated: "link", the file, the task and its front
+# matter for each link; "move", the file, the task and why for each move; then "index", whether
+# the index is as it is (true or false) and the index's text: tidy_judge
+tidy_judge() {
+  queue_jq -j 'queue_tidy($cards; $items; $left; $current; queue_items(.[0]; $events; $projects; .[1]; $cites; $today; now))
+    | (.links[] | "link\u0000\(.file)\u0000\(.task)\u0000\(.front)\u0000"),
+      (.moves[] | "move\u0000\(.file)\u0000\(.task)\u0000\(.why)\u0000"),
+      "index\u0000\(.same)\u0000\(.index)"' >"$plan"
+}
+
+# Make tidy's links and moves and write the index, under the lock commit_records holds, judged
+# afresh there, each change said on the descriptor $stdout names (commit_records' stdout is not the
+# command's). A move whose task's queued/ holds its name already is left, said on stderr, with the
+# files it would have taken, and sets tidy_failed; the index is then read from the files as they
+# are: edit_tidy
+edit_tidy() {
+  local -a out skipped=()
+  local i=0 target taker
+  tidy_judge || die "cannot judge the queue"
+  mapfile -d '' -t out <"$plan"
+  while [[ ${out[i]} == link ]]; do
+    if ! { give "$queued/${out[i + 1]}" "${out[i + 3]}" && mv -f "$queued/${out[i + 1]}.$$" "$queued/${out[i + 1]}"; }; then
+      rm -f "$queued/${out[i + 1]}.$$"
+      die "cannot write $queued/${out[i + 1]}"
+    fi
+    echo "linked ${out[i + 1]} to ${out[i + 2]}: its plan cites it" >&"$stdout"
+    i=$((i + 4))
+  done
+  while [[ ${out[i]} == move ]]; do
+    target=tasks/${out[i + 2]}/queued/${out[i + 1]}
+    taker=${out[i + 3]% takes it}
+    if [[ ${out[i + 3]} == *" takes it" ]] && printf '%s\n' "${skipped[@]}" | grep -qxF -- "$taker"; then
+      :
+    elif [[ -e $TEAM_HOME/$target ]]; then
+      echo "${0##*/}: left ${out[i + 1]} queued: $target is there already" >&2
+      skipped+=("${out[i + 1]}")
+      tidy_failed=1
+    else
+      { mkdir -p "${TEAM_HOME:?}/${target%/*}" && mv -- "$queued/${out[i + 1]}" "$TEAM_HOME/$target"; } ||
+        die "cannot move $queued/${out[i + 1]} to $TEAM_HOME/$target"
+      echo "moved ${out[i + 1]} to ${target%/*}/: ${out[i + 3]}" >&"$stdout"
+    fi
+    i=$((i + 4))
+  done
+  if ((${#skipped[@]})); then
+    index_text >"$index.$$" || { rm -f "$index.$$"; die "cannot write $index"; }
+  else
+    printf '%s' "${out[i + 2]}" >"$index.$$" || { rm -f "$index.$$"; die "cannot write $index"; }
+  fi
+  if cmp -s -- "$index.$$" "$index"; then
+    rm -f "$index.$$"
+  else
+    mv -f "$index.$$" "$index" || { rm -f "$index.$$"; die "cannot write $index"; }
+    echo "wrote $index_rel: $(counted)" >&"$stdout"
+  fi
+}
+
+# team-capacity <sub> --json's object into <out>, or {error} with the last line it said on stderr
+# (~ for the home directory) when it fails: capacity_json <sub> <out>
+capacity_json() {
+  if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-capacity" "$1" --json >"$2" 2>"$2.err" </dev/null; then return 0; fi
+  error_view "$2.err" "team-capacity $1 failed with no reason given" >"$2"
 }
 
 # Commit <path>... as <message> through commit_records, which runs records_edit first: a push that
@@ -188,8 +398,10 @@ commit() {
   die "the change is written but not committed; the next checkpoint commits it"
 }
 
-why=$(worker_refusal "" "edits no records") && die "$why"
+why=$(worker_refusal "" "$(if [[ ${1:-} == list ]]; then echo "reads no queue"; else echo "edits no records"; fi)") && die "$why"
 (($#)) || usage_error "$usage"
+today=${TEAM_QUEUE_TODAY:-$(date -u +%F)}
+[[ $today =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || usage_error "TEAM_QUEUE_TODAY \"$today\" is not a YYYY-MM-DD date"
 command=$1
 shift
 case $command in
@@ -201,23 +413,14 @@ case $command in
       *) usage_error "$usage" ;;
     esac
     if [[ -n $check ]]; then
-      bad=0
-      while IFS= read -r name; do
-        while IFS= read -r problem; do
-          [[ -n $problem ]] || continue
-          echo "tasks/queued/$name: $problem"
-          bad=1
-        done < <(card "$queued/$name" | jq -r '.problems | split("\t")[]')
-      done < <(files)
-      # Compared whole, never piped to cmp, which on macOS stops reading at the first difference,
-      # so index_text's later writes would fail on stderr; the trailing "." keeps final newlines.
-      expected=$(index_text && echo .)
-      actual=$(cat "$index" 2>/dev/null && echo .) || actual=''
-      if [[ $actual != "$expected" ]]; then
-        echo "$index_rel: not as team-queue index writes it"
-        bad=1
-      fi
-      exit "$bad"
+      # The index is compared whole inside jq, never piped to cmp, which on macOS stops reading at
+      # the first difference.
+      problems=$(queue_jq -r '($items | queue_problem_lines($registry_error)),
+        (select($current != ($items | queue_view | queue_index_text)) | "'"$index_rel"': not as team-queue index writes it")') ||
+        exit 1
+      [[ -n $problems ]] || exit 0
+      printf '%s\n' "$problems"
+      exit 1
     fi
     NET_ERR=$(mktemp)
     trap 'rm -f "$NET_ERR"' EXIT
@@ -226,20 +429,121 @@ case $command in
     commit "chore: queued index" "$index_rel"
     echo "wrote $index_rel: $(counted)"
     ;;
-  migrate)
-    (($# == 0)) || usage_error "$usage"
+  set)
+    (($# == 1)) || usage_error "$usage"
+    table=$1
+    [[ -f $table && -r $table ]] || die "no table at $table"
     NET_ERR=$(mktemp)
-    trap 'rm -f "$NET_ERR"' EXIT
-    moved=0 touched=0 left=''
+    plan=$(mktemp)
+    trap 'rm -f "$NET_ERR" "$plan"' EXIT
+    # The paths to commit are the rows' files, read as queue_set reads the first column; a row
+    # that names no queued file refuses the table before anything is committed.
+    paths=("$index_rel")
+    while IFS= read -r line; do
+      line=${line%$'\r'} line=${line%%$'\t'*}
+      line=${line#"${line%%[! ]*}"} line=${line%"${line##*[! ]}"}
+      [[ -z $line ]] || paths+=("tasks/queued/$line")
+    done < <(tail -n +2 -- "$table")
+    write_count=0
+    exec {stdout}>&1
     # shellcheck disable=SC2034 # read by commit_records
-    records_edit=edit_migrate
-    commit "chore: queued migrate" tasks/queued "$current_rel"
-    echo "migrated $moved line$( ((moved == 1)) || echo s) into $touched file$( ((touched == 1)) || echo s)"
+    records_edit=edit_set
+    commit "chore: queued set" "${paths[@]}"
+    echo "set $write_count file$( ((write_count == 1)) || echo s)"
     echo "wrote $index_rel: $(counted)"
-    if [[ -n $left ]]; then
-      printf '%s' "$left"
-      exit 1
+    problems=$(queue_jq -r '$items | queue_problem_lines($registry_error)') || exit 1
+    [[ -n $problems ]] || exit 0
+    printf '%s\n' "$problems"
+    exit 1
+    ;;
+  take)
+    (($# >= 2)) || usage_error "$usage"
+    take_task=$1 part=false
+    shift
+    [[ $take_task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$take_task'"
+    take_files=()
+    for arg; do
+      if [[ $arg == --part ]]; then
+        [[ $part == false ]] || usage_error "$usage"
+        part=true
+      elif [[ $arg == -* ]]; then
+        usage_error "$usage"
+      else
+        take_files+=("$arg")
+      fi
+    done
+    ((${#take_files[@]})) || usage_error "$usage"
+    NET_ERR=$(mktemp)
+    plan=$(mktemp)
+    trap 'rm -f "$NET_ERR" "$plan"' EXIT
+    # Only a name that may be queued is a path to commit; any other is refused before the commit.
+    paths=("$index_rel")
+    for name in "${take_files[@]}"; do
+      [[ ! $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.md$ ]] || paths+=("tasks/queued/$name")
+    done
+    exec {stdout}>&1
+    # shellcheck disable=SC2034 # read by commit_records
+    records_edit=edit_take
+    commit "chore: queued take $take_task" "${paths[@]}"
+    mapfile -t take_files < <(printf '%s\n' "${take_files[@]}" | awk '!seen[$0]++')
+    for name in "${take_files[@]}"; do
+      if [[ $part == true ]]; then echo "$take_task builds part of $name"; else echo "took $name for $take_task"; fi
+    done
+    ;;
+  tidy)
+    (($# == 0)) || usage_error "$usage"
+    [[ -d $queued ]] || exit 0
+    NET_ERR=$(mktemp)
+    plan=$(mktemp)
+    trap 'rm -f "$NET_ERR" "$plan"' EXIT
+    # Judged first outside the lock, for the paths to commit and to take no lock when nothing
+    # changes; a change judged afresh under the lock that these paths miss is the checkpoint's.
+    tidy_judge || die "cannot judge the queue"
+    mapfile -d '' -t out <"$plan"
+    paths=("$index_rel") i=0
+    while [[ ${out[i]} == link ]]; do paths+=("tasks/queued/${out[i + 1]}") i=$((i + 4)); done
+    while [[ ${out[i]} == move ]]; do
+      paths+=("tasks/queued/${out[i + 1]}" "tasks/${out[i + 2]}/queued/${out[i + 1]}") i=$((i + 4))
+    done
+    ((${#paths[@]} > 1)) || [[ ${out[i + 1]} == false ]] || exit 0
+    tidy_failed=0
+    exec {stdout}>&1
+    # shellcheck disable=SC2034 # read by commit_records
+    records_edit=edit_tidy
+    commit "chore: queued tidy" "${paths[@]}"
+    exit "$tidy_failed"
+    ;;
+  list)
+    json=false plan_file='' plan_given=''
+    while (($#)); do
+      case $1 in
+        --json) [[ $json == false ]] || usage_error "$usage"; json=true; shift ;;
+        --plan) [[ -z $plan_given && $# -ge 2 ]] || usage_error "$usage"; plan_given=1 plan_file=$2; shift 2 ;;
+        *) usage_error "$usage" ;;
+      esac
+    done
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    capacity_json costs "$work/costs" &
+    costs_pid=$!
+    if [[ -z $plan_given ]]; then
+      capacity_json plan "$work/plan" &
+      plan_pid=$!
+      plan_name="team-capacity plan --json's output"
+      wait "$plan_pid" || true
+    elif [[ -f $plan_file && -r $plan_file ]]; then
+      cp -- "$plan_file" "$work/plan"
+      plan_name=$plan_file
+    else
+      jq -cn --arg error "no plan at $plan_file" '{error: $error}' >"$work/plan"
+      plan_name=$plan_file
     fi
+    wait "$costs_pid" || true
+    queue_jq -j --rawfile plan "$work/plan" --rawfile costs "$work/costs" --arg plan_name "$plan_name" --argjson json "$json" \
+      '($plan | queue_capacity($plan_name; "team-capacity-plan/1")) as $plan
+      | ($costs | queue_capacity("team-capacity costs --json'"'"'s output"; "team-capacity-costs/1")) as $costs
+      | $items | queue_list($plan; $costs; $events; $registry_error; $today)
+      | if $json then tojson + "\n" else queue_list_text($items | queue_view) end'
     ;;
   *) usage_error "$usage" ;;
 esac

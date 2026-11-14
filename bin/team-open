@@ -2,6 +2,7 @@
 # Open a task: its number, plan, worktree from the project's pool, Discord thread and ledger entry.
 #
 # Usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <path> <type> <slug> <title...>
+#        team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] --queued <file> [<project> <path> <type> <slug> <title...>]
 #        team-open --task T<n> --add <project> <type> <slug>
 #        team-open --task T<n> --resume <project> [--ticket <NN>]
 #        team-open --task T<n> --ticket <NN>
@@ -36,6 +37,18 @@
 # an earlier run, may hold someone's work). Then makes the task directory (refused, and the slot
 # removed or returned again, unless git ignores it), writes tasks/T<n>/plan.md from
 # templates/plan.md, opens the thread (team-thread) and appends opened.
+# --queued opens the task that builds the queued item tasks/queued/<file>. Before anything is taken
+# it reads the item through team-queue list --json and refuses one that is not ready: not queued,
+# unranked, opened, taken, or waiting ("<file> waits for <reasons>; open it without --queued and
+# link it with team-queue take when that is meant"), and refuses a <project> given that is not the
+# item's. With the file alone, the project is the item's, the path small for size S and feature for
+# M and L, the type fix for small and feat for feature, the slug the file name less .md, cut to 40
+# characters at its last "-" within them, or at 40 when a "-" follows them (a slug that is still no
+# valid one is refused, naming the form with every argument), and the title the item's, else its
+# summary; given, every argument is taken as given. Once the task is open, the plan gets the line
+# "From the queue: `tasks/queued/<file>`: <summary>" below its "## Why" comment, and team-queue take
+# T<n> <file> links the item; a take that fails is one line on stderr naming the command to run, and
+# the open still succeeds, since the heartbeat's queue step links an item a plan cites.
 # --story names the backlog story the task builds, whose file must be in the team home's
 # projects/<project>/backlog/ (story_file in bin/lib/team.sh; refused before anything is taken
 # otherwise): opened and the printed facts carry it as story, and team-merge marks it done.
@@ -117,9 +130,11 @@ usage="usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <pat
 add_usage="usage: team-open --task T<n> --add <project> <type> <slug>"
 resume_usage="usage: team-open --task T<n> --resume <project> [--ticket <NN>]"
 ticket_usage="usage: team-open --task T<n> --ticket <NN>"
+queued_usage="usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] --queued <file> [<project> <path> <type> <slug> <title...>]"
 
-task='' add='' resume='' story='' ticket=''
-while [[ ${1:-} == --task || ${1:-} == --story || ${1:-} == --add || ${1:-} == --resume || ${1:-} == --ticket ]]; do
+task='' add='' resume='' story='' ticket='' queued_file='' queued_given=''
+while [[ ${1:-} == --task || ${1:-} == --story || ${1:-} == --add || ${1:-} == --resume || ${1:-} == --ticket ||
+  ${1:-} == --queued ]]; do
   case $1 in
     --add) add=1 && shift && continue ;;
     --resume) resume=1 && shift && continue ;;
@@ -129,6 +144,12 @@ while [[ ${1:-} == --task || ${1:-} == --story || ${1:-} == --add || ${1:-} == -
     ticket=$2
     shift 2
     [[ $ticket =~ ^[0-9]{2}$ ]] || usage_error "ticket must be a two-digit number like 03, got '$ticket'"
+    continue
+  fi
+  if [[ $1 == --queued ]]; then
+    [[ -z $queued_given ]] || usage_error "$queued_usage"
+    queued_given=1 queued_file=$2
+    shift 2
     continue
   fi
   if [[ $1 == --story ]]; then
@@ -144,6 +165,8 @@ done
 [[ -z $add || -z $resume ]] || usage_error "--add and --resume do not go together"
 [[ -z $story || (-z $add && -z $resume) ]] || usage_error "--story goes only with a new task, not with --add or --resume"
 [[ -z $ticket || (-z $add && -z $story) ]] || usage_error "--ticket goes only with --task or --resume, not with --add or --story"
+[[ -z $queued_given || (-z $add && -z $resume && -z $ticket) ]] ||
+  usage_error "--queued goes only with a new task, not with --add, --resume or --ticket"
 if [[ -n $ticket && -z $resume ]]; then
   [[ -n $task ]] || usage_error "--ticket needs --task T<n>, the open task whose ticket to give a worktree"
   [[ $# -eq 0 ]] || usage_error "$ticket_usage"
@@ -166,14 +189,66 @@ elif [[ -n $add ]]; then
   [[ -n $task ]] || usage_error "--add needs --task T<n>, the open task to add a worktree to"
   [[ $# -eq 3 ]] || usage_error "$add_usage"
   project=$1 path='' type=$2 slug=$3 title=''
+elif [[ -n $queued_given && $# -eq 0 ]]; then
+  # The short form: every argument comes from the item, below.
+  project='' path='' type='' slug='' title=''
 else
-  [[ $# -ge 5 ]] || usage_error "$usage"
+  [[ $# -ge 5 ]] || usage_error "$(if [[ -n $queued_given ]]; then echo "$queued_usage"; else echo "$usage"; fi)"
   project=$1 path=$2 type=$3 slug=$4
   shift 4
   title="$*"
   [[ $path =~ ^(feature|bug|small|research|retro)$ ]] ||
     usage_error "path must be feature, bug, small, research or retro, got '$path'"
   [[ $title =~ [^[:space:]] ]] || usage_error "$usage"
+fi
+# A queued item: read through team-queue list before anything is taken, and refused unless it is
+# ready; the short form's arguments are derived from it.
+if [[ -n $queued_given ]]; then
+  queue_err=$(mktemp)
+  queue=$(TEAM_HOME=$TEAM_HOME "$bin/team-queue" list --json </dev/null 2>"$queue_err") || {
+    why=$(grep . "$queue_err" | tail -n 1) || why="team-queue list failed with no reason given"
+    rm -f "$queue_err"
+    die "cannot read the queue: ${why#team-queue: }"
+  }
+  rm -f "$queue_err"
+  is_queued=false
+  [[ ! $queued_file =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.md$ || $queued_file == index.md ||
+    ! -f $TEAM_HOME/tasks/queued/$queued_file ]] || is_queued=true
+  # ready, the project, size, title and summary, or refuse and why, each ending in a NUL.
+  mapfile -d '' -t item < <(jq -j --arg f "$queued_file" --argjson queued "$is_queued" '
+    (first(.ready[] | select(.file == $f)) // null) as $ready
+    | (first(.waiting[] | select(.file == $f)) // null) as $waiting
+    | (first(.opened[] | select(.file == $f)) // null) as $opened
+    | (first(.unranked[] | select(.file == $f)) // null) as $unranked
+    | if $ready != null then ["ready", $ready.project, $ready.size, $ready.title, ($ready.summary // "")]
+      elif $waiting != null then
+        ["refuse", "\($f) waits for \([$waiting.waits // empty] + [$waiting.after[] | select(.met | not) | .condition] | join(", ")); open it without --queued and link it with team-queue take when that is meant"]
+      elif $opened != null then ["refuse", "\($f) is opened by \($opened.opened), which builds it"]
+      elif $unranked != null then
+        ["refuse", "\($f) is unranked: \($unranked.problems | join("; ")); fix it first (team-queue index --check names it)"]
+      elif $queued then
+        ([.ready[], .waiting[], .opened[] | select(IN(.takes[]; $f)) | .file] | unique) as $takers
+        | ["refuse", "\($f) is taken by \(if $takers == [] then "another queued item" else $takers | join(", ") end): open its taker instead"]
+      else ["refuse", "\($f) is not queued (team-queue list)"] end
+    | .[] | "\(.)\u0000"' <<<"$queue")
+  [[ ${item[0]:-} == ready || ${item[0]:-} == refuse ]] || die "cannot read $queued_file from team-queue list"
+  [[ ${item[0]} == ready ]] || die "${item[1]}"
+  item_project=${item[1]} item_size=${item[2]} item_title=${item[3]} item_summary=${item[4]}
+  if [[ -z $project ]]; then
+    project=$item_project
+    if [[ $item_size == S ]]; then path=small type=fix; else path=feature type=feat; fi
+    slug=${queued_file%.md}
+    if ((${#slug} > 40)); then
+      slug=${slug:0:41}
+      if [[ ${slug:40} == - ]]; then slug=${slug:0:40}; else slug=${slug:0:40} slug=${slug%-*}; fi
+    fi
+    [[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -le 40 ]] ||
+      die "the slug \"$slug\" from $queued_file is not lower-case kebab case of at most 40 characters; give every argument: team-open --queued $queued_file <project> <path> <type> <slug> <title...>"
+    title=${item_title:-$item_summary}
+    [[ $title =~ [^[:space:]] ]] || title=$item_summary
+  elif [[ $project != "$item_project" ]]; then
+    die "$queued_file is $item_project's, not $project's"
+  fi
 fi
 if [[ -z $resume && -z $ticket ]]; then
   [[ $type =~ ^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)$ ]] ||
@@ -278,7 +353,7 @@ lease_holder=$task${ticket:+--$ticket}
 # On failure, a slot this run took and has not yet put on the branch is returned (forced when
 # force_return is set: see the header), and a number this run claimed is given back while nothing
 # holds it yet; once a slot holds the task's branch, the task is half open and re-running with
-# --task finishes it.
+# --task (and --queued <file>, so the item is linked) finishes it.
 worktree='' leased='' force_return='' lease_log='' new_branch=''
 on_exit() {
   local status=$?
@@ -314,10 +389,38 @@ on_exit() {
       "team-open --task $task --add $project $type $slug" >&2
   else
     echo "team-open: $task is half open in $worktree; finish it with:" \
-      "team-open --task $task $project $path $type $slug $(printf '%q' "$title")" >&2
+      "team-open --task $task${queued_given:+ --queued $queued_file} $project $path $type $slug $(printf '%q' "$title")" >&2
   fi
 }
 trap on_exit EXIT
+
+# Once the task is open, say in its plan that it is built from the queued item, a line below the
+# "## Why" comment (after the comment's end, else before the next heading, else at the end, and
+# never twice), and link the item with team-queue take; a take that fails is one line on stderr
+# naming the command, never a failure of the open, since the heartbeat's queue step links an item
+# a plan cites: link_queued
+link_queued() {
+  local line="From the queue: \`tasks/queued/$queued_file\`: $item_summary" out rc=0
+  if ! grep -qxF -- "$line" "$plan"; then
+    if awk -v line="$line" '
+      !done && why && /^## / { print line; print ""; done = 1 }
+      { print }
+      !done && /^## Why$/ { why = 1; next }
+      !done && why && /-->[[:space:]]*$/ { print ""; print line; done = 1 }
+      END { if (!done) { print ""; print line } }' "$plan" >"$plan.$$"; then
+      mv -f "$plan.$$" "$plan"
+    else
+      rm -f "$plan.$$"
+      echo "team-open: cannot write the queue's line into $plan" >&2
+    fi
+  fi
+  out=$(TEAM_HOME=$TEAM_HOME "$bin/team-queue" take "$task" "$queued_file" </dev/null 2>&1) || rc=$?
+  if ((rc == 0)); then
+    [[ -z $out ]] || printf 'team-open: %s\n' "${out//$'\n'/$'\n'team-open: }" >&2
+  else
+    echo "team-open: team-queue take $task $queued_file failed ($(grep -m1 . <<<"$out" || echo "no reason given")); run it to link the item: team-queue take $task $queued_file" >&2
+  fi
+}
 
 # A new branch starts at origin's base; a resumed one is origin's branch, made here when missing,
 # and a ticket branch, never pushed, its wip ref's head.
@@ -802,6 +905,8 @@ else
     '{ts: (now | todate), task: $task, event: "opened", project: $project, path: $path, type: $type,
       title: $title, branch: $branch, base: $base, base_sha: $base_sha, worktree: $worktree}
       + if $story == "" then {} else {story: $story} end')"
+
+  [[ -z $queued_given ]] || link_queued
 
   jq -n --arg task "$task" --arg project "$project" --arg path "$path" --arg title "$title" --arg branch "$branch" \
     --arg base "$base" --arg base_sha "$base_sha" --arg worktree "$worktree" --arg task_dir "$worktree/$task_dir" \

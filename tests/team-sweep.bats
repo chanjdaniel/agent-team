@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
 # team-sweep: what the coordinator must not leave unattended (a task with no live worker, a
 # worker waiting for input or idle without reporting, a busy worker whose transcripts have gone
-# unwritten past its limit, a team session outliving its task, the team's stow plan, a retro due),
-# from the ledger, the live session list, the stored capacity readings and the transcripts' times.
+# unwritten past its limit, a team session outliving its task, the team's stow plan, a retro due,
+# the queue's next item and problems, a closed task's current items), from the ledger, the live
+# session list, the stored capacity readings, the transcripts' times, team-queue list (its
+# team-capacity a stub) and team-current check.
 
 load helpers/common
 
@@ -2164,4 +2166,166 @@ T7 ticket-gone: ticket 03: its builder T7-builder-03 33333333 is gone with the t
   run_bin -1 team-sweep
   assert_equal "$output" "T7 stray: T7-builder-02 22222222 is live but T7 is closed; next: read claude logs 22222222 for anything left to log, then stop it with claude stop 22222222
 T44 stray: T44-builder-03 44444444 is live but T44 is not in the ledger; next: read claude logs 44444444 for anything left to log, then stop it with claude stop 44444444"
+}
+
+GIB=1073741824
+
+# queue_room [<jq update>]: run_bin runs from a copy of bin/ whose team-capacity is the logging
+# stub, so the sweep's plan and team-queue's costs are fixed: a plan at full (90%) with 11.7 GiB of
+# 16.9 GiB free, changed by the jq update given, and a builder needing 1.7 GiB; and the team home
+# gets a tasks/queued/.
+queue_room() {
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  if [[ ! -e $CODE_CHECKOUT/bin ]]; then
+    mkdir -p "$CODE_CHECKOUT"
+    copy_bin "$CODE_CHECKOUT/bin"
+    shared_make stub "$REPO_ROOT/tests/helpers/stub"
+    ln -f "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-capacity"
+    stub_script team-capacity <<'SH'
+case $1 in
+  plan) print_file "$STUB_FIXTURES/plan.json" ;;
+  costs) print_file "$STUB_FIXTURES/costs.json" ;;
+  *) exit 9 ;;
+esac
+SH
+    jq -cn --argjson gib "$GIB" '{schema: "team-capacity-costs/1", costs: [
+        {kind: "session:builder", estimate_bytes: (1.7 * $gib | round), source: "learned", samples: 7, range: null, says: "x"}]}' \
+      >"$STUB_FIXTURES/costs.json"
+  fi
+  jq -cn --argjson gib "$GIB" '{schema: "team-capacity-plan/1", mode: "manual", level: "full", share: 0.9,
+      budget: (16.9 * $gib | round), reserved: (5.2 * $gib | round), over: false, confirmed: false,
+      stop_sessions: [], stop_stacks: [], stow: [], resume: [], launch: []} | '"${1:-.}" >"$STUB_FIXTURES/plan.json"
+  mkdir -p "$TEAM_HOME/tasks/queued"
+}
+
+# queued <name> [<key>: <value>]...: tasks/queued/<name>, its front matter the lines given, then
+# its title.
+queued() {
+  { echo ---; printf '%s\n' "${@:2}"; echo ---; echo "# ${1%.md}"; } >"$TEAM_HOME/tasks/queued/$1"
+}
+
+# queued_ready <name> <priority> <summary> [<key>: <value>]...: a ready item of proj, size S.
+queued_ready() {
+  queued "$1" "summary: $3" "project: proj" "priority: $2" "size: S" "${@:4}"
+}
+
+ROOM="room for one more task at full (90%): 11.7 GiB of 16.9 GiB free, a builder needs 1.7 GiB"
+
+@test "queue-ready: with room, the top ready item is named after every other finding, never one waiting, and none with no room" {
+  queue_room
+  opened T3
+  launch T3 builder 4f2a9c1e
+  queued_ready low.md 3 "the polish"
+  queued_ready top.md 1 "the fix that matters most"
+  queued_ready mid.md 2 "the approved work"
+  # Priority 1 and first by name, but it waits for T3's merge.
+  queued_ready a-waits.md 1 "the work after T3" "after: T3 merged"
+  local no_worker="T3 no-worker: no live session among its 1 launch (latest T3-builder 4f2a9c1e); next: read claude logs 4f2a9c1e for how it ended, then launch the next worker with team-worker or log what is known with team-log"
+  local ready="queue: $ROOM: open top.md (proj, priority 1, S): the fix that matters most; next: team-open --queued top.md"
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "$no_worker
+$ready"
+  # The queue reads the sweep's own plan, never one of its own.
+  assert_equal "$(stub_calls team-capacity | jq -r '.[0]' | sort | uniq -c | awk '{print $2, $1}')" "costs 1
+plan 1"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[1]' <<<"$output")" "$(jq -cn --arg text "$ready" \
+    '{task: null, kind: "queue-ready", session: null, name: null, next: "team-open --queued top.md", text: $text}')"
+  # The watch prints it with the rest once they have stood for its baseline's time.
+  looks '[]'
+  TEAM_SWEEP_BASELINE_SECONDS=60 run_bin -0 team-sweep --wait
+  assert_equal "$output" "$no_worker
+$ready"
+  # No room: no queue-ready.
+  queue_room '.level = "none" | .share = 0 | .budget = 0'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$no_worker"
+  no_github
+}
+
+@test "queue and current-stale: a malformed queued file and a closed task's current items, after queue-ready, each with task null" {
+  queue_room
+  queued_ready top.md 2 "the approved work"
+  queued bad.md "summary: no priority here" "project: proj" "size: S"
+  queued worse.md "summary: a priority past the scale" "project: proj" "priority: 5" "size: S"
+  queued worst.md "summary: no size" "project: proj" "priority: 2"
+  opened T7
+  ledger_line '{ts: "2026-11-02T01:31:49Z", task: "T7", event: "closed", archive: [], returned: [], kept: []}'
+  opened T8
+  ledger_line '{ts: "2026-11-03T04:00:00Z", task: "T8", event: "closed", archive: [], returned: [], kept: []}'
+  opened T9
+  launch T9 builder 9c9c9c9c
+  printf '%s\n' '# Current items' \
+    '- next T7 open the follow-up once T7 merges | ledger 2026-11-01T07:08:11Z' \
+    '- watch T9 its checks | ledger 2026-11-01T07:08:11Z' \
+    '- owe T8 the report on T8 | ledger 2026-11-01T07:08:11Z' >"$TEAM_HOME/tasks/current.md"
+  local seven eight problems
+  seven=$(printf '%s' 'next T7 open the follow-up once T7 merges | ledger 2026-11-01T07:08:11Z' | sha256sum | cut -c1-6)
+  eight=$(printf '%s' 'owe T8 the report on T8 | ledger 2026-11-01T07:08:11Z' | sha256sum | cut -c1-6)
+  run_bin -1 team-queue index --check
+  problems=$(grep -v 'index.md' <<<"$output" | head -n 2 | paste -sd ';' | sed 's/;/; /')
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$(sed -n '2,$p' <<<"$output")" "queue: $ROOM: open top.md (proj, priority 2, S): the approved work; next: team-open --queued top.md
+queue: 3 problems in tasks/queued/: $problems; next: fix each file team-queue index --check names
+current: 2 items name a closed task: $seven (T7, closed 2026-11-02), $eight (T8, closed 2026-11-03); next: team-current done <id> for each that is done, or add it again under an open task"
+  assert_contains "$problems" "tasks/queued/bad.md: it has no priority"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[1:][] | del(.text)' <<<"$output")" \
+    '{"task":null,"kind":"queue-ready","session":null,"name":null,"next":"team-open --queued top.md"}
+{"task":null,"kind":"queue","session":null,"name":null,"next":"fix each file team-queue index --check names"}
+{"task":null,"kind":"current-stale","session":null,"name":null,"next":"team-current done <id> for each that is done, or add it again under an open task"}'
+  # One of each is said in the singular.
+  rm "$TEAM_HOME/tasks/queued/worse.md" "$TEAM_HOME/tasks/queued/worst.md"
+  printf '%s\n' '# Current items' '- next T7 open the follow-up once T7 merges | ledger 2026-11-01T07:08:11Z' \
+    >"$TEAM_HOME/tasks/current.md"
+  run_bin -1 team-sweep
+  assert_contains "$output" "queue: 1 problem in tasks/queued/: tasks/queued/bad.md: it has no priority"
+  assert_contains "$output" "current: 1 item names a closed task: $seven (T7, closed 2026-11-02); next: "
+  # With nothing queued wrong and no item of a closed task, neither.
+  rm "$TEAM_HOME/tasks/queued/bad.md"
+  printf '%s\n' '# Current items' '- watch T9 its checks | ledger 2026-11-01T07:08:11Z' >"$TEAM_HOME/tasks/current.md"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map(.kind)' <<<"$output")" '["no-worker","queue-ready"]'
+}
+
+@test "a team-queue or team-current that fails is its one-line finding, and the sweep still finds the rest" {
+  queue_room
+  queued_ready top.md 1 "the fix"
+  printf '%s\n' '# Current items' >"$TEAM_HOME/tasks/current.md"
+  opened T3
+  launch T3 builder 4f2a9c1e
+  ln -f "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-queue"
+  ln -f "$BATS_RUN_TMPDIR/shared/stub" "$CODE_CHECKOUT/bin/team-current"
+  stub_script team-queue <<SH
+echo "team-queue: something went first" >&2
+echo "team-queue: cannot read $HOME/queue" >&2
+exit 1
+SH
+  stub_script team-current <<'SH'
+echo "team-current: the ledger is not JSON" >&2
+exit 2
+SH
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$(sed -n '2,$p' <<<"$output")" "queue: team-queue: cannot read ~/queue: fix what team-queue names
+current: team-current: the ledger is not JSON: fix what team-current names"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[1:][] | del(.text)' <<<"$output")" \
+    '{"task":null,"kind":"queue","session":null,"name":null,"next":"fix what team-queue names"}
+{"task":null,"kind":"current","session":null,"name":null,"next":"fix what team-current names"}'
+  # Exit 0 with no view, or a view of another shape, is a failure too; and a check that names
+  # problems (exit 1) but no closed task is no finding.
+  stub_script team-queue <<<'echo "[]"'
+  stub_script team-current <<<'echo "{\"schema\":\"team-current-check/1\",\"problems\":[{\"line\":2,\"id\":null,\"item\":\"x\",\"reasons\":[\"bad\"]}],\"closed\":[]}"; exit 1'
+  run_bin -1 team-sweep
+  assert_equal "$(sed -n '2,$p' <<<"$output")" "queue: team-queue list printed no team-queue/1 view: fix what team-queue names"
+  # Neither runs when there is nothing for it to read.
+  rm -r "$TEAM_HOME/tasks/queued" "$TEAM_HOME/tasks/current.md"
+  : >"$STUB_CALLS/team-queue.log"
+  : >"$STUB_CALLS/team-current.log"
+  run_bin -1 team-sweep
+  assert_equal "$(sed -n '2,$p' <<<"$output")" ""
+  assert_equal "$(stub_calls team-queue)$(stub_calls team-current)" ""
 }

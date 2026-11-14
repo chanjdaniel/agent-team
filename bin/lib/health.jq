@@ -42,8 +42,8 @@ def health_limits($seams):
 # The heartbeat's steps in their order, for the view's problems; a step not named here comes after
 # them, by name.
 def health_steps:
-  ["run", "probe", "lease", "checkpoint", "ledger", "usage", "coordinator", "uptime", "quota", "inbox",
-   "finished", "capacity", "level", "stacks", "pack", "janitor"];
+  ["run", "probe", "lease", "checkpoint", "ledger", "usage", "queue", "coordinator", "uptime", "quota",
+   "inbox", "finished", "capacity", "level", "stacks", "pack", "janitor"];
 
 # The ledger read in one pass, over its raw lines (jq -nR): the lines that are not JSON objects,
 # counted, the first 100 of them by line number, and the ts of the last event that is not a

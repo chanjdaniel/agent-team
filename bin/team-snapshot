@@ -2,7 +2,7 @@
 # Show everything open across the team: every open task's state, the team's resource level,
 # Daniel's withdrawals of the default merge word, the production checks' last results, the live team
 # sessions and strays, the open PRs of every registered project, what waits on Daniel, the
-# coordinator's current items and how much queued work there is.
+# coordinator's current items and the queue.
 #
 # Usage: team-snapshot [--json]
 # Open tasks are those with events and no closed, in task number order, each as its team-state
@@ -36,11 +36,14 @@
 # asks with no answer, with their text. Current items are the lines of the team home's
 # tasks/current.md that start with "- " (what the coordinator holds that the ledger has no event
 # for), none when the file is missing; the text leaves out the queued ones, which are the queued
-# index's, and, while the waiting list is read, the ask and owe ones, which are its. Then "Queued
-# work: <n> files, listed in tasks/queued/index.md", the files of tasks/queued/ but the index, and
-# no line with none. Text lines are cut at 120 columns, an open task's, the resources line, the
-# Production line, a waiting line and an item at 200, and the text form shows the first 40 items,
-# then how many more.
+# index's, and, while the waiting list is read, the ask and owe ones, which are its. Then the
+# queue's line, from team-queue list --json (which reads team-capacity plan and costs itself):
+# "Queue: <r> ready, <w> waiting, <o> opened; <the room's line>; next: <file> (<project>, priority
+# <p>, <size>): <summary>", "Queue: nothing ready; <w> waiting, <o> opened; <the room's line>", or
+# "Queue unreadable: <why>" (team-queue's last line on stderr, its "team-queue: " cut), and no
+# line with no tasks/queued/. Text lines are cut at 120 columns, an open task's, the resources
+# line, the Production line, a waiting line, an item and the queue's line at 200, and the text
+# form shows the first 40 items, then how many more.
 # With --json, the versioned snapshot (schema team-snapshot/1): tasks (each team-state's JSON, or
 # {task, error} when its state could not be told, as for a PR naming an unregistered project),
 # level (team-level status --stored --json's object, or {error} with the last line team-level said
@@ -55,11 +58,15 @@
 # title, url, branch, base, draft, task}]}, or {project, repo, error}), pending_asks ({task, id,
 # text, ts}), waiting ({lines, total, owed}: waiting.json's first five items' lines, how many it
 # holds, and the owed replies as text; {error} when it cannot be read; null with none), items
-# (every current item, its "- " left off, as a string) and queued (the queued files' count).
+# (every current item, its "- " left off, as a string), queued (the files of tasks/queued/ but the
+# index) and queue (team-queue list --json's object less its findings, {error} when it cannot be
+# read, null with no tasks/queued/).
 # GitHub failures never fail it: the affected part carries an error and the text says "GitHub
 # unavailable". Exit 1 when the session list or the list of projects cannot be read.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/error-view.sh
+source "$TEAM_LIB/error-view.sh"
 
 json=''
 for arg in "$@"; do
@@ -91,6 +98,22 @@ production_status() {
     line=$(grep . "$err" | tail -n 1) || line="team-uptime failed with no reason given"
     line=${line#team-uptime: }
     jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
+  fi
+  rm -f "$out" "$err"
+}
+
+# The queue, team-queue list --json's object (it reads team-capacity plan and costs itself), or
+# {error} with the last line it said on stderr, its "team-queue: " cut and $HOME as ~; null with no
+# tasks/queued/: queue_status
+queue_status() {
+  local out err
+  if [[ ! -d $TEAM_HOME/tasks/queued ]]; then echo null; return; fi
+  out=$(mktemp) err=$(mktemp)
+  if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-queue" list --json >"$out" 2>"$err" </dev/null &&
+    jq -ce 'select(type == "object" and .schema == "team-queue/1")' "$out" 2>/dev/null; then
+    :
+  else
+    error_view "$err" "team-queue list printed no team-queue/1 object" "team-queue: "
   fi
   rm -f "$out" "$err"
 }
@@ -127,6 +150,8 @@ machine_level >"$tmp/level" &
 level_pid=$!
 production_status >"$tmp/production" &
 production_pid=$!
+queue_status >"$tmp/queue" &
+queue_pid=$!
 index=0
 while IFS= read -r project; do
   [[ -n $project ]] || continue
@@ -147,6 +172,7 @@ done
 for pid in "${project_pids[@]}"; do wait "$pid" || exit 1; done
 wait "$level_pid"
 wait "$production_pid"
+wait "$queue_pid"
 
 jq -cs . "${states[@]}" </dev/null >"$tmp/states"
 jq -cs . "${prs[@]}" </dev/null >"$tmp/prs"
@@ -170,8 +196,9 @@ queued=0
 ledger_jq 'ledger_events | task_projects as $projects | default_events | default_withdrawals($projects)' -nRc \
   "$ledger" >"$tmp/withdrawn"
 snapshot=$(ledger_jq 'snapshot($tasks[0]; $states[0]; $level[0]; $withdrawn[0]; $sessions; $prs[0]; $items[0]; $production[0];
-    $waiting; $queued)' -nc --argjson waiting "$waiting" --argjson queued "$queued" \
+    $waiting; $queued; $queue[0])' -nc --argjson waiting "$waiting" --argjson queued "$queued" \
   --slurpfile tasks "$tmp/tasks" --slurpfile states "$tmp/states" --slurpfile production "$tmp/production" \
+  --slurpfile queue "$tmp/queue" \
   --slurpfile level "$tmp/level" --slurpfile withdrawn "$tmp/withdrawn" --argjson sessions "$LIVE_SESSIONS" \
   --slurpfile prs "$tmp/prs" --slurpfile items "$tmp/items")
 
