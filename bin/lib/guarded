@@ -44,7 +44,7 @@ secrets .*\.(pem|key|p12|pfx)
 secrets (.*/)?[^/]*(secret|credential)[^/]*
 guardrails@own bin/team-(merge|checks|heavy|review-status|ask|run-approved|worker|lease|log|project)
 guardrails@own bin/claude-coordinator
-guardrails@own bin/lib/(guarded|ledger-contract\.json|lifecycle\.json|data-check|records|code|command_rules\.py|command_text\.py|outbound\.py|kill_rules\.py|delete_rules\.py)
+guardrails@own bin/lib/(guarded|ledger-contract\.json|lifecycle\.json|data-check|records|code|command_rules\.py|command_text\.py|outbound\.py|kill_rules\.py|delete_rules\.py|gate-claude-settings\.json|opencode-gate|opencode-guard\.js)
 guardrails@own bin/hooks/.*
 guardrails@own settings/[^/]*\.json
 guardrails@own coordinator\.settings\.json
