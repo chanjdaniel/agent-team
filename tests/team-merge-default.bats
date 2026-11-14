@@ -22,7 +22,7 @@ daniel_plan() {
 # The PR is of the team's own project by repo: proj's repo is the origin of the code checkout.
 own_by_repo() {
   code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin git@github.com:Owner/Proj.git
 }
 
 # The reason the default word gives on a PR of the team's own project.
@@ -300,7 +300,7 @@ discord_has() {
 
 @test "another project merges on the default word with the team's own registered beside it" {
   code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/agent-team.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin https://github.com/owner/agent-team.git
   cat >>"$TEAM_HOME/projects.toml" <<'TOML'
 
 [agent-team]

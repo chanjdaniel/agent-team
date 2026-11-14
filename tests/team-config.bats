@@ -21,8 +21,8 @@ setup() {
   printf '%s\n' '# User-scope plugins every machine installs, and their marketplaces (team-config).' \
     'marketplace anthropics/claude-plugins-official' \
     'plugin discord@claude-plugins-official' 'plugin mongodb-atlas@claude-plugins-official' >"$shared/plugins.txt"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: the shared config"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: the shared config"
   # The team home's own auto memory is set up (tests/team-config-memory.bats covers it).
   mkdir -p "$TEAM_HOME/.claude"
   jq -n --arg dir "$TEAM_HOME/memory/coordinator" '{autoMemoryDirectory: $dir}' \
@@ -67,7 +67,7 @@ backups() {
 @test "diff prints one line per difference and exits 1; a local-only skill is listed" {
   echo '{"model": "sonnet"}' >"$HOME/.claude/settings.json"
   rm "$HOME/.claude/AGENTS.md"
-  rm -r "$HOME/.claude/skills/tdd"
+  rm -r "${HOME:?}/.claude/skills/tdd"
   echo "Changed here." >>"$HOME/.claude/skills/wizard/references/steps.md"
   mkdir -p "$HOME/.claude/skills/retro" "$HOME/.claude/skills/synced/claude-ai"
   echo "Look back." >"$HOME/.claude/skills/retro/SKILL.md"
@@ -127,7 +127,7 @@ plugin ponder@claude-plugins-official not in plugins.txt"
 @test "apply installs copies, backs up what it replaces, leaves a local-only skill; a second apply changes nothing" {
   echo '{"model": "sonnet"}' >"$HOME/.claude/settings.json"
   rm "$HOME/.claude/AGENTS.md"
-  rm -r "$HOME/.claude/skills/tdd"
+  rm -r "${HOME:?}/.claude/skills/tdd"
   echo "Changed here." >>"$HOME/.claude/skills/wizard/references/steps.md"
   mkdir -p "$HOME/.claude/skills/retro"
   echo "Look back." >"$HOME/.claude/skills/retro/SKILL.md"
@@ -168,7 +168,7 @@ plugin marketplace"
 }
 
 @test "apply into an empty HOME installs everything and backs up nothing" {
-  rm -rf "$HOME/.claude/skills" "$HOME/.claude"/{CLAUDE.md,AGENTS.md,settings.json}
+  rm -rf "${HOME:?}/.claude/skills" "${HOME:?}/.claude"/{CLAUDE.md,AGENTS.md,settings.json}
   run_bin -0 team-config apply
   assert_equal "$output" "installed CLAUDE.md
 installed AGENTS.md
@@ -204,13 +204,13 @@ installed skill wizard"
 
 @test "capture brings an in-place edit and a new skill into machine/claude/, prints them and never commits" {
   local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   jq '.model = "sonnet"' "$HOME/.claude/settings.json" >"$BATS_TEST_TMPDIR/s"
   mv "$BATS_TEST_TMPDIR/s" "$HOME/.claude/settings.json"
   mkdir -p "$HOME/.claude/skills/retro" "$HOME/.claude/skills/synced/claude-ai"
   echo "Look back." >"$HOME/.claude/skills/retro/SKILL.md"
   echo "claude.ai's own." >"$HOME/.claude/skills/synced/claude-ai/SKILL.md"
-  rm -r "$HOME/.claude/skills/tdd"
+  rm -r "${HOME:?}/.claude/skills/tdd"
   echo '{"version": 3, "skills": {"lavish": {}}}' >"$HOME/.agents/.skill-lock.json"
   plugins_installed discord@claude-plugins-official mongodb-atlas@claude-plugins-official ponder@claude-plugins-official
   run_bin -0 team-config capture
@@ -227,8 +227,8 @@ captured plugin ponder@claude-plugins-official"
 plugin discord@claude-plugins-official
 plugin mongodb-atlas@claude-plugins-official
 plugin ponder@claude-plugins-official"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain | sort -k2)" " M machine/claude/plugins.txt
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain | sort -k2)" " M machine/claude/plugins.txt
  M machine/claude/settings.json
  M machine/claude/skill-lock.json
 ?? machine/claude/skills/retro/"
@@ -279,7 +279,7 @@ plugin ponder@claude-plugins-official"
   run_bin -0 team-config own
   assert_equal "$output" "autoMode.environment set"
   # It needs no team home config, and no settings file is unset.
-  rm -r "$shared" "$HOME/.claude/settings.json"
+  rm -r "${shared:?}" "${HOME:?}/.claude/settings.json"
   run_bin -0 team-config own
   assert_equal "$output" "autoMode.environment unset"
   echo 'not json' >"$HOME/.claude/settings.json"
@@ -288,7 +288,7 @@ plugin ponder@claude-plugins-official"
 }
 
 @test "the first capture makes machine/claude/; diff and apply refuse without it" {
-  rm -rf "$shared"
+  rm -rf "${shared:?}"
   run_bin -1 --separate-stderr team-config diff
   assert_equal "$stderr" "team-config: no machine/claude/ in $TEAM_HOME; run team-config capture on the machine whose config the team shares"
   run_bin -1 --separate-stderr team-config apply
@@ -317,7 +317,7 @@ plugin mongodb-atlas@claude-plugins-official"
   run_bin -1 --separate-stderr team-config capture
   assert_equal "$output" "captured CLAUDE.md"
   assert_equal "$stderr" "team-config: \`claude plugin list\` did not answer, so plugins.txt is unchanged"
-  run git -C "$TEAM_HOME" status --porcelain
+  run git -C "${TEAM_HOME:?}" status --porcelain
   assert_equal "$output" " M machine/claude/CLAUDE.md"
 }
 

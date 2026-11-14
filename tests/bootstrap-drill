@@ -26,7 +26,7 @@ out=''
 drill_record() {
   local verdict=fail commit claude=none bin version=''
   (($1 != 0)) || verdict=pass
-  commit=$(git -C "$root" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || commit=unknown
+  commit=$(git -C "${root:?}" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null) || commit=unknown
   bin=$(command -v claude 2>/dev/null) || bin=$HOME/.local/bin/claude
   if [[ -x $bin ]]; then
     if command -v timeout >/dev/null; then

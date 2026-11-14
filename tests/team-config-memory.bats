@@ -59,7 +59,7 @@ apart() {
     project site projects/site
     project away projects/away
   } >"$TEAM_HOME/projects.toml"
-  git -C "$TEAM_HOME" commit -q -m "chore: the team home apart" projects.toml
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: the team home apart" projects.toml
 }
 
 # The folder Claude Code keeps a checkout's auto memory in by default: every character of its
@@ -120,8 +120,8 @@ note() {
   echo '{"permissions": {"allow": ["Bash(npm test)"]}}' >"$conv/.claude/settings.local.json"
   # site's own .gitignore already ignores it, so its exclude file stays as it was.
   printf '%s\n' '.claude/settings.local.json' >"$site/.gitignore"
-  git -C "$site" add .gitignore
-  git -C "$site" commit -q -m "chore: ignore local settings"
+  git -C "${site:?}" add .gitignore
+  git -C "${site:?}" commit -q -m "chore: ignore local settings"
   note "$(old_memory "$TEAM_HOME")/team.md" "The team's own." "2026-10-02 10:00"
   run_bin -0 team-config apply
   assert_contains "$output" "memory conv: autoMemoryDirectory set"
@@ -132,10 +132,10 @@ note() {
   assert_equal "$(jq -r .autoMemoryDirectory "$site/.claude/settings.local.json")" "~/agent-team/memory/site"
   assert_equal "$(jq -r .autoMemoryDirectory "$TEAM_HOME/.claude/settings.local.json")" "~/agent-team/memory/agent-team"
   run -1 grep -F settings.local.json "$site/.git/info/exclude"
-  assert_equal "$(git -C "$conv" status --porcelain)" ""
-  assert_equal "$(git -C "$site" status --porcelain)" ""
+  assert_equal "$(git -C "${conv:?}" status --porcelain)" ""
+  assert_equal "$(git -C "${site:?}" status --porcelain)" ""
   # In the team home only memory/ is new (the note moved there), left for the checkpoint to commit.
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" "?? memory/"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" "?? memory/"
 }
 
 @test "a second apply changes nothing" {
@@ -187,8 +187,8 @@ memory site setting points to ~/elsewhere"
 @test "a settings.local.json git tracks is refused for its project alone" {
   mkdir -p "$conv/.claude"
   echo '{}' >"$conv/.claude/settings.local.json"
-  git -C "$conv" add .claude/settings.local.json
-  git -C "$conv" commit -q -m "chore: share local settings"
+  git -C "${conv:?}" add .claude/settings.local.json
+  git -C "${conv:?}" commit -q -m "chore: share local settings"
   run_bin -1 team-config diff
   assert_contains "$output" "memory conv settings.local.json tracked by git"
   run_bin -1 team-config apply
@@ -206,12 +206,12 @@ memory site setting points to ~/elsewhere"
 
 @test "team-config never commits memory/" {
   local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   note "$(old_memory "$conv")/deploys.md" "Deploys go through CI." "2026-10-01 10:00"
   run_bin -0 team-config apply
   run_bin -0 team-config capture
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$TEAM_HOME" ls-files memory)" ""
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" ls-files memory)" ""
 }
 
 @test "a team home apart from every project keeps its memory in memory/coordinator/, with each fix" {
@@ -230,7 +230,7 @@ memory coordinator: moved 2 notes from ~/.claude/projects/"
   assert_equal "$(cat "$TEAM_HOME/memory/coordinator/team.md")" "The team's own."
   assert_equal "$(find "$(old_memory "$TEAM_HOME")" -mindepth 1)" ""
   [[ ! -e $TEAM_HOME/memory/agent-team ]]
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" "?? memory/"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" "?? memory/"
   run_bin -0 team-config diff
 
   jq '.autoMemoryDirectory = "~/elsewhere"' "$TEAM_HOME/.claude/settings.local.json" >"$BATS_TEST_TMPDIR/s"

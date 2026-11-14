@@ -173,14 +173,14 @@ T7 ran fix ($WT/scripts/fix.sh), exit 3; its output is in $log"
 @test "the ran is on origin when the run ends, and the exit is still the script's" {
   local team_origin=$BATS_TEST_TMPDIR/origin/agent-team.git tip
   approve fix "$WT/scripts/fix.sh"
-  tip=$(git -C "$team_origin" rev-parse dev)
+  tip=$(git -C "${team_origin:?}" rev-parse dev)
   run_bin -3 --separate-stderr team-run-approved T7 fix
   assert_equal "$stderr" ""
   assert_equal "$(tail -n 1 <<<"$output")" "T7 ran fix ($WT/scripts/fix.sh), exit 3; its output is in $RUNS/fix.log"
-  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
-  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T7 ran"
-  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
-  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | tail -n 1 | jq -c 'del(.ts)')" '{"task":"T7","event":"ran","id":"fix","exit":3}'
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "${team_origin:?}" log -1 --format=%s dev)" "chore: ledger T7 ran"
+  assert_equal "$(git -C "${team_origin:?}" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "${team_origin:?}" show dev:ledger.jsonl | tail -n 1 | jq -c 'del(.ts)')" '{"task":"T7","event":"ran","id":"fix","exit":3}'
 }
 
 @test "a script that exits 0 is exit 0, and one in the task directory runs too" {

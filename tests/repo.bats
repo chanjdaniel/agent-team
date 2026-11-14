@@ -9,7 +9,7 @@ setup() {
 
 @test "no em dash in tracked Markdown or templates" {
   local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -z -- '*.md' 'templates/**' | tr '\0' '\n')
+  files=$(git -C "${REPO_ROOT:?}" ls-files -z -- '*.md' 'templates/**' | tr '\0' '\n')
   [[ -n $files ]]
   hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -n $'—' -- <<<"$files" || true)
   assert_equal "$hits" ""
@@ -55,7 +55,7 @@ layout_breaks() {
 # atlas_host_files <dir>
 atlas_host_files() {
   local files
-  files=$(git -C "$1" ls-files -z | tr '\0' '\n')
+  files=$(git -C "${1:?}" ls-files -z | tr '\0' '\n')
   [[ -n $files ]]
   (cd "$1" && xargs -d '\n' grep -I -H -i -o -E '[a-z0-9-]+\.[a-z0-9-]+\.mongodb\.net' -- <<<"$files" \
     | grep -v -i '\.example\.mongodb\.net$' | cut -d: -f1 | sort -u || true)
@@ -74,7 +74,7 @@ atlas_host_files() {
   git init -q "$copy"
   mkdir "$copy/toolkits"
   echo "host: made-up.zz9zz9z.$domain" >"$copy/toolkits/one.md"
-  git -C "$copy" add toolkits/one.md
+  git -C "${copy:?}" add toolkits/one.md
   run -0 atlas_host_files "$copy"
   assert_equal "$output" "toolkits/one.md"
   echo "host: MADE-UP.ZZ9ZZ9Z.${domain^^}" >"$copy/toolkits/one.md"
@@ -82,7 +82,7 @@ atlas_host_files() {
   assert_equal "$output" "toolkits/one.md"
   echo "host: X.EXAMPLE.${domain^^}" >"$copy/toolkits/one.md"
   echo "host: x.example.$domain" >"$copy/toolkits/two.md"
-  git -C "$copy" add toolkits/two.md
+  git -C "${copy:?}" add toolkits/two.md
   run -0 atlas_host_files "$copy"
   assert_equal "$output" ""
 }
@@ -106,14 +106,14 @@ unassigned_paths() {
     done
     [[ $in_code == 1 ]] || echo "$path: not code"
     [[ $in_records == 0 ]] || echo "$path: a record"
-  done < <(git -C "$1" ls-files -z)
+  done < <(git -C "${1:?}" ls-files -z)
 }
 
 # A sandbox copy of this checkout's tracked paths (empty files, the two lists as they are) at
 # <dir>: path_copy <dir>
 path_copy() {
   git init -q "$1"
-  git -C "$REPO_ROOT" ls-files -s -z | git -C "$1" update-index -z --index-info
+  git -C "${REPO_ROOT:?}" ls-files -s -z | git -C "${1:?}" update-index -z --index-info
   mkdir -p "$1/bin/lib"
   cp "$REPO_ROOT/bin/lib/code" "$REPO_ROOT/bin/lib/records" "$1/bin/lib/"
 }
@@ -130,7 +130,7 @@ path_copy() {
   run -0 unassigned_paths "$copy"
   assert_equal "$output" ""
   touch "$copy/NOTES.md" "$copy/ledger.jsonl"
-  git -C "$copy" add NOTES.md ledger.jsonl
+  git -C "${copy:?}" add NOTES.md ledger.jsonl
   echo 'sops/machine-setup.md' >>"$copy/bin/lib/records"
   run -0 unassigned_paths "$copy"
   assert_equal "$output" "NOTES.md: not code
@@ -144,7 +144,7 @@ sops/machine-setup.md: a record"
   path_copy "$copy"
   mkdir -p "$copy/usage/home-pc/time"
   touch "$copy/usage/home-pc/2026-10-26.jsonl" "$copy/usage/home-pc/time/2026-10-26.jsonl"
-  git -C "$copy" add usage
+  git -C "${copy:?}" add usage
   run -0 unassigned_paths "$copy"
   assert_equal "$output" "usage/home-pc/2026-10-26.jsonl: not code
 usage/home-pc/2026-10-26.jsonl: a record
@@ -185,9 +185,9 @@ usage/home-pc/time/2026-10-26.jsonl"
     or (.by | IN("coordinator", "daniel") | not) or (.proves | length) == 0) | .name] | join(" ")' "$registry")" ""
   while IFS= read -r path; do
     if [[ $path == */ ]]; then
-      [[ -n $(git -C "$REPO_ROOT" ls-files -- "$path") ]] || missing+=("$path")
+      [[ -n $(git -C "${REPO_ROOT:?}" ls-files -- "$path") ]] || missing+=("$path")
     else
-      git -C "$REPO_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || missing+=("$path")
+      git -C "${REPO_ROOT:?}" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || missing+=("$path")
     fi
   done < <(jq -r '[.drills[].proves[]] | unique[]' "$registry")
   assert_equal "${missing[*]}" ""
@@ -1346,7 +1346,7 @@ COMMANDS
 # The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
 @test "the production launchers, the MCP servers' bodies and their 1Password read are not executable" {
   local modes
-  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
+  modes=$(git -C "${REPO_ROOT:?}" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
     servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/op-secret.mjs | awk '{print $1, $4}')
   assert_equal "$(wc -l <<<"$modes")" 6
   if grep -v '^100644 ' <<<"$modes"; then echo "executable in git (above)" >&2; return 1; fi
@@ -1727,7 +1727,7 @@ Bash(gh-axi pr ready *)'
   done
   # No brief starts a wait on CI, which the coordinator's checks wait takes after a pass; the rule
   # stays for a worker's wait by hand.
-  if git -C "$REPO_ROOT" grep -n team-ci-wait -- templates; then return 1; fi
+  if git -C "${REPO_ROOT:?}" grep -n team-ci-wait -- templates; then return 1; fi
   allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
   allows builder "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
   allows builder "$REPO_ROOT/bin/team-ci-wait --no-agent-review https://github.com/me/shop/pull/5"
@@ -1799,7 +1799,7 @@ COMMANDS
 # zizmor config file, which would ignore by file or wholesale: zizmor_problems <dir>
 zizmor_problems() {
   local config files
-  files=$(git -C "$1" ls-files -z -- '*.yml' '*.yaml' | tr '\0' '\n')
+  files=$(git -C "${1:?}" ls-files -z -- '*.yml' '*.yaml' | tr '\0' '\n')
   if [[ -n $files ]]; then
     (cd "$1" && xargs -d '\n' grep -H -n -E 'zizmor: *ignore' -- <<<"$files" \
       | grep -v -E ':[0-9]+:.*zizmor: ignore\[[a-z0-9-]+(, *[a-z0-9-]+)*\] +[^ ]' \
@@ -1927,10 +1927,10 @@ YAML
     container: archlinux:latest # zizmor:ignore[unpinned-images] spelled without its space
 YAML
   printf '    container: archlinux:latest # zizmor: ignore[unpinned-images]   \n' >>"$copy/.github/workflows/one.yml"
-  git -C "$copy" add .github/workflows/one.yml
+  git -C "${copy:?}" add .github/workflows/one.yml
   run -0 zizmor_problems "$copy"
   assert_equal "$output" $'.github/workflows/one.yml:3\n.github/workflows/one.yml:4\n.github/workflows/one.yml:5\n.github/workflows/one.yml:6'
-  git -C "$copy" rm -q --cached .github/workflows/one.yml
+  git -C "${copy:?}" rm -q --cached .github/workflows/one.yml
   touch "$copy/zizmor.yaml" "$copy/.github/zizmor.yml"
   run -0 zizmor_problems "$copy"
   assert_equal "$output" $'zizmor.yaml: a zizmor config\n.github/zizmor.yml: a zizmor config'
@@ -1972,6 +1972,24 @@ YAML
     job_block "$id" | grep -qx '    if: always()' || { echo "$id does not always run" >&2; return 1; }
     job_block "$id" | grep -qxF "          RESULT: \${{ needs.$id-shards.result }}" || { echo "$id reads no result of $id-shards" >&2; return 1; }
     job_block "$id" | grep -qxF "        run: '[[ \$RESULT == success ]]'" || { echo "$id does not pass only on success" >&2; return 1; }
+  done
+}
+
+# A hung job ends long before GitHub's 6-hour default, and one that runs bats outlives tests/run's
+# file limit, so tests/run names the hung file before the job dies.
+@test "every CI job sets a whole-number timeout-minutes, above tests/run's file limit wherever it runs bats" {
+  local ci=$REPO_ROOT/.github/workflows/ci.yml file_limit id ids limits
+  job_block() { sed -n "/^jobs:\$/,\$p" "$ci" | sed -n "/^  $1:\$/,/^  [a-z_-]*:\$/p" | sed '$d'; }
+  file_limit=$(sed -n 's/.*file_minutes=\${TESTS_FILE_MINUTES:-\([0-9]*\)}.*/\1/p' "$REPO_ROOT/tests/run")
+  [[ $file_limit =~ ^[1-9][0-9]*$ ]] || { echo "tests/run names no default file limit" >&2; return 1; }
+  ids=$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$ci")
+  [[ -n $ids ]]
+  for id in $ids; do
+    limits=$(job_block "$id" | sed -n 's/^    timeout-minutes: \(.*\)$/\1/p')
+    [[ $limits =~ ^[1-9][0-9]*$ ]] || { echo "$id sets no one whole-number timeout-minutes: '$limits'" >&2; return 1; }
+    if job_block "$id" | grep -v '^ *#' | grep -q 'tests/run bats'; then
+      ((limits > file_limit)) || { echo "$id runs bats with a $limits-minute limit, not above tests/run's $file_limit" >&2; return 1; }
+    fi
   done
 }
 
@@ -2040,10 +2058,10 @@ SH
   done
   echo '@test "it runs team-zzalpha" { true; }' >"$copy/tests/names-alpha.bats"
   echo '# the rules' >"$copy/sops/rules.md"
-  git -C "$copy" init -q
-  git -C "$copy" add -A
-  git -C "$copy" commit -qm base
-  git -C "$copy" tag base
+  git -C "${copy:?}" init -q
+  git -C "${copy:?}" add -A
+  git -C "${copy:?}" commit -qm base
+  git -C "${copy:?}" tag base
 }
 
 # A change to one script reaches its own file, every file naming it, its caller's file, and
@@ -2059,13 +2077,13 @@ SH
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" "$reached"
   [[ ! -e $STUB_CALLS/bats-ran ]]
-  git -C "$copy" switch -qc work
-  git -C "$copy" commit -qam 'change team-zzalpha'
+  git -C "${copy:?}" switch -qc work
+  git -C "${copy:?}" commit -qam 'change team-zzalpha'
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" "$reached"
   [[ ! -e $STUB_CALLS/bats-ran ]]
   # The base defaults to origin/dev.
-  git -C "$copy" update-ref refs/remotes/origin/dev base
+  git -C "${copy:?}" update-ref refs/remotes/origin/dev base
   run -0 --separate-stderr "$copy/tests/run" bats --changed --list
   assert_equal "$output" "$reached"
 }
@@ -2112,9 +2130,9 @@ bats: 3 tests passed; 0 of 1 files failed"
 # Commits the copy's working tree and moves its base tag there, so a test's fixture files are no
 # change.
 changed_rebase() {
-  git -C "$1" add -A
-  git -C "$1" commit -qm fixture
-  git -C "$1" tag -f base >/dev/null
+  git -C "${1:?}" add -A
+  git -C "${1:?}" commit -qm fixture
+  git -C "${1:?}" tag -f base >/dev/null
 }
 
 # A change outside the code's scripts, tests and settings (sops/, a new file there) reaches
@@ -2128,7 +2146,7 @@ changed_rebase() {
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" tests/repo.bats
   echo '@test "it reads the rules" { grep -q rules "$BATS_TEST_DIRNAME/../sops/rules.md"; }' >"$copy/tests/manual.bats"
-  git -C "$copy" checkout -q -- sops/rules.md
+  git -C "${copy:?}" checkout -q -- sops/rules.md
   changed_rebase "$copy"
   echo 'more' >>"$copy/sops/rules.md"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
@@ -2149,7 +2167,7 @@ changed_rebase() {
     echo '# changed' >>"$copy/$path"
     run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
     assert_equal "$output" "$(cd "$copy" && printf '%s\n' tests/*.bats | LC_ALL=C sort)"
-    git -C "$copy" checkout -q -- "$path"
+    git -C "${copy:?}" checkout -q -- "$path"
   done
 }
 
@@ -2201,7 +2219,7 @@ changed_rebase() {
   echo 'def zz: 2;' >"$copy/bin/lib/zzmod.jq"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/coordinator-manual.bats\ntests/repo.bats\ntests/team-zzgamma.bats'
-  git -C "$copy" checkout -q -- bin/lib/zzmod.jq
+  git -C "${copy:?}" checkout -q -- bin/lib/zzmod.jq
   echo 'more' >>"$copy/bin/lib/zzkey"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/coordinator-manual.bats\ntests/repo.bats\ntests/team-zzgamma.bats'
@@ -2224,7 +2242,7 @@ changed_rebase() {
   echo 'zzi() { false; }' >"$copy/tests/helpers/zzi.bash"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/a-loads.bats\ntests/repo.bats'
-  git -C "$copy" checkout -q -- tests/helpers/zzi.bash
+  git -C "${copy:?}" checkout -q -- tests/helpers/zzi.bash
   echo '# a new brief' >"$copy/templates/briefs/y.md"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/briefs-reader.bats\ntests/coordinator-manual.bats\ntests/repo.bats'
@@ -2240,15 +2258,15 @@ changed_rebase() {
   echo '@test "old" { cat OLD.md; }' >"$copy/tests/old-reader.bats"
   echo '@test "new" { cat NEW.md; }' >"$copy/tests/new-reader.bats"
   changed_rebase "$copy"
-  git -C "$copy" mv OLD.md NEW.md
+  git -C "${copy:?}" mv OLD.md NEW.md
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/new-reader.bats\ntests/old-reader.bats\ntests/repo.bats'
-  git -C "$copy" commit -qm rename
+  git -C "${copy:?}" commit -qm rename
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/new-reader.bats\ntests/old-reader.bats\ntests/repo.bats'
-  git -C "$copy" switch -qc dropped base
-  git -C "$copy" rm -q bin/team-zzalpha
-  git -C "$copy" commit -qm 'drop team-zzalpha'
+  git -C "${copy:?}" switch -qc dropped base
+  git -C "${copy:?}" rm -q bin/team-zzalpha
+  git -C "${copy:?}" commit -qm 'drop team-zzalpha'
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/coordinator-manual.bats\ntests/names-alpha.bats\ntests/repo.bats\ntests/team-zzalpha.bats\ntests/team-zzbeta.bats'
 }
@@ -2311,6 +2329,197 @@ changed_rebase() {
   for slow in x -1 1.5 ' 1'; do
     TESTS_SLOWER_BY=$slow run -1 --separate-stderr "$copy/tests/run" bats
     assert_equal "$stderr" "run: TESTS_SLOWER_BY is the seconds a bats file may take over its timing, a whole number, not '$slow'"
+  done
+}
+
+# tests/run in a checkout of its own with the vendored bats, whose bats files are given in each
+# test: limits_checkout <copy>
+limits_checkout() {
+  mkdir -p "$1/tests/vendor"
+  copy_bin "$1/bin"
+  link_shared tests-run "$REPO_ROOT/tests/run" "$1/tests/run"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$1/tests/shards"
+  link_shared bats-core "$REPO_ROOT/tests/vendor/bats-core" "$1/tests/vendor/bats-core"
+  cp "$REPO_ROOT/tests/timings.tsv" "$1/tests/timings.tsv"
+}
+
+@test "tests/run fails a bats test past TESTS_TEST_SECONDS by its name and the limit, and the other tests of its file still run" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
+  limits_checkout "$copy"
+  printf '%s\n' '@test "hangs" { sleep 30; }' '@test "after it" { true; }' >"$copy/tests/hangs.bats"
+  echo '@test "quick" { true; }' >"$copy/tests/quick.bats"
+  local start=$SECONDS
+  TEAM_JOBS=2 TESTS_TEST_SECONDS=2 run -1 --separate-stderr "$copy/tests/run" bats
+  ((SECONDS - start < 25))
+  assert_contains "$output" "ok tests/quick.bats ("
+  assert_equal "$(grep -E '^(not )?ok [0-9]+ ' <<<"$output")" "not ok 1 hangs # timeout after 2s
+ok 2 after it"
+  [[ $(grep '^not ok tests/hangs.bats' <<<"$output") =~ ^"not ok tests/hangs.bats ("[0-9]+"s)"$ ]]
+  assert_contains "$output" "bats: 2 tests passed; 1 of 2 files failed"
+}
+
+@test "tests/run stops a bats file still running after TESTS_FILE_MINUTES, printing its output so far and what held it" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
+  limits_checkout "$copy"
+  # A test that passes but leaves a process holding bats' output (fd 3) open, deaf to TERM, so
+  # bats never ends after its last test until the kill 30 s after the TERM.
+  printf '%s\n' '@test "first" { true; }' \
+    '@test "leaves a process behind" { bash -c '"'"'trap "" TERM; sleep 300'"'"' & }' >"$copy/tests/held.bats"
+  echo '@test "quick" { true; }' >"$copy/tests/quick.bats"
+  local start=$SECONDS
+  TEAM_JOBS=2 TESTS_FILE_MINUTES=1 run -1 --separate-stderr "$copy/tests/run" bats
+  ((SECONDS - start >= 60 && SECONDS - start < 120))
+  assert_contains "$output" "ok tests/quick.bats ("
+  [[ $(grep '^not ok tests/held.bats' <<<"$output") =~ ^"not ok tests/held.bats ("(6[0-9]|[7-9][0-9]|1[01][0-9])"s): stopped at its 1-minute limit"$ ]]
+  assert_equal "$(sed -n '/^--- tests\/held.bats$/,/^bats: /p' <<<"$output")" "--- tests/held.bats
+1..2
+ok 1 first
+ok 2 leaves a process behind
+tests/run: tests/held.bats ran past 1 minute; the test after the last line above was still running, or a process it left held the file's output open
+bats: 3 tests passed; 1 of 2 files failed"
+}
+
+@test "tests/run's per-test limit never holds a failing test, which ends at once, nor the file's tests after it" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
+  limits_checkout "$copy"
+  # Vendored bats-core 1.14.0 forgot a failing test's countdown (VENDOR.md's patch), so the file
+  # waited out the whole limit after it.
+  printf '%s\n' '@test "fails" { false; }' '@test "after it" { true; }' >"$copy/tests/fails.bats"
+  local start=$SECONDS
+  TEAM_JOBS=1 run -1 --separate-stderr "$copy/tests/run" bats
+  ((SECONDS - start < 60))
+  assert_equal "$(grep -E '^(not )?ok [0-9]+ ' <<<"$output")" "not ok 1 fails
+ok 2 after it"
+}
+
+# bats runs a test's time limit countdown as a background job of the test's own shell, so a bare
+# wait there waits out the limit too: a test waits on the processes it started, by their ids.
+@test "no test file runs a bare wait, which would wait for bats' own time limit countdown" {
+  local found
+  found=$(cd "$REPO_ROOT" && grep -nE '^[[:space:]]+wait([[:space:]]+-[nf])*([[:space:]]*($|[;&|)}])|[[:space:]]+[0-9]?>)' \
+    tests/*.bats tests/helpers/*.bash) || (($? == 1))
+  assert_equal "$found" ""
+}
+
+# T281: a test's git -C "$TEAM_HOME" with TEAM_HOME empty ran in the code checkout and switched its
+# branch; ${TEAM_HOME:?} stops the line instead.
+@test "no test runs git or rm -r on an unguarded path variable" {
+  run -0 "$REPO_ROOT/tests/guard-paths" --check
+  assert_equal "$output" ""
+}
+
+# The planted file holds each form unguarded, then what the check leaves alone, then two forms only
+# a hand can rewrite; the guarded file is the planted one as the rewrite leaves it.
+@test "tests/guard-paths names each unguarded form, rewrites it to the guarded form, and leaves a hand form and unexpanded text alone" {
+  local planted=$BATS_TEST_TMPDIR/planted.bats guarded=$BATS_TEST_TMPDIR/guarded.bats i
+  cat >"$planted" <<'PLANTED'
+git -C "$TEAM_HOME" status
+git -C $wt log
+git --git-dir "$mirror" rev-parse HEAD
+git --git-dir="${mirror}" rev-parse HEAD
+git --work-tree "$wt/sub" status
+git -c x.y=z --work-tree=$1 status
+x=$(git -C "${slots[1]}" rev-parse HEAD)
+rm -rf "$scratch"
+rm -r -f "$wt/x" "$other"
+rm --recursive "$dir"
+cd "$wt" && git status
+"$real_git" -C "$TEAM_HOME" log
+done < <(git -C "$root" ls-files)
+echo 'git -C "$TEAM_HOME" status'
+cat <<'SH'
+rm -rf "$x"
+SH
+cat <<SH
+git -C \$wt status
+SH
+git -C "$(pwd)" status
+rm -f "$file"
+cd "$wt" && ls
+# git -C "$TEAM_HOME" status
+tar -C "$dir" -xf a.tar
+git -C "${TEAM_HOME:?}/sub" status
+git -C "${x%/*}" status
+rm -rf "${x:-}"
+PLANTED
+  cat >"$guarded" <<'GUARDED'
+git -C "${TEAM_HOME:?}" status
+git -C ${wt:?} log
+git --git-dir "${mirror:?}" rev-parse HEAD
+git --git-dir="${mirror:?}" rev-parse HEAD
+git --work-tree "${wt:?}/sub" status
+git -c x.y=z --work-tree=${1:?} status
+x=$(git -C "${slots[1]:?}" rev-parse HEAD)
+rm -rf "${scratch:?}"
+rm -r -f "${wt:?}/x" "${other:?}"
+rm --recursive "${dir:?}"
+cd "${wt:?}" && git status
+"$real_git" -C "${TEAM_HOME:?}" log
+done < <(git -C "${root:?}" ls-files)
+echo 'git -C "$TEAM_HOME" status'
+cat <<'SH'
+rm -rf "$x"
+SH
+cat <<SH
+git -C \$wt status
+SH
+git -C "$(pwd)" status
+rm -f "$file"
+cd "$wt" && ls
+# git -C "$TEAM_HOME" status
+tar -C "$dir" -xf a.tar
+git -C "${TEAM_HOME:?}/sub" status
+git -C "${x%/*}" status
+rm -rf "${x:-}"
+GUARDED
+  run -1 "$REPO_ROOT/tests/guard-paths" --check "$planted"
+  local expected=()
+  for i in {1..13} 27 28; do expected+=("$planted:$i: $(sed -n "${i}p" "$planted")"); done
+  assert_equal "$output" "$(printf '%s\n' "${expected[@]}")"
+  run -1 --separate-stderr "$REPO_ROOT/tests/guard-paths" "$planted"
+  assert_equal "$stderr" "$planted:27: rewrite by hand
+$planted:28: rewrite by hand"
+  assert_equal "$(cat "$planted")" "$(cat "$guarded")"
+  run -1 "$REPO_ROOT/tests/guard-paths" --check "$planted"
+  assert_equal "$output" "$planted:27: git -C \"\${x%/*}\" status
+$planted:28: rm -rf \"\${x:-}\""
+  sed -i '27,28d' "$guarded"
+  run -0 "$REPO_ROOT/tests/guard-paths" --check "$guarded"
+  assert_equal "$output" ""
+  run -0 "$REPO_ROOT/tests/guard-paths" "$guarded"
+  assert_equal "$output" ""
+}
+
+@test "a guarded git or rm -r line with its variable empty stops at once, leaving the repository it runs in as it was" {
+  local repo=$BATS_TEST_TMPDIR/repo line before
+  git init -q -b dev "$repo"
+  echo x >"$repo/x"
+  git -C "${repo:?}" add x
+  git -C "${repo:?}" commit -q -m "feat: x"
+  git -C "${repo:?}" remote add origin https://example.invalid/repo.git
+  git -C "${repo:?}" worktree add -q "$repo/wt"
+  before=$(git -C "${repo:?}" symbolic-ref HEAD; git -C "${repo:?}" rev-parse HEAD; git -C "${repo:?}" remote -v; ls "$repo")
+  for line in 'git -C "${TEAM_HOME:?}" checkout -q --detach' 'git -C "${TEAM_HOME:?}/sub" remote remove origin' \
+    'git --git-dir="${mirror:?}" update-ref -d HEAD' 'git --work-tree "${wt:?}" checkout -q -b other' \
+    'rm -rf "${wt:?}/x"' 'rm -r "${slots[1]:?}"' 'cd "${wt:?}" && git switch -q --detach'; do
+    run ! --separate-stderr env -C "$repo" TEAM_HOME= mirror= wt= bash -c "$line"
+    assert_contains "$stderr" "parameter null or not set"
+    assert_equal "$(git -C "${repo:?}" symbolic-ref HEAD; git -C "${repo:?}" rev-parse HEAD; git -C "${repo:?}" remote -v; ls "$repo")" "$before"
+  done
+}
+
+@test "tests/run refuses a TESTS_TEST_SECONDS or TESTS_FILE_MINUTES that is no whole number above 0" {
+  local copy=$BATS_TEST_TMPDIR/copy value
+  unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
+  limits_checkout "$copy"
+  for value in '' x 0 -1 1.5 ' 1' 01; do
+    TESTS_TEST_SECONDS=$value run -1 --separate-stderr "$copy/tests/run" bats
+    assert_equal "$stderr" "run: TESTS_TEST_SECONDS is the seconds a bats test may run, a whole number above 0, not '$value'"
+    TESTS_FILE_MINUTES=$value run -1 --separate-stderr "$copy/tests/run" bats
+    assert_equal "$stderr" "run: TESTS_FILE_MINUTES is the minutes a bats file may run, a whole number above 0, not '$value'"
   done
 }
 

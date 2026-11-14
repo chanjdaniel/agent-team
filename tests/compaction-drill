@@ -71,7 +71,7 @@ cleanup() {
     "$claude" purge -y "$team" >/dev/null 2>&1 ||
       echo "compaction-drill: claude purge -y $team failed; remove the session's state by hand" >&2
   fi
-  rm -rf "$sandbox"
+  rm -rf "${sandbox:?}"
   exit "$status"
 }
 trap cleanup EXIT

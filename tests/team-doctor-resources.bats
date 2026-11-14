@@ -172,7 +172,7 @@ sessions() {
   echo '{}' >"$state/slots/readings.jsonl"
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.local/state/agent-team/slots is $why; fix: rm -r ~/.local/state/agent-team/slots"
-  rm -r "$state/slots"
+  rm -r "${state:?}/slots"
   : >"$state/slots.lock"
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.local/state/agent-team/slots.lock is $why; fix: rm -r ~/.local/state/agent-team/slots.lock"
@@ -184,7 +184,7 @@ sessions() {
   tools_at macos
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots and ~/.local/state/agent-team/slots.lock are $why; fix: rm -r ~/.config/agent-team/slots.json ~/.local/state/agent-team/slots ~/.local/state/agent-team/slots.lock"
-  rm -r "$config/slots.json" "$state/slots" "$state/slots.lock"
+  rm -r "${config:?}/slots.json" "${state:?}/slots" "${state:?}/slots.lock"
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "PASS resources: $LEVEL; $MACOS"
 }

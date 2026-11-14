@@ -193,25 +193,25 @@ ticket() {
   printf 'ledger.jsonl.lock\n' >"$TEAM_HOME/.gitignore"
   local team_origin tip
   team_origin=$(hold_lease home-pc)
-  tip=$(git -C "$team_origin" rev-parse dev)
+  tip=$(git -C "${team_origin:?}" rev-parse dev)
   run_bin -0 --separate-stderr team-merge T14
   [[ $stderr != *"not on origin"* ]]
-  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
-  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T14 merged"
-  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
-  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "${team_origin:?}" log -1 --format=%s dev)" "chore: ledger T14 merged"
+  assert_equal "$(git -C "${team_origin:?}" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+  assert_equal "$(git -C "${team_origin:?}" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
 
   # The story cannot be marked and waiting.md cannot be written, both after the merge.
   merge_again
   story_of E40/F01/S02
   waiting_unwritable
-  tip=$(git -C "$team_origin" rev-parse dev)
+  tip=$(git -C "${team_origin:?}" rev-parse dev)
   run_bin -0 --separate-stderr team-merge T14
   assert_contains "$stderr" "its story E40/F01/S02 is not marked done"
   assert_contains "$stderr" "waiting.md is not updated"
-  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: ledger T14 merged"
-  assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
-  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
+  assert_equal "$(git -C "${team_origin:?}" log -1 --format=%s dev)" "chore: ledger T14 merged"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev^)" "$tip"
+  assert_equal "$(git -C "${team_origin:?}" show dev:ledger.jsonl | jq -c 'select(.event == "merged") | del(.ts)')" "$(merged_events)"
 }
 
 @test "a waiting list team-inbox cannot write is a line on stderr, and the merge stands" {
@@ -374,7 +374,7 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
 @test "Daniel's word holds through a conflicted merge whose passing review was logged after it, then a clean catch-up" {
   moved_head conflict base
   local rereviewed
-  rereviewed=$(git -C "$HOME/projects/proj" rev-parse "$head^1")
+  rereviewed=$(git -C "${HOME:?}/projects/proj" rev-parse "$head^1")
   review "$rereviewed" pass
   caught_up "$rereviewed"
   run_bin -0 team-merge T14
@@ -384,7 +384,7 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
 @test "a catch-up after a conflicted merge is refused when that merge's review failed, came before the word, or git shows the catch-up is not clean" {
   moved_head conflict base
   local rereviewed why
-  rereviewed=$(git -C "$HOME/projects/proj" rev-parse "$head^1")
+  rereviewed=$(git -C "${HOME:?}/projects/proj" rev-parse "$head^1")
   why="the merges of the base since Daniel's word on ${approved:0:7} are not clean: ${rereviewed:0:7} conflicted when merged"
   # A failing review, or a pass the findings of a later review replaced.
   review "$rereviewed" findings
@@ -404,7 +404,7 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
 @test "a caught-up event is checked against git: a head with a merge of its own past the rereviewed one is refused" {
   moved_head conflict conflict
   local rereviewed why
-  rereviewed=$(git -C "$HOME/projects/proj" rev-parse "$head^1")
+  rereviewed=$(git -C "${HOME:?}/projects/proj" rev-parse "$head^1")
   review "$rereviewed" pass
   # The ledger says the second merge was clean, and it was not.
   caught_up "$rereviewed"
@@ -694,8 +694,8 @@ EOF
   echo "a note" >"$code/notes.txt"
   run_bin -0 --separate-stderr team-merge T14
   merge=$(jq -r .merge <<<"$output")
-  assert_equal "$(git -C "$code" rev-parse HEAD)" "$merge"
-  assert_equal "$(git -C "$code" rev-parse HEAD)" "$(git -C "$PROJ_ORIGIN" rev-parse dev)"
+  assert_equal "$(git -C "${code:?}" rev-parse HEAD)" "$merge"
+  assert_equal "$(git -C "${code:?}" rev-parse HEAD)" "$(git -C "${PROJ_ORIGIN:?}" rev-parse dev)"
   assert_equal "$(cat "$code/tool.sh")" tool
   assert_equal "$(grep -c 'code checkout' <<<"$stderr")" 1
   assert_contains "$stderr" "team-merge: the code checkout $code: dev fast-forwarded to ${merge:0:7}"
@@ -703,30 +703,30 @@ EOF
 
 @test "a code checkout on another branch is left as it is, saying why and how, and the merge exits 0" {
   merging_the_code
-  git -C "$code" switch -q -c feat/elsewhere
-  before=$(git -C "$code" rev-parse HEAD)
+  git -C "${code:?}" switch -q -c feat/elsewhere
+  before=$(git -C "${code:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-merge T14
   assert_equal "$(merged_events | wc -l)" 1
-  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
-  assert_equal "$(git -C "$code" rev-parse dev)" "$before"
+  assert_equal "$(git -C "${code:?}" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "${code:?}" rev-parse dev)" "$before"
   assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: it is on feat/elsewhere, not dev; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
 }
 
 @test "a code checkout on a detached HEAD is left as it is" {
   merging_the_code
-  git -C "$code" switch -q --detach
-  before=$(git -C "$code" rev-parse HEAD)
+  git -C "${code:?}" switch -q --detach
+  before=$(git -C "${code:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "${code:?}" rev-parse HEAD)" "$before"
   assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: it is on a detached HEAD, not dev; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
 }
 
 @test "a code checkout with local changes is left as it is, even when they are not in the way" {
   merging_the_code
   echo "edited" >>"$code/README.md"
-  before=$(git -C "$code" rev-parse HEAD)
+  before=$(git -C "${code:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "${code:?}" rev-parse HEAD)" "$before"
   assert_equal "$(tail -n 1 "$code/README.md")" edited
   assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: it has local changes to README.md; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
 }
@@ -734,20 +734,20 @@ EOF
 @test "a code checkout whose base has diverged from origin's is left as it is" {
   merging_the_code
   echo "mine" >"$code/mine.txt"
-  git -C "$code" add mine.txt
-  git -C "$code" commit -q -m "chore: a commit of its own"
-  before=$(git -C "$code" rev-parse HEAD)
+  git -C "${code:?}" add mine.txt
+  git -C "${code:?}" commit -q -m "chore: a commit of its own"
+  before=$(git -C "${code:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "${code:?}" rev-parse HEAD)" "$before"
   assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: dev has diverged from origin's; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
 }
 
 @test "an untracked file in the way leaves the code checkout as it is" {
   merging_the_code
   echo "mine" >"$code/tool.sh"
-  before=$(git -C "$code" rev-parse HEAD)
+  before=$(git -C "${code:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "${code:?}" rev-parse HEAD)" "$before"
   assert_equal "$(cat "$code/tool.sh")" mine
   assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: local changes to tool.sh are in the way; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
 }
@@ -758,17 +758,17 @@ EOF
   other=$(other_spelling "$code")
   sed -i "s|^path = \"agent-team\"\$|path = \"${other##*/}\"|" "$TEAM_HOME/projects.toml"
   run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(git -C "$code" rev-parse HEAD)" "$(jq -r .merge <<<"$output")"
+  assert_equal "$(git -C "${code:?}" rev-parse HEAD)" "$(jq -r .merge <<<"$output")"
 }
 
 @test "a merge of any other project leaves the code checkout alone" {
   code_checkout
   push_to_dev "$CODE_ORIGIN" bin-change.txt >/dev/null
-  before=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+  before=$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-merge T14
-  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)" "$before"
   [[ $stderr != *"code checkout"* ]]
-  [[ -z $(git -C "$CODE_CHECKOUT" for-each-ref refs/remotes/origin/dev --contains "$(git -C "$CODE_ORIGIN" rev-parse dev)") ]]
+  [[ -z $(git -C "${CODE_CHECKOUT:?}" for-each-ref refs/remotes/origin/dev --contains "$(git -C "${CODE_ORIGIN:?}" rev-parse dev)") ]]
 }
 
 @test "a per-head merge reads no file list" {

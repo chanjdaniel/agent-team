@@ -222,10 +222,10 @@ stack_project() {
   printf '#!/usr/bin/env bash\necho "seeded $COMPOSE_PROJECT_NAME on port $TH_WEB_PORT for $TEAM_TASK from $PWD"\n' \
     >"$STACK_PRIMARY/scripts/seed.sh"
   chmod +x "$STACK_PRIMARY/scripts/seed.sh"
-  git -C "$STACK_PRIMARY" add scripts docker-compose.yml
-  git -C "$STACK_PRIMARY" commit -q -m "feat: add the stack"
-  git -C "$STACK_PRIMARY" push -q origin HEAD
-  git -C "$STACK_PRIMARY" worktree add -q -b work "$STACK_WORKTREE"
+  git -C "${STACK_PRIMARY:?}" add scripts docker-compose.yml
+  git -C "${STACK_PRIMARY:?}" commit -q -m "feat: add the stack"
+  git -C "${STACK_PRIMARY:?}" push -q origin HEAD
+  git -C "${STACK_PRIMARY:?}" worktree add -q -b work "$STACK_WORKTREE"
   cat >>"$TEAM_HOME/projects.toml" <<TOML
 
 [$name]

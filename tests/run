@@ -7,8 +7,14 @@
 # (every test is sandboxed, so files share nothing), the slowest first by tests/shards' weights:
 # one line per file as it ends, then the whole output of each file that failed, each skipped
 # test's line as "tests/<file>.bats: ok <n> <name> # skip <reason>" (a skip counts as passed),
-# and the count of tests passed. How many at once is TEAM_JOBS when set (a whole number above 0, else refused),
-# else, when a team home is found, team-capacity jobs (the floor of the level's CPU budget, at
+# and the count of tests passed. Each test has a time limit, TESTS_TEST_SECONDS (default 600, as
+# bats' BATS_TEST_TIMEOUT), past which bats fails it as "not ok <n> <name> # timeout after <s>s";
+# each file one, TESTS_FILE_MINUTES (default 40), past which it is stopped (timeout -k 30) as
+# "not ok tests/<name>.bats (<n>s): stopped at its <m>-minute limit", its output so far printed as a
+# failed file's, with a line saying the test after its last line was still running or a process
+# it left held its output open; each a whole number above 0, else refused.
+# How many at once is TEAM_JOBS when set (a whole number above 0, else refused), else, when a
+# team home is found, team-capacity jobs (the floor of the level's CPU budget, at
 # least 1: 3 at minor on 12 cores), else nproc (CI, a fresh clone).
 # Every part but shellcheck alone and a --list (a shard's or --changed's) runs under the
 # machine's heavy-run lock (team-heavy run, whose cost sample is heavy:tests-run), so a suite
@@ -71,7 +77,7 @@ if [[ $what == bats && $# -gt 1 && $2 == --changed ]]; then
     [[ ${#rest[@]} -eq 1 && ${rest[0]} == --list ]] || usage_error "$usage"
     list=1
   fi
-  if ! git -C "$root" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+  if ! git -C "${root:?}" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
     [[ $# -gt 2 && $3 == "$base" ]] || die "no $base to compare with in $root: fetch it, or name a base (tests/run bats --changed <base>)"
     usage_error "--changed: no commit $base; $usage"
   fi
@@ -92,6 +98,13 @@ fi
 if [[ -n ${TESTS_SLOWER_BY+set} && ! $TESTS_SLOWER_BY =~ ^[0-9]+$ ]]; then
   die "TESTS_SLOWER_BY is the seconds a bats file may take over its timing, a whole number, not '$TESTS_SLOWER_BY'"
 fi
+if [[ -n ${TESTS_TEST_SECONDS+set} && ! $TESTS_TEST_SECONDS =~ ^[1-9][0-9]*$ ]]; then
+  die "TESTS_TEST_SECONDS is the seconds a bats test may run, a whole number above 0, not '$TESTS_TEST_SECONDS'"
+fi
+if [[ -n ${TESTS_FILE_MINUTES+set} && ! $TESTS_FILE_MINUTES =~ ^[1-9][0-9]*$ ]]; then
+  die "TESTS_FILE_MINUTES is the minutes a bats file may run, a whole number above 0, not '$TESTS_FILE_MINUTES'"
+fi
+test_seconds=${TESTS_TEST_SECONDS:-600} file_minutes=${TESTS_FILE_MINUTES:-40}
 
 # Every part but shellcheck alone and a --list runs under the machine's heavy-run lock
 # (bin/team-heavy).
@@ -125,12 +138,12 @@ bats_files() {
 # The paths --changed starts from (see the header), one per line, relative to the checkout.
 changed_paths() {
   local entry
-  git -C "$root" diff --name-only --no-renames "$base...HEAD"
+  git -C "${root:?}" diff --name-only --no-renames "$base...HEAD"
   while IFS= read -r -d '' entry; do
     echo "${entry:3}"
     # A rename or copy's entry is followed by its source's path.
     if [[ ${entry:0:2} == *[RC]* ]]; then IFS= read -r -d '' entry && echo "$entry"; fi
-  done < <(git -C "$root" status --porcelain=v1 -z --untracked-files=all)
+  done < <(git -C "${root:?}" status --porcelain=v1 -z --untracked-files=all)
 }
 
 # The files the selection reads, from the checkout's root: the bats files that grep "$@" matches,
@@ -315,13 +328,15 @@ slow_files() {
     }' "$timings" -
 }
 
-# The bats files (bats_files), in parallel (see the header); fails if any file fails.
+# The bats files (bats_files), in parallel, each test and file under its time limit (see the
+# header); fails if any file fails.
 run_bats() {
-  local file failed=0 names
+  local file failed=0 names minutes="$file_minutes minutes"
+  ((file_minutes != 1)) || minutes='1 minute'
   out=$(mktemp -d)
   trap 'rm -rf "$out"' EXIT
-  # Each file's output goes to $out/<file>, with $out/<file>.failed beside it when it fails and
-  # $out/<file>.seconds its seconds.
+  # Each file's output goes to $out/<file>, with $out/<file>.failed beside it when it fails,
+  # $out/<file>.stopped when its time limit stopped it, and $out/<file>.seconds its seconds.
   bats_files >"$out/files" || { echo "bats: tests/shards could not split the files"; return 1; }
   if [[ -n $changed ]]; then
     if [[ ! -s $out/files ]]; then
@@ -335,18 +350,28 @@ run_bats() {
     echo "bats: shard $shard has no file"
     return 0
   fi
+  # timeout ends 124 when its TERM stopped the file, 137 when its kill did.
   # shellcheck disable=SC2016 # expanded by each file's bash
   tr '\n' '\0' <"$out/files" |
-    xargs -0 -r -n 1 -P "$jobs" bash -c '
-      name=${2##*/} verdict=ok
-      "$0/tests/vendor/bats-core/bin/bats" "$2" >"$1/$name" 2>&1 || { verdict="not ok"; touch "$1/$name.failed"; }
+    BATS_TEST_TIMEOUT=$test_seconds xargs -0 -r -n 1 -P "$jobs" bash -c '
+      name=${3##*/} verdict=ok rc=0 stopped=""
+      timeout -k 30 "$2m" "$0/tests/vendor/bats-core/bin/bats" "$3" >"$1/$name" 2>&1 || rc=$?
+      if ((rc != 0)); then verdict="not ok"; touch "$1/$name.failed"; fi
+      if ((rc == 124 || rc == 137)) && ((SECONDS >= $2 * 60)); then
+        touch "$1/$name.stopped"
+        stopped=": stopped at its $2-minute limit"
+      fi
       echo "$SECONDS" >"$1/$name.seconds"
-      printf "%s tests/%s (%ds)\n" "$verdict" "$name" "$SECONDS"' "$root" "$out"
+      printf "%s tests/%s (%ds)%s\n" "$verdict" "$name" "$SECONDS" "$stopped"' "$root" "$out" "$file_minutes"
   for file in "$out"/*.bats; do
     [[ -e $file.failed ]] || continue
     failed=$((failed + 1))
     printf '\n--- tests/%s\n' "${file##*/}"
     cat "$file"
+    # A file stopped mid-line ends that line first.
+    [[ ! -s $file || -z $(tail -c 1 "$file") ]] || echo
+    [[ ! -e $file.stopped ]] ||
+      echo "tests/run: tests/${file##*/} ran past $minutes; the test after the last line above was still running, or a process it left held the file's output open"
   done
   # A skipped test counts as passed, so each one is named, which a file's ok line never shows.
   for file in "$out"/*.bats; do

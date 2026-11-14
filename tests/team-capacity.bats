@@ -10,6 +10,12 @@ load helpers/common
 # The unit directory, and the directory of the readings, the kept state and the cost samples.
 UNITS='' STATE_DIR=''
 
+# A sleeper a test started, killed on every path, so a failed test never leaves it holding
+# bats' output open.
+teardown() {
+  [[ ! -f $BATS_TEST_TMPDIR/sleepers ]] || xargs kill <"$BATS_TEST_TMPDIR/sleepers" 2>/dev/null || true
+}
+
 setup() {
   sandbox
   fake_service_managers
@@ -671,9 +677,9 @@ team_reading() {
   # its ticket branch, not logged yet: half open).
   local primary=$HOME/agent-team wt2=$HOME/agent-team/.claude/worktrees/3 wt3=$HOME/agent-team/.claude/worktrees/4
   git init -q -b dev "$primary"
-  git -C "$primary" commit -q --allow-empty -m "chore: start"
-  git -C "$primary" worktree add -q -b feat/T9-work--02 "$wt2"
-  git -C "$primary" worktree add -q -b feat/T9-work--03 "$wt3"
+  git -C "${primary:?}" commit -q --allow-empty -m "chore: start"
+  git -C "${primary:?}" worktree add -q -b feat/T9-work--02 "$wt2"
+  git -C "${primary:?}" worktree add -q -b feat/T9-work--03 "$wt3"
   jq -cn --arg wt "$wt2" '{ts: "2026-11-01T10:05:00Z", task: "T9", event: "worktree-added", project: "agent-team",
     branch: "feat/T9-work--02", base: "feat/T9-work", base_sha: "abc1234", worktree: $wt, ticket: "02"}' >>"$TEAM_HOME/ledger.jsonl"
   proc 200 1 300 40 "$wt2"
@@ -774,12 +780,24 @@ team_reading() {
   # The stubbed uname says this machine's own OS, read past the stubs.
   if [[ $(command -p uname -s) == Darwin ]]; then as_macos; fi
   mkdir -p "$T7_WT"
-  local sleeper rss
+  local sleeper rss comm i
   (cd "$T7_WT" && exec sleep 60) &
   sleeper=$!
+  echo "$sleeper" >>"$BATS_TEST_TMPDIR/sleepers"
+  # Its RSS is read only once it is the sleep, never the subshell before its exec, whose RSS is
+  # larger. macOS may print a path, and GNU's sleep from Homebrew's gnubin as gsleep.
+  for ((i = 0; ; i++)); do
+    comm=$(ps -o comm= -p "$sleeper" || true)
+    comm=${comm##*/}
+    [[ $comm != sleep && $comm != gsleep ]] || break
+    if ((i == 100)); then
+      echo "the sleeper is still $comm after 5 s" >&2
+      return 1
+    fi
+    sleep 0.05
+  done
   rss=$(ps -o rss= -p "$sleeper" | tr -d ' ')
   run_bin -0 --separate-stderr team-capacity sample
-  kill "$sleeper"
   assert_equal "$output$stderr" ""
   # The machine's own team slices (the suite's heavy run, in its task's) are tasks of the reading
   # too, so only the sandbox's are read.

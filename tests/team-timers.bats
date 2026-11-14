@@ -29,6 +29,49 @@ setup() {
   notices=$HOME/.local/state/agent-team/notices.json
   inbox_discord alerts
   inbox_guild_kept
+  # Every run here ends in seconds, so a run that hangs is stopped at 120 s, never the 70
+  # minutes of the default; a test of the time limit itself sets its own.
+  export TEAM_TIMERS_RUN_SECONDS=120
+}
+
+# The most seconds a test here waits on another process: for a file to be written, or for a
+# background run to end.
+WAIT_SECONDS=30
+
+# The run limit of a test whose run must reach its hung session list (claude agents) before the
+# limit stops it: three times the slowest a run took to reach it on a loaded CI runner, 6.5 s on
+# macOS and 1.8 s on Linux (T313), rounded up. The 2 and 3 s limits before it were below what a
+# macOS run took.
+HANG_RUN_SECONDS=20
+
+# Wait until the file <file> holds something, polling every 0.1 s, and fail past WAIT_SECONDS
+# naming <what> (the process that writes it): wait_for_file <file> <what>
+wait_for_file() {
+  local end=$((SECONDS + WAIT_SECONDS))
+  until [[ -s $1 ]]; do
+    if ((SECONDS >= end)); then
+      echo "timed out after $WAIT_SECONDS s waiting for $2" >&2
+      return 1
+    fi
+    command -p sleep 0.1
+  done
+}
+
+# Wait for the background process <pid>, a child of the test's shell, and set rc to its exit
+# status; past WAIT_SECONDS kill it and fail naming <what>: wait_for_pid <pid> <what>
+wait_for_pid() {
+  local end=$((SECONDS + WAIT_SECONDS))
+  while kill -0 "$1" 2>/dev/null; do
+    if ((SECONDS >= end)); then
+      kill -KILL "$1" 2>/dev/null || true
+      wait "$1" 2>/dev/null || true
+      echo "timed out after $WAIT_SECONDS s waiting for $2" >&2
+      return 1
+    fi
+    command -p sleep 0.1
+  done
+  rc=0
+  wait "$1" || rc=$?
 }
 
 # The failures log's lines, each without its time.
@@ -38,7 +81,7 @@ problems() {
 
 # The commit at the tip of origin's lease branch.
 lease_tip() {
-  git -C "$origin" rev-parse lease
+  git -C "${origin:?}" rev-parse lease
 }
 
 # The PATH a script sees once the library is sourced: on macOS, Homebrew's GNU tools first.
@@ -344,11 +387,12 @@ SH
 rm -f '$agents/agent-team.heartbeat.plist'
 trap '' TERM
 echo "\$\$" >>'$hung'
-command -p sleep 300
+command -p sleep 30
 SH
   forget_launchctl
-  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
-  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=$HANG_RUN_SECONDS TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after $HANG_RUN_SECONDS s"$ ]]
+  [[ -s $hung ]]
   assert_equal "$(still_running "$hung")" ""
   jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
   assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
@@ -360,26 +404,29 @@ SH
   local uid hung=$BATS_TEST_TMPDIR/hung pid rc
   uid=$(id -u)
   run_bin -0 team-timers enable
+  # A session list deaf to SIGTERM that marks it in $hung.term, its sleep deaf to it too: the time
+  # limit's stop TERMs both, then kills both KILL_SECONDS later.
   stub_script claude <<SH
 [[ \$1 == agents ]] || exit 0
-trap '' TERM
+trap "echo TERM >>'$hung.term'" TERM
 echo "\$\$" >>'$hung'
-command -p sleep 300
+(trap '' TERM; command -p sleep 30) &
+echo "\$!" >>'$hung'
+while kill -0 "\$!" 2>/dev/null; do wait "\$!" || true; done
 SH
   forget_launchctl
-  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=2 TEAM_TIMERS_KILL_SECONDS=4 \
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=$HANG_RUN_SECONDS TEAM_TIMERS_KILL_SECONDS=4 \
     "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/run.out" 2>&1 &
   pid=$!
-  until [[ -s $hung ]]; do command -p sleep 0.1; done
+  wait_for_file "$hung" "the run's session list (claude agents) to hang"
+  wait_for_file "$hung.term" "the run's time limit to stop its session list"
   # The time limit has stopped the run, whose lock went with it, and bounded_run is still in its
   # wait before the timed-out log line and record.
-  command -p sleep 3
   run_bin -0 --separate-stderr team-timers disable
   assert_equal "$output" "the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends"
-  rc=0
-  wait "$pid" || rc=$?
+  wait_for_pid "$pid" "team-timers run to end once its time limit stopped it"
   assert_equal "$rc" 1
-  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 2 s"$ ]]
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after $HANG_RUN_SECONDS s"$ ]]
   assert_equal "$(still_running "$hung")" ""
   jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
   assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
@@ -616,18 +663,18 @@ EOF
   mkdir -p "$TEAM_HOME/memory/home" "$state"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
   touch -d '-3 minutes' "$state/last-checkpoint"
-  tip=$(git -C "$origin" rev-parse dev)
+  tip=$(git -C "${origin:?}" rev-parse dev)
   run_bin -0 team-timers run
   assert_contains "$output" "lease: home-pc holds the lease"
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: not due: the last checkpoint was 3 minutes ago (--force makes one now)"$ ]]
-  assert_equal "$(git -C "$origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${origin:?}" rev-parse dev)" "$tip"
 
   # The heartbeat's next run, 5 minutes on, makes one, and so does the one after.
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
   # It takes the waiting list the first run's inbox step wrote, a record too.
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md
+  assert_equal "$(git -C "${origin:?}" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md
 waiting.json
 waiting.md"
   assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
@@ -636,23 +683,23 @@ waiting.md"
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md"
+  assert_equal "$(git -C "${origin:?}" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md"
 
   # A machine that does not hold the lease never checkpoints, however old the last one.
   run -0 "$REPO_ROOT/bin/team-lease" release
   echo "- another note" >>"$TEAM_HOME/memory/home/MEMORY.md"
   touch -d '-30 minutes' "$state/last-checkpoint"
-  tip=$(git -C "$origin" rev-parse dev)
+  tip=$(git -C "${origin:?}" rev-parse dev)
   run_bin -0 team-timers run
   assert_equal "$(grep -c checkpoint: <<<"$output")" 0
-  assert_equal "$(git -C "$origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${origin:?}" rev-parse dev)" "$tip"
 }
 
 @test "a checkpoint that fails is logged and fails the run" {
   local state=$HOME/.local/state/agent-team
   mkdir -p "$TEAM_HOME/memory/home"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   run_bin -1 team-timers run
   [[ $(grep -E '^[^ ]+ checkpoint: ' <<<"$output" | tail -n 1) =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
   [[ ! -e $state/last-checkpoint ]]
@@ -664,7 +711,7 @@ waiting.md"
 
   mkdir -p "$TEAM_HOME/memory/home"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   touch -d '-5 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
   run_bin -1 team-timers run
   # The ledger's commit and the last one each fail, so two lines, the same in both logs and on
@@ -677,7 +724,7 @@ checkpoint: failed: team home: not on a branch, so the records are not committed
   assert_equal "$(grep ' checkpoint: failed: ' <<<"$output")" "$line"
 
   # Back on its branch: the next run's good lines are in the heartbeat log alone.
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   touch -d '-5 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
   run_bin -0 team-timers run
   assert_contains "$output" " checkpoint: team home: committed "
@@ -690,9 +737,9 @@ checkpoint: failed: team home: not on a branch, so the records are not committed
 open_task_refused_wip() {
   make_repo home >/dev/null
   printf '.scratch/\n' >"$HOME/projects/home/.gitignore"
-  git -C "$HOME/projects/home" add .gitignore
-  git -C "$HOME/projects/home" commit -q -m "chore: ignore scratch"
-  git -C "$HOME/projects/home" push -q origin main
+  git -C "${HOME:?}/projects/home" add .gitignore
+  git -C "${HOME:?}/projects/home" commit -q -m "chore: ignore scratch"
+  git -C "${HOME:?}/projects/home" push -q origin main
   cat >>"$TEAM_HOME/projects.toml" <<'TOML'
 
 [home]
@@ -737,7 +784,7 @@ SH
 
   # More failures are more lines, in the checkpoint's order: a detached team home fails its
   # ledger commit, first, and its last commit.
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   run_bin -1 team-timers run
   [[ $(grep ' checkpoint: failed: ' <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$'\n'[0-9T:Z-]+" checkpoint: failed: T1 home: cannot push wip/home/T1 to the team home's origin: "[^$'\n']+$'\n'[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
 }
@@ -807,7 +854,7 @@ SH
   fake_checkpoint <<SH
 trap '' TERM
 echo "a line before it hangs"
-command -p sleep 300 &
+command -p sleep 30 &
 echo "\$!" >>'$hung'
 echo "\$\$" >>'$hung'
 wait
@@ -830,7 +877,7 @@ checkpoint: failed: timed out after 1 s"
   add_loose 200
   mkdir -p "$TEAM_HOME/memory/home"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   run_bin -1 team-timers run
   # With no good checkpoint yet, its first failure alerts, before the later steps.
   assert_equal "$(steps "$output")" "lease checkpoint alert pack janitor"
@@ -840,7 +887,7 @@ checkpoint: failed: timed out after 1 s"
   [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
 
   # 75: another checkpoint still running, or GitHub unreachable.
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   rm "$(day_report)"
   add_loose 200
   fake_checkpoint <<'SH'
@@ -861,13 +908,13 @@ SH
 [[ \$1 == agents ]] || exit 0
 trap '' TERM
 echo "\$\$" >>'$hung'
-command -p sleep 300
+command -p sleep 30
 SH
   local start=$SECONDS
-  TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
-  ((SECONDS - start < 20))
+  TEAM_TIMERS_RUN_SECONDS=$HANG_RUN_SECONDS TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  ((SECONDS - start < HANG_RUN_SECONDS + 17))
   assert_equal "$output" "$(cat "$log")"
-  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" run: failed: timed out after $HANG_RUN_SECONDS s"$ ]]
   (($(grep -c . "$hung") >= 1))
   assert_equal "$(still_running "$hung")" ""
   flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
@@ -878,11 +925,11 @@ SH
   assert_equal "$(steps "$output")" "lease checkpoint"
 }
 
-# The ids of the processes whose arguments are exactly "sleep 4199", each killed, so a run that
-# leaves one never holds the file's run open.
+# The ids of the processes whose arguments are exactly "sleep $TEAM_TIMERS_RUN_SECONDS", each
+# killed, so a run that leaves one never holds the file's run open.
 leftover_timers() {
   local pid
-  command -p ps -A -o pid=,args= | awk '$2 == "sleep" && $3 == "4199" && NF == 3 { print $1 }' |
+  command -p ps -A -o pid=,args= | awk -v n="$TEAM_TIMERS_RUN_SECONDS" '$2 == "sleep" && $3 == n && NF == 3 { print $1 }' |
     while read -r pid; do
       kill -KILL "$pid" 2>/dev/null || true
       echo "$pid"
@@ -896,7 +943,7 @@ leftover_timers() {
   stub_script ps <<'SH'
 if [[ $* == "-A -o pid=,ppid=" ]]; then
   for ((i = 0; i < 50; i++)); do
-    command -p ps -A -o args= | grep -x 'sleep 4199' >/dev/null && break
+    command -p ps -A -o args= | grep -x "sleep $TEAM_TIMERS_RUN_SECONDS" >/dev/null && break
     command -p sleep 0.1
   done
   command -p ps -A -o pid=,ppid=,comm= | awk '$3 != "sleep" && $3 !~ /\/sleep$/ { print $1, $2 }'
@@ -905,7 +952,9 @@ fi
 command -p ps "$@"
 exit
 SH
-  export TEAM_TIMERS_RUN_SECONDS=4199
+  # A run limit no other run on the machine has, since the test reads every process, another copy
+  # of this file's among them: 5000000 plus this test's process id, which no live test shares.
+  export TEAM_TIMERS_RUN_SECONDS=$((5000000 + $$))
   local start lock=$HOME/.local/state/agent-team/heartbeat.lock
   mkdir -p "${lock%/*}"
 
@@ -1021,8 +1070,8 @@ queue_lines() {
   agent_team_task T5
   mkdir -p "$TEAM_HOME/tasks/queued"
   printf -- '---\nsummary: pin Node 24\nproject: agent-team\npriority: 2\nsize: S\n---\n# Pin Node\n' >"$TEAM_HOME/tasks/queued/node-pin.md"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -qm "chore: queue node-pin.md"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -qm "chore: queue node-pin.md"
   # team-open --queued takes the item for the task it opens.
   run_bin -0 team-queue take T5 node-pin.md
   run_bin -0 team-timers run
@@ -1032,8 +1081,8 @@ queue_lines() {
   assert_equal "$(queue_lines "$output")" "moved node-pin.md to tasks/T5/queued/: T5 merged
 wrote tasks/queued/index.md: 0 files"
   [[ ! -e $TEAM_HOME/tasks/queued/node-pin.md && -f $TEAM_HOME/tasks/T5/queued/node-pin.md ]]
-  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued tidy"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$(git -C "$origin" rev-parse dev)"
+  assert_equal "$(git -C "${TEAM_HOME:?}" log -1 --format=%s)" "chore: queued tidy"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$(git -C "${origin:?}" rev-parse dev)"
   run_bin -0 team-queue index --check
   run_bin -0 team-timers run
   assert_equal "$(queue_lines "$output")" ""
@@ -1489,7 +1538,8 @@ finished: stopped T9-builder 44444444: its work is handed on"
 
 # Origin unreachable for the team home: a closed local port.
 cut_origin() {
-  git -C "${1:-${TEAM_HOME:?}}" remote set-url origin https://127.0.0.1:9/agent-team.git
+  local home=${1:-${TEAM_HOME:?}}
+  git -C "${home:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
 }
 
 # git's reason for a cut origin, whose wording after "Failed to connect to 127.0.0.1" changes
@@ -1673,7 +1723,7 @@ GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker 
   stub_script claude <<SH
 if [[ ! -e '$BATS_TEST_TMPDIR/hung' ]]; then
   touch '$BATS_TEST_TMPDIR/hung'
-  command -p sleep 300
+  command -p sleep 30
 fi
 echo '$COORDINATOR'
 SH
@@ -2464,7 +2514,7 @@ EOF2
   assert_equal "$(posts)" "$(grep ' level: ' <<<"$output" | cut -d ' ' -f 3- | jq -R .)"
   assert_equal "$(jq -c '[.mode, .level, .by]' <(tail -n 1 "$TEAM_HOME/level.jsonl"))" '["auto","full","auto"]'
   # The level record went into the checkpoint.
-  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s -- level.jsonl)" "$(git -C "$TEAM_HOME" log -1 --format=%s)"
+  assert_equal "$(git -C "${TEAM_HOME:?}" log -1 --format=%s -- level.jsonl)" "$(git -C "${TEAM_HOME:?}" log -1 --format=%s)"
   # A run with nothing to change logs nothing for it.
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"

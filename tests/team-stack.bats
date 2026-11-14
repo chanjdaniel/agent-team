@@ -495,7 +495,7 @@ compose port web 80"
 @test "a worktree of no registered project, or of a project without a stack block, is refused" {
   local other
   other=$(make_repo other)
-  git -C "$other" worktree add -q -b work "$HOME/worktrees/other-1"
+  git -C "${other:?}" worktree add -q -b work "$HOME/worktrees/other-1"
   run_bin -1 --separate-stderr team-stack down --worktree "$HOME/worktrees/other-1"
   assert_equal "$stderr" "team-stack: $HOME/worktrees/other-1 is a worktree of $other, which is no project's primary checkout in projects.toml"
   sed -i '/^\[shop.stack\]$/,$d' "$TEAM_HOME/projects.toml"
@@ -1566,7 +1566,7 @@ failing_seed() {
   printf '#!/usr/bin/env bash\necho "half seeded"\nexit 3\n' >"$STACK_WORKTREE/scripts/seed.sh"
 }
 fixed_seed() {
-  git -C "$STACK_WORKTREE" checkout -q -- scripts/seed.sh
+  git -C "${STACK_WORKTREE:?}" checkout -q -- scripts/seed.sh
 }
 
 # The worktree's wrapper makes its stack, but its up -d --wait fails while
@@ -1597,7 +1597,7 @@ live_team_stack() {
   run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
   assert_equal "${stderr##*$'\n'}" "team-stack: the seed command scripts/seed.sh failed (exit 3) for $PROJECT; the next team-stack up or team-stack seed seeds it again"
   assert_equal "$(record '.seed | [.state, .exit, (.pid // "none")]')" '["failed",3,"none"]'
-  assert_equal "$(record .seed.commit -r)" "$(git -C "$STACK_WORKTREE" rev-parse HEAD)"
+  assert_equal "$(record .seed.commit -r)" "$(git -C "${STACK_WORKTREE:?}" rev-parse HEAD)"
   local at
   at=$(record .seed.at -r)
   [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
@@ -1744,7 +1744,7 @@ EOF
     >>"$STACK_WORKTREE/scripts/seed.sh"
   run_bin -0 team-stack seed --worktree "$STACK_WORKTREE"
   local head
-  head=$(git -C "$STACK_WORKTREE" rev-parse HEAD)
+  head=$(git -C "${STACK_WORKTREE:?}" rev-parse HEAD)
   assert_equal "$(jq -c --arg head "$head" '[.schema, .seed.state, .seed.commit == $head, (.seed.pid | type)]' "$during.json")" \
     '["team-stack/1","running",true,"number"]'
   assert_contains "$(cat "$during.ps")" "bin/team-stack seed"

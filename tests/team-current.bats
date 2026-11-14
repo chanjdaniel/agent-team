@@ -26,8 +26,8 @@ id_of() {
 
 # The subject of the team home's last commit, and the paths it changed, on one line each.
 last_commit() {
-  git -C "$TEAM_HOME" log -1 --format=%s
-  git -C "$TEAM_HOME" show --name-only --format= HEAD
+  git -C "${TEAM_HOME:?}" log -1 --format=%s
+  git -C "${TEAM_HOME:?}" show --name-only --format= HEAD
 }
 
 @test "add prints the item's id and appends its line; list prints each item with its id" {
@@ -50,7 +50,7 @@ $(id_of "$second") ${second#- }"
   local b="- watch T4 the CI wait on PR 7, re-arm with team-ci-wait | ledger 2026-11-01T07:08:11Z"
   local c="- queued - the Node pin | ~/team/tasks/queued/node-pin.md"
   printf '%s\n' "# Current items" "" "$a" "$b" "$c" >"$current"
-  git -C "$TEAM_HOME" commit -q -am "chore: items"
+  git -C "${TEAM_HOME:?}" commit -q -am "chore: items"
   run_bin -0 team-current "done" "$(id_of "$b")"
   assert_contains "$output" "removed $(id_of "$b") ${b#- }"
   assert_equal "$(cat "$current")" "$(printf '%s\n' "# Current items" "" "$a" "$c")"
@@ -63,8 +63,8 @@ $(id_of "$second") ${second#- }"
 @test "add refuses each line the manual does not allow, file unchanged and nothing committed" {
   local before head long
   printf '%s\n' "# Current items" "- next T4 open the Node pin task | tasks/queued/node-pin.md" >"$current"
-  git -C "$TEAM_HOME" commit -q -am "chore: items"
-  before=$(cat "$current") head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  git -C "${TEAM_HOME:?}" commit -q -am "chore: items"
+  before=$(cat "$current") head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   long=$(printf 'x%.0s' {1..280})
   mkdir -p "$BATS_TEST_TMPDIR/job"
   echo out >"$BATS_TEST_TMPDIR/job/out.md"
@@ -74,8 +74,8 @@ $(id_of "$second") ${second#- }"
     run_bin -1 --separate-stderr team-current add "$@"
     assert_contains "$stderr" "$reason"
     assert_equal "$(cat "$current")" "$before"
-    assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-    assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+    assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+    assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" ""
   }
   check_refusal "kind 'todo' is not ask, owe, next or watch" todo - a thing --where tasks/queued/node-pin.md
   check_refusal "queued work is a file in tasks/queued/ with front matter, which team-queue index lists, never a current item" \
@@ -123,7 +123,7 @@ b" --where tasks/queued/node-pin.md
 @test "done refuses an id that matches no item or two, file unchanged" {
   local item="- next T4 open the Node pin task | tasks/queued/node-pin.md"
   printf '%s\n' "# Current items" "$item" "$item" "- owe - a reply | 1563000000000000045" >"$current"
-  git -C "$TEAM_HOME" commit -q -am "chore: items"
+  git -C "${TEAM_HOME:?}" commit -q -am "chore: items"
   local before
   before=$(cat "$current")
   run_bin -1 --separate-stderr team-current "done" "$(id_of "$item")"
@@ -134,7 +134,7 @@ b" --where tasks/queued/node-pin.md
   assert_equal "$(cat "$current")" "$before"
   run_bin -2 team-current "done" abc
   run_bin -2 team-current "done" 12345g
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" ""
 }
 
 @test "check names each bad line with its reason and exits 1, never writing; a clean file passes" {
@@ -151,7 +151,7 @@ b" --where tasks/queued/node-pin.md
 - next T4 open the Node pin task | tasks/queued/node-pin.md
 Not an item: a note under the list.
 EOF
-  git -C "$TEAM_HOME" commit -q -am "chore: items"
+  git -C "${TEAM_HOME:?}" commit -q -am "chore: items"
   run_bin -1 team-current check
   assert_equal "$output" "tasks/current.md:4: task '-:' is not T<n> or -
 tasks/current.md:5: the where 'ledger' is not a file in the team home
@@ -161,7 +161,7 @@ tasks/current.md:8: the line has no ' | <where>'
 tasks/current.md:9: the where '/tmp/watch.log' is a temp path
 tasks/current.md:10: the line is already in tasks/current.md, at line 3
 tasks/current.md:11: not an item line (- <kind> <task or -> <text> | <where>)"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" ""
   printf '%s\n' "# Current items" "" "- next T4 open the Node pin task | tasks/queued/node-pin.md" >"$current"
   run_bin -0 team-current check
   assert_equal "$output" ""
@@ -193,13 +193,13 @@ closed_task() {
   local d="- watch T9 the scratch | /tmp/watch.log"
   local e="- ask T77 a task the ledger does not hold | 1563000000000000045"
   printf '%s\n' "# Current items" "" "$a" "$b" "$c" "$d" "$e" >"$current"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: items"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: items"
   run_bin -1 team-current check
   assert_equal "$output" "tasks/current.md:3: T181 closed at 2026-11-02T01:31:49Z; done it (team-current done $(id_of "$a")) or add it again under an open task
 tasks/current.md:6: the where '/tmp/watch.log' is a temp path
 tasks/current.md:6: T9 closed at 2026-11-05T10:00:00Z; done it (team-current done $(id_of "$d")) or add it again under an open task"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" ""
   # With no closed task named, the file passes.
   printf '%s\n' "# Current items" "$b" "$c" "$e" >"$current"
   run_bin -0 team-current check
@@ -216,8 +216,8 @@ tasks/current.md:6: T9 closed at 2026-11-05T10:00:00Z; done it (team-current don
   local a="- next T181 open the rest of the refactor | tasks/queued/node-pin.md"
   local b="- todo T4 something | tasks/queued/node-pin.md"
   printf '%s\n' "# Current items" "$a" "$b" "Not an item." "- ask - no where" >"$current"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: items"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: items"
   run_bin -1 --separate-stderr team-current check --json
   assert_equal "$stderr" ""
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg a "${a#- }" --arg ida "$(id_of "$a")" \
@@ -240,42 +240,42 @@ tasks/current.md:6: T9 closed at 2026-11-05T10:00:00Z; done it (team-current don
   rm "$current"
   run_bin -0 team-current check --json
   assert_equal "$(jq -c . <<<"$output")" '{"schema":"team-current-check/1","problems":[],"closed":[]}'
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" " D tasks/current.md"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" " D tasks/current.md"
 }
 
 @test "add and done commit tasks/current.md alone and push it, another changed record left uncommitted" {
   echo "# Plan, changed" >"$TEAM_HOME/tasks/T4/plan.md"
   echo "a staged note" >"$TEAM_HOME/README.md"
-  git -C "$TEAM_HOME" add README.md
+  git -C "${TEAM_HOME:?}" add README.md
   run_bin -0 team-current add next T4 open the Node pin task --where tasks/queued/node-pin.md
   local id=${lines[0]}
   assert_contains "$output" "team home: committed"
   assert_equal "$(last_commit)" "chore: current next T4
 tasks/current.md"
-  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: current next T4"
+  assert_equal "$(git -C "${team_origin:?}" log -1 --format=%s dev)" "chore: current next T4"
   run_bin -0 team-current "done" "${id:0:4}"
   assert_equal "$(last_commit)" "chore: current done $id
 tasks/current.md"
-  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: current done $id"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" "A  README.md
+  assert_equal "$(git -C "${team_origin:?}" log -1 --format=%s dev)" "chore: current done $id"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" "A  README.md
  M tasks/T4/plan.md"
 }
 
 @test "a commit the team home's hooks refuse undoes the change and fails" {
   local before head
-  before=$(cat "$current") head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  before=$(cat "$current") head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   printf '#!/bin/sh\necho "pre-commit: refused" >&2\nexit 1\n' >"$TEAM_HOME/.git/hooks/pre-commit"
   chmod +x "$TEAM_HOME/.git/hooks/pre-commit"
   run_bin -1 --separate-stderr team-current add next T4 open the Node pin task --where tasks/queued/node-pin.md
   assert_contains "$stderr" "pre-commit: refused"
   assert_contains "$stderr" "not committed, so the change is undone"
   assert_equal "$(cat "$current")" "$before"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" ""
 }
 
 @test "a push that fails keeps the commit for the next checkpoint and succeeds" {
-  git -C "$TEAM_HOME" remote set-url origin "$BATS_TEST_TMPDIR/no-such-origin.git"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$BATS_TEST_TMPDIR/no-such-origin.git"
   run_bin -0 --separate-stderr team-current add next T4 open the Node pin task --where tasks/queued/node-pin.md
   assert_contains "$stderr" "cannot push dev"
   assert_equal "$(last_commit)" "chore: current next T4

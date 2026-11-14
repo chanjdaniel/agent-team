@@ -334,7 +334,7 @@ EOF
   # The whole doctor, since the lease line shows every check before it ran to its end without them.
   on_macos
   tools_at macos
-  rm -r "$HOMEBREW_PREFIX/opt/gnu-sed" "$HOMEBREW_PREFIX/opt/flock"
+  rm -r "${HOMEBREW_PREFIX:?}/opt/gnu-sed" "${HOMEBREW_PREFIX:?}/opt/flock"
   run_bin -1 team-doctor
   assert_equal "$(line_of homebrew)" 'FAIL homebrew: missing Homebrew packages: gnu-sed flock; fix: run `brew install gnu-sed flock`'
   assert_equal "$(line_of machine)" "PASS machine: home-pc"

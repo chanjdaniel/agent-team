@@ -53,7 +53,7 @@ add_reply() {
 #   opening a fourth 5-hour block); T2's reviewer l2 was launched and has no replies.
 # In all 21 replies, 6.855 $w, in 13 sessions; 17 ledger events from the first reply on.
 report_fixture() {
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/report/usage" "$TEAM_HOME/usage"
   cp "$BATS_TEST_DIRNAME/fixtures/team-tokens/report/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
   echo agent-team-records >"$HOME/.config/agent-team/home"
@@ -97,7 +97,7 @@ q() {
 stopped_session() {
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
   local session=c2000000-0000-4000-8000-000000000000
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$projects"
   printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"c2000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
   jq -nc --arg session "$session" --arg stopper "$1" --arg argument "$2" --arg id "$3" --arg form "${4:-string}" \
@@ -281,7 +281,7 @@ read 3 of 3 transcripts; wrote 1 day file"
 }
 
 @test "with no transcripts it writes nothing" {
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   run_bin -0 team-tokens export
   assert_equal "$output" "read 0 of 0 transcripts; no day file changed"
   [[ ! -e $TEAM_HOME/usage ]]
@@ -388,7 +388,7 @@ read 3 of 3 transcripts; wrote 1 day file"
 # - T5's builder b5 peaks at 100k (0.82), and T5 has two tickets done;
 # - T6's reviewer c6 has one reply of 260k (0.15).
 long_fixture() {
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$TEAM_HOME/usage/home-pc"
   jq -nc '
     {ts: "2026-10-20T07:00:00Z", task: "T5", event: "opened", project: "agent-team"},
@@ -428,7 +428,7 @@ long_fixture() {
 }
 
 @test "the long sessions table shows the top 15 tasks by \$w, and says how many more there are" {
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$TEAM_HOME/usage/home-pc"
   # Seventeen tasks, T1 to T17, each a builder of one 300k reply whose $w grows with its number.
   jq -nc 'range(1; 18) as $n
@@ -590,7 +590,7 @@ long_fixture() {
   assert_equal "$(jq -c '[.sources, .live, .totals.replies, ([.models[] | [.model, .replies]])]' <<<"$output")" \
     '[{"home-pc":"2026-10-21"},1,5,[["claude-opus-5-5",4],["claude-sonnet-5-5",1]]]'
   # With no day file, every transcript is read.
-  rm -r "$TEAM_HOME/usage"
+  rm -r "${TEAM_HOME:?}/usage"
   run_bin -0 team-tokens --until 2026-10-21T16:00Z --json
   assert_equal "$(jq -c '[.sources, .live, .totals.replies]' <<<"$output")" '[{"home-pc":null},5,5]'
 }
@@ -636,7 +636,7 @@ long_fixture() {
 }
 
 @test "with no usage and an empty ledger the report says none in each table" {
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   run_bin -0 team-tokens --until 2026-10-21T16:00Z
   assert_contains "$output" "0 replies in 0 sessions, 0.0M tokens, 0.00 \$w; 0 ledger events in the window."
   assert_contains "$output" "## Roles"$'\n\n'"None in the window."
@@ -774,7 +774,7 @@ coordinator_fixture() {
 #   31.8 s in 6 replies, its longest run 10.1 s; the day 303.3 s, to 00:05:03.300;
 # - its subagents/agent-def456.jsonl and eeeeeeee-..., an unlaunched session: no row.
 time_fixture() {
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/time/projects" "$HOME/.claude/projects"
   cp "$BATS_TEST_DIRNAME/fixtures/team-tokens/time/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
   dddd=dddddddd-4444-4444-8444-444444444444
@@ -851,7 +851,7 @@ tool SendMessage: 1 1 1"
 @test "a turn that ends on an API error reply with no turn_duration waits from there, as wait error, whatever wakes it" {
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
   local session=c1000000-0000-4000-8000-000000000000
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$projects"
   printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"c1000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
   # The brief at 10:00:00, the session limit's reply at 10:00:05 and no turn_duration, then the
@@ -917,7 +917,7 @@ tool TaskStop: 0.5 1 0.5"
 @test "a background call that ends with its own completed notification counts to it, as before" {
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
   local session=c3000000-0000-4000-8000-000000000000
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$projects"
   printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"c3000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
   # The watch starts at 10:00:05, the turn ends at 10:00:10, the watch's completed notification
@@ -955,7 +955,7 @@ wait message: 3600 1 3600"
 @test "a background call that writes a heredoc and then waits on Daniel is keyed by its wait" {
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
   local session=c4000000-0000-4000-8000-000000000000
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$projects"
   printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"planner","session":"c4000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
   jq -nc --arg session "$session" --arg command $'cd CONTENT-dir; cat >> interview.md <<\'EOF\'\nCONTENT-note\nEOF\nteam-thread wait T1' '
@@ -1025,7 +1025,7 @@ bash team-thread wait"
     $'cd CONTENT-dir; cat > CONTENT-f <<EOF\nCONTENT-line\ntests/run' 'cd'
   )
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1 i session expected=
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$projects"
   : >"$TEAM_HOME/ledger.jsonl"
   for ((i = 0; i < ${#cases[@]}; i += 2)); do

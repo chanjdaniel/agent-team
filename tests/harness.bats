@@ -83,10 +83,10 @@ FIXTURE
 @test "make_repo builds a bare origin and a primary clone that tracks it" {
   run -0 make_repo shop dev
   assert_equal "$output" "$HOME/projects/shop"
-  assert_equal "$(git -C "$output" rev-parse --abbrev-ref HEAD)" "dev"
-  assert_equal "$(git -C "$output" rev-parse --abbrev-ref origin/HEAD)" "origin/dev"
-  assert_equal "$(git -C "$output" rev-parse HEAD)" "$(git -C "$BATS_TEST_TMPDIR/origin/shop.git" rev-parse dev)"
-  assert_equal "$(git -C "$output" log -1 --format='%an <%ae>')" "Team Test <team-test@example.invalid>"
+  assert_equal "$(git -C "${output:?}" rev-parse --abbrev-ref HEAD)" "dev"
+  assert_equal "$(git -C "${output:?}" rev-parse --abbrev-ref origin/HEAD)" "origin/dev"
+  assert_equal "$(git -C "${output:?}" rev-parse HEAD)" "$(git -C "${BATS_TEST_TMPDIR:?}/origin/shop.git" rev-parse dev)"
+  assert_equal "$(git -C "${output:?}" log -1 --format='%an <%ae>')" "Team Test <team-test@example.invalid>"
 }
 
 @test "untraced returns its command's status, for a function and a command, with the trap lifted only inside" {

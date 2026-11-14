@@ -634,15 +634,15 @@ $RANKED"
   assert_equal "$stderr" ""
   # A holder that steals the lease after a crash reads origin's waiting.json, so the post's
   # reservation is there at once, its commit holding the two files alone.
-  assert_equal "$(git -C "$origin" log -1 --format=%s dev)" "chore: waiting list posted"
-  assert_equal "$(git -C "$origin" show --format= --name-only dev | sort)" "$(printf '%s\n' waiting.json waiting.md)"
-  assert_equal "$(git -C "$origin" show dev:waiting.json | jq -c '[.posted.items[].n]')" '[1]'
-  assert_equal "$(git -C "$origin" show dev:waiting.md)" "$(cat "$TEAM_HOME/waiting.md")"
+  assert_equal "$(git -C "${origin:?}" log -1 --format=%s dev)" "chore: waiting list posted"
+  assert_equal "$(git -C "${origin:?}" show --format= --name-only dev | sort)" "$(printf '%s\n' waiting.json waiting.md)"
+  assert_equal "$(git -C "${origin:?}" show dev:waiting.json | jq -c '[.posted.items[].n]')" '[1]'
+  assert_equal "$(git -C "${origin:?}" show dev:waiting.md)" "$(cat "$TEAM_HOME/waiting.md")"
 
   # A plain run pushes nothing: the checkpoint commits what it wrote.
   log_events '{"task":"T3","event":"asked","id":"b","text":"B?"}'
   run_bin -0 team-inbox
-  assert_equal "$(git -C "$origin" show dev:waiting.json | jq -c '[.items[].n]')" '[1]'
+  assert_equal "$(git -C "${origin:?}" show dev:waiting.json | jq -c '[.items[].n]')" '[1]'
 
   # Held offline, it does not try; with origin unreachable, the push fails; either way the post
   # stands, recorded here, and the next checkpoint pushes it.
@@ -652,12 +652,12 @@ $RANKED"
   assert_contains "$stderr" ", and the team is holding); the next checkpoint pushes them"
   assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000002"]'
   rm "$HOME/.local/state/agent-team/offline"
-  git -C "$TEAM_HOME" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
   run_bin -0 --separate-stderr team-inbox --post
   assert_contains "$stderr" "team-inbox: the post's numbers are not on origin yet ("
   assert_contains "$stderr" "); the next checkpoint pushes them"
   assert_equal "$(jq -c .posted.messages "$TEAM_HOME/waiting.json")" '["1569000000000000003"]'
-  assert_equal "$(git -C "$origin" show dev:waiting.json | jq -c .posted.messages)" '["1569000000000000001"]'
+  assert_equal "$(git -C "${origin:?}" show dev:waiting.json | jq -c .posted.messages)" '["1569000000000000001"]'
 }
 
 @test "--post without the token refuses before writing anything, and a failed guild read refuses as Discord's refusal says" {
@@ -775,7 +775,7 @@ $RANKED"
   export CODE_CHECKOUT
   CODE_CHECKOUT=$(make_repo conv)
   copy_bin "$CODE_CHECKOUT/bin"
-  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/Owner/proj/
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin https://github.com/Owner/proj/
   run_bin -0 --separate-stderr team-inbox
   assert_equal "$stderr" ""
   assert_equal "$(waiting_items_shown)" "- **1** T4 Task T4: ready to merge <https://github.com/owner/proj/pull/4> - unblocks 2 (1 task, 1 PR)

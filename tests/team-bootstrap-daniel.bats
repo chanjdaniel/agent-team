@@ -139,8 +139,8 @@ $SITE"
 
 @test "the dev guard and the records guard, off, are Daniel's steps, in that order" {
   tools_at arch
-  git -C "$CODE_CHECKOUT" config --unset core.hooksPath
-  git -C "$TEAM_HOME" config --unset core.hooksPath
+  git -C "${CODE_CHECKOUT:?}" config --unset core.hooksPath
+  git -C "${TEAM_HOME:?}" config --unset core.hooksPath
   run_bin -1 team-bootstrap --stage check
   assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: git hooks: Daniel runs git -C $CODE_CHECKOUT config core.hooksPath bin/hooks/git (core.hooksPath is unset, so git runs none of bin/hooks/git)
 Daniel 2: records hooks: Daniel runs git -C $TEAM_HOME config core.hooksPath $CODE_CHECKOUT/bin/hooks/records-git (the team home's core.hooksPath is unset, so git runs no data check on its commits)"
@@ -226,7 +226,7 @@ $SITE"
 @test "check lists the team home's re-clone as Daniel's first step while its history line fails, ahead of the logins" {
   tools_at arch
   rewrite_origin_dev
-  git -C "$TEAM_HOME" fetch -q origin
+  git -C "${TEAM_HOME:?}" fetch -q origin
   stub_script gh <<'EOF2'
 exit 1
 EOF2

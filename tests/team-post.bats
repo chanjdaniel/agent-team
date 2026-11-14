@@ -110,7 +110,8 @@ image_line() {
 
 # The stand-in for Discord: the stub runs the real curl, sending the real request to a server on
 # the loopback, which keeps its body in <file>, so a test reads what would reach Discord. The
-# server takes one request, and stops within 30 s if none comes: real_discord <file>
+# server takes one request, and stops within 30 s if none comes; its pid is real_server:
+# real_discord <file>
 real_discord() {
   local real port=$BATS_TEST_TMPDIR/port
   real=$(type -ap curl | grep -vF "$BATS_TEST_TMPDIR/stubs/" | head -n 1)
@@ -133,6 +134,7 @@ with open(sys.argv[2] + ".new", "w") as out:
 os.rename(sys.argv[2] + ".new", sys.argv[2])
 server.handle_request()
 PY
+  real_server=$!
   until [[ -s $port ]]; do sleep 0.05; done
   stub_script curl <<EOF
 exec "$real" "\${@:1:\$#-1}" "http://127.0.0.1:$(<"$port")/"
@@ -405,7 +407,7 @@ EOF
   real_discord "$sent"
   run_bin -0 team-post T7 --thread interview --file "$IMAGES/q.md" --attach "$dir/ti;le,1.png"
   assert_equal "$output" "1564000000000000001"
-  wait
+  wait "$real_server"
   grep -aqF 'name="payload_json"' "$sent"
   grep -aqF '{"content":"Tile 1 is the bar as it is, tile 2 the new one.","allowed_mentions":{"parse":["users"]}}' "$sent"
   grep -aqF 'name="files[0]"; filename="ti;le,1.png"' "$sent"

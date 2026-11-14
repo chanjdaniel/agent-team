@@ -17,15 +17,15 @@ setup() {
   stub_command team-bootstrap
   ln "$BATS_TEST_TMPDIR/stubs/team-bootstrap" "$DRILL_ROOT/bin/team-bootstrap"
   echo drill >"$DRILL_ROOT/README.md"
-  git -C "$DRILL_ROOT" init -q
-  git -C "$DRILL_ROOT" add README.md
-  git -C "$DRILL_ROOT" commit -q -m "chore: start the drill's checkout"
+  git -C "${DRILL_ROOT:?}" init -q
+  git -C "${DRILL_ROOT:?}" add README.md
+  git -C "${DRILL_ROOT:?}" commit -q -m "chore: start the drill's checkout"
   stub_reply claude '2.1.321 (Claude Code)'
 }
 
 # The drill's checkout's HEAD.
 drill_head() {
-  git -C "$DRILL_ROOT" rev-parse HEAD
+  git -C "${DRILL_ROOT:?}" rev-parse HEAD
 }
 
 # team-bootstrap prints <line> and exits 1, as it does at a step of Daniel's or on a failure of
@@ -108,7 +108,7 @@ drill-record: machine=ci-arch verdict=fail commit=$(drill_head) claude=2.1.321"
 }
 
 @test "a checkout whose HEAD cannot be read records the commit as unknown" {
-  rm -rf "$DRILL_ROOT/.git"
+  rm -rf "${DRILL_ROOT:?}/.git"
   bootstrap_ends "check: summary: set up, and this machine holds the lease"
   # git looks no further up than the drill's checkout, so the suite's own repository is not read.
   GIT_CEILING_DIRECTORIES=$BATS_TEST_TMPDIR drill ci-arch

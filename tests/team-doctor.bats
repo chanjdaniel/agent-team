@@ -32,17 +32,17 @@ setup() {
   run_bin -0 team-doctor
   assert_equal "$(line_of 'git hooks')" "PASS git hooks: core.hooksPath is bin/hooks/git"
   local fix="fix: Daniel runs git -C $CODE_CHECKOUT config core.hooksPath bin/hooks/git"
-  git -C "$CODE_CHECKOUT" config core.hooksPath .git/hooks
+  git -C "${CODE_CHECKOUT:?}" config core.hooksPath .git/hooks
   run_bin -1 team-doctor
   assert_equal "$(line_of 'git hooks')" "FAIL git hooks: core.hooksPath is .git/hooks, not bin/hooks/git; $fix"
   # Set only globally, it does not count: the guard is the code checkout's.
-  git -C "$CODE_CHECKOUT" config --unset core.hooksPath
+  git -C "${CODE_CHECKOUT:?}" config --unset core.hooksPath
   git config --global core.hooksPath bin/hooks/git
   run_bin -1 team-doctor
   assert_equal "$(line_of 'git hooks')" "FAIL git hooks: core.hooksPath is unset, so git runs none of bin/hooks/git; $fix"
   git config --global --unset core.hooksPath
   # Nor in the team home: the code checkout is the one the line reads.
-  git -C "$TEAM_HOME" config core.hooksPath bin/hooks/git
+  git -C "${TEAM_HOME:?}" config core.hooksPath bin/hooks/git
   run_bin -1 team-doctor
   assert_equal "$(line_of 'git hooks')" "FAIL git hooks: core.hooksPath is unset, so git runs none of bin/hooks/git; $fix"
   # Under HOME, the command names the code checkout from ~.
@@ -114,23 +114,23 @@ guard_is() {
   tools_at arch
   local want=$CODE_CHECKOUT/bin/hooks/records-git
   local fix="fix: Daniel runs git -C $TEAM_HOME config core.hooksPath $want"
-  git -C "$TEAM_HOME" config --unset core.hooksPath || true
+  git -C "${TEAM_HOME:?}" config --unset core.hooksPath || true
   run_bin -1 team-doctor
   assert_equal "$(line_of 'records hooks')" \
     "FAIL records hooks: the team home's core.hooksPath is unset, so git runs no data check on its commits; $fix"
   # The code's own hooks are the wrong ones for the records.
-  git -C "$TEAM_HOME" config core.hooksPath bin/hooks/git
+  git -C "${TEAM_HOME:?}" config core.hooksPath bin/hooks/git
   run_bin -1 team-doctor
   assert_equal "$(line_of 'records hooks')" \
     "FAIL records hooks: the team home's core.hooksPath is bin/hooks/git, not $want; $fix"
-  git -C "$TEAM_HOME" config core.hooksPath "$want/"
+  git -C "${TEAM_HOME:?}" config core.hooksPath "$want/"
   run_bin -0 team-doctor
   assert_equal "$(line_of 'records hooks')" "PASS records hooks: the team home's core.hooksPath is $want"
   # Run from a worktree of the code, the line still names the primary checkout's hooks.
-  git -C "$CODE_CHECKOUT" checkout -q -b feat/T1-thing
-  git -C "$CODE_CHECKOUT" add -A
-  git -C "$CODE_CHECKOUT" commit -q -m "chore: the code"
-  git -C "$CODE_CHECKOUT" worktree add -q "$BATS_TEST_TMPDIR/wt" -b feat/T2-other
+  git -C "${CODE_CHECKOUT:?}" checkout -q -b feat/T1-thing
+  git -C "${CODE_CHECKOUT:?}" add -A
+  git -C "${CODE_CHECKOUT:?}" commit -q -m "chore: the code"
+  git -C "${CODE_CHECKOUT:?}" worktree add -q "$BATS_TEST_TMPDIR/wt" -b feat/T2-other
   CODE_CHECKOUT=$BATS_TEST_TMPDIR/wt run_bin team-doctor
   assert_equal "$(line_of 'records hooks')" "PASS records hooks: the team home's core.hooksPath is $want"
 }
@@ -180,7 +180,7 @@ guard_is() {
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: the setting ~/.config/agent-team/home names no team home; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
   # The code checkout, a checkout with an origin of its own, holds no records.
-  git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
+  git -C "${CODE_CHECKOUT:?}" remote add origin https://github.com/chanjdaniel/agent-team.git
   TEAM_HOME=$CODE_CHECKOUT run_bin -1 team-doctor
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: $CODE_CHECKOUT, $named, is the code checkout, which holds no records; fix: clone the team home to ~/agent-team-records, then name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
@@ -192,17 +192,17 @@ guard_is() {
   TEAM_HOME=$home/tasks run_bin -1 team-doctor
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: $home/tasks, $named, is not a git checkout of its own; fix: move it aside, then clone the team home to $home/tasks"
-  git -C "$home" worktree add -q "$tmp/wt"
+  git -C "${home:?}" worktree add -q "$tmp/wt"
   TEAM_HOME=$tmp/wt run_bin -1 team-doctor
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: $tmp/wt, $named, is a worktree of $home, not a checkout of its own; fix: move it aside, then clone the team home to $tmp/wt"
   # No origin, then a detached HEAD.
-  git -C "$home" remote rename origin elsewhere
+  git -C "${home:?}" remote rename origin elsewhere
   run_bin -1 team-doctor
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: $home, $named, has no remote origin; fix: git -C $home remote add origin <the team home's repository URL>"
-  git -C "$home" remote rename elsewhere origin
-  git -C "$home" checkout -q --detach
+  git -C "${home:?}" remote rename elsewhere origin
+  git -C "${home:?}" checkout -q --detach
   run_bin -1 team-doctor
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: $home, $named, is on a detached HEAD, so its records would be committed on no branch; fix: git -C $home switch dev"
@@ -226,11 +226,11 @@ guard_is() {
   only_checks 085-team-home-fetch.sh
   tools_at arch
   local origin=$BATS_TEST_TMPDIR/origin/agent-team.git clone=$HOME/agent-team-records
-  git -C "$origin" branch wip/home/T1 dev
+  git -C "${origin:?}" branch wip/home/T1 dev
   git clone -q --single-branch --branch dev "$origin" "$clone"
-  git -C "$clone" remote set-branches --add origin lease
-  git -C "$clone" fetch -q origin
-  assert_equal "$(git -C "$clone" for-each-ref --format='%(refname)' refs/remotes | grep -v '/HEAD$')" "refs/remotes/origin/dev
+  git -C "${clone:?}" remote set-branches --add origin lease
+  git -C "${clone:?}" fetch -q origin
+  assert_equal "$(git -C "${clone:?}" for-each-ref --format='%(refname)' refs/remotes | grep -v '/HEAD$')" "refs/remotes/origin/dev
 refs/remotes/origin/lease"
   TEAM_HOME=$clone run_bin team-doctor
   assert_equal "$(line_of 'team home fetch')" "PASS team home fetch: fetches only dev and lease"
@@ -243,32 +243,32 @@ refs/remotes/origin/lease"
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home fetch')" "PASS team home fetch: fetches only dev and lease"
   # A default clone's refspec, and the wip/* and salvage/* branches it fetched.
-  git -C "$origin" branch wip/home/T1 dev
-  git -C "$origin" branch salvage/home/T1-laptop dev
-  git -C "$home" config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
-  git -C "$home" fetch -q origin
+  git -C "${origin:?}" branch wip/home/T1 dev
+  git -C "${origin:?}" branch salvage/home/T1-laptop dev
+  git -C "${home:?}" config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  git -C "${home:?}" fetch -q origin
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home fetch')" \
     "WARN team home fetch: fetches +refs/heads/*:refs/remotes/origin/*, not only dev and lease, and keeps origin/salvage/home/T1-laptop, origin/wip/home/T1; fix: git -C $home remote set-branches origin dev lease && git -C $home branch -r -d origin/salvage/home/T1-laptop origin/wip/home/T1"
   # The fix, run: the line passes, and a fetch brings no wip/* again.
   eval "$(line_of 'team home fetch' | sed 's/.*; fix: //')"
-  git -C "$home" fetch -q origin
+  git -C "${home:?}" fetch -q origin
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home fetch')" "PASS team home fetch: fetches only dev and lease"
-  assert_equal "$(git -C "$home" for-each-ref --format='%(refname)' refs/remotes | grep -v '/HEAD$')" "refs/remotes/origin/dev
+  assert_equal "$(git -C "${home:?}" for-each-ref --format='%(refname)' refs/remotes | grep -v '/HEAD$')" "refs/remotes/origin/dev
 refs/remotes/origin/lease"
   # Narrowed, but a leftover branch kept, or a refspec missing.
-  git -C "$home" update-ref refs/remotes/origin/wip/home/T1 dev
-  git -C "$home" remote set-branches origin dev
+  git -C "${home:?}" update-ref refs/remotes/origin/wip/home/T1 dev
+  git -C "${home:?}" remote set-branches origin dev
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home fetch')" \
     "WARN team home fetch: fetches +refs/heads/dev:refs/remotes/origin/dev, not only dev and lease, and keeps origin/wip/home/T1; fix: git -C $home remote set-branches origin dev lease && git -C $home branch -r -d origin/wip/home/T1"
-  git -C "$home" remote set-branches origin dev lease
+  git -C "${home:?}" remote set-branches origin dev lease
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home fetch')" \
     "WARN team home fetch: keeps origin/wip/home/T1; fix: git -C $home branch -r -d origin/wip/home/T1"
-  git -C "$home" config --unset-all remote.origin.fetch
-  git -C "$home" branch -q -r -d origin/wip/home/T1
+  git -C "${home:?}" config --unset-all remote.origin.fetch
+  git -C "${home:?}" branch -q -r -d origin/wip/home/T1
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home fetch')" \
     "WARN team home fetch: fetches no branch, not only dev and lease; fix: git -C $home remote set-branches origin dev lease"
@@ -277,7 +277,7 @@ refs/remotes/origin/lease"
 @test "the team home fetch line is left out while the team home line fails" {
   only_checks 085-team-home-fetch.sh
   tools_at arch
-  git -C "$TEAM_HOME" remote rename origin elsewhere
+  git -C "${TEAM_HOME:?}" remote rename origin elsewhere
   run_bin -1 team-doctor
   assert_equal "$(line_of 'team home fetch')" ""
 }
@@ -291,28 +291,28 @@ refs/remotes/origin/lease"
   assert_equal "$(line_of 'team home history')" "$pass"
   # Ahead, with a records commit of its own.
   echo '{}' >>"$home/ledger.jsonl"
-  git -C "$home" add ledger.jsonl
-  git -C "$home" commit -q -m "chore: a record"
+  git -C "${home:?}" add ledger.jsonl
+  git -C "${home:?}" commit -q -m "chore: a record"
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home history')" "$pass"
   # Behind, once another machine's push is fetched.
   push_to_dev "$origin" tasks/T1/plan.md >/dev/null
-  git -C "$home" fetch -q origin
+  git -C "${home:?}" fetch -q origin
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home history')" "$pass"
   # Rewritten on origin: the line fetches nothing, so it passes until a fetch brings the new dev.
   rewrite_origin_dev
   local before
-  before=$(git -C "$home" rev-parse refs/remotes/origin/dev)
+  before=$(git -C "${home:?}" rev-parse refs/remotes/origin/dev)
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home history')" "$pass"
-  assert_equal "$(git -C "$home" rev-parse refs/remotes/origin/dev)" "$before"
-  git -C "$home" fetch -q origin
+  assert_equal "$(git -C "${home:?}" rev-parse refs/remotes/origin/dev)" "$before"
+  git -C "${home:?}" fetch -q origin
   run_bin -1 team-doctor
   assert_equal "$(line_of 'team home history')" \
     "FAIL team home history: $home shares no history with origin's dev, so its history was rewritten since it was cloned (the records rewrite of 2026-10-28, say), and nothing should read or pull it; fix: re-clone it, keeping this one aside, as sops/records-rewrite.md step 10 says: mv $home $home.pre-rewrite, a fresh clone of dev with lease added, its records guard, and the ignored files carried over; never git pull into this clone"
   # Without origin's dev the line is left out: the fetch line and team-resume say why.
-  git -C "$home" update-ref -d refs/remotes/origin/dev
+  git -C "${home:?}" update-ref -d refs/remotes/origin/dev
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home history')" ""
   assert_equal "$(line_of 'team home')" "PASS team home: $home, named by TEAM_HOME: a checkout of its own on dev, with an origin"
@@ -322,8 +322,8 @@ refs/remotes/origin/lease"
   only_checks 086-team-home-history.sh
   tools_at arch
   rewrite_origin_dev
-  git -C "$TEAM_HOME" fetch -q origin
-  git -C "$TEAM_HOME" remote rename origin elsewhere
+  git -C "${TEAM_HOME:?}" fetch -q origin
+  git -C "${TEAM_HOME:?}" remote rename origin elsewhere
   run_bin -1 team-doctor
   assert_equal "$(line_of 'team home history')" ""
   assert_contains "$(line_of 'team home')" "FAIL team home: "
@@ -479,12 +479,12 @@ protected_by() {
   run_bin -0 team-doctor
   assert_equal "$(line_of config)" "PASS config: this machine's Claude config is the team home's"
   echo '{"model": "sonnet"}' >"$HOME/.claude/settings.json"
-  rm -r "$HOME/.claude/skills/tdd"
+  rm -r "${HOME:?}/.claude/skills/tdd"
   echo '[{"id": "discord@claude-plugins-official", "scope": "user", "enabled": false}]' >"$STUB_FIXTURES/plugins.json"
   run_bin -1 team-doctor
   assert_equal "$(line_of config)" "WARN config: settings.json differs, skill tdd missing; fix: team-config diff --full, then team-config apply (take the team home's) or team-config capture (keep this machine's)"
   # Without the team home's config, the line says what team-config said.
-  rm -r "$TEAM_HOME/machine/claude"
+  rm -r "${TEAM_HOME:?}/machine/claude"
   run_bin -1 team-doctor
   assert_equal "$(line_of config)" "WARN config: no machine/claude/ in $TEAM_HOME; run team-config capture on the machine whose config the team shares; fix: fix what team-config names, then run team-doctor again"
   assert_contains "$(line_of plugins)" "FAIL plugins: unknown, since team-config diff did not answer: no machine/claude/"

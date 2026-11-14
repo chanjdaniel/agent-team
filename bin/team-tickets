@@ -68,13 +68,16 @@
 # its scale, so it holds every level: Chrome is bin/lib/chrome.sh's, as team-doctor's chrome line
 # finds it (the file TEAM_CHROME names, a .app directory run as <app>/Contents/MacOS/<its name less
 # .app>, else Google Chrome's app on macOS, else the first of google-chrome-stable, google-chrome,
-# chromium and chromium-browser on PATH), run under a 60-second timeout with a fresh profile
-# directory, removed after. The PNG counts when Chrome exits 0 and wrote one, or when it exits
-# otherwise, but for the timeout, and its stderr says "<n> bytes written to file <the
-# screenshot's path>" of a PNG of n bytes (a Mac with no display writes the screenshot, then
-# hangs until its teardown watchdog ends it with exit 2). With no Chrome, or Chrome failing,
-# timing out or writing no PNG, the page is still written and its path printed, any old
-# tickets.png is removed, stderr says why there is no PNG, and the exit is 1.
+# chromium and chromium-browser on PATH), run with a fresh profile directory, removed after, under
+# a 90-second timeout, then killed 5 seconds after that TERM (a loaded machine slows Chrome's start
+# and render many times over, and 90 seconds keeps the whole --graph inside a session's two-minute
+# foreground call). The PNG counts when Chrome exits 0 and wrote one, or when it exits
+# otherwise, the timeout's TERM or kill included, and its stderr says "<n> bytes written to file
+# <the screenshot's path>" of a PNG of n bytes (a Mac with no display writes the screenshot, then
+# hangs until its teardown watchdog ends it with exit 2, or on a loaded Mac until the timeout
+# does). With no Chrome, or Chrome failing or timing out with no PNG it says it wrote whole, or
+# writing no PNG, the page is still written and its path printed, any old tickets.png is removed,
+# stderr says why there is no PNG, and the exit is 1.
 # Make the graph for the plan ask to Daniel and when Daniel asks how a building task stands, and
 # attach its PNG with team-ask --attach or team-post --attach.
 # --html and --graph go with no other mode. Nothing else is written.
@@ -415,14 +418,17 @@ if [[ -n $graph ]]; then
   made+=("$profile" "$shot" "$err")
   url=file://$(jq -rn --arg path "$page" '$path | split("/") | map(@uri) | join("/")')
   status=0
-  timeout -k 5 60 "$chrome" --headless=new --disable-gpu --hide-scrollbars --no-first-run \
+  # 90 s: on CI's loaded runners (4 at once beside a shard) T313 measured T257's screenshot written
+  # at most 15.1 s (Linux) and 19.6 s (macOS) after Chrome's start, three times which, rounded up
+  # to a whole 30 s, is 60 s, which one loaded Ubuntu shard's Chrome still ran past; 90 s is the
+  # most that, with its 5 s kill, keeps --graph inside a session's 120 s foreground call.
+  timeout -k 5 90 "$chrome" --headless=new --disable-gpu --hide-scrollbars --no-first-run \
     --no-default-browser-check --disable-extensions --disable-background-networking \
     --disable-component-update --disable-sync --mute-audio --user-data-dir="$profile" \
     --force-device-scale-factor=2 --window-size="$width,$height" --screenshot="$shot" "$url" \
     </dev/null >/dev/null 2>"$err" || status=$?
   # A Chrome helper still ending may hold it a moment longer; the EXIT trap removes it then.
   rm -rf -- "$profile" 2>/dev/null || true
-  ((status != 124)) || no_png "Chrome timed out after 60 s"
   last=$(grep -v '^[[:space:]]*$' "$err" | tail -n 1) || true
   # Whether Chrome's stderr says it wrote the screenshot whole: a line "<n> bytes written to file
   # <the screenshot's path, or its real path>", n the file's size.
@@ -432,9 +438,11 @@ if [[ -n $graph ]]; then
     grep -qxF -e "$bytes bytes written to file $shot" -e "$bytes bytes written to file $(realpath -- "$shot")" "$err"
   }
   # A Mac with no display (a macOS CI runner) writes the screenshot, then hangs in its teardown
-  # until Chrome's watchdog ends it with exit 2, so a nonzero exit, but the timeout's kill, still
+  # until Chrome's watchdog ends it with exit 2 (10 to 14 s after the screenshot, on a loaded
+  # runner) or the timeout does, so a nonzero exit, the timeout's TERM and kill included, still
   # takes a PNG that Chrome says it wrote whole.
-  if ((status != 0)) && ! { ((status != 137)) && [[ $(image_type "$shot") == png ]] && wrote_shot; }; then
+  if ((status != 0)) && ! { [[ $(image_type "$shot") == png ]] && wrote_shot; }; then
+    ((status != 124)) || no_png "Chrome timed out after 90 s"
     no_png "Chrome exited $status${last:+: $last}"
   fi
   [[ $(image_type "$shot") == png ]] || no_png "Chrome exited 0 and wrote no PNG${last:+: $last}"

@@ -83,8 +83,8 @@ sections() {
 
 # The subject of the team home's last commit, and the paths it changed, on one line each.
 last_commit() {
-  git -C "$TEAM_HOME" log -1 --format=%s
-  git -C "$TEAM_HOME" show --name-only --format= HEAD
+  git -C "${TEAM_HOME:?}" log -1 --format=%s
+  git -C "${TEAM_HOME:?}" show --name-only --format= HEAD
 }
 
 @test "index ranks the ready items, then lists the waiting, opened and unranked ones, taken items under their taker, and commits the index alone" {
@@ -124,12 +124,12 @@ Written by \`team-queue index\` from each file's front matter and the ledger; ed
 - g-bad.md: priority \"5\" is not 1, 2, 3 or 4"
   assert_equal "$(last_commit)" "chore: queued index
 tasks/queued/index.md"
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain -- tasks/queued/index.md) ]]
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain -- tasks/queued/index.md) ]]
   # A run that changes nothing commits nothing.
   local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   run_bin -0 team-queue index
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
   [[ -z $(find "$queued" -name 'index.md.*') ]]
 }
 
@@ -335,7 +335,7 @@ tasks/queued/l-takes-bad.md: opened \"soon\" is not T<n>
 tasks/queued/l-takes-bad.md: takes \"T5\" is not a queued file
 tasks/queued/index.md: not as team-queue index writes it"
   [[ -z $(find "$queued" -name 'index.md.*') ]]
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain -- tasks/queued/index.md) ]]
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain -- tasks/queued/index.md) ]]
 }
 
 @test "--check names an item whose task merged whole or closed over 15 minutes ago, never one in its grace or a merged part" {
@@ -446,8 +446,8 @@ tasks/queued/g-waits.md and tasks/queued/h-after.md."
   printf -- '---\ntask: T5\nguarded: ci\nsummary: old words\n---\n# legacy\n\nThe body stays.\n---\n' >"$queued/legacy.md"
   printf '# no front matter\n\nBody only.\n' >"$queued/bare.md"
   item node-pin.md "summary: pin Node 24" "waits: the release" "project: proj" "priority: 2" "size: S"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: queue three"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: queue three"
   item untouched.md "summary: not in the table" "project: proj"
   local table=$BATS_TEST_TMPDIR/table.tsv
   printf '%s\n' $'file\tsummary\tproject\tpriority\tsize\tfrom\twaits' \
@@ -496,7 +496,7 @@ tasks/queued/index.md
 tasks/queued/legacy.md
 tasks/queued/node-pin.md"
   # A file the table does not name is left out of the commit.
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain -- tasks/queued)" "?? tasks/queued/untouched.md"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain -- tasks/queued)" "?? tasks/queued/untouched.md"
   [[ -z $(find "$queued" -name '*.md.*') ]]
   # A table of one row, written with CRLF line ends, sets one file, and with nothing left to name it exits 0.
   printf 'file\tpriority\tsize\r\nuntouched.md\t3\tS\r\n' >"$table"
@@ -515,7 +515,7 @@ size: S
 
 @test "set refuses a table whose header is not file and front matter keys, writing nothing" {
   local table=$BATS_TEST_TMPDIR/table.tsv head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   printf '%s\n' $'name\tpriority\towner\tsize\tsize\tfile' $'node-pin.md\t1\tkim\tS\tS\tx' >"$table"
   run_bin -1 --separate-stderr team-queue set "$table"
   assert_equal "$output" "$table:1: the header's first column is \"name\", not file
@@ -527,7 +527,7 @@ $table:1: column \"file\" is no front matter key (team-queue --help)"
   run_bin -1 team-queue set "$table"
   assert_equal "$output" "$table:1: the table has no header line
 team-queue: the table is refused whole, so nothing is written"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
   [[ ! -e $queued/index.md ]]
 }
 
@@ -536,10 +536,10 @@ team-queue: the table is refused whole, so nothing is written"
   printf -- '---\nsummary: twice\nsummary: again\nproject: proj\npriority: 2\nsize: S\n---\n# twice\n' >"$queued/twice.md"
   ready fine.md 2 S "fine"
   item unnamed.md "summary: not in the table"
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: queue four"
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: queue four"
   local table=$BATS_TEST_TMPDIR/table.tsv head before
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   before=$(cat "$queued"/*.md | cksum)
   printf '%s\n' $'file\tproject\tpriority\tsize\tafter\ttakes' \
     $'gone.md\tproj\t2\tS\t\t' \
@@ -568,8 +568,8 @@ $table:9: node-pin.md is on line 4 too
 $table:10: tasks/queued/unnamed.md: takes itself"
   assert_equal "$stderr" "team-queue: the table is refused whole, so nothing is written"
   assert_equal "$(cat "$queued"/*.md | cksum)" "$before"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain) ]]
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain) ]]
   [[ -z $(find "$queued" -name '*.md.*') ]]
 }
 

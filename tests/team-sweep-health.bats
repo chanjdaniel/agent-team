@@ -17,11 +17,6 @@ setup() {
 NEXT_CHECKPOINT="next: fix what it names (heartbeat-failures.log has every line), then run team-checkpoint --force"
 NEXT_HEALTH="next: fix what each names; team-timers health lists them"
 
-# The UTC time <minutes> ago.
-ago() {
-  date -u -d "-$1 minutes" +%FT%TZ
-}
-
 # health_record [<filter>]: a health record of a good run just now, with jq's <filter> applied,
 # ago(<minutes>) at hand.
 health_record() {
@@ -75,12 +70,17 @@ fake_timers() {
 
 @test "checkpoint-stale: a heartbeat with no run for 15 minutes on the holder is the same kind, saying when it last ran" {
   health_record 'ago(20) as $t | .written = $t | .last_run.start = $t | .last_run.end = $t'
-  jq '.written_at = (now - 20 * 60 | floor | todate)' "$state/lease.json" >"$state/lease.json.new"
+  # The lease was last written at the run's own start, read back from the record: health.jq takes
+  # the later of the two as when the heartbeat was last seen, so one time read once keeps a second
+  # boundary between the two writes out of the text.
+  local start
+  start=$(jq -r .last_run.start "$record")
+  jq --arg start "$start" '.written_at = $start' "$state/lease.json" >"$state/lease.json.new"
   mv "$state/lease.json.new" "$state/lease.json"
   run_bin -1 team-sweep --json
   assert_equal "$(jq -c 'map(.kind)' <<<"$output")" '["checkpoint-stale"]'
   assert_equal "$(jq -r '.[0].text' <<<"$output")" \
-    "checkpoint: the heartbeat last ran $(jq -r .last_run.start "$record") (20 minutes ago); $NEXT_CHECKPOINT"
+    "checkpoint: the heartbeat last ran $start (20 minutes ago); $NEXT_CHECKPOINT"
 }
 
 @test "health: alerting ledger, login-refused and step problems are one finding listing them; a step short of its runs and offline raise nothing" {

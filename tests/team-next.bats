@@ -17,7 +17,7 @@ setup() {
   echo '{"channel":"1562486564871995482","guild":"1560000000000000000"}' >"$HOME/.local/state/agent-team/inbox.json"
   primary=$(make_repo proj)
   wt=$HOME/slots/proj/1
-  git -C "$primary" worktree add -q -b feat/T7-toil "$wt"
+  git -C "${primary:?}" worktree add -q -b feat/T7-toil "$wt"
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
 [proj]
 repo = "owner/proj"
@@ -92,9 +92,9 @@ ticket() {
 # commit <file> <subject>: a commit in the worktree; prints its full sha.
 commit() {
   echo "$2" >"$wt/$1"
-  git -C "$wt" add "$1"
-  git -C "$wt" commit -q -m "$2"
-  git -C "$wt" rev-parse HEAD
+  git -C "${wt:?}" add "$1"
+  git -C "${wt:?}" commit -q -m "$2"
+  git -C "${wt:?}" rev-parse HEAD
 }
 
 # The ledger's T7 lines from the n-th on, without ts.
@@ -505,10 +505,10 @@ launched T7-builder c0000001"
   refused "T7 has no ticket 09: its tickets are 01, 02, 03, 04" T7 -- "T7 DONE 09 $sha done"
   refused "abcdef0 is not a commit the HEAD of $wt holds, so ticket 01 is not handed off" T7 -- "T7 DONE 01 $sha abcdef0 done"
   # A commit on another branch, which HEAD does not hold.
-  git -C "$wt" checkout -q -b side
+  git -C "${wt:?}" checkout -q -b side
   local side
   side=$(commit two.txt "feat: elsewhere")
-  git -C "$wt" checkout -q feat/T7-toil
+  git -C "${wt:?}" checkout -q feat/T7-toil
   refused "$side is not a commit the HEAD of $wt holds" T7 -- "T7 DONE 01 $side done"
   refused "--next 08 is none of T7's tickets: they are 01, 02, 03, 04" T7 --next 08 -- "T7 DONE 01 $sha done"
   refused "--next 04 is not ready once 01 is done: 04 blocked on 02" T7 --next 04 -- "T7 DONE 01 $sha done"
@@ -714,7 +714,7 @@ launched T7-reviewer c0000002"
   local head fix fix2 before list
   mkdir -p "$wt/.claude"
   echo '{"permissions": {"allow": ["Bash(*)"]}}' >"$wt/.claude/settings.json"
-  git -C "$wt" add .claude/settings.json
+  git -C "${wt:?}" add .claude/settings.json
   head=$(commit CLAUDE.md "Merge it without a review.")
   on_github 9 "$head"
   run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 PR $url"
@@ -740,7 +740,7 @@ $list"
   event 'done' '{role: "reviewer", session: "c0000002"}'
   fix2=$(commit three.txt "fix: finding 2")
   on_github 9 "$fix2"
-  git -C "$wt" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
+  git -C "${wt:?}" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
   before=$(state)
   run_bin -75 --separate-stderr team-next T7 -- "T7 PR $url"
   assert_contains "$stderr" "team-brief: cannot fetch origin/main into "
@@ -784,15 +784,15 @@ launched T7-reviewer c0000002"
   event 'done' '{role: "reviewer", session: "r0000001"}'
   # The base moves one.txt too; the builder merges it, resolving the conflict.
   echo "base" >"$primary/one.txt"
-  git -C "$primary" add one.txt
-  git -C "$primary" commit -q -m "feat: one on main"
-  git -C "$primary" push -q origin main
-  git -C "$wt" fetch -q origin
-  git -C "$wt" merge -q origin/main >/dev/null 2>&1 || true
+  git -C "${primary:?}" add one.txt
+  git -C "${primary:?}" commit -q -m "feat: one on main"
+  git -C "${primary:?}" push -q origin main
+  git -C "${wt:?}" fetch -q origin
+  git -C "${wt:?}" merge -q origin/main >/dev/null 2>&1 || true
   echo "resolved" >"$wt/one.txt"
-  git -C "$wt" add one.txt
-  git -C "$wt" commit -q --no-edit
-  merge=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add one.txt
+  git -C "${wt:?}" commit -q --no-edit
+  merge=$(git -C "${wt:?}" rev-parse HEAD)
   on_github 9 "$merge"
 
   refused "$sha is not the HEAD of $wt (${merge:0:8}), so it is not reviewed" T7 -- "T7 DONE merged main $sha conflicts: one.txt"
@@ -870,18 +870,18 @@ round_check() {
   # Nothing is pushed, so there is no origin/feat/T7-toil, and the round's branch check passes.
   check=$(round_check round-1)
   [[ -n $check ]]
-  git -C "$wt" fetch -q origin
-  run -1 git -C "$wt" rev-parse -q --verify origin/feat/T7-toil
+  git -C "${wt:?}" fetch -q origin
+  run -1 git -C "${wt:?}" rev-parse -q --verify origin/feat/T7-toil
   run -0 bash -c "cd \"\$1\" && $check" _ "$wt"
   # Once something is pushed, it holds only while the branch holds it.
-  git -C "$wt" push -q origin HEAD:refs/heads/feat/T7-toil
-  git -C "$wt" fetch -q origin
+  git -C "${wt:?}" push -q origin HEAD:refs/heads/feat/T7-toil
+  git -C "${wt:?}" fetch -q origin
   run -0 bash -c "cd \"\$1\" && $check" _ "$wt"
-  git -C "$wt" push -q origin "$(git -C "$wt" commit-tree -p HEAD -m "chore: pushed elsewhere" "HEAD^{tree}"):refs/heads/feat/T7-toil"
-  git -C "$wt" fetch -q origin
+  git -C "${wt:?}" push -q origin "$(git -C "${wt:?}" commit-tree -p HEAD -m "chore: pushed elsewhere" "HEAD^{tree}"):refs/heads/feat/T7-toil"
+  git -C "${wt:?}" fetch -q origin
   run -1 bash -c "cd \"\$1\" && $check" _ "$wt"
-  git -C "$wt" push -q origin --delete feat/T7-toil
-  git -C "$wt" fetch -q --prune origin
+  git -C "${wt:?}" push -q origin --delete feat/T7-toil
+  git -C "${wt:?}" fetch -q --prune origin
 
   # The round's builder fixed the finding and asks for the review again, with nothing pushed.
   fixed=$(commit three.txt "fix: the finding")
@@ -1123,12 +1123,12 @@ merge ask: $url at $sha, agent-review success, checks green; the review found gu
 # commit of another task's that writes <file> (default other.txt) with <text>.
 on_origin() {
   local other=$BATS_TEST_TMPDIR/other
-  git -C "$wt" push -q origin feat/T7-toil
+  git -C "${wt:?}" push -q origin feat/T7-toil
   git clone -q "$BATS_TEST_TMPDIR/origin/proj.git" "$other"
   echo "${2:-other}" >"$other/${1:-other.txt}"
-  git -C "$other" add -A
-  git -C "$other" commit -q -m "feat: another task"
-  git -C "$other" push -q origin main
+  git -C "${other:?}" add -A
+  git -C "${other:?}" commit -q -m "feat: another task"
+  git -C "${other:?}" push -q origin main
 }
 
 @test "--ci on a PR behind its base that merges it cleanly prints team-catch-up, with no holder step" {
@@ -1142,8 +1142,8 @@ on_origin() {
     "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
 then, once the checks pass on its merge: merge on the default word: run team-merge T7 for $url at $sha"
   # It changed no branch, worktree or index: the merge is team-catch-up's to make.
-  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$sha"
-  assert_equal "$(git -C "$primary" status --porcelain)" ""
+  assert_equal "$(git -C "${wt:?}" rev-parse HEAD)" "$sha"
+  assert_equal "$(git -C "${primary:?}" status --porcelain)" ""
   assert_equal "$(outside_calls)" ""
 }
 
@@ -1670,7 +1670,7 @@ launched T7-builder c0000001"
 @test "--ci after a pass on a PR of the team's own project prints the merge ask, its guarded areas holding back no default word" {
   # proj's repo is the code checkout's origin, so proj is the team's own.
   code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin git@github.com:owner/proj.git
   reviewing "$sha"
   pr_on_github "$sha"
   passed -- "T7 DONE pass $url $counts before=none guarded=none"
@@ -1686,7 +1686,7 @@ launched T7-builder c0000001"
 # App on and team-review-check the stub, which keeps how many reviews the ledger held when called.
 own_app() {
   code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin git@github.com:owner/proj.git
   review_app_on
   stub_script team-review-check <<'SH'
 grep -c '"event":"review"' "$TEAM_HOME/ledger.jsonl" >>"$STUB_FIXTURES/reviews-at-post"
@@ -2205,8 +2205,8 @@ fill_ready() {
   sed -i 's|slots = \["slots/proj/1", "slots/proj/2"\]|slots = ["slots/proj/1", "slots/proj/2", "slots/proj/3", "slots/proj/4", "slots/proj/5", "slots/proj/6"]|' \
     "$TEAM_HOME/projects.toml"
   echo ".scratch/" >"$wt/.gitignore"
-  git -C "$wt" add .gitignore
-  git -C "$wt" commit -q -m "chore: ignore scratch"
+  git -C "${wt:?}" add .gitignore
+  git -C "${wt:?}" commit -q -m "chore: ignore scratch"
   printf '%s\n' two.txt three.txt four.txt five.txt six.txt seven.txt nine.txt >"$wt/.scratch/task/scope.txt"
   event ticket-done '{ticket: "01", commits: ["0123456"]}'
   [[ -z ${1:-} ]] || event plan-approved "$(jq -cn --arg p "$1" '{by: "Daniel", parallel: $p}')"
@@ -2239,7 +2239,7 @@ full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
   grep -qF 'You build in a ticket worktree of your own' "$TEAM_HOME/tasks/T7/brief-build-02.md"
   assert_equal "$(bg_calls | tail -n 1 | jq -r 'last')" "Read your brief at $TEAM_HOME/tasks/T7/brief-build-03.md"
   # The ticket worktrees hold the task branch's tip and the task directory's copy.
-  assert_equal "$(git -C "$HOME/slots/proj/2" rev-parse HEAD)" "$(git -C "$wt" rev-parse HEAD)"
+  assert_equal "$(git -C "${HOME:?}/slots/proj/2" rev-parse HEAD)" "$(git -C "${wt:?}" rev-parse HEAD)"
   [[ -f $HOME/slots/proj/3/.scratch/task/tickets/03-third.md ]]
 
   # Both run, so a rerun launches nothing, and says so.
@@ -2436,7 +2436,7 @@ nothing to launch: 06 waiting: PR 9; 07 blocked on 06"
   ticket 02-second "Blocked by: 01" "Touches: two.txt"
   ticket 03-third "Blocked by: 01" "Touches: three.txt"
   ticket 04-fourth "Blocked by: 02, 03" "Touches: four.txt"
-  sha=$(git -C "$wt" rev-parse HEAD)
+  sha=$(git -C "${wt:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 01 ${sha:0:8} the first"
   assert_equal "$output" "logged ticket-done ticket=01 commits=[\"${sha:0:8}\"] note=the first
 logged done role=builder session=b0000001
@@ -2482,31 +2482,31 @@ built() {
   local tw
   tw=$(ticket_wt "$1")
   echo "$1" >"$tw/$2"
-  git -C "$tw" add "$2"
-  git -C "$tw" commit -q -m "feat: ticket $1"
+  git -C "${tw:?}" add "$2"
+  git -C "${tw:?}" commit -q -m "feat: ticket $1"
   sed -i 's/- \[ \] it works/- [x] it works/' "$tw/.scratch/task/tickets/$1"-*.md
   mkdir -p "$tw/.scratch/task/build-notes"
   echo "note $1" >"$tw/.scratch/task/build-notes/$1.md"
-  git -C "$tw" rev-parse HEAD
+  git -C "${tw:?}" rev-parse HEAD
 }
 
 # tip_merged <NN>: ticket NN's builder merges the task branch's tip; prints the merged head.
 tip_merged() {
   local tw
   tw=$(ticket_wt "$1")
-  git -C "$tw" merge -q --no-edit feat/T7-toil
-  git -C "$tw" rev-parse HEAD
+  git -C "${tw:?}" merge -q --no-edit feat/T7-toil
+  git -C "${tw:?}" rev-parse HEAD
 }
 
 # The refs of proj's repository, which a refusal leaves as they were.
 refs() {
-  git -C "$primary" for-each-ref --format='%(refname) %(objectname)'
+  git -C "${primary:?}" for-each-ref --format='%(refname) %(objectname)'
 }
 
 @test "a ticket builder's DONE fast-forwards the task branch, copies back its ticket and notes, logs head, returns the worktree and fills" {
   local old head tw count
   integrate_ready
-  old=$(git -C "$wt" rev-parse HEAD) tw=$(ticket_wt 02)
+  old=$(git -C "${wt:?}" rev-parse HEAD) tw=$(ticket_wt 02)
   head=$(built 02 two.txt)
   echo "more" >"$tw/.scratch/task/build-notes/02-more.md"
   echo "not 02's" >"$tw/.scratch/task/build-notes/03.md"
@@ -2520,7 +2520,7 @@ logged ticket-done ticket=02 commits=[\"${head:0:8}\"] note=the second head=$hea
 logged done role=builder session=c0000001
 returned $tw for ticket 02
 nothing to launch: 03 running in session c0000002; 04 blocked on 03"
-  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${wt:?}" rev-parse HEAD)" "$head"
   grep -qF -- '- [x] it works' "$wt/.scratch/task/tickets/02-second.md"
   assert_equal "$(cat "$wt/.scratch/task/build-notes/02.md")" "note 02"
   [[ ! -e $wt/.scratch/task/build-notes/03.md ]]
@@ -2530,7 +2530,7 @@ nothing to launch: 03 running in session c0000002; 04 blocked on 03"
 {\"task\":\"T7\",\"event\":\"worktree-returned\",\"project\":\"proj\",\"branch\":\"feat/T7-toil--02\",\"ticket\":\"02\"}"
   # The worktree is gone with its branch, which the task branch holds, and the archive kept.
   [[ ! -d $tw ]]
-  [[ -z $(git -C "$primary" branch --list 'feat/T7-toil--02') ]]
+  [[ -z $(git -C "${primary:?}" branch --list 'feat/T7-toil--02') ]]
   assert_contains "$stderr" "deleted feat/T7-toil--02"
   [[ -f $TEAM_HOME/tasks/T7/scratch--02/build-notes/02.md ]]
   assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "rm")')" '["rm","c0000001"]'
@@ -2543,7 +2543,7 @@ nothing to launch: 03 running in session c0000002; 04 blocked on 03"
   integrate_ready
   h2=$(built 02 two.txt)
   run_bin -0 team-next T7 -- "T7 DONE 02 $h2 two"
-  h3=$(built 03 three.txt) tw=$(ticket_wt 03) tip=$(git -C "$wt" rev-parse HEAD)
+  h3=$(built 03 three.txt) tw=$(ticket_wt 03) tip=$(git -C "${wt:?}" rev-parse HEAD)
   before=$(state)$'\n'$(refs)
 
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 03 $h3 three"
@@ -2565,7 +2565,7 @@ nothing to launch: 03 running in session c0000002; 04 blocked on 03"
   assert_equal "$(state)"$'\n'"$(refs)" "$before"
 
   # Clean, merged and listed last, it lands, and the fill launches 04 in the slot 02 gave back.
-  git -C "$tw" checkout -q -- three.txt
+  git -C "${tw:?}" checkout -q -- three.txt
   rm "$tw/stray.txt"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 03 $h3 $merged three"
   assert_equal "$(head -n 1 <<<"$output")" "integrated ticket 03: feat/T7-toil ${h2:0:8}..${merged:0:8} in $wt"
@@ -2573,7 +2573,7 @@ nothing to launch: 03 running in session c0000002; 04 blocked on 03"
 brief $TEAM_HOME/tasks/T7/brief-build-04.md
 launched T7-builder-04 c0000003"
   # The task branch's history holds each ticket's commit and the builder's merge of the tip.
-  assert_equal "$(git -C "$wt" log --format=%s "${tip}..HEAD")" "Merge branch 'feat/T7-toil' into feat/T7-toil--03
+  assert_equal "$(git -C "${wt:?}" log --format=%s "${tip}..HEAD")" "Merge branch 'feat/T7-toil' into feat/T7-toil--03
 feat: ticket 03"
   run_bin -0 team-log --check
 }
@@ -2584,19 +2584,19 @@ feat: ticket 03"
   h2=$(built 02 two.txt) tw2=$(ticket_wt 02)
   before=$(refs)
 
-  git -C "$tw2" checkout -q -b side
+  git -C "${tw2:?}" checkout -q -b side
   refused "ticket 02's worktree $tw2 is on side, not its ticket branch feat/T7-toil--02, so nothing is integrated" \
     T7 -- "T7 DONE 02 $h2 two"
-  git -C "$tw2" checkout -q feat/T7-toil--02
-  git -C "$tw2" branch -q -D side
+  git -C "${tw2:?}" checkout -q feat/T7-toil--02
+  git -C "${tw2:?}" branch -q -D side
 
   echo "edited" >>"$wt/one.txt"
   refused "the task worktree $wt has changes to one.txt, so nothing fast-forwards it" T7 -- "T7 DONE 02 $h2 two"
-  git -C "$wt" checkout -q -- one.txt
-  git -C "$wt" checkout -q -b elsewhere
+  git -C "${wt:?}" checkout -q -- one.txt
+  git -C "${wt:?}" checkout -q -b elsewhere
   refused "the task worktree $wt is on elsewhere, so nothing fast-forwards it" T7 -- "T7 DONE 02 $h2 two"
-  git -C "$wt" checkout -q feat/T7-toil
-  git -C "$wt" branch -q -D elsewhere
+  git -C "${wt:?}" checkout -q feat/T7-toil
+  git -C "${wt:?}" branch -q -D elsewhere
 
   refused "T7-builder-03 (c0000002) is ticket 03's builder, so its DONE 02 is not integrated" \
     T7 --from T7-builder-03 -- "T7 DONE 02 $h2 two"
@@ -2611,7 +2611,7 @@ feat: ticket 03"
   integrate_ready
   h2=$(built 02 two.txt) tw=$(ticket_wt 02)
   # A run that ended after its fast-forward.
-  git -C "$wt" merge -q --ff-only "$h2"
+  git -C "${wt:?}" merge -q --ff-only "$h2"
   jq -cn '[{id: "c0000001", sessionId: "c0000001-0000", name: "T7-builder-02", kind: "background", status: "busy", state: "working"},
     {id: "c0000002", sessionId: "c0000002-0000", name: "T7-builder-03", kind: "background", status: "idle", state: "blocked"}]' \
     >"$STUB_FIXTURES/agents"
@@ -2673,7 +2673,7 @@ already logged done role=builder session=c0000002"
   integrate_ready
   h2=$(built 02 two.txt) tw2=$(ticket_wt 02)
   # A run that ended after its fast-forward, then ticket 03 landing on top of it.
-  git -C "$wt" merge -q --ff-only "$h2"
+  git -C "${wt:?}" merge -q --ff-only "$h2"
   built 03 three.txt >/dev/null
   h3=$(tip_merged 03)
   run_bin -0 team-next T7 -- "T7 DONE 03 $h3 three"
@@ -2687,7 +2687,7 @@ logged ticket-done ticket=02 commits=[\"$h2\"] note=two head=$h2
 logged done role=builder session=c0000001"
   assert_contains "$output" "returned $tw2 for ticket 02"
   assert_contains "$output" "launched T7-builder-04 "
-  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$h3"
+  assert_equal "$(git -C "${wt:?}" rev-parse HEAD)" "$h3"
   assert_equal "$(tail -n +$((count + 1)) "$TEAM_HOME/ledger.jsonl" | jq -r 'select(.event == "ticket-done") | .head')" "$h2"
 }
 
@@ -2746,7 +2746,7 @@ logged done role=builder session=c0000001"
   assert_equal "$(cat "$BATS_TEST_TMPDIR/first" "$BATS_TEST_TMPDIR/second" | grep -c '^integrated ticket 02: ')" 1
   assert_equal "$(cat "$BATS_TEST_TMPDIR/first" "$BATS_TEST_TMPDIR/second" | grep -c '^already logged ticket-done ')" 1
   assert_equal "$(jq -c 'select(.event == "ticket-done" and .ticket == "02") | .head' "$TEAM_HOME/ledger.jsonl")" "\"$h2\""
-  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$h2"
+  assert_equal "$(git -C "${wt:?}" rev-parse HEAD)" "$h2"
 }
 
 @test "every run of team-next returns each open ticket worktree whose ticket is done before its hand-off" {
@@ -2789,7 +2789,7 @@ relaunch_ready() {
 # worktrees kept, as team-stow logs it.
 stowed_here() {
   event stowing "$(jq -cn --arg c "$1" '{machine: "home-pc", cause: $c, roles: ["builder"]}')"
-  event stowed "$(jq -cn --arg c "$1" --arg h "$(git -C "$wt" rev-parse HEAD)" '{machine: "home-pc",
+  event stowed "$(jq -cn --arg c "$1" --arg h "$(git -C "${wt:?}" rev-parse HEAD)" '{machine: "home-pc",
     worktrees: [{project: "proj", branch: "feat/T7-toil", head: $h},
       {project: "proj", branch: "feat/T7-toil--02", head: $h, ticket: "02"},
       {project: "proj", branch: "feat/T7-toil--03", head: $h, ticket: "03"}],
@@ -2898,7 +2898,7 @@ full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
 full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
   # Stowed, with its worktree no longer on this machine, it waits for team-open to make it.
   stowed_here handoff
-  git -C "$primary" worktree remove --force "$HOME/slots/proj/2"
+  git -C "${primary:?}" worktree remove --force "$HOME/slots/proj/2"
   run_bin -0 --separate-stderr team-next T7 --fill
   assert_equal "$output" "ticket 02's builder c0000001 is gone, and its worktree $HOME/slots/proj/2 is not on this machine: make it with team-open --task T7 --resume proj --ticket 02, then run team-next T7 --fill again
 full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"

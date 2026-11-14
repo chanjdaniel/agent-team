@@ -1043,7 +1043,7 @@ due() {
   export CODE_CHECKOUT
   CODE_CHECKOUT=$(make_repo proj)
   copy_bin "$CODE_CHECKOUT/bin"
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin git@github.com:owner/proj.git
   run_bin -0 team-sweep
   # conv is, by its path, the code checkout, whose origin is no project's: its PR is never due,
   # while proj's is.
@@ -2322,7 +2322,7 @@ current: team-current: the ledger is not JSON: fix what team-current names"
   run_bin -1 team-sweep
   assert_equal "$(sed -n '2,$p' <<<"$output")" "queue: team-queue list printed no team-queue/1 view: fix what team-queue names"
   # Neither runs when there is nothing for it to read.
-  rm -r "$TEAM_HOME/tasks/queued" "$TEAM_HOME/tasks/current.md"
+  rm -r "${TEAM_HOME:?}/tasks/queued" "${TEAM_HOME:?}/tasks/current.md"
   : >"$STUB_CALLS/team-queue.log"
   : >"$STUB_CALLS/team-current.log"
   run_bin -1 team-sweep

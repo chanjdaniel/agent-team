@@ -16,9 +16,9 @@ setup() {
   mkdir -p "$home/scripts"
   cp "$REPO_ROOT/tests/fixtures/stack/compose.sh" "$home/scripts/compose.sh"
   cp "$REPO_ROOT/tests/fixtures/stack/docker-compose.yml" "$home/docker-compose.yml"
-  git -C "$home" add .gitignore scripts docker-compose.yml
-  git -C "$home" commit -q -m "feat: add the stack"
-  git -C "$home" push -q origin main
+  git -C "${home:?}" add .gitignore scripts docker-compose.yml
+  git -C "${home:?}" commit -q -m "feat: add the stack"
+  git -C "${home:?}" push -q origin main
   home_origin=$BATS_TEST_TMPDIR/origin/home.git
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
 [home]
@@ -74,13 +74,13 @@ SH
     launch "T$n" builder "a${n}a${n}a${n}a${n}" "$HOME/slots/home/$n"
     echo "spec $n" >"$HOME/slots/home/$n/.scratch/task/spec.md"
     echo "$n" >"$HOME/slots/home/$n/f$n.txt"
-    git -C "$HOME/slots/home/$n" add "f$n.txt"
-    git -C "$HOME/slots/home/$n" commit -q -m "feat: f$n"
+    git -C "${HOME:?}/slots/home/$n" add "f$n.txt"
+    git -C "${HOME:?}/slots/home/$n" commit -q -m "feat: f$n"
     run_bin -0 team-stack up --worktree "$HOME/slots/home/$n" --no-seed
   done
   : >"$STUB_CALLS/claude.log"
   wt1=$HOME/slots/home/1 wt2=$HOME/slots/home/2 wt3=$HOME/slots/home/3
-  head1=$(git -C "$wt1" rev-parse HEAD) head2=$(git -C "$wt2" rev-parse HEAD) head3=$(git -C "$wt3" rev-parse HEAD)
+  head1=$(git -C "${wt1:?}" rev-parse HEAD) head2=$(git -C "${wt2:?}" rev-parse HEAD) head3=$(git -C "${wt3:?}" rev-parse HEAD)
 }
 
 # A heavy run a failed test left (heavy_run) is stopped, so no stand-in outlives its test.
@@ -133,8 +133,8 @@ running_stacks() {
 # Every ref of both origins, the session list, the ledger and the running stacks: what a refused
 # or repeated stow leaves as it was.
 untouched_state() {
-  git -C "$team_origin" for-each-ref --format='%(objectname) %(refname)'
-  git -C "$home_origin" for-each-ref --format='%(objectname) %(refname)'
+  git -C "${team_origin:?}" for-each-ref --format='%(objectname) %(refname)'
+  git -C "${home_origin:?}" for-each-ref --format='%(objectname) %(refname)'
   cat "$BATS_TEST_TMPDIR/sessions.json" "$TEAM_HOME/ledger.jsonl"
   running_stacks
 }
@@ -161,17 +161,17 @@ stowed: T2 roles builder; home feat/T2-work2 at ${head2:0:7}; cause level"
 
   # The sessions stop before the checkpoint, which runs once.
   [[ $output == *"sessions: T2: stopped and removed"*"checkpoint: "* ]]
-  assert_equal "$(git -C "$team_origin" log --format=%s dev | grep -c '^chore: checkpoint$')" 1
-  assert_equal "$(git -C "$team_origin" show dev:tasks/T2/scratch/spec.md)" "spec 2"
+  assert_equal "$(git -C "${team_origin:?}" log --format=%s dev | grep -c '^chore: checkpoint$')" 1
+  assert_equal "$(git -C "${team_origin:?}" show dev:tasks/T2/scratch/spec.md)" "spec 2"
 
   assert_equal "$(stops_and_removes)" "stop a1a1a1a1
 rm a1a1a1a1
 stop a2a2a2a2
 rm a2a2a2a2"
   assert_equal "$(running_stacks)" "stackfix-3"
-  assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work1 feat/T2-work2)" "$head1
+  assert_equal "$(git -C "${home_origin:?}" rev-parse feat/T1-work1 feat/T2-work2)" "$head1
 $head2"
-  run -1 git -C "$home_origin" rev-parse -q --verify feat/T3-work3
+  run -1 git -C "${home_origin:?}" rev-parse -q --verify feat/T3-work3
   assert_equal "$(stowed_events)" "$(stowed_of T1 1 "$head1")
 $(stowed_of T2 2 "$head2")"
   assert_equal "$(stow_kinds)" "T1 stowing
@@ -243,11 +243,11 @@ stack_exists() {
 }
 
 @test "a diverged branch refuses its task before its sessions stop, and the others still stow" {
-  git -C "$wt1" push -q origin feat/T1-work1
-  git -C "$wt1" reset -q --hard HEAD~1
+  git -C "${wt1:?}" push -q origin feat/T1-work1
+  git -C "${wt1:?}" reset -q --hard HEAD~1
   echo "b" >"$wt1/b.txt"
-  git -C "$wt1" add b.txt
-  git -C "$wt1" commit -q -m "feat: b"
+  git -C "${wt1:?}" add b.txt
+  git -C "${wt1:?}" commit -q -m "feat: b"
 
   run_bin -1 --separate-stderr team-stow T1 T2 --json
   assert_contains "$stderr" "team-stow: T1 is not stowed: feat/T1-work1 (home) has diverged from origin: 1 commits here and 1 there; bring it level with origin, then run team-stow again"
@@ -297,11 +297,11 @@ T1 stowed"
 
 @test "a branch refused after the stowing --begin logged gives its stow-failed, and the others still stow" {
   run_bin -0 team-stow --begin T1 T2
-  git -C "$wt1" push -q origin feat/T1-work1
-  git -C "$wt1" reset -q --hard HEAD~1
+  git -C "${wt1:?}" push -q origin feat/T1-work1
+  git -C "${wt1:?}" reset -q --hard HEAD~1
   echo "b" >"$wt1/b.txt"
-  git -C "$wt1" add b.txt
-  git -C "$wt1" commit -q -m "feat: b"
+  git -C "${wt1:?}" add b.txt
+  git -C "${wt1:?}" commit -q -m "feat: b"
 
   run_bin -1 --separate-stderr team-stow T1 T2
   assert_contains "$stderr" "team-stow: T1 is not stowed: feat/T1-work1 (home) has diverged from origin"
@@ -441,10 +441,10 @@ $wt2 axi"
   assert_contains "$stderr" "team-stow: laptop does not hold the lease: home-pc holds it"
   assert_equal "$(untouched_state)" "$before"
 
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -75 --separate-stderr team-stow T1
   assert_contains "$stderr" "team-stow: GitHub unreachable; no stow while offline"
-  git -C "$TEAM_HOME" remote set-url origin "$team_origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$team_origin"
   assert_equal "$(untouched_state)" "$before"
   assert_equal "$(stops_and_removes)" ""
 }
@@ -485,24 +485,24 @@ open_ticket() {
 # Every branch ref of the project's origin and of its second remote, and every ref but wip/ and
 # the records' dev and lease of the team home's origin: where a pushed ticket branch would show.
 pushed_branches() {
-  git -C "$home_origin" for-each-ref --format='origin %(refname)' refs/heads
-  git -C "$fork" for-each-ref --format='fork %(refname)'
-  git -C "$team_origin" for-each-ref --format='team %(refname)' | grep -v -e ' refs/heads/wip/' -e ' refs/heads/dev$' -e ' refs/heads/lease$' || true
+  git -C "${home_origin:?}" for-each-ref --format='origin %(refname)' refs/heads
+  git -C "${fork:?}" for-each-ref --format='fork %(refname)'
+  git -C "${team_origin:?}" for-each-ref --format='team %(refname)' | grep -v -e ' refs/heads/wip/' -e ' refs/heads/dev$' -e ' refs/heads/lease$' || true
 }
 
 @test "T287: a task with ticket worktrees stows with no push of a ticket branch, each kept as its wip ref, its stowed naming each ticket" {
   local t2 t3 h2 h3 w2 w3
   fork=$BATS_TEST_TMPDIR/fork.git
   git init -q --bare "$fork"
-  git -C "$wt1" remote add fork "$fork"
+  git -C "${wt1:?}" remote add fork "$fork"
   t2=$(open_ticket 02)
   t3=$(open_ticket 03)
   # Ticket 02 committed its work; ticket 03 has uncommitted changes on its head.
   echo two >"$t2/two.txt"
-  git -C "$t2" add two.txt
-  git -C "$t2" commit -q -m "feat: two"
+  git -C "${t2:?}" add two.txt
+  git -C "${t2:?}" commit -q -m "feat: two"
   echo three >"$t3/three.txt"
-  h2=$(git -C "$t2" rev-parse HEAD) h3=$(git -C "$t3" rev-parse HEAD)
+  h2=$(git -C "${t2:?}" rev-parse HEAD) h3=$(git -C "${t3:?}" rev-parse HEAD)
   : >"$STUB_CALLS/claude.log"
 
   run_bin -0 --separate-stderr team-stow T1
@@ -516,10 +516,10 @@ stop 02bbbbbb
 rm 02bbbbbb
 stop 03bbbbbb
 rm 03bbbbbb"
-  w2=$(git -C "$team_origin" rev-parse wip/home/T1--02)
-  w3=$(git -C "$team_origin" rev-parse wip/home/T1--03)
+  w2=$(git -C "${team_origin:?}" rev-parse wip/home/T1--02)
+  w3=$(git -C "${team_origin:?}" rev-parse wip/home/T1--03)
   assert_equal "$w2" "$h2"
-  assert_equal "$(git -C "$team_origin" rev-parse "$w3^1")" "$h3"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse "$w3^1")" "$h3"
   assert_contains "$output" "branches: T1 home: pushed feat/T1-work1 at ${head1:0:7}"
   assert_contains "$output" "branches: T1 home--02: feat/T1-work1--02 is kept as wip/home/T1--02 at ${h2:0:7}, never pushed"
   assert_contains "$output" "branches: T1 home--03: feat/T1-work1--03 with its uncommitted changes in $t3 is kept as wip/home/T1--03 at ${w3:0:7}, never pushed"
@@ -541,35 +541,35 @@ T1 stowed"
 @test "T287: a ticket worktree whose wip ref does not hold its work refuses its task with a stow-failed, and stows once its ref does" {
   local t2 h2
   t2=$(open_ticket 02)
-  h2=$(git -C "$t2" rev-parse HEAD)
+  h2=$(git -C "${t2:?}" rev-parse HEAD)
   run_bin -0 team-checkpoint
-  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1--02)" "$h2"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse wip/home/T1--02)" "$h2"
   # Off its ticket branch, the checkpoint skips it, so wip/home/T1--02 keeps the old head.
-  git -C "$t2" checkout -q -b elsewhere
+  git -C "${t2:?}" checkout -q -b elsewhere
   echo moved >"$t2/moved.txt"
-  git -C "$t2" add moved.txt
-  git -C "$t2" commit -q -m "feat: moved"
+  git -C "${t2:?}" add moved.txt
+  git -C "${t2:?}" commit -q -m "feat: moved"
   : >"$STUB_CALLS/claude.log"
 
   run_bin -1 --separate-stderr team-stow T1 T2
   local reason="feat/T1-work1--02 (home, ticket 02) is not kept: wip/home/T1--02 on the team home's origin does not hold the head and uncommitted changes of $t2 on feat/T1-work1--02, and a ticket branch is never pushed"
   assert_contains "$stderr" "team-stow: T1 is not stowed: $reason; make the checkpoint keep it (its line above says why it did not), then run team-stow again"
   assert_contains "$output" "checkpoint: T1 home--02: skipped: "
-  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1--02)" "$h2"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse wip/home/T1--02)" "$h2"
   # Refused after its sessions stopped and its checkpoint: no push of its branch, a stow-failed.
-  run -1 git -C "$home_origin" rev-parse -q --verify feat/T1-work1
-  run -1 git -C "$home_origin" rev-parse -q --verify feat/T1-work1--02
+  run -1 git -C "${home_origin:?}" rev-parse -q --verify feat/T1-work1
+  run -1 git -C "${home_origin:?}" rev-parse -q --verify feat/T1-work1--02
   assert_equal "$(stow_kinds)" "T1 stowing
 T2 stowing
 T2 stowed
 T1 stow-failed: $reason"
 
   # Back on its ticket branch, its ref holds its head again, and the run stows it.
-  git -C "$t2" checkout -q feat/T1-work1--02
+  git -C "${t2:?}" checkout -q feat/T1-work1--02
   run_bin -0 --separate-stderr team-stow T1
   assert_contains "$output" "branches: T1 home--02: feat/T1-work1--02 is kept as wip/home/T1--02 at ${h2:0:7}, never pushed"
   assert_equal "$(stowed_events | jq -c 'select(.task == "T1") | .worktrees[1]')" \
     "$(jq -cn --arg h "$h2" '{project: "home", branch: "feat/T1-work1--02", head: $h, ticket: "02"}')"
   assert_equal "$(stowed_events | jq -c 'select(.task == "T1") | .sessions')" '["builder"]'
-  run -1 git -C "$home_origin" rev-parse -q --verify feat/T1-work1--02
+  run -1 git -C "${home_origin:?}" rev-parse -q --verify feat/T1-work1--02
 }

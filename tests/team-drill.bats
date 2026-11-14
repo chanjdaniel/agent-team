@@ -19,15 +19,15 @@ setup() {
 
 # The code checkout's HEAD.
 head_commit() {
-  git -C "$CODE_CHECKOUT" rev-parse HEAD
+  git -C "${CODE_CHECKOUT:?}" rev-parse HEAD
 }
 
 # Commit a change to <path> in the code checkout; prints the commit: commit_path <path>
 commit_path() {
   mkdir -p "$(dirname "$CODE_CHECKOUT/$1")"
   echo "$RANDOM" >>"$CODE_CHECKOUT/$1"
-  git -C "$CODE_CHECKOUT" add -- "$1"
-  git -C "$CODE_CHECKOUT" commit -q -m "feat: change $1"
+  git -C "${CODE_CHECKOUT:?}" add -- "$1"
+  git -C "${CODE_CHECKOUT:?}" commit -q -m "feat: change $1"
   head_commit
 }
 

@@ -86,10 +86,10 @@ age_probe() {
 @test "a reply is blocked when the lease on origin names another holder, before any fence" {
   steal_lease laptop home-pc
   local refs
-  refs=$(git -C "$TEAM_HOME" for-each-ref)
+  refs=$(git -C "${TEAM_HOME:?}" for-each-ref)
   reply -2
   # The new lease was fetched without moving a ref: team-lease's refs are its own.
-  assert_equal "$(git -C "$TEAM_HOME" for-each-ref)" "$refs"
+  assert_equal "$(git -C "${TEAM_HOME:?}" for-each-ref)" "$refs"
   grep -qx fetch "$STUB_CALLS/git-net.log"
   assert_equal "$stderr" "Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease posts nothing to Discord; the coordinator on the holder answers there."
   [[ ! -e $state/fenced ]]
@@ -116,7 +116,7 @@ age_probe() {
 
 @test "a reply is allowed when origin is unreachable: the heartbeat owns offline" {
   steal_lease laptop home-pc
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   reply -0
   assert_equal "$stderr" ""
   jq -e '.reachable == false' "$state/probe.json"

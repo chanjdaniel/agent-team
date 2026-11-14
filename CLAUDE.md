@@ -90,12 +90,13 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `tests/compaction-drill`: run by hand by the coordinator, since it starts a real Claude session; it compacts a coordinator-shaped session in a sandbox team home built from `tests/fixtures/compaction-drill/`, checks it still knows each task's wait and every current item, and records its run.
   - `tests/compaction-drill.bats`: dry-runs `tests/compaction-drill` on a stub `claude`.
   - `tests/drill.bats`: the two-machine drill (handoff, steal, crash, outage, and the records rewrite's cutover on one machine).
+  - `tests/guard-paths`: rewrites each unguarded path variable a test hands git or `rm -r` to `${var:?}`, and with `--check` names each one left.
   - `tests/helpers/`: the helpers, with `docker.bash`, the opt-in stub `docker`.
   - `tests/shards`: splits the bats files into `tests/run bats --shard`'s shards by their seconds in `tests/timings.tsv`, and `tests/shards update` rewrites their Linux seconds from a CI run's shard jobs, keeping their macOS ones.
   - `tests/task-life.bats`: a whole task's life across the scripts.
   - `tests/timings.tsv`: each bats file's seconds on Linux in one CI run, and on macOS as the last CI run with macOS jobs had them, which `tests/shards` weighs it by.
   - `tests/toolkits/`: the toolkits' Node tests.
-  - `tests/vendor/`: bats-core, vendored.
+  - `tests/vendor/`: bats-core, vendored, with the one line its `VENDOR.md` patches.
 - `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`) and the roles a server starts for when not every one (`mcp-roles.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
   - `codegraph/`: for a setup trial's builders and reviewers, a session-start hook that, in a worktree with a `.codegraph/` directory, builds or syncs that worktree's CodeGraph index and prints a banner to locate code with `codegraph explore` first; no MCP server.
@@ -148,10 +149,12 @@ It holds:
 
 - `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/`, `tests/`, `servers/` and `toolkits/`, then the whole bats suite, then the toolkit tests; `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each, as the CI jobs do; `tests/run bats --shard <k>/<n>` runs one shard of the bats files, as CI's `test-shards` jobs do, whose `test` job keeps the required id.
   Its bats files run in parallel, one bats per file and as many at once as `TEAM_JOBS` says when set, else as the team's CPU budget allows when a team home is found (`team-capacity jobs`, 3 at minor on 12 cores), else as there are CPUs (CI, a fresh clone), so every file must stay independent of the others; its last line is the wall time and the most files it ran at once.
+  It stops a bats test that runs past `TESTS_TEST_SECONDS` (default 600) and a bats file that runs past `TESTS_FILE_MINUTES` (default 40), each failing with the test's or the file's name, so a hang names itself long before CI's job ends.
   `team-checks` gives the commands it runs `TEAM_JOBS` from `team-capacity jobs` unless it is set.
   `tests/shards` splits them by each file's seconds in CI (`tests/timings.tsv`, a file it lacks weighed by its bytes), so refresh the timings with `tests/shards update` when the shards' times drift apart, and a removed bats file takes its row with it, as `tests/repo.bats` holds.
   Every part but `shellcheck` alone and a shard's `--list` runs under the machine's heavy-run lock (`bin/team-heavy`, which `team-checks` takes for the local checks too), so two suites on one machine queue instead of overlapping, each in a process group (and on Linux a scope) of its own that leaves a cost sample, and the sandbox clears `TEAM_HEAVY_HELD`, `AGENT_TEAM_TASK` and `TEAM_JOBS` so the tests take their own.
 - A PR to `dev` is checked on GitHub: `.github/workflows/ci.yml` runs its jobs (`shellcheck`, `test`, `toolkits`, `data` and `zizmor`, with the shard job `test-shards`, which `test` waits for), all on Linux and none on macOS, on every PR to `dev` and to `main` and by hand (`workflow_dispatch`).
+  Each job has a time limit (`timeout-minutes`), about twice its longest recent run, and each that runs bats one above `tests/run`'s file limit, which `tests/repo.bats` holds.
   `dev`'s protection and `projects.toml`'s `required_checks` for `agent-team` require each job by its id, so renaming a job changes a required check, and `team-merge` merges only with every one passed on the PR's exact head.
   `tests/repo.bats` holds the jobs but the shard jobs to the registry fixture's `required_checks`, and each shard job to the job that waits for it, and no workflow runs on a push, a schedule or `pull_request_target`.
   The `zizmor` job audits the workflows offline with zizmor, pinned by version and sha256 as gitleaks is, and fails on any finding; an accepted one is ignored on its own line as `# zizmor: ignore[<audit>] <reason>`, which `tests/repo.bats` holds, with no zizmor config to ignore more.
@@ -176,6 +179,7 @@ It holds:
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
   CI runs no macOS job, so a failure that only macOS shows is seen only when the suite runs on a Mac.
 - Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, no tracked Markdown or template outside the records (`bin/lib/records`, kept as written) has an em dash, and the Layout above stays a list, one thing per line of at most 300 characters, alphabetical within each list.
+  A test runs `git -C`, `--git-dir`, `--work-tree`, `rm -r` or a git line's `cd` on a variable path only as `${var:?}`, so an empty variable stops its line instead of reaching the code checkout or the team home, which `tests/guard-paths --check` holds through `tests/repo.bats`, and `tests/guard-paths` rewrites.
 - Every PreToolUse hook entry, in `settings/*.json`, `coordinator.settings.json` and a toolkit's `hooks/hooks.json`, sets `"onFailure": "block"` and a whole-number `timeout` from 1 to 120 seconds beside its `command`, which `tests/repo.bats` holds, so a guard hook that fails or hangs blocks the call; `team-doctor`'s `guard hooks` line runs `scratch-only-edits`, `command-guard` and `lease-fence` on a harmless Bash call, since a guard that always fails then blocks every call it sees.
 
 ## Script conventions

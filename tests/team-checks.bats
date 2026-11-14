@@ -13,9 +13,9 @@ echo "checking the head"
 [[ -f needed.txt ]] || { echo "needed.txt is missing"; exit 3; }
 SH
   chmod +x "$primary/check.sh"
-  git -C "$primary" add check.sh
-  git -C "$primary" commit -q -m "test: the local check"
-  head=$(git -C "$primary" rev-parse HEAD)
+  git -C "${primary:?}" add check.sh
+  git -C "${primary:?}" commit -q -m "test: the local check"
+  head=$(git -C "${primary:?}" rev-parse HEAD)
   export CHECKS_DIR=$BATS_TEST_TMPDIR/checks
   mkdir -p "$CHECKS_DIR"
   registry '["./check.sh"]'
@@ -43,14 +43,14 @@ TOML
 
 # commit_file <file> <message>: commit <file> of proj's primary checkout, and make head that commit.
 commit_file() {
-  git -C "$primary" add "$1"
-  git -C "$primary" commit -q -m "$2"
-  head=$(git -C "$primary" rev-parse HEAD)
+  git -C "${primary:?}" add "$1"
+  git -C "${primary:?}" commit -q -m "$2"
+  head=$(git -C "${primary:?}" rev-parse HEAD)
 }
 
 # The worktrees of proj's primary checkout, one path per line.
 proj_worktrees() {
-  git -C "$primary" worktree list --porcelain | sed -n 's/^worktree //p'
+  git -C "${primary:?}" worktree list --porcelain | sed -n 's/^worktree //p'
 }
 
 @test "--help prints the header" {
@@ -72,7 +72,7 @@ proj_worktrees() {
   echo "needed" >"$primary/needed.txt"
   commit_file needed.txt "test: what the check needs"
   # The calling checkout has moved on: the check runs on the head it is given.
-  git -C "$primary" commit -q --allow-empty -m "chore: later"
+  git -C "${primary:?}" commit -q --allow-empty -m "chore: later"
   run_bin -0 --separate-stderr team-checks proj "$head" --from "$primary"
   assert_equal "$output" "local check './check.sh' passed on the head ${head:0:7}"
   local where sha tmp
@@ -81,7 +81,7 @@ proj_worktrees() {
   [[ $where != "$primary" && ! -e $where ]]
   [[ $tmp != "$HOME"/* && $tmp != /home/* && $tmp != /Users/* && ! -e $tmp ]]
   assert_equal "$(proj_worktrees)" "$primary"
-  assert_equal "$(git -C "$primary" branch --show-current)" dev
+  assert_equal "$(git -C "${primary:?}" branch --show-current)" dev
 }
 
 @test "the checkout defaults to the repository of the current directory, and a head is given in full or short" {
