@@ -5,12 +5,12 @@
       "name": "claude",
       "version_cmd": "claude --version",
       "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+) \\(Claude Code\\)",
-      "pin": "2.1.316",
+      "pin": "2.1.325",
       "min": "2.1.295",
       "pin_mismatch": "WARN",
       "source": {
-        "arch": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.316",
-        "macos": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.316"
+        "arch": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.325",
+        "macos": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.325"
       },
       "path": {
         "arch": "~/.local/bin",
