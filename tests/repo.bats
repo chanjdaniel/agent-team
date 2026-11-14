@@ -1329,6 +1329,19 @@ COMMANDS
   # claude given the toolkit have rules of their own.
   assert_denies 'Bash(*node *start-server.mjs*)' 'node /home/me/agent-team/toolkits/vercel-read/scripts/start-server.mjs'
   assert_denies 'Bash(*&& scripts/*start-server.mjs*)' 'cd toolkits/vercel-read && scripts/start-server.mjs'
+  # So is prod-mongo's, and a claude given it is denied by the prod-* rules.
+  assert_denies 'Bash(*node *start-server.mjs*)' 'node /home/me/agent-team/toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(./*start-server.mjs*)' './toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(/*start-server.mjs*)' '/home/me/agent-team/toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(toolkits/*start-server.mjs*)' 'toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(scripts/*start-server.mjs*)' 'scripts/start-server.mjs'
+  assert_denies 'Bash(*&& scripts/*start-server.mjs*)' 'cd toolkits/prod-mongo && scripts/start-server.mjs'
+  assert_denies 'Bash(*; scripts/*start-server.mjs*)' 'cd toolkits/prod-mongo; scripts/start-server.mjs'
+  assert_denies 'Bash(env *start-server.mjs*)' 'env toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(bun *start-server.mjs*)' 'bun toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(deno *start-server.mjs*)' 'deno run -A toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(*--plugin-dir*prod-*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/prod-mongo'
+  assert_denies 'Bash(*--mcp-config*prod-*)' 'claude -p hi --mcp-config toolkits/prod-mongo/.mcp.json'
   assert_denies 'Bash(*node *vercel-mcp*)' 'node -e "import(\"/home/me/agent-team/servers/vercel-mcp.mjs\")"' \
     'node servers/vercel-mcp.mjs' 'cd servers && node --input-type=module -e "await import(\"./vercel-mcp.mjs\")"'
   assert_denies 'Bash(./*vercel-mcp*)' './vercel-mcp.mjs'
@@ -1337,18 +1350,69 @@ COMMANDS
   assert_denies 'Bash(env *vercel-mcp*)' 'env VERCEL_READ_API=http://127.0.0.1:1 servers/vercel-mcp.mjs'
   assert_denies 'Bash(bun *vercel-mcp*)' 'bun servers/vercel-mcp.mjs'
   assert_denies 'Bash(deno *vercel-mcp*)' 'deno run -A servers/vercel-mcp.mjs'
+  # prod-mongo's server body exports its start, which a shell's import could call with the
+  # launcher's settings, raising the launch's 1Password prompt; its file name is its own, so a
+  # relative import from its own directory names it too.
+  assert_denies 'Bash(*node *prod-mongo-mcp*)' \
+    'node --input-type=module -e "await import(\"/home/me/agent-team/servers/prod-mongo/prod-mongo-mcp.mjs\")"' \
+    'cd servers && node -e "import(\"./prod-mongo/prod-mongo-mcp.mjs\").then((m) => m.startProdMongo({}))"' \
+    'cd servers/prod-mongo && node -e "import(\"./prod-mongo-mcp.mjs\").then((m) => m.startProdMongo({}))"'
+  assert_denies 'Bash(env *prod-mongo-mcp*)' 'env PROD_MONGO_ROOT=/x node -e "import(\"./servers/prod-mongo/prod-mongo-mcp.mjs\")"'
+  assert_denies 'Bash(bun *prod-mongo-mcp*)' 'bun -e "await import(\"./prod-mongo-mcp.mjs\")"'
+  assert_denies 'Bash(deno *prod-mongo-mcp*)' 'deno eval "await import(\"./servers/prod-mongo/prod-mongo-mcp.mjs\")"'
+  [[ -f $REPO_ROOT/servers/prod-mongo/prod-mongo-mcp.mjs && ! -e $REPO_ROOT/servers/prod-mongo/server.mjs ]]
+  assert_denies 'Bash(*node *prod-mongo/scripts/settings*)' \
+    'node -e "import(\"/home/me/agent-team/toolkits/prod-mongo/scripts/settings.mjs\")"'
+  assert_denies 'Bash(env *prod-mongo/scripts/settings*)' 'env node toolkits/prod-mongo/scripts/settings.mjs'
+  assert_denies 'Bash(bun *prod-mongo/scripts/settings*)' 'bun toolkits/prod-mongo/scripts/settings.mjs'
+  assert_denies 'Bash(deno *prod-mongo/scripts/settings*)' 'deno run -A toolkits/prod-mongo/scripts/settings.mjs'
+  # The 1Password read every server body shares exports readSecrets, which a shell's import could
+  # call with any reference, raising a 1Password prompt no launch announced.
+  assert_denies 'Bash(*node *op-secret*)' \
+    'node --input-type=module -e "await import(\"/home/me/agent-team/servers/op-secret.mjs\")"' \
+    'cd servers && node -e "import(\"./op-secret.mjs\").then((m) => m.readSecrets(\"x\", [\"op://a/b/c\"]))"'
+  assert_denies 'Bash(env *op-secret*)' 'env OP_ACCOUNT=x node -e "import(\"./servers/op-secret.mjs\")"'
+  assert_denies 'Bash(bun *op-secret*)' 'bun -e "await import(\"./servers/op-secret.mjs\")"'
+  assert_denies 'Bash(deno *op-secret*)' 'deno eval "await import(\"./servers/op-secret.mjs\")"'
   assert_denies 'Bash(*--plugin-dir*vercel-read*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/vercel-read' \
     'claude --bg --plugin-dir=toolkits/vercel-read'
   assert_denies 'Bash(*--mcp-config*vercel-read*)' 'claude -p hi --mcp-config toolkits/vercel-read/.mcp.json' \
     'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.vercel-read.json'
 }
 
+# A dump under the backups folder holds every vendor's personal details, and every session runs as
+# Daniel's account, so the folder's 0700 mode keeps none of them out: every session's file tools are
+# denied it, and its shell has speed bumps on the folder's path. Only prod-mongo's server, which no
+# session's tools are, writes and reads there.
+@test "every session is denied reading or editing the backups folder, by its file tools and by its path in a shell" {
+  local file rule
+  for file in "${SETTINGS[@]}"; do
+    for rule in 'Read(~/conventioner-backups/**)' 'Edit(~/conventioner-backups/**)'; do
+      jq -e --arg rule "$rule" '.permissions.deny | index($rule)' "$REPO_ROOT/$file" >/dev/null ||
+        { echo "$file lacks the deny rule $rule" >&2; return 1; }
+    done
+  done
+  # The ops role takes them from worker.json, which every role's settings layer on.
+  if grep -n conventioner-backups "$REPO_ROOT/settings/ops.json"; then echo "ops.json repeats worker.json's rules" >&2; return 1; fi
+  assert_denies 'Bash(*/conventioner-backups/*)' 'zcat ~/conventioner-backups/2026-11-09T081502Z/dump/conventioner/vendors.bson.gz' \
+    'cat /home/me/conventioner-backups/x/manifest.json' 'ls ~/conventioner-backups/' 'cd ~/conventioner-backups/x && ls'
+  assert_denies 'Bash(*/conventioner-backups)' 'ls -la ~/conventioner-backups' 'cd $HOME/conventioner-backups'
+  assert_denies 'Bash(*/conventioner-backups *)' 'grep -r vendor ~/conventioner-backups --include "*.json"' \
+    'du -sh ~/conventioner-backups | sort'
+}
+
 # The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
 @test "the production launchers, the MCP servers' bodies and their 1Password read are not executable" {
-  local modes
+  local modes path
+  for path in toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
+    toolkits/prod-mongo/scripts servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/prod-mongo \
+    servers/op-secret.mjs; do
+    [[ -n $(git -C "$REPO_ROOT" ls-files -- "$path") ]] || { echo "$path holds no tracked file" >&2; return 1; }
+  done
   modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
-    servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/op-secret.mjs | awk '{print $1, $4}')
-  assert_equal "$(wc -l <<<"$modes")" 6
+    toolkits/prod-mongo/scripts servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/prod-mongo servers/op-secret.mjs |
+    awk '{print $1, $4}')
+  grep -qx '100644 toolkits/prod-mongo/scripts/start-server.mjs' <<<"$modes"
   if grep -v '^100644 ' <<<"$modes"; then echo "executable in git (above)" >&2; return 1; fi
 }
 
@@ -1517,6 +1581,20 @@ claude plugin validate --strict toolkits/vercel-read
 git add toolkits/vercel-read servers/vercel-mcp.mjs tests/toolkits/vercel-read.test.mjs
 git diff origin/dev -- toolkits/vercel-read servers/vercel-mcp.mjs
 git log --oneline -- servers/vercel-mcp.mjs
+node --test tests/toolkits/prod-mongo.test.mjs
+node --test tests/toolkits/prod-mongo.test.mjs --test-name-pattern 'list-backups'
+git add servers/prod-mongo toolkits/prod-mongo tests/toolkits/prod-mongo.test.mjs
+git diff origin/dev -- servers/prod-mongo/prod-mongo-mcp.mjs toolkits/prod-mongo/scripts/settings.mjs
+sed -n 1,40p servers/prod-mongo/prod-mongo-mcp.mjs
+grep -n conventioner-backups toolkits/prod-mongo/README.md settings/worker.json
+git grep -n "~/conventioner-backups"
+PROD_MONGO_ROOT=$HOME/.cache/agent-team-tests/backups node --test tests/toolkits/prod-mongo.test.mjs
+cat toolkits/prod-mongo/scripts/settings.mjs
+claude plugin validate --strict toolkits/prod-mongo
+git diff origin/dev -- servers/op-secret.mjs
+sed -n 1,40p servers/op-secret.mjs
+grep -n readSecrets servers/op-secret.mjs servers/vercel-mcp.mjs
+git add servers/op-secret.mjs
 COMMANDS
 }
 
@@ -1975,6 +2053,26 @@ YAML
   done
 }
 
+# The toolkit tests run MongoDB's Database Tools, which CI installs by the lock's own commands, so
+# the pins live in tools.lock alone and a new download entry needs no change to the workflow.
+@test "CI's toolkits job installs every download tool of tools.lock by tools.jq's commands, into ~/.local/bin on PATH, before the toolkit tests" {
+  local ci=$REPO_ROOT/.github/workflows/ci.yml block
+  block=$(sed -n '/^jobs:$/,$p' "$ci" | sed -n '/^  toolkits:$/,/^  [a-z_-]*:$/p' | sed '$d')
+  grep -qxF "          mapfile -t fixes < <(jq -L bin/lib -r --arg os arch --arg machine x86_64 'include \"tools\"; download_sources(\$os; \$machine)' bin/lib/tools.lock)" <<<"$block"
+  grep -qxF '          for fix in "${fixes[@]}"; do bash -c "$fix" || exit 1; done' <<<"$block"
+  grep -qxF '          echo "$HOME/.local/bin" >>"$GITHUB_PATH"' <<<"$block"
+  # The install comes before the tests, and names no tool itself.
+  (($(grep -n 'download_sources' <<<"$block" | cut -d: -f1) < $(grep -nxF '      - run: tests/run toolkits' <<<"$block" | cut -d: -f1)))
+  if grep -nE 'mongo(dump|restore|import)' <<<"$block"; then echo "the toolkits job names a download tool itself" >&2; return 1; fi
+  # Every download tool goes to ~/.local/bin on Arch, which the step puts on PATH, and has an
+  # archive for the runner.
+  # shellcheck disable=SC2088 # the lock's own text, never expanded
+  assert_equal "$(jq -r '[.tools[] | select(.from == "download") | .dir.arch] | unique | join(" ")' "$REPO_ROOT/bin/lib/tools.lock")" '~/.local/bin'
+  run -0 jq -L "$REPO_ROOT/bin/lib" -r --arg os arch --arg machine x86_64 'include "tools"; download_sources($os; $machine)' "$REPO_ROOT/bin/lib/tools.lock"
+  assert_equal "$(grep -c '^f=$(mktemp) && d=$(mktemp -d) && curl -fsSLo "$f" https://' <<<"$output")" \
+    "$(jq '[.tools[] | select(.from == "download")] | length' "$REPO_ROOT/bin/lib/tools.lock")"
+}
+
 # Every tests/*.bats file lands in exactly one shard, tests/run's shard is tests/shards' own, and
 # the shards' weights stay within the heaviest file's of each other.
 @test "tests/run's bats shards split every file once, evenly by tests/shards' weights" {
@@ -2403,7 +2501,7 @@ $(printf 'file\tlinux\tmacos\ntests/a.bats\t12\t\ntests/b.bats\t7\t\ntests/c.bat
 # toolkit tests hold to the server's own tools/list, says what it must still be.
 @test "each production toolkit's README inventory is exactly its server's tools" {
   local kit listed want
-  for kit in prod-read prod-write; do
+  for kit in prod-read prod-write prod-mongo vercel-read; do
     listed=$(sed -n '/^```text$/,/^```$/p' "$REPO_ROOT/toolkits/$kit/README.md" | grep '^mcp__' | sort)
     want=$(jq -r --arg kit "$kit" '.tools[] | "mcp__\($kit)__\(.name)"' "$REPO_ROOT/toolkits/$kit/evals/mocks/$kit/_tools.json" | sort)
     [[ -n $want ]]

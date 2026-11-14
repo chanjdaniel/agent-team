@@ -2,6 +2,8 @@
 // 1Password: the shared body of each MongoDB toolkit's scripts/start-server.mjs.
 //
 //   await startMongodbMcp({ name, reference, settings })
+//   connectionStringRefusal(value)   the check of the value read, which prod-mongo's server
+//                                    passes to readSecrets too
 //
 // It reads the secret reference with `op read --no-newline` (execFileSync, no shell, stdin
 // ignored because stdin is the MCP transport), runs `op signout`, drops every inherited MDB_MCP_*
@@ -29,6 +31,12 @@ const fixedSettings = {
   MDB_MCP_DISABLE_UNTRUSTED_DATA_WARNING: "false",
 };
 
+// readSecrets' check of a MongoDB connection string, which every MongoDB toolkit's launcher
+// passes, so their refusals are the same line.
+export function connectionStringRefusal(value) {
+  if (!/^mongodb(\+srv)?:\/\//.test(value)) return "op read returned something that is not a MongoDB connection string";
+}
+
 export async function startMongodbMcp({ name, reference, settings }) {
   const fail = (reason) => {
     process.stderr.write(`${name}: ${reason}\n`);
@@ -44,9 +52,7 @@ export async function startMongodbMcp({ name, reference, settings }) {
     fail("the pinned MongoDB MCP server is not installed: run servers/install");
   }
 
-  const [value] = readSecrets(name, [reference], (read) => {
-    if (!/^mongodb(\+srv)?:\/\//.test(read)) return "op read returned something that is not a MongoDB connection string";
-  });
+  const [value] = readSecrets(name, [reference], connectionStringRefusal);
 
   for (const key of Object.keys(process.env)) {
     if (key.startsWith("MDB_MCP_")) delete process.env[key];

@@ -278,9 +278,37 @@
       "input": "gh pr ready 1 --undo --help",
       "expect": "rule",
       "family": "undo-ready"
+    },
+    {
+      "id": "prod-mongo-server",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Bash",
+      "input": "node --input-type=module -e \"await import('./servers/prod-mongo/prod-mongo-mcp.mjs')\"",
+      "expect": "rule",
+      "family": "prod-mongo-server"
+    },
+    {
+      "id": "op-secret",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Bash",
+      "input": "node --input-type=module -e \"await import('./servers/op-secret.mjs')\"",
+      "expect": "rule",
+      "family": "op-secret"
+    },
+    {
+      "id": "read-backups",
+      "roles": ["planner", "builder", "reviewer"],
+      "tool": "Read",
+      "input": "@HOME@/conventioner-backups/load-check-probe-absent",
+      "expect": "rule",
+      "family": "backups-folder"
     }
   ],
   "families": [
+    {
+      "family": "backups-folder",
+      "rules": "^(Read|Bash)\\(.*conventioner-backups"
+    },
     {
       "family": "channels",
       "rules": "^(Read|Bash)\\(.*\\.claude/channels"
@@ -334,12 +362,20 @@
       "rules": "^Bash\\((\\*&& |\\*\\|\\| |\\*\\| |\\*\\$\\(|\\*/bin/|env |command |exec )?op( \\*)?\\)$"
     },
     {
+      "family": "op-secret",
+      "rules": "op-secret"
+    },
+    {
       "family": "posts",
       "rules": "team-(post|thread wait)"
     },
     {
       "family": "proc",
       "rules": "/proc/"
+    },
+    {
+      "family": "prod-mongo-server",
+      "rules": "prod-mongo-mcp|prod-mongo/scripts/settings"
     },
     {
       "family": "production",

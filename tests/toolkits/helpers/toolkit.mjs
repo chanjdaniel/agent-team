@@ -1,13 +1,15 @@
 // Checks every toolkit server test makes, whichever toolkit it starts.
 //
 //   assertNoLeak(server, { marker, home })     after every run: the secret never got out
-//   launcherRefusalTests(toolkit, context, { reads, notTheSecret })
+//   launcherRefusalTests(toolkit, context, { reads, notTheSecret, path })
 //                                              inside a describe(): one test per launcher refusal;
 //                                              context() gives { value, home, marker } at run time;
-//                                              `reads`, the op reads a launch makes (1), and
+//                                              `reads`, the op reads a launch makes (1),
 //                                              `notTheSecret`, { what, reason } of the value that
 //                                              is not the toolkit's secret (a MongoDB connection
-//                                              string's by default)
+//                                              string's by default), and `path`, the server's
+//                                              PATH given testPath's options (testPath itself by
+//                                              default), for a server that needs a tool on it
 //   evalMockTools(toolkit, server)             the tools/list a toolkit's eval mocks give the server
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -29,10 +31,10 @@ export function assertNoLeak(server, { marker, home }) {
 // first read that fails ends the reads.
 const notAConnectionString = { what: "when the value is not a connection string", reason: /is not a MongoDB connection string$/ };
 
-export function launcherRefusalTests(toolkit, context, { reads = 1, notTheSecret = notAConnectionString } = {}) {
+export function launcherRefusalTests(toolkit, context, { reads = 1, notTheSecret = notAConnectionString, path: serverPath = testPath } = {}) {
   const read = Array(reads).fill("read");
   const cases = [
-    { what: "when op is not on PATH", path: () => testPath({ withOp: false }), calls: [], reason: /^op is not on PATH$/ },
+    { what: "when op is not on PATH", path: () => serverPath({ withOp: false }), calls: [], reason: /^op is not on PATH$/ },
     { what: "when op read fails", mode: "fail", calls: ["read"], reason: /^op read failed: .*authorization prompt dismissed/ },
     { what: "when op read returns nothing", value: () => "", calls: [...read, "signout"], reason: /^op read returned an empty value$/ },
     { what: notTheSecret.what, value: ({ marker }) => `${marker}\n`, calls: [...read, "signout"], reason: notTheSecret.reason },
@@ -43,7 +45,7 @@ export function launcherRefusalTests(toolkit, context, { reads = 1, notTheSecret
     test(what, async () => {
       const run = context();
       const op = opStub({ value: value ? value(run) : run.value, mode });
-      const server = startToolkitServer(toolkit, { home: run.home, opDir: op.dir, path: path?.(), args });
+      const server = startToolkitServer(toolkit, { home: run.home, opDir: op.dir, path: path ? path() : serverPath(), args });
       try {
         await assert.rejects(server.initialize(), /server exited \(1\)/);
       } finally {

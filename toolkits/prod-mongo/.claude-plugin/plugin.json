@@ -1,0 +1,8 @@
+{
+  "name": "prod-mongo",
+  "version": "0.1.0",
+  "description": "Verified backups of Conventioner's production database into ~/conventioner-backups, and restore drills that prove they restore into a throwaway local MongoDB, on the read user's connection string from 1Password at server start, which reaches mongodump only through a FIFO. Loaded only into the ops role.",
+  "author": {
+    "name": "Daniel Chan"
+  }
+}

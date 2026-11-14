@@ -1,7 +1,7 @@
 {
   "name": "agent-team-servers",
   "private": true,
-  "description": "The MCP servers the team's toolkits and sessions run, Foldkit's DevTools MCP server among them, the MCP client ui-capture (toolkits/frontend) speaks to one with, the chrome-devtools-axi client the browser toolkit's test runs, the effect, @effect/tsgo and typescript packages the effect toolkit's test checks its skill and its hook against, and the foldkit, @effect/platform-browser, @foldkit/vite-plugin and vite packages its test runs a fixture Foldkit app's dev servers on, pinned by package-lock.json and installed by servers/install.",
+  "description": "The MCP servers the team's toolkits and sessions run, Foldkit's DevTools MCP server among them, the MCP client ui-capture (toolkits/frontend) speaks to one with, the chrome-devtools-axi client the browser toolkit's test runs, the effect, @effect/tsgo and typescript packages the effect toolkit's test checks its skill and its hook against, the foldkit, @effect/platform-browser, @foldkit/vite-plugin and vite packages its test runs a fixture Foldkit app's dev servers on, and the mongodb driver the prod-mongo server counts its dumps with, pinned by package-lock.json and installed by servers/install.",
   "license": "UNLICENSED",
   "dependencies": {
     "@effect/platform-browser": "4.1.2",
@@ -13,6 +13,7 @@
     "chrome-devtools-mcp": "1.12.0",
     "effect": "4.1.2",
     "foldkit": "0.170.0",
+    "mongodb": "7.7.0",
     "mongodb-mcp-server": "3.1.0",
     "typescript": "7.0.2",
     "vite": "8.3.6"

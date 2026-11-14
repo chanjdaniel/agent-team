@@ -6,6 +6,8 @@
 //   await server.initialize();                         or initialize({ elicitation: true })
 //   const tools = await server.listTools();
 //   const result = await server.callTool("find", { database, collection, filter });
+//                                  or callTool(name, args, { progressToken }), which asks for
+//                                  progress notifications (in fromServer)
 //   await server.close();
 //   server.stdout, server.stderr   everything the server printed, for leak checks
 //   server.pid, server.exited      the server process, and a promise of { code, signal }
@@ -210,8 +212,8 @@ class McpConnection {
   }
 
   // A tool's result, with its text joined as `text`; isError is the tool's own refusal.
-  async callTool(name, args) {
-    const result = await this.request("tools/call", { name, arguments: args });
+  async callTool(name, args, { progressToken } = {}) {
+    const result = await this.request("tools/call", { name, arguments: args, ...(progressToken === undefined ? {} : { _meta: { progressToken } }) });
     const text = (result.content ?? []).map((part) => part.text ?? "").join("\n");
     return { ...result, text };
   }

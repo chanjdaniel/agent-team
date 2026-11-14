@@ -122,14 +122,16 @@
 #
 # The coordinator toolkit is claude-coordinator's alone, never a worker's, and the frontend toolkit
 # Daniel's own sessions', since it attaches to their one Agent Chrome window, so either is a
-# malformed command line (exit 2). Production toolkits (prod-*, and vercel-read) are for the ops
-# role only (exit 1). toolkit_refusal in bin/lib/team.sh holds that list, which team-load-check
-# reads too. The ops role needs prod-read or vercel-read, or both (prod-write comes only beside
-# prod-read, and never beside vercel-read, the sets team-load-check's ops form proves), and
-# --request, and is refused while any T<n>-ops session is listed by claude agents (one at a time;
-# end it with team-ops-end). An ops session runs with --restricted and only the built-in tools
-# Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents and Skill (for its toolkits'
-# skills): no shell, no web.
+# malformed command line (exit 2). Production toolkits (prod-*, which takes prod-mongo too, and
+# vercel-read) are for the ops role only (exit 1). toolkit_refusal in bin/lib/team.sh holds that
+# list, which team-load-check reads too. The ops role needs prod-read, vercel-read or prod-mongo,
+# in one of the sets team-load-check's ops form takes: prod-read, alone or with prod-write;
+# vercel-read, alone or with prod-read; prod-mongo, alone, with prod-read, or with prod-read and
+# prod-write (so prod-write comes only beside prod-read, and neither prod-write nor prod-mongo
+# beside vercel-read). It also needs --request, and is refused while any T<n>-ops session is listed
+# by claude agents (one at a time; end it with team-ops-end). An ops session runs with --restricted
+# and only the built-in tools Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents
+# and Skill (for its toolkits' skills): no shell, no web.
 # A worker gets only the toolkits its worktree's project lists in the registry (team-project's
 # toolkits): after those refusals and the worktree's and task's checks, and before the lease is
 # checked, any other is refused (exit 1, nothing started or logged), naming the project, its list
@@ -242,11 +244,15 @@ if [[ $role == ops ]]; then
   # A write session reads through the read user, never the write user.
   [[ " ${toolkits[*]} " != *" prod-write "* || " ${toolkits[*]} " == *" prod-read "* ]] ||
     die "prod-write needs --toolkit prod-read beside it"
-  # The ops load check proves a write session only as prod-read and prod-write.
+  # The ops load check takes a write session only as prod-read and prod-write (with prod-mongo or
+  # without it), and a backup session never beside vercel-read.
   [[ " ${toolkits[*]} " != *" prod-write "* || " ${toolkits[*]} " != *" vercel-read "* ]] ||
     die "prod-write takes no --toolkit vercel-read beside it"
-  [[ " ${toolkits[*]} " == *" prod-read "* || " ${toolkits[*]} " == *" vercel-read "* ]] ||
-    die "the ops role needs --toolkit prod-read or --toolkit vercel-read"
+  [[ " ${toolkits[*]} " != *" prod-mongo "* || " ${toolkits[*]} " != *" vercel-read "* ]] ||
+    die "prod-mongo takes no --toolkit vercel-read beside it"
+  [[ " ${toolkits[*]} " == *" prod-read "* || " ${toolkits[*]} " == *" vercel-read "* ||
+    " ${toolkits[*]} " == *" prod-mongo "* ]] ||
+    die "the ops role needs --toolkit prod-read, --toolkit vercel-read or --toolkit prod-mongo"
   [[ -n $request ]] || die "the ops role needs --request <the link to Daniel's Discord message>"
 fi
 

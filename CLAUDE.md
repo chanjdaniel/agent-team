@@ -45,7 +45,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `ticket_graph.py`: draws a task's ticket list, as `team-tickets --json` prints it, as the self-contained HTML page of its dependency graph that `team-tickets --html` writes.
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
-    - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
+    - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit; for MongoDB's Database Tools, the publisher's archive with its checksum).
     - `uptime.jq`: `team-uptime`'s rules, the counting of each production check, when one is down, its outages judged as notices through `notice.jq`, each post's text, and the status line.
     - `vendor/git-filter-repo/`: git filter-repo 2.47.0, vendored with its MIT license.
     - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project, model and toolkits, the longest, the running, and the classes and breakdown of their time rows.
@@ -66,8 +66,10 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `chrome-devtools-mcp`: the sessions' MCP server, which their settings name by `CHROME_DEVTOOLS_AXI_MCP_PATH`.
     - `effect`: the Effect version whose exports the effect toolkit's test holds the `effect-v4` skill's trap table to.
     - `foldkit`: the Foldkit version that app pins, the framework of the effect toolkit's fixture app.
+    - `mongodb`: the driver the prod-mongo server counts and checks its dumps with, at the version the pinned MongoDB MCP server installs.
     - `typescript`: TypeScript 7, which `effect-tsgo diagnostics` needs installed beside it, though `@effect/tsgo` declares no peer.
     - `vite`: the Vite version that app pins, which runs the fixture app's dev servers.
+  - `prod-mongo/`: the prod-mongo toolkit's server body: its start, its tools, the backups root's rules (`destinationRefusal`), `childEnv` and `scrubbed`, a dump's counts and index names, read without decoding a document, and the throwaway MongoDB the restore drill restores a dump into.
 - `settings/`: worker settings: `worker.json` shared, one file per role layered on it; with the user settings, all a planner, builder or reviewer loads (`--setting-sources user`), none of its worktree's `.claude/`.
 - `sops/`: standing procedures.
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.

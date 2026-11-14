@@ -86,12 +86,14 @@ done: the team home shares history with origin's dev"
   assert_equal "$(cat "$HOME/.config/agent-team/home")" "$TEAM_HOME"
   assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
 running: brew install --cask docker-desktop"
-  assert_equal "$(stage_lines tools | sed -n '1,4p;11,13p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s $(lock_pin claude)
+  assert_equal "$(stage_lines tools | sed -n '1,4p;11,15p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s $(lock_pin claude)
 running: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 running: nvm install $node && nvm alias default $node
 running: npm install -g @colbymchenry/codegraph@$(lock_pin codegraph)
 running: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/$tag/treehouse-$tag-darwin-arm64.tar.gz && echo \"$sha  \$f\" | shasum -a 256 -c && mkdir -p ~/.local/bin && tar -xzf \"\$f\" -C ~/.local/bin treehouse && rm -f \"\$f\"
 running: $FORK_BUILD
+running: $(download_fix mongodump darwin-arm64 'shasum -a 256 -c' unzip)
+running: $(download_fix mongorestore darwin-arm64 'shasum -a 256 -c' unzip)
 running: mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
   assert_equal "$(grep -m1 config.yaml <<<"$output")" "tools: ~/.no-mistakes/config.yaml is not there: Daniel's team-secrets restore brings it (the secret no-mistakes-config), then team-bootstrap --stage tools names the wrapper in it"
   # The build: the fork cloned into a new temporary directory (<d> here), built there and installed;

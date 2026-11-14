@@ -63,7 +63,7 @@ registry() {
     printf '%s\n' '[code.pool]' 'provider = "git"' 'slots = []'
     project site
     printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'
-    if [[ -n ${1:-} ]]; then project proj '["prod-read", "prod-write", "vercel-read"]' && echo "$1"; fi
+    if [[ -n ${1:-} ]]; then project proj '["prod-read", "prod-write", "vercel-read", "prod-mongo"]' && echo "$1"; fi
   } >"$TEAM_HOME/projects.toml"
 }
 

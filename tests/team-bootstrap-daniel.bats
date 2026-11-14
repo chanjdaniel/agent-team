@@ -26,6 +26,9 @@ setup() {
   assert_equal "$(tail -n1 <<<"$output")" "tools: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage tools, which installs treehouse op with sudo and asks for your password; then team-bootstrap again"
   assert_equal "$(stub_calls npm | wc -l)" 6
   assert_contains "$output" "tools: running: $FORK_BUILD"
+  # MongoDB's Database Tools go to ~/.local/bin, with no sudo.
+  assert_contains "$output" "tools: running: $(download_fix mongodump linux-amd64 'sha256sum -c -' tar)"
+  assert_contains "$output" "tools: running: $(download_fix mongorestore linux-amd64 'sha256sum -c -' tar)"
   assert_equal "$(stub_calls sudo)" ""
   [[ $output != *projects:* ]]
 }

@@ -1,0 +1,54 @@
+{
+  "tools": [
+    {
+      "name": "backup",
+      "description": "Dump the conventioner database into a new folder under ~/conventioner-backups, named for the UTC time it started, and check the dump against the database's own counts taken before and after it. Answers the folder, each collection's document count and the size, never a document. A dump that does not match is removed. Takes no input.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "list-backups",
+      "description": "List the dumps under ~/conventioner-backups, newest first: each one's collections, documents, size, whether it was verified, its newest restore drill's verdict and what was derived from it; then any other entry there (a hand-made dump, one a killed backup left unfinished) by name and size; the total, and the dumps past the rule that keeps the newest 5 verified ones, for Daniel to delete by hand. Reads only the folder, no database, and sets it to mode 0700 when it is looser. Takes no input.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "restore-drill",
+      "description": "Prove a dump under ~/conventioner-backups restores: restore it into a throwaway local MongoDB (in memory, on the loopback only, behind a password of its own, removed at the end on every path), compare each collection's document count and index names with the dump's manifest, and record the verdict in the dump's folder. Answers PASS or FAIL, each collection that did not match, the time taken and that nothing was left running; never a document. Never reaches the production database. It runs through the machine's heavy-run lock, waiting up to 20 minutes for it, and answers that the machine is busy when it is still held.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "backup": {
+            "type": "string",
+            "description": "The backup's name, its UTC start as list-backups gives it (2026-11-08T142305Z); the newest verified backup when left out."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

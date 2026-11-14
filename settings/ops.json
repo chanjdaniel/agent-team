@@ -5,7 +5,7 @@
   "disableBundledSkills": true,
   "disableSkillShellExecution": true,
   "permissions": {
-    "allow": ["mcp__prod-read__*", "mcp__vercel-read__*", "Edit(./.scratch/answer.md)"],
+    "allow": ["mcp__prod-read__*", "mcp__vercel-read__*", "mcp__prod-mongo__*", "Edit(./.scratch/answer.md)"],
     "ask": [
       "mcp__*prod-write*",
       "mcp__prod-write__insert-many",
@@ -35,19 +35,19 @@
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/scratch-only-edits", "args": [".scratch/answer.md"], "onFailure": "block", "timeout": 30 }]
       },
       {
-        "matcher": "^mcp__.*(prod-(read|write)|vercel-read).*__",
+        "matcher": "^mcp__.*(prod-(read|write|mongo)|vercel-read).*__",
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/ops-log", "args": ["@TASK_DIR@"], "onFailure": "block", "timeout": 30 }]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "^mcp__.*(prod-(read|write)|vercel-read).*__",
+        "matcher": "^mcp__.*(prod-(read|write|mongo)|vercel-read).*__",
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/ops-log", "args": ["@TASK_DIR@"] }]
       }
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "^mcp__.*(prod-(read|write)|vercel-read).*__",
+        "matcher": "^mcp__.*(prod-(read|write|mongo)|vercel-read).*__",
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/ops-log", "args": ["@TASK_DIR@"] }]
       }
     ]

@@ -17,7 +17,7 @@ The ops role's write protocol (read, ask, write, read again) is the contract; th
 
 - Write the filter first, by the document's key: `id` for Conventioner's documents (a UUID string), or `_id`.
   A filter by name, by state or by any field another document could share is how one fix becomes many.
-- `count` that exact filter on `prod-read`, then `find` it with a projection of the key and the fields the change touches, and `limit: 21`: 21 results means more than 20 documents, which waits for Daniel's own `mongodump`.
+- `count` that exact filter on `prod-read`, then `find` it with a projection of the key and the fields the change touches, and `limit: 21`: 21 results means more than 20 documents, which need a backup first: with `prod-mongo` loaded, its backup and restore drill, as its skill says, named in the QUESTION; without it, say in the QUESTION that a backup is needed first, and wait.
 - Check the data docs for fields derived from the one being changed (a market's `slug` derives from its `name`, which may change only while the market is a draft) and for rules the app enforces on writes; a direct write bypasses them all, so each one the change touches is named in the QUESTION.
 
 ## 2. Ask, in the shape the prompt will show

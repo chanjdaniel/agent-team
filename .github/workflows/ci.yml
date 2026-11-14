@@ -101,6 +101,14 @@ jobs:
       # MongoDB 8.0 starts or exits by the kernel's version (tests/toolkits/helpers/mongo.mjs).
       - name: Show the kernel
         run: uname -r
+      # Every tool bin/lib/tools.lock installs from a publisher's archive (MongoDB's Database Tools),
+      # by the lock's own commands for this runner, each archive checked against its SHA-256.
+      - name: Install the lock's downloaded tools
+        run: |
+          mapfile -t fixes < <(jq -L bin/lib -r --arg os arch --arg machine x86_64 'include "tools"; download_sources($os; $machine)' bin/lib/tools.lock)
+          ((${#fixes[@]}))
+          for fix in "${fixes[@]}"; do bash -c "$fix" || exit 1; done
+          echo "$HOME/.local/bin" >>"$GITHUB_PATH"
       - run: tests/run toolkits
 
   # What the PR adds: no secret in its commits, no real email address, no image and no
