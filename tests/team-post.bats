@@ -499,7 +499,7 @@ EOF
     "$IMAGES/link.png|it is a link" "$IMAGES/inner-link.png|it is a link"
     "$IMAGES/text.png|$bytes" "$IMAGES/empty.png|$bytes" "$IMAGES/bitmap.png|$bytes"
     "$IMAGES/almost.png|$bytes" "$IMAGES/sound.png|$bytes"
-    "$ui/capture-1/page.png|it is in a capture of the page Daniel is on, and nothing proves that page held no real data"
+    "$ui/capture-1/page.png|capture-1 holds no ui-page.md, so nothing says where its page came from"
   )
   local case
   for case in "${refused[@]}"; do

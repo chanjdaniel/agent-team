@@ -27,8 +27,9 @@
 # the answer stands.
 # --item <n> (n from 1 to 999), for one reply that answers several items ("3 yes, 5 no"): the ask
 # is the item this checkout's team-inbox --item <n> names, refused with its reason when it names
-# none. A PR's number is refused, naming the merge word's team-log line, an interview's, naming its
-# thread, and an ask of tasks/current.md's, naming its team-current done, logging nothing. For an ask it does all the first form does, and also refuses
+# none. A PR's number is refused, naming the merge word's team-log line, an interview's or a
+# walk's, naming its thread, and an ask of tasks/current.md's, naming its team-current done,
+# logging nothing. For an ask it does all the first form does, and also refuses
 # a message whose numbered parts name no part n: each line, a leading bullet (- or *) dropped, is
 # split before each comma, semicolon, & or "and" that a number follows, and a part is an optional
 # #, a number, an optional . ) : or -, then spaces and its text, a part with none taking the text
@@ -68,6 +69,11 @@ if [[ -n $item ]]; then
     ask) ;;
     pr) die "item $item is $task's PR $id, which Daniel's word merges: on a merge word, log team-log $task merge-approved url=$id discord_message=$message head=<the full sha you asked on>, then run team-merge $task" ;;
     interview) die "item $item is $task's interview, which Daniel answers in <#$id>; nothing is logged" ;;
+    walk)
+      where="its task's thread"
+      [[ -z $id ]] || where="<#$id>"
+      die "item $item is $task's walk, whose notes Daniel posts in $where; nothing is logged"
+      ;;
     note) die "item $item is the current item $id of tasks/current.md, an ask with no asked, which no answer is logged for: act on the answer, then team-current done $id" ;;
     *) die "item $item is $named, which no answer is logged for" ;;
   esac

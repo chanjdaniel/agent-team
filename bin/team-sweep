@@ -56,6 +56,13 @@
 #                  run, logged it) has stood 30 minutes with no stowed or stow-failed, whatever
 #                  parks it, with session null: "stowing since <its time> (<cause>), with no
 #                  stowed; next: run team-stow T<n>, which finishes the stow or logs stow-failed"
+#   walk-stale     an open task, parked or not, with session null, whose walk is on with no message
+#                  from Daniel for over 4 hours (walk_holds in bin/lib/ledger.jq: since the latest of
+#                  its start and its walk-note events), so it no longer keeps its stack up or stows
+#                  last: "T<n> walk-stale: its walk has had no message from Daniel since <time>, over
+#                  4 hours, ...; next: ask Daniel whether it goes on: if not, team-ui T<n> --walk
+#                  stop; if so, team-ui T<n> --walk stop, then team-ui T<n> --walk start", with the
+#                  --in interview and --reseeded <a new message of Daniel's> that walk started with
 #   merge-due      an open task in awaiting-merge, with no ask nothing settled, no paused or
 #                  waiting standing, the checks of its latest pass passed (checks_wait in
 #                  bin/lib/ledger.jq, read from the ledger alone: team-next T<n> --ci logged a ci
@@ -124,8 +131,9 @@
 #                  worker is found stalled: fix what session-activity names"
 #   level-stow     after the activity finding, with task and session null: team-capacity plan (from
 #                  the stored readings) confirms the team over its budget at its level and names
-#                  tasks to stow, newest first: "level: over budget at minor (30%): stow T174, then
-#                  T171" (the coordinator sends their workers STOW, then runs team-stow)
+#                  tasks to stow, newest first and a task whose walk counts after every other:
+#                  "level: over budget at minor (30%): stow T174, then T171" (the coordinator sends
+#                  their workers STOW, then runs team-stow)
 #   level-resume   after it, with task and session null: the first task stowed, waiting to
 #                  resume (for the level or a handoff), oldest stow first, whose roles' estimates
 #                  fit the budget again and that nothing holds (Daniel's hold or an ask no launch

@@ -30,11 +30,25 @@
 #              thread among them, or one already retracted, is refused. Prints
 #              "retracted <id>". A copy Discord's CDN holds may outlive it.
 # In a worker session --file must be inside the task's own directory (<worktree>/<task_dir> of its
-# open worktrees), and each --attach there too, no symbolic link, no file with a second hard link,
-# and a PNG, JPEG, WebP or GIF by its first bytes; both judged by the real path. So nothing in
-# tasks/T<n>/ui/ leaves in a worker's post, a capture there having its own refusal, since nothing
-# here proves its page held no real data. These go by path, and a copy is a new file that no path
-# check can see. Each refusal names the path and comes before anything is sent.
+# open worktrees), and each --attach there too, or be page.png or element.png of a capture cleared
+# below; each no symbolic link, no file with a second hard link, and a PNG, JPEG, WebP or GIF by its
+# first bytes; both judged by the real path. Nothing else in tasks/T<n>/ui/ leaves in a worker's
+# post: the top of ui/ holds Daniel's own images, a flat capture an older team-ui left, and files
+# team-ui --attach copied from another channel, which nothing here clears. These go by path, and a
+# copy is a new file that no path check can see.
+# A capture, tasks/T<n>/ui/capture-<k>/, is cleared by where its page came from, since localhost
+# does not mean fixture data. ui-page.md's fixed fourth line must name a page over http on localhost
+# or 127.0.0.1 with a port, and that port must be one team-stack env gives for an open worktree of
+# the task, on a stack labelled with the task. Failing that, the task's walk must be on, its start
+# must name Daniel's word that the primary stack was just reseeded (team-ui --reseeded, which read
+# it from Discord), the port must be the one that word names, and the capture must have been taken
+# since that start. Then every other file in
+# the capture must be a plain file, and is scanned, as a worker's post text always is, by
+# data-check's rule (refused_emails code in bin/lib/team.sh): an address outside the fixture domains
+# refuses it. The scan cannot see a name, or anything in an image, so the page's origin is the guard
+# and the scan a backstop.
+# Each refusal names the path and, for an address, the capture, the file and the kind, never the
+# value; it comes before anything is sent, and leaves the capture in place.
 # Exit codes: 0 posted; 1 refused, or Discord refused a part (the parts before it stay posted,
 # their ids printed, and none after it is sent); 2 a malformed command line; 75 Discord answered
 # 429, with the retry time from its headers on stderr.
@@ -83,22 +97,78 @@ interview=()
 if [[ $thread == interview ]]; then interview=(--interview); fi
 why=$(worker_refusal "$task" "posts to Discord" "${interview[@]}") && die "$why"
 
-# Whether the real path <path> lies under one of <dirs>: under <path> <dirs>...
-under() {
-  local path=$1 dir
-  for dir in "${@:2}"; do
-    [[ $path != "$dir"/* ]] || return 0
-  done
-  return 1
-}
-
 # Each attachment's base name and image type, and the message that carries it, from 0; and how many
 # messages carry them. Filled by check_attachment, in order.
 names=() types=() carried_by=() file_messages=0 in_message=0 bytes=0
 
+# The ports of the task's own stack, read at most once, and why a worktree of it gave none, from what
+# team-stack env gives each of its open worktrees.
+OWN_PORTS=() OWN_PORTS_READ=0 OWN_PORTS_WHY=''
+read_own_ports() {
+  local worktree out line owner ports
+  ((!OWN_PORTS_READ)) || return 0
+  OWN_PORTS_READ=1
+  while IFS= read -r worktree; do
+    if ! out=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-stack" env --worktree "$worktree" 2>&1 </dev/null); then
+      OWN_PORTS_WHY=$(grep -m 1 . <<<"$out" || echo "team-stack env failed")
+      continue
+    fi
+    owner='' ports=()
+    while IFS= read -r line; do
+      if [[ $line =~ ^export\ TH_[A-Za-z0-9_]*_PORT=([0-9]+)$ ]]; then
+        ports+=("${BASH_REMATCH[1]}")
+      elif [[ $line == "export TEAM_TASK="* ]]; then
+        owner=${line#export TEAM_TASK=}
+      fi
+    done <<<"$out"
+    if [[ $owner == "$task" ]]; then
+      OWN_PORTS+=("${ports[@]}")
+    else
+      OWN_PORTS_WHY="its stack is ${owner:-no task}'s"
+    fi
+  done < <(task_worktrees "$task" | jq -r .worktree)
+}
+
+# Refuse <path> unless its capture directory <dir> shows a page proved clear, as the header says:
+# check_capture <path> <dir>
+check_capture() {
+  local path=$1 dir=$2 capture=${2##*/} no_page lines=() taken port own cleared=0 since='' word='' word_port='' why entry found
+  no_page="cannot attach $path: $capture's ui-page.md names no page on a local port"
+  [[ -e $dir/ui-page.md || -L $dir/ui-page.md ]] ||
+    die "cannot attach $path: $capture holds no ui-page.md, so nothing says where its page came from"
+  [[ ! -L $dir/ui-page.md && -f $dir/ui-page.md ]] || die "cannot attach $path: $capture's ui-page.md is a link"
+  # ui-capture's first four lines: the heading, a blank, when, and the page. A later line, a page's
+  # title or a console line, may say anything.
+  mapfile -t -n 4 lines <"$dir/ui-page.md"
+  [[ ${lines[2]:-} =~ ^Captured\ ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z)\ by\ ui-capture\  ]] || die "$no_page"
+  taken=${BASH_REMATCH[1]}
+  [[ ${lines[3]:-} =~ ^Page:\ http://(localhost|127\.0\.0\.1):([0-9]+)/ ]] || die "$no_page"
+  port=${BASH_REMATCH[2]}
+  read_own_ports
+  for own in "${OWN_PORTS[@]}"; do
+    [[ $own != "$port" ]] || cleared=1
+  done
+  if ((!cleared)); then
+    json_vars --ledger since='qc_walk.since' word='qc_walk.reseeded' word_port='qc_walk.reseeded_port' <<<"$(task_event_array "$task")"
+    why=${OWN_PORTS_WHY:+ ($OWN_PORTS_WHY)}
+    [[ -n $word ]] ||
+      die "cannot attach $path: $capture's page is on port $port, no port of $task's own stack$why, and its walk's start names no word of Daniel's that the primary stack was just reseeded"
+    [[ $port == "$word_port" ]] ||
+      die "cannot attach $path: $capture's page is on port $port, no port of $task's own stack$why, and Daniel's word $word clears only port ${word_port:-none}"
+    (($(date -ud "$taken" +%s) >= $(date -ud "$since" +%s))) ||
+      die "cannot attach $path: $capture was taken before the walk that Daniel's word $word clears began"
+  fi
+  while IFS= read -r -d '' entry; do
+    [[ -f $entry && ! -L $entry && $(stat -c %h -- "$entry") == 1 ]] ||
+      die "cannot attach $path: $capture's ${entry##*/} is a link or no plain file"
+    found=$(refused_emails code <"$entry")
+    [[ -z $found ]] || die "cannot attach $path: $capture's ${entry##*/} holds ${found//$'\n'/ and }"
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 ! -name page.png ! -name element.png -print0 | LC_ALL=C sort -z)
+}
+
 # Refuse an attachment that may not leave, or take it into the arrays above: check_attachment <path>
 check_attachment() {
-  local path=$1 name real type size
+  local path=$1 name real type size capture image
   [[ -f $path && -r $path ]] || die "no image to attach: $path"
   name=$(basename -- "$path")
   [[ $name != *[[:cntrl:]]* ]] || die "cannot attach $path: its name holds a control character"
@@ -106,10 +176,15 @@ check_attachment() {
   if ((worker)); then
     [[ ! -L $path && $(stat -c %h -- "$path") == 1 ]] || die "cannot attach $path: it is a link"
     real=$(realpath -e -- "$path")
-    [[ $real != "$ui"/capture-* ]] ||
-      die "cannot attach $path: it is in a capture of the page Daniel is on, and nothing proves that page held no real data"
-    under "$real" "${own_dirs[@]}" ||
-      die "cannot attach $path: a worker session attaches only from $task's task directory"
+    if [[ ${real#"$ui"/} =~ ^(capture-[1-9][0-9]*)/([^/]+)$ ]]; then
+      capture=${BASH_REMATCH[1]} image=${BASH_REMATCH[2]}
+      [[ $image == page.png || $image == element.png ]] ||
+        die "cannot attach $path: only page.png and element.png of a capture may be attached"
+      check_capture "$path" "$ui/$capture"
+    else
+      path_under "$real" "${TASK_OWN_DIRS[@]}" ||
+        die "cannot attach $path: a worker session attaches only from $task's task directory"
+    fi
     [[ -n $type ]] || die "cannot attach $path: not a PNG, JPEG, WebP or GIF by its first bytes"
   fi
   size=$(stat -c %s -- "$path")
@@ -128,20 +203,21 @@ if ((retracting)); then
   channel=$(task_events "$task" | jq -r --arg id "$retract" 'select(.event == "image-posted" and .thread == "interview" and .discord_message == $id) | .discord_thread' | tail -n 1)
   [[ -n $channel ]] || die "the ledger records no image post $retract in $task's interview thread, so nothing was retracted"
 else
-  # A worker's files stay in the task's own place, each open worktree's task directory; ui/ only
-  # names what the refusal of a capture says.
-  worker=0 own_dirs=() ui=''
+  # A worker's files stay in the task's own place, each open worktree's task directory; ui/ holds
+  # its captures, each cleared on its own.
+  worker=0 ui=''
   if [[ -n ${AGENT_TEAM_ROLE:-} && $AGENT_TEAM_ROLE != coordinator ]]; then
     worker=1
     ui=$(realpath -m -- "$TEAM_HOME/tasks/$task/ui")
-    while IFS=$'\t' read -r worktree project; do
-      dir=$(team_project "$project" task_dir) || die "cannot read $project's task directory from the registry"
-      own_dirs+=("$(realpath -m -- "$worktree/$dir")")
-    done < <(task_worktrees "$task" | jq -r '[.worktree, .project] | @tsv')
+    task_own_dirs "$task"
   fi
   [[ -f $file && -r $file ]] || die "no file to post: $file"
-  if ((worker)) && ! under "$(realpath -e -- "$file")" "${own_dirs[@]}"; then
+  if ((worker)) && ! path_under "$(realpath -e -- "$file")" "${TASK_OWN_DIRS[@]}"; then
     die "cannot post $file: a worker session posts only a file in $task's task directory"
+  fi
+  if ((worker)); then
+    text_found=$(refused_emails code <"$file")
+    [[ -z $text_found ]] || die "cannot post $file: it holds ${text_found//$'\n'/ and }"
   fi
   for path in "${attachments[@]}"; do check_attachment "$path"; done
   # Each part's request body, one compact JSON object per line, cut as the plugin's chunk() does,

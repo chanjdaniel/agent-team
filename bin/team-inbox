@@ -11,19 +11,21 @@
 # in the task's thread; else the thread); each PR ready to merge (the task's phase awaiting-merge,
 # the PR not merged and no merge-approved logged at its head), "<task> <title>: ready to merge
 # <its full URL>"; each interview under way (an interview-thread with no planner's done or
-# plan-approved after it), "<task> <title>: interview under way <its thread>"; and the asks of the
-# team home's tasks/current.md (team-current's ask lines, questions to Daniel with no asked), each
-# with its task unless -, its text and its where when that is a URL.
+# plan-approved after it) with no walk on in that thread, "<task> <title>: interview under way
+# <its thread>"; each walk under way (team-ui --walk, on), "<task> <title>: walk under way <the
+# thread it runs in>", or no thread with none; and the asks of the team home's tasks/current.md
+# (team-current's ask lines, questions to Daniel with no asked), each with its task unless -, its
+# text and its where when that is a URL.
 # They are ranked by what each answer unblocks, the most first: while the item holds its task (an
-# ask no launch went past, a PR ready to merge, an interview under way), its task and each other
-# open task whose standing blocked park is on that task (cause task), and the task's tickets
-# team-tickets T<n> --json says are ready; and 1 for a PR ready to merge, or for an ask whose text
-# names one of its task's PRs not merged. A current.md ask holds no task the ledger knows, so it
-# counts 0. Ties go oldest first (an ask by its asked's ts, a PR by its first pr event's, an
-# interview by its interview-thread's, a current.md ask after every dated one, in its order), then
-# the asks, the PRs and the interviews, each in task number order. team-tickets runs once per task
-# with an item, its stderr dropped; a task whose tickets it cannot read counts none, with a line
-# on stderr saying why.
+# ask no launch went past, a PR ready to merge, an interview or a walk under way), its task and
+# each other open task whose standing blocked park is on that task (cause task), and the task's
+# tickets team-tickets T<n> --json says are ready; and 1 for a PR ready to merge, or for an ask
+# whose text names one of its task's PRs not merged. A current.md ask holds no task the ledger
+# knows, so it counts 0. Ties go oldest first (an ask by its asked's ts, a PR by its first pr
+# event's, an interview by its interview-thread's, a walk by its start's, a current.md ask after
+# every dated one, in its order), then the asks, the PRs, the interviews and the walks, each in
+# task number order. team-tickets runs once per task with an item, its stderr dropped; a task
+# whose tickets it cannot read counts none, with a line on stderr saying why.
 # Each item is one line under the title "**Waiting on you**", its number in bold, ending with what
 # its answer unblocks, " - unblocks <n>" and, when n is more than 0, each part that is: "- **3** T7
 # plan: Approve the plan? <link> - unblocks 3 (1 task, 2 tickets)"; every URL is in <>, so Discord
@@ -34,7 +36,8 @@
 # current.md that cannot be read leaves its asks and owe lines out, with a line on stderr saying
 # why.
 # Numbers: an item is keyed "ask <task> <id> <the asked's ts>" (so a re-ask of the same id is a new
-# item), "pr <url>" (its trailing slash dropped), "interview <task> <thread>" or "note <id>", id
+# item), "pr <url>" (its trailing slash dropped), "interview <task> <thread>", "walk <task> <the
+# walk's start>" (so a walk stopped and started again is a new item) or "note <id>", id
 # team-current's id of its line. An item the last run listed keeps its number, and each new one,
 # in rank order, takes the lowest number no listed item holds and no item of the latest post
 # showed (waiting.json's posted, null until a post records one). A waiting.json that is missing
@@ -85,11 +88,12 @@
 # read or a message cannot be posted.
 # --item <n>, n from 1 to 999, for routing Daniel's numbered reply ("3 yes, 5 no"; team-answer
 # --item runs it): prints the standing item numbered n, as "ask <task> <id>", "pr <task> <url>",
-# "interview <task> <thread>" or "note <task or -> <id>". It reads waiting.json alone, with no
-# lock, no Discord and no lease check (the lease-fence hook blocks it on a fenced machine), and
-# refuses with exit 1 a number no standing item holds: "item <n> no longer waits: the list posted
-# <time> showed it as <its line>" when the latest post showed it, else "no item <n> waits; the
-# list holds 1, 2 and 4" (or "nothing waits"); and a waiting.json that is missing or cannot be read.
+# "interview <task> <thread>", "walk <task> <thread>" ("walk <task>" for a walk with no thread) or
+# "note <task or -> <id>". It reads waiting.json alone, with no lock, no Discord and no lease
+# check (the lease-fence hook blocks it on a fenced machine), and refuses with exit 1 a number no
+# standing item holds: "item <n> no longer waits: the list posted <time> showed it as <its line>"
+# when the latest post showed it, else "no item <n> waits; the list holds 1, 2 and 4" (or
+# "nothing waits"); and a waiting.json that is missing or cannot be read.
 # Files: the team home's waiting.md, the list as Daniel reads it, with its final newline, and
 # waiting.json beside it ({schema: "team-waiting/1", items: [{n, key, kind, task, title, ...,
 # since, unblocks: {tasks, tickets, prs}, line}], withdrawn, owed, posted}), which the scripts
@@ -108,9 +112,10 @@
 # dropped with no edit; any other failure keeps it for the next run, with a line on stderr. It
 # never edits anything else, and posts only on --post.
 # team-ask, team-answer, team-merge, team-close, team-thread --interview on a new thread,
-# team-current on an ask or owe item, and team-log after an event of a kind the contract marks
-# inbox, run it at their end (refresh_inbox in bin/lib/team.sh), going on with a line on stderr
-# when it fails; team-timers run runs it every five minutes on the lease holder. It refuses
+# team-ui --walk on a start or stop, team-current on an ask or owe item, and team-log after an
+# event of a kind the contract marks inbox, run it at their end (refresh_inbox in
+# bin/lib/team.sh), going on with a line on stderr when it fails; team-timers run runs it every
+# five minutes on the lease holder. It refuses
 # in a worker session (worker_refusal in bin/lib/team.sh), and, but on --item, on a machine that is
 # fenced or lost the lease (lease_refusal); one run at a time holds
 # ~/.local/state/agent-team/inbox.lock, waiting for it at most a minute (TEAM_INBOX_LOCK_SECONDS

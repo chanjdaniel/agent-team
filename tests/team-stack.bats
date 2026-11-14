@@ -1313,6 +1313,114 @@ records.lock"
   assert_equal "$(stopped)" conventioner-2
 }
 
+# T7 opened, its walk turned on <hours> ago, as team-ui logs it: walk_on <hours>
+walk_on() {
+  open_task T7
+  jq -cn --arg ts "$(date -u -d "$1 hours ago" +%FT%TZ)" '{ts: $ts, task: "T7", event: "walk", state: "on"}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# A message of Daniel's on T7's walk, <hours> ago: walk_note <hours>
+walk_note() {
+  jq -cn --arg ts "$(date -u -d "$1 hours ago" +%FT%TZ)" '{ts: $ts, task: "T7", event: "walk-note"}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "sweep leaves up a stack past idle_minutes while its task's walk is on, and says so once per walk" {
+  sessions "$(session "$HOME/elsewhere" idle)"
+  started conventioner-2 7200
+  walk_on 1
+  local since
+  since=$(jq -r 'select(.event == "walk") | .ts' "$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  assert_equal "$(stopped)" ""
+  [[ $output =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\ kept\ conventioner-2\ of\ T7\ in\ $STACK_WORKTREE:\ its\ walk\ is\ on\ since\ $since,\ which\ counts\ as\ busy$ ]]
+  assert_equal "$(cat "$HOME/.local/state/agent-team/stacks/sweep.log")" "$output"
+  (($(busy_ago conventioner-2) < 60))
+  # The next sweep keeps it too, and adds no line.
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" ""
+  assert_equal "$(wc -l <"$HOME/.local/state/agent-team/stacks/sweep.log")" 1
+  # Another walk of the task says so again.
+  task_event T7 walk '{"state":"off"}'
+  jq -cn --arg ts "$(date -u +%FT%TZ)" '{ts: $ts, task: "T7", event: "walk", state: "on"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-stack sweep
+  assert_contains "$output" " kept conventioner-2 of T7 "
+  assert_equal "$(stopped)" ""
+  assert_equal "$(wc -l <"$HOME/.local/state/agent-team/stacks/sweep.log")" 2
+}
+
+@test "sweep's stack idles from the last sweep that kept it once its walk stops, as from a busy session" {
+  sessions
+  started conventioner-2 7200
+  walk_on 1
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  task_event T7 walk '{"state":"off"}'
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" ""
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '31 minutes ago' +%FT%TZ)\"}"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep counts a walk started over 4 hours ago while Daniel's last message on it is under 4 hours old" {
+  sessions
+  started conventioner-2 86400
+  walk_on 6
+  walk_note 5
+  walk_note 1
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+}
+
+@test "sweep stops a stack whose walk has had no message from Daniel for over 4 hours" {
+  sessions
+  started conventioner-2 86400
+  walk_on 6
+  walk_note 5
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+  assert_contains "$output" " stopped conventioner-2 of T7 in $STACK_WORKTREE: "
+}
+
+@test "sweep stops a stack with a walk on no message ever followed, past 4 hours" {
+  sessions
+  started conventioner-2 86400
+  walk_on 5
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep's walk holds only its own task's stack" {
+  sessions
+  started conventioner-2 7200
+  open_task T9 "$HOME/wt/T9"
+  jq -cn --arg ts "$(date -u +%FT%TZ)" '{ts: $ts, task: "T9", event: "walk", state: "on"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep's walk does not hold an instance of its task (kind e2e), which no walk runs on" {
+  docker_state containers '(.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .Config.Labels)
+    |= . + {"io.github.chanjdaniel.team.kind": "e2e"}'
+  sessions
+  started conventioner-2 7200
+  walk_on 1
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep's walk ends with its task: a closed task's walk holds nothing" {
+  sessions
+  started conventioner-2 7200
+  walk_on 1
+  task_event T7 closed '{"archive":[],"returned":[],"kept":[]}'
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
 @test "sweep with Docker not answering says on stderr that no stack runs and exits 0, without reading the session list" {
   docker_down
   run_bin -0 --separate-stderr team-stack sweep

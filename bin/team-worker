@@ -122,7 +122,9 @@
 #
 # The coordinator toolkit is claude-coordinator's alone, never a worker's, and the frontend toolkit
 # Daniel's own sessions', since it attaches to their one Agent Chrome window, so either is a
-# malformed command line (exit 2). Production toolkits (prod-*, and vercel-read) are for the ops
+# malformed command line (exit 2). By Daniel's decision (D1 of T216's report, 2026-11-04), a walk's
+# planner reads that window only by team-ui --capture (capture_refusal in bin/lib/team.sh), never
+# with this toolkit's MCP server. Production toolkits (prod-*, and vercel-read) are for the ops
 # role only (exit 1). toolkit_refusal in bin/lib/team.sh holds that list, which team-load-check
 # reads too. The ops role needs prod-read or vercel-read, or both (prod-write comes only beside
 # prod-read, and never beside vercel-read, the sets team-load-check's ops form proves), and

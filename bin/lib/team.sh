@@ -12,7 +12,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append, ledger_push,
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, plan_task_dir, plan_files, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, claude_cache_dir, tool_dirs,
-# team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, memory_setting, same_path, bounded, docker_bounded, docker_silence, trust_probe,
+# team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, capture_refusal, toolkit_refusal, task_own_dirs, path_under, lease_gate, worktree_changes, memory_setting, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, own_projects, own_bar, review_app, base64url, review_app_jwt, review_app_api, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
@@ -151,8 +151,9 @@ json_vars() {
   done
 }
 
-# The kind of one address: none (no address), service, fixture, owner (<owner>, git's user.email,
-# lowercase, when given), provider or other: email_kind <address> [<owner>]
+# The one rule on email addresses, which data-check's two policies, ledger_append and a worker's
+# team-post hold to: the kind of one address: none (no address), service, fixture, owner (<owner>,
+# git's user.email, lowercase, when given), provider or other: email_kind <address> [<owner>]
 email_kind() {
   local addr=${1,,} owner=${2:-}
   local name=${addr%@*} domain=${addr##*@}
@@ -231,7 +232,8 @@ LEDGER_TASKS=() LEDGER_KINDS=() LEDGER_PUSH_DUE='' LEDGER_INBOX_DUE=''
 # "refusing a ledger event: lifecycle: <problems joined by ; >", with nothing appended. Any other
 # writer acted before it logs, so its event is appended unchecked, saying nothing, and team-log
 # --check-lifecycle names it. With <seconds>, the lock is waited on at most that long, and a lock
-# still held then is a refusal, before any lifecycle check. An event of a kind the contract marks
+# still held then is a refusal, before any lifecycle check, and so is a lock or ledger that cannot
+# be written, nothing appended, whatever the caller's set -e. An event of a kind the contract marks
 # push (Daniel's word, or an outside fact) makes a push due, which the script's ledger_push makes,
 # and one of a kind it marks inbox sets LEDGER_INBOX_DUE: ledger_append <event> [<seconds>]
 ledger_append() {
@@ -281,7 +283,8 @@ ledger_append() {
       esac
     fi
     printf '%s\n' "$line" >>"$ledger"
-  } 9>>"$TEAM_HOME/ledger.jsonl.lock"
+  } 9>>"$TEAM_HOME/ledger.jsonl.lock" ||
+    die "could not append the event to the ledger under its lock, $TEAM_HOME/ledger.jsonl.lock"
   [[ " ${LEDGER_TASKS[*]} " == *" $task "* ]] || LEDGER_TASKS+=("$task")
   [[ " ${LEDGER_KINDS[*]} " == *" $event "* ]] || LEDGER_KINDS+=("$event")
   [[ $push != true ]] || LEDGER_PUSH_DUE=1
@@ -470,7 +473,7 @@ local_path() {
 # The paths of the task directory <dir> that have no place in the team home's history, so its
 # archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated, in this
 # order, sorted within each:
-#   UI capture         a top-level ui/ (a frontend capture stays on the machine that took it)
+#   UI capture         a top-level ui/ (a frontend capture's files stay on the machine that took them)
 #   stack logs         a top-level stack-logs/, where team-stack down saves each service's log
 #                      tail: for the builder at the time, never the records
 #   Lighthouse reports a ui-check run's lighthouse/, ui-check/<run>/lighthouse (its failing
@@ -907,16 +910,58 @@ worker_refusal() {
   fi
 }
 
+# Print why this session may not read the Agent Chrome for <task>, or fail when it may: only a
+# worker session is held, and the one worker that may is a planner of <task> (its settings'
+# AGENT_TEAM_TASK) while that task's walk is on in its interview thread, by Daniel's decision
+# (D1 of T216's report, 2026-11-04): that planner captures the page Daniel drives, read-only. A ledger
+# that cannot be read refuses. team-ui --capture and the frontend toolkit's ui-capture both ask
+# it: capture_refusal <task>
+capture_refusal() {
+  local task=$1 role=${AGENT_TEAM_ROLE:-} own=${AGENT_TEAM_TASK:-}
+  [[ -n $role && $role != coordinator ]] || return 1
+  if [[ $role != planner ]]; then
+    worker_refusal "$task" "takes no capture of the Agent Chrome"
+  elif [[ $task != "$own" ]]; then
+    echo "a planner session of ${own:-no task} takes no capture of the Agent Chrome for $task: a planner captures only during its own task's interview walk"
+  elif [[ $(task_event_array "$task" | ledger_jq 'qc_walk.thread // empty' -r) != interview ]]; then
+    echo "$task has no interview walk on: a planner captures only during its own task's interview walk, which Daniel starts through the coordinator"
+  else
+    return 1
+  fi
+}
+
+# Set TASK_OWN_DIRS to the real path of each open worktree's task directory of <task>
+# (<worktree>/<task_dir>), what a worker's files must lie under; it holds none for a task with no
+# open worktree: task_own_dirs <task>
+task_own_dirs() {
+  local worktree project dir
+  TASK_OWN_DIRS=()
+  while IFS=$'\t' read -r worktree project; do
+    dir=$(team_project "$project" task_dir) || die "cannot read $project's task directory from the registry"
+    TASK_OWN_DIRS+=("$(realpath -m -- "$worktree/$dir")")
+  done < <(task_worktrees "$1" | jq -r '[.worktree, .project] | @tsv')
+}
+
+# Whether the real path <path> lies under one of <dirs>: path_under <path> <dirs>...
+path_under() {
+  local path=$1 dir
+  for dir in "${@:2}"; do
+    [[ $path != "$dir"/* ]] || return 0
+  done
+  return 1
+}
+
 # Print why a worker session of <role> may not load toolkit <name>, or fail when it may: the
 # coordinator toolkit is claude-coordinator's alone and the frontend toolkit Daniel's own sessions'
-# (it attaches to their one Agent Chrome window), so no worker loads either; a production toolkit
-# (prod-*, and vercel-read) is the ops role's alone. The one list of them, which team-worker and
+# (it attaches to their one Agent Chrome window, and a walk's planner reads it only through
+# capture_refusal's gate), so no worker loads either; a production toolkit (prod-*, and
+# vercel-read) is the ops role's alone. The one list of them, which team-worker and
 # team-load-check read; an empty <role> judges only the toolkits no worker loads:
 # toolkit_refusal <name> <role or "">
 toolkit_refusal() {
   case $1 in
     coordinator) echo "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)" ;;
-    frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's" ;;
+    frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's; by Daniel's decision (D1 of T216's report, 2026-11-04), a walk's planner only reads that window, by team-ui --capture" ;;
     prod-* | vercel-read) [[ -n $2 && $2 != ops ]] || return 1; echo "toolkit '$1' is for the ops role only" ;;
     *) return 1 ;;
   esac

@@ -247,9 +247,11 @@
 #          confirmed, the steps in order, each with what it frees: stop each finished session
 #          (idle, its work handed on: handed_on_launches in bin/lib/ledger.jq, the rule
 #          team-worker stops a task's own by, over every open task), stop each running team dev
-#          stack of an open task that no busy session (interactive ones too) works in, then stow
-#          open tasks with a live worker or a reservation left, the most recently opened first,
-#          until the rest fits; at none every one. A task with a stow under way (a stowing
+#          stack of an open task that no busy session (interactive ones too) works in and whose
+#          walk does not count now (walk_holds in bin/lib/ledger.jq), then stow open tasks with a
+#          live worker or a reservation left, the most recently opened first and any whose walk
+#          counts now after every other, until the rest fits; at none every one, a walk's
+#          included. A task with a stow under way (a stowing
 #          standing, which team-stow --begin or a team-stow run logged, until its stowed or
 #          stow-failed) is never named to stow, what it holds counts as freed already, so no other
 #          task stows in its place, and it is in neither list below. Then the tasks stowed,

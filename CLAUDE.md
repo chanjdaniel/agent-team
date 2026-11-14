@@ -82,6 +82,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `records-rewrite.md`: the cutover that rewrites the records repository's history with `team-records-rewrite`, each step Daniel's or the coordinator's.
   - `resources.md`: the team's resources: its systemd user slice and each task's, `team-capacity install`, the placement of worker sessions and the gate in it, the checked assumptions, the readings per task, the learned costs, heavy runs' scopes, and the doctor's `resources` line.
 - `templates/`: the task plan and the worker briefs `team-open` and `team-brief` render.
+  - `briefs/planner-walk.md`: a planner following Daniel's manual QC walk in its interview thread, capturing the page they drive.
 - `tests/`: the bats suite, one `.bats` file per script (a long one split by topic, as `team-doctor-*.bats`).
   - `tests/bootstrap-drill`: runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow, and ends with the record line `team-drill import` reads from the job's log.
   - `tests/bootstrap-drill.bats`: runs `tests/bootstrap-drill` on a stub `team-bootstrap`.
@@ -99,6 +100,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `codegraph/`: for a setup trial's builders and reviewers, a session-start hook that, in a worktree with a `.codegraph/` directory, builds or syncs that worktree's CodeGraph index and prints a banner to locate code with `codegraph explore` first; no MCP server.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
   - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill (the installed `effect`'s sources, the v3 and beta traps, the check), a hook giving Effect's findings on each TypeScript file edited, and, but for a planner, Foldkit's DevTools server, held to the worktree.
+  - `frontend/`: the Agent Chrome's capture and its server, for Daniel's session and the coordinator; of the workers, only a walk's planner reads it, by `team-ui --capture`.
   - `spec-review/`: the `spec-review` skill, which has two fresh, read-only reader agents read a task's spec and tickets in parallel, as a stranger and as its builder, and writes their findings to `spec-review.md` for the spec's author to sort.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
@@ -113,7 +115,7 @@ It holds:
 | `ledger.jsonl` | The append-only record of every task's events |
 | `level.jsonl` | The team's resource level and mode, one line per change (`team-level`), committed with the ledger so a level holds across restarts and handoffs |
 | `drills.jsonl` | Each run of a drill, one line per run (`team-drill`): what ran, on which machine, code commit and Claude Code version, and its verdict, appended and never rewritten |
-| `waiting.md` | What waits on Daniel, every open ask, PR ready to merge and interview, and the asks and owed replies of `tasks/current.md`, numbered and ranked by what each answer unblocks, as `team-inbox` last wrote it from the ledger and that file |
+| `waiting.md` | What waits on Daniel, every open ask, PR ready to merge, interview and walk, and the asks and owed replies of `tasks/current.md`, numbered and ranked by what each answer unblocks, as `team-inbox` last wrote it from the ledger and that file |
 | `waiting.json` | The same list with each item's number, key and count and the latest post, which `team-inbox` reads to keep each number while its item stands |
 | `projects.toml` | The project registry, read only through `bin/team-project`, whose `--help` documents every key |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
@@ -138,6 +140,7 @@ It holds:
   On every remote and branch, it also refuses a push whose tip tree holds a records path unless the remote's URL is the team home's origin (a trailing `.git` or slash aside), so the records never reach the code repository from a stale checkout.
 - The records repository takes its one hook from here by absolute path, `git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git`, which `team-doctor`'s `records hooks` line checks: its `pre-commit` refuses a records commit that adds an email address at a public provider or any image (a screenshot is never kept in git), naming each path, never the address.
 - One scan, `bin/lib/data-check`, holds both data rules: that hook runs its `records` policy, and CI's `data` job its `code` policy (no email address outside the fixture domains, no image, no `node_modules/` path), after gitleaks over the PR's commits.
+  Its rule on addresses is `email_kind` and `refused_emails` in `bin/lib/team.sh`, which `team-post` holds a worker's post and a capture's text to as well.
   A test that needs an address uses `example.com`, `example.invalid` or another fixture domain `bin/lib/data-check`'s header lists, and builds one at a real provider from a variable, so the file never holds one written out.
 - Every session is denied skipping the hooks (`--no-verify`, `git commit -n`) and setting, unsetting or overriding `core.hooksPath` (reading it stays allowed), so the setup lines above are Daniel's to run.
   Those deny rules are a speed bump, never the guarantee: git accepts too many spellings for a deny list to cover, so the hooks and `dev`'s protection are what hold the rule.

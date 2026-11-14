@@ -300,6 +300,59 @@ channels/$THREAD/messages?after=1564000000000000003&limit=100"
   assert_equal "$(stub_calls sleep)" ""
 }
 
+# The walk-note lines of the ledger, each its discord_message.
+walk_notes() {
+  jq -r 'select(.event == "walk-note") | .discord_message' "$TEAM_HOME/ledger.jsonl"
+}
+
+# T7's walk on, as team-ui logs it, with these fields: walk_logged [<jq object>]
+walk_logged() {
+  jq -cn --arg ts "$(date -u +%FT%TZ)" "{ts: \$ts, task: \"T7\", event: \"walk\", state: \"on\"} + (${1:-{\}})" >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "wait logs Daniel's latest message as one walk note, its id and time and never its words, while the walk is in the interview thread" {
+  interview_logged
+  walk_logged '{thread: "interview"}'
+  say 1564000000000000002 "$DANIEL" "This button is off."
+  say 1564000000000000003 "$OTHER" "not this one"
+  say 1564000000000000004 "$DANIEL" "And this one."
+  run_bin -0 --separate-stderr team-thread wait T7 --after 1564000000000000001
+  assert_equal "$(ids)" "1564000000000000002
+1564000000000000004"
+  assert_equal "$(walk_notes)" 1564000000000000004
+  assert_equal "$(jq -c 'select(.event == "walk-note") | keys' "$TEAM_HOME/ledger.jsonl")" '["discord_message","event","task","ts"]'
+  assert_equal "$(grep -c 'this one\|button' "$TEAM_HOME/ledger.jsonl" || true)" 0
+  # Another member's message alone wakes no wait and is no note of Daniel's.
+  say 1564000000000000005 "$OTHER" "still not"
+  say 1564000000000000006 "$DANIEL" "Next."
+  run_bin -0 team-thread wait T7 --after 1564000000000000004
+  assert_equal "$(walk_notes | tail -n 1)" 1564000000000000006
+}
+
+@test "wait logs no walk note with no walk on, a walk in the task's own thread, or one stopped" {
+  interview_logged
+  say 1564000000000000002 "$DANIEL" "Five a minute."
+  run_bin -0 team-thread wait T7 --after 1564000000000000001
+  assert_equal "$(walk_notes)" ""
+  walk_logged
+  run_bin -0 team-thread wait T7 --after 1564000000000000001
+  assert_equal "$(walk_notes)" ""
+  walk_logged '{thread: "interview"}'
+  jq -cn --arg ts "$(date -u +%FT%TZ)" '{ts: $ts, task: "T7", event: "walk", state: "off"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-thread wait T7 --after 1564000000000000001
+  assert_equal "$(walk_notes)" ""
+}
+
+@test "a walk note that cannot be logged says so and still prints Daniel's message" {
+  interview_logged
+  walk_logged '{thread: "interview"}'
+  say 1564000000000000002 "$DANIEL" "Still printed."
+  mkdir "$TEAM_HOME/ledger.jsonl.lock"
+  run_bin -0 --separate-stderr team-thread wait T7 --after 1564000000000000001
+  assert_equal "$(ids)" 1564000000000000002
+  assert_contains "$stderr" "could not log the walk note"
+}
+
 @test "wait blocks, polling every five seconds, until Daniel posts, and takes an attachment's link" {
   interview_logged
   say 1564000000000000001 "$BOT" "Q1: which limit?"

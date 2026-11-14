@@ -800,11 +800,31 @@ def pending_asks: lifecycle | lifecycle_pending_asks;
 def unsettled_asks: . as $events | [lifecycle.asks[] | {k: .i, ask: $events[.i]}];
 
 # The task's manual QC walk: {since} while it is on, since the ts of its latest walk event when
-# that says on, else null, as for a task with none or a closed one, whose walk ended with it. Read
-# by team-ui --walk and task_state.
+# that says on, with its thread when that names one (interview) and the message of Daniel's it
+# reseeded on and the one port that clears when it has one, else null, as for a task with none or a
+# closed one, whose walk ended
+# with it. Read by team-ui --walk, capture_refusal, team-post, task_state and walk_last_note.
 def qc_walk:
   if task_status == "closed" then null
-  else map(select(.event == "walk")) | last | if .state == "on" then {since: .ts} else null end end;
+  else map(select(.event == "walk")) | last
+    | if .state == "on" then {since: .ts} + (if .thread then {thread} else {} end) + (if .reseeded then {reseeded, reseeded_port} else {} end) else null end end;
+
+# How long a walk counts with no message from Daniel, in seconds: a person clicking in Chrome makes
+# no session busy, so this is all that tells a walk under way from one left on.
+def walk_hold_seconds: 14400;
+
+# Over a task's events: when Daniel last spoke on the walk that is on, the latest of its start and
+# its walk-note events, or null with no walk on. A message that reached neither team-thread wait nor
+# team-ui --note-file is not among them.
+def walk_last_note:
+  qc_walk as $walk
+  | if $walk == null then null
+    else [$walk.since, (.[] | select(.event == "walk-note") | .ts)] | max end;
+
+# Over a task's events: whether a walk is on and still counts at the time <now> (seconds), keeping
+# its stack up and its task last to stow. Read by team-stack sweep and plan_tasks.
+def walk_holds($now):
+  walk_last_note | . != null and ($now - fromdateiso8601) <= walk_hold_seconds;
 
 # The worktrees team-resume could not re-home that still are not made: the latest rehome-failed of
 # each project and ticket (none for the task's own worktree in the project) with no later opened,
@@ -1400,7 +1420,7 @@ def state_line:
          elif .facts.withdrawn != null then " | default word withdrawn"
          else " | default word does not cover it: \(.reasons[0])"
            + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end) // "" end)
-  + (if .walk == null then "" else " | walk on since \(.walk.since)" end)
+  + (if .walk == null then "" else " | walk on since \(.walk.since)\(if .walk.thread then " in its \(.walk.thread) thread" else "" end)" end)
   + (if .stowing == null then "" else " | stowing since \(.stowing.since)" end)
   + (.parks // [] | if . == [] then ""
      else " | parks: " + (map("\(.id) \(.cause) since \(.since): \(.reason)" + if .passed then " (passed by a launch)" else "" end) | join("; ")) end);
@@ -1435,6 +1455,14 @@ def parked:
 def finding($task; $kind; $session; $name; $detail; $next):
   {task: $task, kind: $kind, session: $session, name: $name, next: $next,
    text: "\($task) \($kind): \($detail); next: \($next)"};
+
+# team-sweep's walk-stale finding, over a task's events, or nothing: a walk on that no longer counts.
+def walk_stale_finding:
+  .[0].task as $task | walk_last_note as $last | qc_walk as $walk
+  | select($last != null and (walk_holds(now) | not))
+  | finding($task; "walk-stale"; null; null;
+      "its walk has had no message from Daniel since \($last), over \(walk_hold_seconds / 3600) hours, so it no longer keeps its stack up or stows last";
+      "ask Daniel whether it goes on: if not, team-ui \($task) --walk stop; if so, team-ui \($task) --walk stop, then team-ui \($task) --walk start\(if $walk.thread then " --in \($walk.thread)" else "" end)\(if $walk.reseeded then " --reseeded <a new message of Daniel's>" else "" end)");
 
 # Whether a task's merge-base round is in flight, over its events and the session list: its latest
 # builder launch or resumed that names a merge-base brief has no later review, caught-up or merged,
@@ -1584,11 +1612,11 @@ def waiting_on:
 # session, or a room refusal of its brief), in place of no-worker; ticket-worktree-left an open
 # ticket worktree whose ticket has a ticket-done since the worktree's latest worktree-added,
 # worktree-moved or rehomed of that ticket, with no stowed after that ticket-done and no park of
-# its ticket standing. A denied is no report (the worker went past the denial), so these findings
-# read the events without it.
+# its ticket standing. A denied is no report (the worker went past the denial), nor is a walk-note
+# (Daniel spoke, the worker did not), so these findings read the events without them.
 def task_findings($sessions; $activity):
   .[0].task as $task
-  | map(select(.event != "denied"))
+  | map(select(.event | IN("denied", "walk-note") | not))
   | . as $events
   | length as $count
   | ([lifecycle.parks[] | select(.passed | not) | .ticket | strings] | unique) as $parked_tickets
@@ -1831,7 +1859,8 @@ def coordinator_twin_findings($self):
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
 # takes it): each open task's stowing finding, then its merge-due (on the default word, judged with
-# every task's withdrawals), else its findings unless it is parked, then its ci-due, then the stray sessions (named
+# every task's withdrawals), else its findings unless it is parked, then its walk-stale, parked or
+# not, since a parked task's walk still needs asking about, then its ci-due, then the stray sessions (named
 # like a team worker whose task is closed or not in the ledger, never the load check's T0, whose
 # session the coordinator waits on for up to 30 minutes), in task number order; then the
 # coordinator-twin, activity, level, retro-due and health findings. $own is the registered projects
@@ -1846,6 +1875,7 @@ def sweep($sessions; $plan; $activity; $own; $health; $self):
         ([merge_due_finding($withdrawals; $sessions; $own)] as $due
          | if $due != [] then $due[] elif parked then empty
            else task_findings($sessions; $activity) end),
+        walk_stale_finding,
         ci_due_finding),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
@@ -1864,8 +1894,8 @@ def sweep($sessions; $plan; $activity; $own; $health; $self):
 # with no new launch), stowing ({since, cause} of its stowing while that stands, a stow under way,
 # else null), stowed (while it is stowed_awaiting_resume, {at, roles} of its latest stowed or
 # stow-failed and hold, stow_hold's, else null), stowed_since (that stowed's or stow-failed's time
-# when no launch follows it, else null), refused (refused_launches')} per open task, in task number
-# order.
+# when no launch follows it, else null), refused (refused_launches'), walk (whether its walk counts
+# now, walk_holds)} per open task, in task number order.
 def plan_tasks($sessions):
   [by_task | to_entries[] | select(.value | is_open) | .key as $task | .value as $events
    | ($events | lifecycle) as $state
@@ -1878,7 +1908,8 @@ def plan_tasks($sessions):
                else null end),
       stowing: ($state | lifecycle_stowing),
       stowed_since: ($state.stow | if . != null and IN(.state; "stowed", "failed") then .since else null end),
-      refused: ($state | lifecycle_refused_launches)}]
+      refused: ($state | lifecycle_refused_launches),
+      walk: ($events | walk_holds(now))}]
   | by_task_number;
 
 # The ids of the open tasks stowed, waiting to resume (stowed_awaiting_resume), among every task's
@@ -2044,18 +2075,21 @@ def blocked_on_counts:
 # merge ({key: "pr <url, its trailing slash dropped>", kind: "pr", task, title, url}), as
 # merge_ready_prs has them over $own (own_projects' {projects, app}, or null),
 # then the interviews under way ({key: "interview <task> <thread>", kind: "interview", task, title,
-# thread}), then the asks of tasks/current.md, $notes' of kind ask ({key: "note <id>", kind: "note",
-# task (T<n> or -), title: null, id (team-current's), text, where}), in its order; each also with
-# since, when it began (the asked's ts, the PR's first pr event's, the latest interview-thread's;
-# null for a note, which the ledger does not date), and unblocks, what its answer unblocks, {tasks,
-# tickets, prs}: while the item holds its task (an ask no launch went past, a PR ready to merge, an
-# interview under way), tasks is 1 for it and 1 for each other open task blocked on it
-# (blocked_on_counts) and tickets its ready tickets, $tickets' count for it ({"T<n>": n}, 0 when it
-# has none), else both are 0, as for a note, which holds no task; prs is 1 for a PR ready to merge
-# and for an ask whose text names one of its task's PRs not merged, else 0. withdrawn: the
-# withdrawals of the default merge word that stand (default_withdrawals), in ledger order; owed:
-# the replies owed to Daniel, $notes' of kind owe, as {task, text, where}. $notes is current.md's
-# ask and owe lines as team-inbox reads them, [{kind, task, text, where, id}].
+# thread}), none whose walk is on in that thread, which the walks list, then the walks under way
+# ({key: "walk <task> <its start's ts>", kind: "walk", task, title, thread (the thread it runs in,
+# or null)}), then the asks of tasks/current.md, $notes' of kind ask ({key: "note <id>", kind:
+# "note", task (T<n> or -), title: null, id (team-current's), text, where}), in its order; each also
+# with since, when it began (the asked's ts, the PR's first pr event's, the latest
+# interview-thread's, the walk's start's; null for a note, which the ledger does not date), and
+# unblocks, what its answer unblocks, {tasks, tickets, prs}: while the item holds its task (an ask
+# no launch went past, a PR ready to merge, an interview or a walk under way), tasks is 1 for it
+# and 1 for each other open task blocked on it (blocked_on_counts) and tickets its ready tickets,
+# $tickets' count for it ({"T<n>": n}, 0 when it has none), else both are 0, as for a note, which
+# holds no task; prs is 1 for a PR ready to merge and for an ask whose text names one of its task's
+# PRs not merged, else 0. withdrawn: the withdrawals of the default merge word that stand
+# (default_withdrawals), in ledger order; owed: the replies owed to Daniel, $notes' of kind owe, as
+# {task, text, where}. $notes is current.md's ask and owe lines as team-inbox reads them, [{kind,
+# task, text, where, id}].
 def inbox_items($own; $notes; $tickets):
   default_events as $withdrawals
   | ($withdrawals | default_withdrawals(task_projects)) as $withdrawn
@@ -2084,10 +2118,15 @@ def inbox_items($own; $notes; $tickets):
         | {key: "pr \($url)", kind: "pr", task: $t.task, title: $t.title, url: .,
            since: ([$events[] | select(.event == "pr" and (.url | strings | rtrimstr("/")) == $url) | .ts] | first),
            unblocks: unblocks($t.task; true; 1)}]
-      + [.[] | select(.events | interview_under_way)
+      + [.[] | select(.events | interview_under_way and (qc_walk.thread != "interview"))
         | (.events | map(select(.event == "interview-thread")) | last) as $interview
         | ($interview.discord_thread | tostring) as $thread
         | {key: "interview \(.task) \($thread)", kind: "interview", task, title, thread: $thread, since: $interview.ts,
+           unblocks: unblocks(.task; true; 0)}]
+      + [.[] | (.events | qc_walk) as $walk | select($walk != null)
+        | (if $walk.thread == "interview" then "interview-thread" else "thread" end) as $kind
+        | {key: "walk \(.task) \($walk.since)", kind: "walk", task, title,
+           thread: (.events | map(select(.event == $kind) | .discord_thread | strings) | last), since: $walk.since,
            unblocks: unblocks(.task; true; 0)}]
       + [$notes[] | select(.kind == "ask")
         | {key: "note \(.id)", kind: "note", task, title: null, id, text, where, since: null,
@@ -2121,10 +2160,11 @@ def waiting_rank: [.unblocks // {} | .[] | numbers] | add // 0;
 # which Discord and GitHub both renumber, and every URL in <>, which keeps Discord from showing a
 # preview card for it: an ask linked to the question's message in guild $guild (null when unknown),
 # to the task's thread when either is unknown, and to nothing with no thread; a PR, "ready to
-# merge", with its URL; an interview, "interview under way", with its thread; an ask of current.md
-# with its task unless -, and its where when that is a URL (note_text); then what its answer
-# unblocks, " - unblocks <n>", n being its unblocks' sum, and when it is more than 0 each part that
-# is, as "(1 task, 2 tickets, 1 PR)".
+# merge", with its URL; an interview, "interview under way", with its thread; a walk, "walk under
+# way", with the thread it runs in, or nothing with none; an ask of current.md with its task unless
+# -, and its where when that is a URL (note_text); then what its answer unblocks, " - unblocks
+# <n>", n being its unblocks' sum, and when it is more than 0 each part that is, as "(1 task, 2
+# tickets, 1 PR)".
 def note_text:
   (if .task == "-" then "" else "\(.task) " end) + (.text | clip(150))
   + if (.where // "") | test("^https?://\\S+$") then " <\(.where)>" else "" end;
@@ -2140,6 +2180,7 @@ def waiting_line($guild):
         else " <#\(.thread)>" end
     elif .kind == "pr" then "\(named): ready to merge <\(.url)>"
     elif .kind == "note" then note_text
+    elif .kind == "walk" then "\(named): walk under way" + if .thread == null then "" else " <#\(.thread)>" end
     else "\(named): interview under way <#\(.thread)>" end
   + " - unblocks \(waiting_rank)" + if $parts == "" then "" else " (\($parts))" end;
 
@@ -2191,7 +2232,8 @@ def waiting_posted($at; $ids; $sent):
 
 # team-inbox --item's answer for the number $n, over waiting.json read whole (jq -s): {item} for
 # the standing item numbered $n, the line naming it ("ask <task> <id>", "pr <task> <url>",
-# "interview <task> <thread>" or "note <task or -> <id>"), else {refusal}: the item the latest post showed as $n, which no
+# "interview <task> <thread>", "walk <task>" with the thread it runs in when it has one, or "note
+# <task or -> <id>"), else {refusal}: the item the latest post showed as $n, which no
 # longer waits, or the numbers that do; or a waiting.json of another schema.
 def waiting_item($n):
   if length != 1 or (.[0] | type != "object" or .schema != "team-waiting/1") then
@@ -2202,6 +2244,7 @@ def waiting_item($n):
     | if $item != null then
         {item: (if $item.kind == "ask" then "ask \($item.task) \($item.id)"
           elif $item.kind == "pr" then "pr \($item.task) \($item.url)"
+          elif $item.kind == "walk" then "walk \($item.task)" + if $item.thread == null then "" else " \($item.thread)" end
           elif $item.kind == "note" then "note \($item.task) \($item.id)"
           else "\($item.kind) \($item.task) \($item.thread)" end)}
       elif $shown != null then {refusal: "item \($n) no longer waits: the list posted \(.posted.at) showed it as \($shown.line)"}

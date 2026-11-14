@@ -58,7 +58,7 @@
 # Then the ledger, its closed and worktree-returned lines with it, is committed and pushed to the
 # team home's origin at once (ledger_push in bin/lib/team.sh, which says on stderr when it is not
 # on origin yet, the task staying closed).
-# Last, team-inbox takes the task's asks, PRs and interview out of the team home's waiting.md;
+# Last, team-inbox takes the task's asks, PRs, interview and walk out of the team home's waiting.md;
 # when that fails, a line on stderr says so, and the task stays closed.
 # A legacy task (events but no opened) has no worktrees in the ledger: its sessions are stopped
 # and removed and closed carries the note legacy. --worktree names a slot it still holds; the

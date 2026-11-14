@@ -90,12 +90,13 @@ Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command
 
 ## The stack record
 
-Each team stack has one record of what Docker cannot tell, `~/.local/state/agent-team/stacks/<Compose project>.json`: `{"schema": "team-stack/1", "seed": {...}, "admission": {...}, "last_busy": ...}`, each key optional.
+Each team stack has one record of what Docker cannot tell, `~/.local/state/agent-team/stacks/<Compose project>.json`: `{"schema": "team-stack/1", "seed": {...}, "admission": {...}, "last_busy": ..., "walk": ...}`, each key optional.
 Running and stopped stay Docker's, and ownership stays in the labels.
 
 - The seed's `state` is `pending`, `running`, `done`, `failed` or `skipped`, with `at`, when it took that state (UTC), and `commit`, the worktree's `HEAD` when the seed started (null when git cannot say, and for `pending` and `skipped`).
   A `running` seed also has `pid`, the `team-stack` running it, and a `failed` one `exit`, the seed command's status.
 - `admission` is `{id, at}`, the admission the stack was started on ("Admission"), and when it was made.
+- `walk` is the start of the walk the sweep last kept the stack up for ("Stopping idle stacks"), so it says so once per walk.
 - A record with no `seed` (every file from before the record), a missing one for a stack that exists, and a file that is not a JSON object read as `unknown`, and are left alone, so a stack that holds Daniel's or a builder's data is never seeded on a guess.
 - Only `team-stack` writes it, each write under an exclusive `flock` on `~/.local/state/agent-team/stacks/records.lock`, a temporary file moved into place, so the sweep's `last_busy` and an `up`'s seed never overwrite each other.
 
@@ -203,13 +204,17 @@ Then it stops each idle team stack:
 - It looks only at running team stacks: every container of the Compose project of class team, so gate and unowned stacks, and a project whose containers mix them with team ones, are never stopped; only containers count, so a team project holding an unowned volume is stopped, which keeps every object.
 - A stack is busy while a live session (`claude agents --json`, interactive sessions included) with `status` `busy` has its `cwd` in the stack's `worktree` label or below it: the `cwd` or one of its parents names the same directory as the label, however either is spelled (a symlink, or another case on a case-insensitive filesystem), so a sibling path sharing the prefix (`shop-1-2` for `shop-1`) is not inside it.
 - For a busy stack it writes the time to its record ("The stack record") as `last_busy`, keeping the rest, since the session list keeps no last-activity time.
+- A stack is busy too while its task's walk counts, since a person clicking in Chrome makes no session busy (T191's stack was stopped during its walk): `team-ui T<n> --walk` has it on, and the latest of its start and its `walk-note` events is at most 4 hours old (`walk_holds` in `bin/lib/ledger.jq`).
+  `team-thread wait` logs a `walk-note` for an interview walk, and `team-ui --capture --note-file` for a walk in the task's own thread; a message of Daniel's reaching neither does not reset the clock.
+  The record then also holds the walk's start as `walk`, and for each walk one line is printed and added to `sweep.log`, for example `2026-10-25T10:00:00Z kept conventioner-2 of T7 in /home/daniel/.treehouse/Conventioner-d4c77a/2/Conventioner: its walk is on since 2026-10-25T09:40:00Z, which counts as busy`.
+  Past the 4 hours the walk no longer counts, so the stack idles from its last sweep as any other, and `team-sweep`'s `walk-stale` finding names the walk for the coordinator to ask Daniel about.
 - A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable record is never seen busy.
 - Idle for more than `idle_minutes` ("Admission" has the settings), it is stopped with `docker compose -p <project> stop`, its data kept, and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-10-25T10:00:00Z stopped conventioner-2 of T7 in /home/daniel/.treehouse/Conventioner-d4c77a/2/Conventioner: last busy at 2026-10-25T09:20:00Z (idle_minutes 30), its data kept`.
   `~/agent-team/bin/team-stack up` starts it again with its data, without seeding unless its seed is owed.
 - Docker not answering means no stack runs: it says so on stderr and exits 0, so the heartbeat logs nothing for it; a session list that cannot be read exits 1 and stops nothing; a gate stack's removal or a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
 - Unowned stacks are never touched.
 - `down` removes the stack's record with the stack.
-- Instances (`--instance`) are team stacks labelled with their worktree, so they are swept the same way.
+- Instances (`--instance`) are team stacks labelled with their worktree, so they are swept the same way, but for the walk: no walk runs on one, so only a `dev` stack is held.
 
 ## Removing what is left behind
 

@@ -5,7 +5,9 @@
       "Bash(@TEAM_CODE@/bin/team-post @TASK@ --thread interview --retract *)",
       "Bash(@TEAM_CODE@/bin/team-thread wait @TASK@)",
       "Bash(@TEAM_CODE@/bin/team-thread wait @TASK@ --after *)",
-      "Bash(@TEAM_CODE@/bin/team-tickets @TASK@ --check)"
+      "Bash(@TEAM_CODE@/bin/team-tickets @TASK@ --check)",
+      "Bash(@TEAM_CODE@/bin/team-ui @TASK@ --capture)",
+      "Bash(@TEAM_CODE@/bin/team-ui @TASK@ --capture --note-file *)"
     ],
     "deny": [
       "Bash(team-post --coordinator*)",

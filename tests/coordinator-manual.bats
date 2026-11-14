@@ -58,6 +58,32 @@ section() {
   assert_equal "${missing[*]}" ""
 }
 
+@test "the manual, ui-intake and the docs agree on a walk in an interview thread" {
+  local intake=$plugin/skills/ui-intake/SKILL.md readme=$REPO_ROOT/toolkits/frontend/README.md
+  # The manual: the brief and its start, walk-stale, and the inbox's list.
+  grep -qF '`planner-walk`' "$manual"
+  grep -qF '`team-ui T<n> --walk start --in interview`' "$manual"
+  grep -qF '`walk-stale`' "$manual"
+  grep -qF 'interview and walk, is numbered' "$manual"
+  # The skill: when a walk is its planner's, how it starts and stops, and what the sweep's finding asks.
+  grep -qF '`team-thread T<n> --interview`' "$intake"
+  grep -qF '`team-ui T<n> --walk start --in interview`' "$intake"
+  grep -qF '`team-brief T<n> planner-walk' "$intake"
+  grep -qF -- '--reseeded <its message id>' "$intake"
+  grep -qF '`walk-stale`' "$intake"
+  # The rule D2 changed: images only, a walk's planner only, under team-post's guards.
+  if grep -F "Nothing of a capture is posted to Discord, a walk's captures included" "$intake"; then return 1; fi
+  grep -qF "You never post a capture." "$intake"
+  grep -qF "A walk's planner, in its interview thread, posts only \`page.png\` and \`element.png\`" "$intake"
+  grep -qF 'under `team-post`'"'"'s guards' "$intake"
+  grep -qF '`planner-walk`' "$REPO_ROOT/roles/planner.md"
+  grep -qF 'planner-walk' "$REPO_ROOT/bin/team-brief"
+  grep -qF 'planner-walk' "$REPO_ROOT/bin/team-thread"
+  grep -qF 'planner-walk' "$REPO_ROOT/CLAUDE.md"
+  # The README's rule on where a capture stays names what leaves.
+  grep -qF "A walk's planner posts \`page.png\` and \`element.png\` of a capture" "$readme"
+}
+
 @test "every bin/team-* script is named in the manual" {
   local script unnamed=() named
   named=$(named_commands "$manual")
@@ -706,7 +732,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   discord=$(section coordinator Discord)
   # The manual's Discord section: the thread, the file and who writes it, the post, the routing.
   grep -qxF -- "- Every task has its thread under \`#coordinator\`; the task's updates go there, and cross-task news in \`#coordinator\` itself." <<<"$discord"
-  grep -qxF -- "  What waits on Daniel, every open ask, PR ready to merge and interview, is numbered in the team home's \`waiting.md\`, which \`team-inbox\` writes, run by the heartbeat and by each script that changes the list, \`team-log\` included." <<<"$discord"
+  grep -qxF -- "  What waits on Daniel, every open ask, PR ready to merge, interview and walk, is numbered in the team home's \`waiting.md\`, which \`team-inbox\` writes, run by the heartbeat and by each script that changes the list, \`team-log\` included." <<<"$discord"
   grep -qxF -- "  When Daniel asks what waits, \`team-inbox --post\` posts it as a new message at the bottom of \`#coordinator\`; nothing edits an old one." <<<"$discord"
   grep -qxF -- "- A reply that answers by number (\"3 yes, 5 no\") goes to each number's item, which \`team-inbox --item <n>\` names: an ask's answer is \`team-answer --item <n> <message id>\`, a PR's merge word its \`merge-approved\` as step 6 says, and an interview is answered in its thread; tell Daniel of a number that no longer waits, as \`--item\` says." <<<"$discord"
   # Step 6 is the one that logs the merge word, as the routing line points.

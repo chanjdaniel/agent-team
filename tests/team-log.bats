@@ -192,6 +192,7 @@ injection team-log role source text
 rehome-failed team-resume project branch machine reason
 rehomed team-open project branch worktree machine
 walk team-ui state
+walk-note team-thread,team-ui
 image-posted team-post thread discord_thread discord_message file
 image-retracted team-post thread discord_thread discord_message
 TABLE
@@ -265,7 +266,8 @@ TABLE
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|default\|plan\|standing\), phases_left \(list of whole numbers\), check_run \(number\); pushed at once  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\), approved \(list\)  \(.*approved the ids of the parks the builder approved itself.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\); pushed at once  \(.*legacy.*\)$' <<<"$output"
-  grep -Eq '^  walk +team-ui +state \(on\|off\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"
+  grep -Eq '^  walk-note +team-thread, team-ui +-; optional discord_message \(id\)  \(a message of Daniel.s on the walk that is on.*never its words.*\)$' <<<"$output"
+  grep -Eq '^  walk +team-ui +state \(on\|off\); optional thread \(interview\), reseeded \(id\), reseeded_port \(number\)  \(a manual QC walk of the task.*team-ui --walk.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head; pushed at once  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, discord_message \(id\), brief, template, admission, past_ask \(list\), ticket  \(request is the link to Daniel.s Discord message, on an ops launch, and discord_message its id, a message no other ops launch ran on \(team-worker refuses one that did\), which only an ops launch carries; model is the --model the session launched on, .*; admission is the id of the capacity admission the launch was made on \(team-capacity admit.s first line\), absent on T0, ops and a launch from before 2026-11-11; past_ask is the ids of the open asks the launch went past \(team-worker --past-ask\), which then park nothing, absent when it names none; ticket is the two-digit number of the ticket whose ticket worktree a builder launched in .*\)$' <<<"$output"
   grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\), item \(number\); pushed at once  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask; item: .*team-answer --item alone\)$' <<<"$output"
@@ -325,6 +327,16 @@ Nothing waits on you."
   run_bin -0 team-log T14 resumed all=true
   assert_equal "$(logged_after 2 | wc -l)" "2"
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" '{"task":"T14","event":"resumed","all":true}'
+}
+
+@test "a ledger lock that cannot be opened refuses the event, naming the lock, with nothing appended" {
+  opened_task T14
+  mkdir "$TEAM_HOME/ledger.jsonl.lock"
+  local before
+  before=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-log T14 resumed all=true
+  assert_contains "$stderr" "team-log: could not append the event to the ledger under its lock, $TEAM_HOME/ledger.jsonl.lock"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$before"
 }
 
 @test "values that parse as JSON are stored as JSON, others as strings" {

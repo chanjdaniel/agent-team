@@ -18,7 +18,8 @@
 # users.noreply.github.com and git@<host> (an SSH remote) are services, never refused, and a
 # name@word.<file type> (logo@2x.png) is no address. Neither policy reads vendored code
 # (tests/vendor/), which is its upstream's as published, and records does not read a package
-# (a node_modules/ directory, in an archived scratch copy, say) either.
+# (a node_modules/ directory, in an archived scratch copy, say) either. The rule on addresses is
+# email_kind and refused_emails in bin/lib/team.sh, which a worker's team-post holds to as well.
 # Exit 0 nothing refused, 1 refused with each path and kind on stderr, 2 a malformed command line.
 set -euo pipefail
 # No team home is read, so CI and a checkout that names none run it.

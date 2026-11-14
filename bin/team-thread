@@ -16,7 +16,7 @@
 #             A new one brings the team home's waiting.md up to date (refresh_inbox in
 #             bin/lib/team.sh: team-inbox; a failure is one line on stderr, and the exit stays 0).
 #             The plugin delivers nothing from that channel, so the coordinator never hears what
-#             is said there: a planner whose brief is planner-interview talks with Daniel there.
+#             is said there: a planner whose brief is planner-interview or planner-walk talks with Daniel there.
 #   wait      Blocks until Daniel posts in the open task's interview thread, then prints each of
 #             their new messages, oldest first, as one JSON line: {"id", "sent" (Discord's
 #             timestamp), "text" (verbatim), "attachments" (only when there are any: each one's
@@ -40,6 +40,10 @@
 #             no image or a size Discord gives over the limit (none of these fetched), a file over
 #             the limit, first bytes of another kind, a failed download or a ui/ it cannot write
 #             in. None of these ends the wait.
+#             While the task's walk is on in this thread, it first logs the latest of them as a
+#             walk-note, its id and the time, never its words, which keeps the walk counting
+#             (walk_holds in bin/lib/ledger.jq); a line that cannot be logged is said on stderr, and
+#             the messages still print.
 # --interview and wait refuse on a machine that is fenced or that lost the lease (lease_refusal,
 # checked before each read), and with no interview channel set; wait ends with the hold's
 # message (offline_hold) when the team holds offline. In a worker session only a planner's wait
@@ -197,6 +201,18 @@ print_message() {
 # What a machine that may not wait does instead, as the lease-fence hook says it.
 WAITS="waits on no interview; stop, since the coordinator on the holder takes the task on."
 
+# Log the latest message found as a walk note while the task's walk is on in this thread, read from
+# the ledger now, since it may have started or stopped during the wait. Only its id and the time,
+# never its words. A failure is said and never costs Daniel's message: log_walk_note <task> <found file>
+log_walk_note() {
+  local walk id
+  walk=$(task_event_array "$1" | ledger_jq 'qc_walk.thread // empty' -r) || walk=''
+  [[ $walk == interview ]] || return 0
+  id=$(tail -n 1 "$2" | jq -r .id)
+  (ledger_append "$(jq -cn --arg task "$1" --arg id "$id" '{ts: (now | todate), task: $task, event: "walk-note", discord_message: $id}')") ||
+    echo "${0##*/}: could not log the walk note of message $id, so this message does not keep $1's walk counting" >&2
+}
+
 if [[ ${1:-} == wait ]]; then
   shift
   task='' after=''
@@ -243,6 +259,7 @@ if [[ ${1:-} == wait ]]; then
     # A full page means more may follow at once.
     [[ $(jq length <<<"$page") -lt 100 ]] || continue
     if [[ -s $scratch/found ]]; then
+      log_walk_note "$task" "$scratch/found"
       while IFS= read -r message; do print_message "$message"; done <"$scratch/found"
       exit 0
     fi

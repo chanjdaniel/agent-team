@@ -94,8 +94,11 @@
 # team-stow run, logged it) until its stowed or stow-failed, or null; the text form says "stowing
 # since <ts>" while one stands, after the walk and before the parks.
 # walk is the task's manual QC walk (team-ui T<n> --walk), {"since": "<ts>"} while it is on, from
-# its latest walk event's ts, and null while it is off or the task is closed; the text form says
-# "walk on since <ts>" while it is on, before the parks, and nothing of it while it is off.
+# its latest walk event's ts, with "thread": "interview" when it runs in the task's interview
+# thread, "reseeded" and "reseeded_port" when its start named Daniel's word that the primary stack
+# on that port was just reseeded (team-ui --reseeded), and null while it is off or the task is
+# closed; the text form says "walk on since <ts>" while it is on, then " in its interview thread"
+# for such a walk, before the parks, and nothing of it while it is off.
 # rehome_failures are the worktrees team-resume could not re-home and nothing has made since: the
 # latest rehome-failed of each project and ticket, as {project, branch, machine, reason, since},
 # with ticket for a ticket worktree's, until a later opened, worktree-added, worktree-moved,
