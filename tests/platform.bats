@@ -3,7 +3,8 @@
 # Homebrew's GNU tools first on PATH; and the library's tool directories from bin/lib/tools.lock,
 # first on PATH after them. A stubbed uname drives the macOS branch on Linux, and
 # $HOMEBREW_PREFIX points it at a fake Homebrew. The old-interpreter tests need a real one: macOS
-# has Bash 3.2 at /bin/bash and Python 3.9 at /usr/bin/python3, so the macos CI job runs them.
+# has Bash 3.2 at /bin/bash and Python 3.9 at /usr/bin/python3, so they run on a Mac, and CI,
+# which runs no macOS job, skips them.
 
 load helpers/common
 

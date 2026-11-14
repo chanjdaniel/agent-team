@@ -229,7 +229,7 @@ ledger_opened() {
   assert_equal "$(line_of 'gate conventioner')" "FAIL gate conventioner: \`no-mistakes status\` printed no gate: daemon not running; fix: cd ~/projects/Conventioner && no-mistakes init"
 }
 
-@test "trust: a promptless claude --bg in each root, FAIL on Workspace not trusted, the probe session removed either way" {
+@test "trust: a promptless claude --bg with Remote Control off in each root, FAIL on Workspace not trusted, the probe session removed either way" {
   only_checks 200-projects.sh
   tools_at arch
   echo "$SITE" >"$STUB_FIXTURES/untrusted"
@@ -242,16 +242,18 @@ ledger_opened() {
   assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$TEAM_HOME
 $CONVENTIONER
 $SITE"
-  local home probe
+  # Each probe starts with Remote Control off, which a --settings value turns off over the user
+  # settings' remoteControlAtStartup, so no probe leaves a row in Daniel's Remote Control list.
+  local home probe rc='--settings {"remoteControlAtStartup":false}'
   home=$(printf '%s' "$TEAM_HOME" | sha256sum | cut -c1-8)
   probe=$(printf '%s' "$CONVENTIONER" | sha256sum | cut -c1-8)
-  assert_equal "$(stub_calls claude | jq -r 'select(.[0] | IN("--bg", "stop", "rm")) | join(" ")')" "--bg --name team-doctor-home-trust
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] | IN("--bg", "stop", "rm")) | join(" ")')" "--bg --name team-doctor-home-trust $rc
 stop $home
 rm $home
---bg --name team-doctor-trust-conventioner
+--bg --name team-doctor-trust-conventioner $rc
 stop $probe
 rm $probe
---bg --name team-doctor-trust-site
+--bg --name team-doctor-trust-site $rc
 stop 0badc0de
 rm 0badc0de"
 

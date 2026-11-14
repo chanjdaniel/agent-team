@@ -1297,8 +1297,8 @@ reviewer    45003       2               2            0"
   # claude was asked only the doctor's questions, its login, its plugins and its trust probes of
   # the team home and of code, the one project with a checkout here (which the stub's reply never
   # starts): no session of the load check's.
-  assert_equal "$(stub_calls claude | jq -r 'join(" ")' | LC_ALL=C sort -u)" "--bg --name team-doctor-home-trust
---bg --name team-doctor-trust-code
+  assert_equal "$(stub_calls claude | jq -r 'join(" ")' | LC_ALL=C sort -u)" "--bg --name team-doctor-home-trust --settings {\"remoteControlAtStartup\":false}
+--bg --name team-doctor-trust-code --settings {\"remoteControlAtStartup\":false}
 agents --json
 auth status --json
 plugin list --json"

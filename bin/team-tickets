@@ -437,7 +437,7 @@ if [[ -n $graph ]]; then
     bytes=$(($(wc -c <"$shot")))
     grep -qxF -e "$bytes bytes written to file $shot" -e "$bytes bytes written to file $(realpath -- "$shot")" "$err"
   }
-  # A Mac with no display (CI's macOS runner) writes the screenshot, then hangs in its teardown
+  # A Mac with no display (a macOS CI runner) writes the screenshot, then hangs in its teardown
   # until Chrome's watchdog ends it with exit 2 (10 to 14 s after the screenshot, on a loaded
   # runner) or the timeout does, so a nonzero exit, the timeout's TERM and kill included, still
   # takes a PNG that Chrome says it wrote whole.
