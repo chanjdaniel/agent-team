@@ -493,19 +493,19 @@ LINES
   local url=https://github.com/owner/proj/pull/5 head=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
   local shard='{"name":"test-shards (2)","class":"pr","kind":"failed","link":"https://github.com/owner/proj/actions/runs/42/job/43","step":"Run the bats suite"}'
   local rollup='{"name":"test","class":"rollup","kind":"rollup","link":"https://github.com/owner/proj/actions/runs/42/job/44","step":null}'
-  local runner='{"name":"macos-shards (1)","class":"infrastructure","kind":"never-started","link":"https://github.com/owner/proj/actions/runs/41904778858/job/117300000000000001","step":null}'
+  local runner='{"name":"smoke-shards (1)","class":"infrastructure","kind":"never-started","link":"https://github.com/owner/proj/actions/runs/41904778858/job/117300000000000001","step":null}'
   run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=passed
   run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=failed "failed=[$shard,$rollup]" look=true
   run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=infrastructure "failed=[$runner]"
   run_bin -0 team-log T14 ci "url=$url" "head=$head" outcome=pending
-  run_bin -0 team-log T14 ci-rerun "url=$url" "head=$head" 'check=macos-shards (1)' run=41904778858 job=117300000000000001
+  run_bin -0 team-log T14 ci-rerun "url=$url" "head=$head" 'check=smoke-shards (1)' run=41904778858 job=117300000000000001
   assert_equal "$(logged_after 2)" "$(
     cat <<LINES
 {"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"passed"}
 {"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"failed","failed":[$shard,$rollup],"look":true}
 {"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"infrastructure","failed":[$runner]}
 {"task":"T14","event":"ci","url":"$url","head":"$head","outcome":"pending"}
-{"task":"T14","event":"ci-rerun","url":"$url","head":"$head","check":"macos-shards (1)","run":"41904778858","job":"117300000000000001"}
+{"task":"T14","event":"ci-rerun","url":"$url","head":"$head","check":"smoke-shards (1)","run":"41904778858","job":"117300000000000001"}
 LINES
   )"
   run_bin -0 team-log --check
