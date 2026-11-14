@@ -8,8 +8,9 @@
 // unrun, the error's message shown to the agent, gives this checkout's bin/hooks/command-guard a
 // Claude-shaped input: tool_name "Bash", tool_input.command the call's command, and cwd its workdir
 // resolved from the session's directory, with CLAUDE_PROJECT_DIR the session's git worktree (left
-// to command-guard's own git lookup when opencode names none, as "/"), and no AGENT_TEAM_ROLE or
-// CLAUDE_JOB_DIR, so the gate's agents take the no-role suffix and have no job tmp.
+// to command-guard's own git lookup when opencode names none, as "/"), and no AGENT_TEAM_ROLE,
+// AGENT_TEAM_TASK or CLAUDE_JOB_DIR, so the gate's agents take the no-role suffix and have no job
+// tmp.
 // command-guard's exit 0 passes the call; its exit 2 refuses it with its stderr; any other end (an
 // exit code, a signal, its 10-second timeout, a start that fails, a command that is not a string)
 // refuses it too, naming why, so a guard that cannot decide refuses. Another tool passes.
