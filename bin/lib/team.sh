@@ -13,7 +13,7 @@
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, plan_task_dir, plan_files, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, claude_cache_dir, tool_dirs,
 # team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, memory_setting, same_path, bounded, docker_bounded, docker_silence, trust_probe,
-# pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
+# pool_status, pool_entry, pool_slot, pool_slots, pool_trusted, pool_add_worktree, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, own_projects, own_bar, review_app, base64url, review_app_jwt, review_app_api, default_events_json, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_magic, image_type, discord_token, discord_api,
 # discord_link, daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, tickets_digest, ticket_graph_dir, task_state_json, pr_merge_authority, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
@@ -1112,20 +1112,118 @@ pool_slot() {
   return 1
 }
 
-# A treehouse pool's slots: its registered slots <slot>..., then each other <dir>/<n>/<folder> that
-# exists (<n> a number) beside a registered <dir>/<m>/<folder>, by number. treehouse numbers a new
-# slot past a folder it finds in the way, an empty one too, so the registry may not list every
-# slot it makes: treehouse_slots <slot>...
-treehouse_slots() {
-  local slot found extra=()
-  for slot in "$@"; do
-    echo "$slot"
-    for found in "${slot%/*/*}"/*/"${slot##*/}"; do
-      [[ -d $found && $(basename "${found%/*}") =~ ^[0-9]+$ ]] || continue
-      pool_slot "$found" "$@" "${extra[@]}" >/dev/null || extra+=("$found")
+# A pool's slots: its registered slots <slot>..., then each other numbered worktree of the pool
+# that exists, by number. For git (<provider>), each <primary>/.claude/worktrees/<n> (<n> a positive
+# whole number with no leading zero), which team-open makes on demand. For treehouse, each other
+# <dir>/<n>/<folder> (<n> a number) beside a registered <dir>/<m>/<folder>: treehouse numbers a
+# new slot past a folder it finds in the way, an empty one too, so the registry may not list
+# every slot it makes: pool_slots <provider> <primary> <slot>...
+pool_slots() {
+  local provider=$1 primary=$2 slot found extra=()
+  shift 2
+  (($# == 0)) || printf '%s\n' "$@"
+  if [[ $provider == git ]]; then
+    for found in "$primary"/.claude/worktrees/*; do
+      [[ -d $found && ${found##*/} =~ ^[1-9][0-9]*$ ]] || continue
+      pool_slot "$found" "$@" >/dev/null || extra+=("$found")
     done
+  else
+    for slot in "$@"; do
+      for found in "${slot%/*/*}"/*/"${slot##*/}"; do
+        [[ -d $found && $(basename "${found%/*}") =~ ^[0-9]+$ ]] || continue
+        pool_slot "$found" "$@" "${extra[@]}" >/dev/null || extra+=("$found")
+      done
+    done
+  fi
+  ((${#extra[@]} == 0)) || printf '%s\n' "${extra[@]}" | awk -F/ -v git="$([[ $provider == git ]] && echo 1)" \
+    '{ print (git ? $NF : $(NF - 1)) "\t" $0 }' | sort -n -k1,1 | cut -f2-
+}
+
+# Whether <path>, however spelled, is a worktree path the pool trusts, existing or not: one of its
+# registered slots <slot>...; for git (<provider>), any <primary>/.claude/worktrees/<n>; for
+# treehouse, any <dir>/<n>/<folder> beside a registered <dir>/<m>/<folder> (<n>, <m> numbers, as
+# pool_slots reads them). Prints the path as the registry or the rule spells it; fails, printing
+# nothing, when the pool trusts no such path: pool_trusted <provider> <primary> <path> <slot>...
+pool_trusted() {
+  local provider=$1 primary=$2 path=${3%/} slot n candidate
+  shift 3
+  pool_slot "$path" "$@" && return 0
+  n=${path##*/}
+  if [[ $provider == git ]]; then
+    candidate=$primary/.claude/worktrees/$n
+    if [[ $n =~ ^[1-9][0-9]*$ ]] && same_path "$candidate" "$path"; then echo "$candidate" && return 0; fi
+    return 1
+  fi
+  n=$(basename "$(dirname "$path")")
+  [[ $n =~ ^[0-9]+$ ]] || return 1
+  for slot in "$@"; do
+    candidate=${slot%/*/*}/$n/${slot##*/}
+    if same_path "$candidate" "$path"; then echo "$candidate" && return 0; fi
   done
-  ((${#extra[@]} == 0)) || printf '%s\n' "${extra[@]}" | awk -F/ '{ print $(NF - 1) "\t" $0 }' | sort -n -k1,1 | cut -f2-
+  return 1
+}
+
+# Add a worktree of the git pool of the primary checkout <primary> and print its path: the
+# preferred path <preferred> (empty for none) while it is free, else the first free registered
+# slot <slot>..., else the lowest free <primary>/.claude/worktrees/<n> from 1, made on demand, so
+# a git pool is never full. Free means no registered worktree of <primary> is the path (same_path)
+# and the path is missing or an empty directory; one that holds anything else is skipped, one line
+# on stderr saying so, and a numbered path already tried as the preferred path or a slot is not
+# tried again. After -- come the options of `git worktree add` and last its commit-ish:
+# `git -C <primary> worktree add -q <option>... <path> <commit>`. The pick and the add are made
+# under the pool's lock (team-open-pool.lock in <primary>'s git common directory), after reading
+# the registered worktrees again, so two runs at once never take one path: the second waits up to
+# TEAM_OPEN_POOL_WAIT_SECONDS (default 600), then exits 75 naming the lock, the only exit 75; the
+# lock goes once the add is done, its descriptor closed for git's own processes. Exits 1 when the
+# add fails: pool_add_worktree <primary> <preferred> <slot>... -- <option>... <commit>
+pool_add_worktree() {
+  local primary=$1 preferred=$2 wait=${TEAM_OPEN_POOL_WAIT_SECONDS:-600} lock fd line wt n=0 candidate free tried
+  local pool_listed=() pool_options=() pool_worktrees=() pool_candidates=() pool_tried=()
+  shift 2
+  while (($#)) && [[ $1 != -- ]]; do pool_listed+=("$1") && shift; done
+  [[ ${1:-} == -- && $# -ge 2 ]] || die "pool_add_worktree needs -- and the commit to add the worktree at"
+  shift
+  pool_options=("${@:1:$#-1}")
+  [[ $wait =~ ^[0-9]+$ ]] || die "TEAM_OPEN_POOL_WAIT_SECONDS must be a whole number of seconds, not '$wait'"
+  lock=$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)/team-open-pool.lock ||
+    die "cannot find the git directory of $primary"
+  exec {fd}<>"$lock"
+  if ! flock -w "$wait" -x "$fd"; then
+    echo "${0##*/}: another run held the pool lock $lock of $primary for $wait seconds; run this again" >&2
+    exit 75
+  fi
+  while IFS= read -r line; do
+    [[ $line != "worktree "* ]] || pool_worktrees+=("${line#worktree }")
+  done < <(git -C "$primary" worktree list --porcelain)
+  [[ -z $preferred ]] || pool_candidates+=("$preferred")
+  for candidate in ${pool_listed[@]+"${pool_listed[@]}"}; do
+    same_path "$candidate" "$preferred" || pool_candidates+=("$candidate")
+  done
+  # Each candidate in turn, then each numbered path not tried as a candidate, until one is free.
+  while :; do
+    if ((${#pool_candidates[@]})); then
+      candidate=${pool_candidates[0]} pool_candidates=("${pool_candidates[@]:1}")
+      pool_tried+=("$candidate")
+    else
+      n=$((n + 1)) candidate=$primary/.claude/worktrees/$n tried=''
+      for wt in ${pool_tried[@]+"${pool_tried[@]}"}; do
+        if same_path "$wt" "$candidate"; then tried=1 && break; fi
+      done
+      [[ -z $tried ]] || continue
+    fi
+    free=1
+    for wt in ${pool_worktrees[@]+"${pool_worktrees[@]}"}; do
+      if same_path "$wt" "$candidate"; then free='' && break; fi
+    done
+    [[ -n $free ]] || continue
+    [[ ! -e $candidate ]] && break
+    [[ -d $candidate && -z $(find "$candidate" -mindepth 1 -maxdepth 1 -print -quit) ]] && break
+    echo "${0##*/}: $candidate is skipped: it holds files but is no worktree of $primary" >&2
+  done
+  git -C "$primary" worktree add -q ${pool_options[@]+"${pool_options[@]}"} "$candidate" "${@: -1}" {fd}>&- ||
+    die "cannot add $candidate as a worktree of $primary"
+  exec {fd}>&-
+  echo "$candidate"
 }
 
 # The slot of the pool <pool> (pool_status' lines) that is the path <path>; fails, printing

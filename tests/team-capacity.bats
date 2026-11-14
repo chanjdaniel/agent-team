@@ -683,6 +683,18 @@ team_reading() {
     "$STATE_DIR/readings.jsonl")" '[["T7",0],["T9",400]]'
 }
 
+@test "sample: a git pool's unregistered numbered worktree is the team's, and a folder of another name is not" {
+  sample_machine
+  # agent-team's pool registers worktrees 1 to 5; 7 is made on demand, 07 and load-check are not
+  # numbered worktrees.
+  mkdir -p "$HOME/agent-team/.claude/worktrees/"{7,07,load-check}
+  proc 600 1 700 1 "$HOME/agent-team/.claude/worktrees/7/src"
+  proc 601 1 50 1 "$HOME/agent-team/.claude/worktrees/07"
+  proc 602 1 30 1 "$HOME/agent-team/.claude/worktrees/load-check"
+  run_bin -0 team-capacity sample
+  assert_equal "$(jq -c --argjson mib "$MIB" '(.memory.team - 628935884 - 315621376) / $mib' "$STATE_DIR/readings.jsonl")" 700
+}
+
 @test "sample: a ticket builder T<n>-builder-NN is a session of its task with the role builder" {
   sample_machine
   as_macos
@@ -1527,6 +1539,42 @@ $second"
   run_bin -1 --separate-stderr team-capacity admit --kind session:planner --task T7
   assert_equal "$output" ""
   assert_equal "$(jq length "$STATE_DIR/admitted.json")" 2
+}
+
+@test "admit --dry-run judges as admit does but keeps nothing: room prints one line, no room is 75 with admit's text, no budget is 1" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  busy_reading
+  level full
+  run_bin -0 --separate-stderr team-capacity admit --kind session:builder --dry-run
+  assert_equal "$output" "room for session:builder at full (90%): a builder needs 0.5 GiB, 6.2 GiB of 20.0 GiB reserved"
+  assert_equal "$stderr" ""
+  [[ ! -e $STATE_DIR/admitted.json ]]
+  # Beside a kept admission it leaves admitted.json as it was, and counts that admission.
+  run_bin -0 team-capacity admit --kind stack:other --task T9 --name other-9 --seed-bytes $((4 * GIB))
+  local before
+  before=$(cat "$STATE_DIR/admitted.json")
+  run_bin -0 --separate-stderr team-capacity admit --kind session:reviewer --task T9 --dry-run
+  assert_equal "$output" "room for session:reviewer at full (90%): a reviewer needs 0.5 GiB, 10.2 GiB of 20.0 GiB reserved"
+  assert_equal "$(cat "$STATE_DIR/admitted.json")" "$before"
+  # No room: the refusal a real admit gives, on stderr, nothing on stdout, nothing kept.
+  run_bin -75 --separate-stderr team-capacity admit --kind stack:other --task T9 --seed-bytes $((64 * GIB))
+  local refusal=$stderr
+  run_bin -75 --separate-stderr team-capacity admit --kind stack:other --task T9 --seed-bytes $((64 * GIB)) --dry-run
+  assert_equal "$output" ""
+  assert_equal "$stderr" "$refusal"
+  assert_contains "$stderr" "no room for stack:other at full (90%): 10.2 GiB of 20.0 GiB reserved"
+  level none
+  run_bin -75 --separate-stderr team-capacity admit --kind session:builder --dry-run
+  assert_equal "$stderr" "no room for session:builder: the team is at level none: nothing starts; room comes when Daniel raises the level"
+  assert_equal "$(cat "$STATE_DIR/admitted.json")" "$before"
+  # Above none with no reading to size the budget by, it fails as admit does.
+  level full
+  rm "$STATE_DIR/readings.jsonl"
+  printf 'MemTotal:       33554432 kB\n' >"$TEAM_MEMINFO"
+  run_bin -1 --separate-stderr team-capacity admit --kind session:builder --dry-run
+  assert_equal "$output" ""
+  assert_contains "$stderr" "team-capacity: no reading of the machine's load, so no budget to admit session:builder by"
+  assert_equal "$(cat "$STATE_DIR/admitted.json")" "$before"
 }
 
 @test "release ends an admission at once, and says nothing to release for an id it no longer holds" {

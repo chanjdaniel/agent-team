@@ -32,9 +32,9 @@ if ((${#left[@]})); then
   captures_fixes+=("rm -rf $(printf '%q ' "${left[@]}" | sed 's/ $//')")
 fi
 
-# The .scratch/shots/ of each slot of each project that no open task holds, one path per line. A
-# slot is judged only when the ledger says who holds it, and only a worktree of the project's own
-# checkout, since a clone sharing a treehouse pool keeps its slots and what is in them.
+# The .scratch/shots/ of each slot of each project's pool (pool_slots) that no open task holds, one
+# path per line. A slot is judged only when the ledger says who holds it, and only a worktree of the
+# project's own checkout, since a clone sharing a treehouse pool keeps its slots and what is in them.
 idle_shots() {
   local holders projects project facts primary mine common how where slot held=() kept=() slots=()
   if [[ ! -f $TEAM_HOME/ledger.jsonl ]] || ! project_registry --list 2>/dev/null; then return 0; fi
@@ -59,7 +59,7 @@ idle_shots() {
     primary=$(jq -r .path <<<"$facts")
     mine=$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || continue
     mapfile -t slots < <(jq -r '.pool.slots[]' <<<"$facts")
-    [[ $(jq -r .pool.provider <<<"$facts") != treehouse ]] || mapfile -t slots < <(treehouse_slots "${slots[@]}")
+    mapfile -t slots < <(pool_slots "$(jq -r .pool.provider <<<"$facts")" "$primary" ${slots[@]+"${slots[@]}"})
     for slot in "${slots[@]}"; do
       # Through a linked .scratch the folder may be another worktree's, which the fix must not remove.
       [[ ! -L $slot/.scratch ]] || continue

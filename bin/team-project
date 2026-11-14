@@ -30,6 +30,10 @@
 #   local_checks     optional: shell commands, run from the root of a checkout of the PR's exact
 #                    head, that must all pass before team-merge merges it (default none);
 #                    team-checks runs them, for team-merge and for the workers alike
+#   changed_tests    optional: how a builder runs the tests its change reaches, one line of text
+#                    team-brief puts in each builder brief, its presence saying CI (or the
+#                    local_checks a reviewer and team-merge run) runs the whole suite (default
+#                    none: nothing but the builder runs the project's whole suite, once at its end)
 #   uptime           optional: the project's production checks, which the heartbeat's uptime
 #                    step runs (team-uptime), an array of tables ([[<name>.uptime]]), each with
 #                    exactly three strings (default none):
@@ -61,8 +65,10 @@
 #                    checkout: lease <holder> prints the leased slot's path; return <slot> hands
 #                    it back, and passes --force and --if-lease-holder <holder> on to treehouse
 #                    return (team-open forces back a slot its own lease dirtied)
-#   slots            the trusted slot paths a task's worktree may be; for treehouse, each other
-#                    numbered slot in their pool's folder is trusted too (team-open)
+#   slots            the registered slot paths, taken first; for git, optional (default []), each
+#                    <primary>/.claude/worktrees/<n> is trusted too and made on demand when no
+#                    registered one is free; for treehouse, each other numbered slot in their
+#                    pool's folder, which treehouse makes
 # Per project stack ([<name>.stack]), optional: the Docker stacks team-stack manages for the
 # project's worktrees (sops/docker.md); a project without one has none:
 #   compose          the project's compose wrapper, which meets the wrapper contract
@@ -121,7 +127,7 @@ RESERVED = {
     "own": "the team's own project in bin/lib/guarded's @own lines",
 }
 # Optional keys, with the value a project without one has.
-PROJECT_OPTIONAL = {"local_checks": [], "models": {}, "uptime": [], "visibility": "public"}
+PROJECT_OPTIONAL = {"local_checks": [], "changed_tests": "", "models": {}, "uptime": [], "visibility": "public"}
 # Keys no project may hold any more, each with why and what to do, which --check names in place of
 # an unknown key.
 RETIRED = {"merge_with_plan": "retired by T276, since the approved plan is every project's merge word: remove the key"}
@@ -225,7 +231,7 @@ def check_pool(name, pool, slot_owners, problems):
     if not isinstance(pool, dict):
         problems.append(f"{where}: must be a table")
         return
-    check_keys(where, pool, POOL_KEYS, ("provider", "slots"), problems)
+    check_keys(where, pool, POOL_KEYS, ("provider",), problems)
     for key in ("provider",) + TREEHOUSE_ONLY:
         if key in pool:
             check_string(where, key, pool[key], problems)
@@ -234,6 +240,9 @@ def check_pool(name, pool, slot_owners, problems):
             problems.append(f"{where}: a treehouse pool needs '{key}'")
         if pool.get("provider") == "git" and key in pool:
             problems.append(f"{where}: '{key}' is for treehouse pools only")
+    # A git pool's slots may be left out: its numbered worktrees are made on demand.
+    if pool.get("provider") == "treehouse" and "slots" not in pool:
+        problems.append(f"{where}: a treehouse pool needs 'slots'")
     slots = pool.get("slots", [])
     if not is_string_list(slots):
         problems.append(f"{where}.slots: must be a list of strings")
@@ -393,6 +402,10 @@ def check(registry):
             problems.append(f"{name}.local_checks: must be a list of strings")
         elif any(not command.strip() or "\n" in command for command in checks):
             problems.append(f"{name}.local_checks: each command must be one line, not empty")
+        if "changed_tests" in project:
+            tests = project["changed_tests"]
+            if not isinstance(tests, str) or not tests.strip() or "\n" in tests:
+                problems.append(f"{name}.changed_tests: must be one line of text, not empty")
         uptime_checks += check_uptime(name, project.get("uptime", []), problems)
         check_models(name, project.get("models", {}), problems)
         if project.get("visibility", "public") not in VISIBILITIES:
@@ -439,7 +452,7 @@ def resolve(project, home):
             resolved["stack"].setdefault(key, default)
     pool = resolved["pool"]
     resolved["path"] = os.path.normpath(os.path.join(home, project["path"]))
-    pool["slots"] = [os.path.normpath(os.path.join(home, slot)) for slot in pool["slots"]]
+    pool["slots"] = [os.path.normpath(os.path.join(home, slot)) for slot in pool.get("slots", [])]
     for key in TREEHOUSE_ONLY:
         if key in pool:
             pool[key] = os.path.normpath(os.path.join(resolved["path"], pool[key]))

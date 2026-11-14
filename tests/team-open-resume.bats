@@ -307,13 +307,45 @@ restored_from() {
   assert_equal "$(events worktree-moved | wc -l)" "1"
 }
 
-@test "--resume takes a new slot from the pool whatever the machine holds, saying nothing of a cap" {
+@test "--resume takes a new slot from the pool whatever the machine holds, saying nothing of a cap, and asks for no room" {
   open_elsewhere home feat work
   run_bin -0 team-open --task T2 home feature feat other "Other work"
+  # At level none a room check would refuse; none runs, so team-capacity keeps no state at all.
+  rm -rf "$HOME/.local/state/agent-team"
+  jq -cn '{ts: (now | floor | todate), mode: "manual", level: "none", by: "Daniel", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
   run_bin -0 --separate-stderr team-open --task T1 --resume home
   assert_equal "$stderr" ""
   assert_equal "$(jq -r .worktree <<<"$output")" "${home_slots[1]}"
   assert_equal "$(git -C "${home_slots[1]}" rev-parse --abbrev-ref HEAD)" "$branch"
+  [[ ! -e $HOME/.local/state/agent-team ]]
+}
+
+@test "a recorded on-demand worktree that is free here is made again at its path, before a free listed slot" {
+  git -C "$home" worktree add -q "${home_slots[0]}" -b feat/T8-busy origin/main
+  git -C "$home" worktree add -q "${home_slots[1]}" -b feat/T9-busy origin/main
+  open_elsewhere home feat work
+  assert_equal "$wt" "$home/.claude/worktrees/1"
+  git -C "$home" worktree remove "${home_slots[0]}"
+  git -C "$home" worktree remove "${home_slots[1]}"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -c . <<<"$output")" "$(facts home "$branch" "$wt" "$head" "$wt" '"tasks/T1/scratch"')"
+  assert_equal "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" "$branch"
+  assert_equal "$(events worktree-moved)" ""
+}
+
+@test "a recorded on-demand worktree taken here: the first free listed slot, else the next number" {
+  git -C "$home" worktree add -q "${home_slots[0]}" -b feat/T8-busy origin/main
+  git -C "$home" worktree add -q "${home_slots[1]}" -b feat/T9-busy origin/main
+  open_elsewhere home feat work
+  git -C "$home" worktree add -q "$wt" -b feat/T7-here origin/main
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r '"\(.worktree) \(.moved)"' <<<"$output")" "$home/.claude/worktrees/2 true"
+  assert_equal "$(git -C "$home/.claude/worktrees/2" rev-parse --abbrev-ref HEAD)" "$branch"
+
+  # The branch already checked out in an on-demand worktree here is that worktree.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r '"\(.worktree) \(.moved)"' <<<"$output")" "$home/.claude/worktrees/2 false"
 }
 
 @test "a treehouse pool leases another slot, switched to the branch, and logs worktree-moved" {

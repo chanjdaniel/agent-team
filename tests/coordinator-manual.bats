@@ -450,9 +450,8 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   # pushes a fix under a review, and a red check comes back as a fix round from the checks wait.
   grep -qF '   The delivery ends at the `PR` it sends (on a gated project, once the gate'"'"'s run, its ci step skipped, or the base'"'"'s merge after it has pushed), with no wait on the PR'"'"'s GitHub checks and nothing more pushed' \
     "$REPO_ROOT/templates/briefs/builder-round.md"
-  # The round updates the PR body's local checks line before its report.
-  grep -qF 'bring the PR body'"'"'s local checks line up to the head you pushed (`gh pr edit <full url> --body-file <file>`)' \
-    "$REPO_ROOT/templates/briefs/builder-round.md"
+  # The PR body names no local checks, so the round has no line of them to bring up to date.
+  if grep -F 'local checks' "$REPO_ROOT/templates/briefs/builder-round.md"; then return 1; fi
   section builder 'What you do' | grep -qF 'On every delivery, send `PR <full url>` as soon as the push and the PR body are in (on a gated one, once the gate'"'"'s run, its ci step skipped, has opened or updated the PR and you have read the title and body it drafted against the project'"'"'s rules and fixed them on the PR), and on a merge-base round `DONE merged ...` once its push is in, and stop there: you never wait on the PR'"'"'s GitHub checks, since a red check comes back to you from the coordinator as a fix round.'
   section builder 'What you do' | grep -qF -- '- Fix the review findings and failed checks the coordinator sends you on the same branch'
   section reviewer 'What you do' | grep -qxF -- '- On a PR, start no wait on its GitHub checks: read, and deliver on the head you read, since the coordinator'"'"'s script waits on the checks of a pass.'

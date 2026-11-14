@@ -1410,9 +1410,12 @@ case $1 in
 esac
 SH
 
+  # The close's own reads of the session list, after the open's (its room check's reading).
+  local before
+  before=$(stub_calls claude | jq -c 'select(.[0] == "agents")' | wc -l)
   TEAM_CLOSE_IDLE_SECONDS=10 run_bin -0 --separate-stderr team-close T1 --ticket 03
   assert_equal "$(jq -c .stopped <<<"$output")" '["7c7c7c7c"]'
-  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "agents")' | wc -l)" "2"
+  assert_equal "$(($(stub_calls claude | jq -c 'select(.[0] == "agents")' | wc -l) - before))" "2"
   [[ ! -e $twt ]]
 }
 

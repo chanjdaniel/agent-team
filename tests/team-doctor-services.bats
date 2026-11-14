@@ -682,6 +682,14 @@ slot_closed() {
   touch "$HOME/projects/site-slots/1/.scratch/shots/page.png"
   run_bin team-doctor
   assert_equal "$(line_of captures)" "WARN captures: ~/projects/site-slots/1/.scratch/shots/ is left behind, in a slot held by no open task (team-close removes .scratch/shots/ from each worktree it returns); fix: rm -rf $HOME/projects/site-slots/1/.scratch/shots"
+
+  # So does a git pool's numbered worktree that no slot lists, made on demand.
+  rm -r "$HOME/projects/site-slots/1/.scratch/shots"
+  git -C "$SITE" worktree add -q --detach "$SITE/.claude/worktrees/4"
+  mkdir -p "$SITE/.claude/worktrees/4/.scratch/shots"
+  touch "$SITE/.claude/worktrees/4/.scratch/shots/page.png"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "WARN captures: ~/projects/site/.claude/worktrees/4/.scratch/shots/ is left behind, in a slot held by no open task (team-close removes .scratch/shots/ from each worktree it returns); fix: rm -rf $SITE/.claude/worktrees/4/.scratch/shots"
 }
 
 @test "the captures line says nothing of .scratch/shots/ that is empty, or in the slot of an open task" {

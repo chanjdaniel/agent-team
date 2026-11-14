@@ -213,17 +213,19 @@ open_task() {
   assert_equal "$(events worktree-added)" ""
 }
 
-@test "--ticket on a full git pool exits 75 naming the holders, the ticket branch made nowhere" {
+@test "--ticket on a git pool with every listed slot held makes the lowest numbered worktree, asking for no room" {
   open_task home
+  # At level none a room check would refuse; none runs, so team-capacity keeps no state at all.
+  rm -rf "$HOME/.local/state/agent-team"
+  jq -cn '{ts: (now | floor | todate), mode: "manual", level: "none", by: "Daniel", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
   run_bin -0 --separate-stderr team-open --task T1 --ticket 01
   git -C "$home" worktree add -q --detach "${home_slots[2]}" origin/main
-  run_bin -75 --separate-stderr team-open --task T1 --ticket 02
-  assert_equal "$output" ""
-  assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of home is taken:" \
-    "  ${home_slots[0]}: T1 (feat/T1-one)" "  ${home_slots[1]}: T1 (feat/T1-one--01)" \
-    "  ${home_slots[2]}: no task (detached HEAD)")"
-  run git -C "$home" branch --list 'feat/T1-one--02'
-  assert_equal "$output" ""
+  run_bin -0 --separate-stderr team-open --task T1 --ticket 02
+  assert_equal "$(jq -r .worktree <<<"$output")" "$home/.claude/worktrees/1"
+  assert_equal "$(git -C "$home/.claude/worktrees/1" rev-parse --abbrev-ref HEAD)" "feat/T1-one--02"
+  [[ -f $home/.claude/worktrees/1/.scratch/task/spec.md ]]
+  assert_equal "$(events worktree-added | jq -r 'select(.ticket == "02") | .worktree')" "$home/.claude/worktrees/1"
+  [[ ! -e $HOME/.local/state/agent-team ]]
 }
 
 @test "after a failure once the slot holds the ticket branch, re-running --ticket finishes in that slot" {

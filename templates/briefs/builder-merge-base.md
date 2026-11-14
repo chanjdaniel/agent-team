@@ -14,8 +14,9 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, 
    If `git merge-base --is-ancestor origin/{{base}} HEAD` already holds, there is nothing to merge or push: send step 7's message with no conflicts.
 4. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `{{task}} QUESTION <the conflict> | options: ...`; then commit the merge.
    Then find what the merge made false, a file, command, flag, setting or path that one side renames or removes and the other still names, and fix it in a commit of its own.
-5. Run the project's local checks ({{local_checks}}) on the merged head with `{{team_bin}}/team-checks {{project}} <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
-6. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit {{pr}} --body-file <file>`).
+5. Run the tests the merge reaches, those of each file that conflicted and of step 4's fixes: {{tests}}
+   Fix the branch until they pass on one head.
+6. Push the branch.
    Run no gate: the merge and the fixes of step 4 are re-reviewed, not re-gated.
 7. Send `{{task}} DONE merged {{base}} <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge, and stop: you start no wait on the PR's GitHub checks, since the coordinator's script waits on them once that review passes, and a red check comes back to you from the coordinator as a fix round.
 
