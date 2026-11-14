@@ -78,9 +78,14 @@
 #                    opening in the seven days to --until, with each machine's $w, and the current
 #                    one, open at --until
 #   the last seven days
-#                    replies, tokens and $w in the seven days to --until, per machine and in all;
-#                    the weekly limit's reset time is in no data (claude.ai shows it to Daniel),
-#                    so this is a rolling seven days
+#                    replies, tokens and $w in the seven days to --until, per machine and in all,
+#                    a rolling seven days; then the newest quota reading, team-quota status --json's
+#                    (Claude's own reading of the plan's limits, the week it counts included), now's
+#                    whatever --until, --task and --machine say: each window's use and reset (as
+#                    team-quota words it, in the machine's local time) and the reading's age, or
+#                    that there is no reading yet, or that team-quota could not be read (it
+#                    failed, printed no team-quota/1 object or took over 30 seconds), which
+#                    changes nothing else
 #   coordinator turns
 #                    from this machine's transcripts of the sessions claude-coordinator named
 #                    coordinator, each turn: from what woke the coordinator (a message from Daniel,
@@ -116,7 +121,8 @@
 # w_per_ticket}], reviewer_toolkits [{project, toolkits, launches, with_replies, reviews, findings,
 # w, w_per_review}] (each sorted by project, then toolkits, an empty list first; a ratio with no
 # outcome null)}, relaunches {reasons, all, warmup_w}, rereviews {count, complete, w, median_w,
-# mean_w}, blocks, current_block (or null), seven_days {from, to, machines, all} and coordinator
+# mean_w}, blocks, current_block (or null), seven_days {from, to, machines, all}, quota (team-quota
+# status --json's object, or null when it could not be read), quota_error (why, or null) and coordinator
 # (or null) {machine, sessions, unread_replies, turns, all, daniel_turns, waits {all, idle,
 # mid_turn}, compactions}, its times in seconds; each list's
 # items are objects named after the table's columns, tokens are counts and $w has six decimals, a
@@ -229,6 +235,7 @@ import os
 import re
 import shlex
 import statistics
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -1903,10 +1910,52 @@ def build_report(opts):
         "machines": [{"machine": m, **sums(rs)} for m, rs in sorted(group(week, lambda r: r["machine"]).items())],
         "all": sums(week),
     }
+    report["quota"], report["quota_error"] = read_quota(team, here)
     # The coordinator is no task's, and its transcripts are this machine's.
     mine = not task and opts["machine"] in (None, machine)
     report["coordinator"] = coordinator_tables(home, machine, classes, every, since, until, here) if mine else None
     return report
+
+
+# How long the report waits for team-quota status, which reads a few files: bin/lib/quota.sh's
+# QUOTA_SECONDS, the Bash readers'.
+QUOTA_SECONDS = 30
+
+
+# The newest quota reading, team-quota status --json's object, and None; or None and why it could
+# not be read, in bin/lib/quota.sh's quota_read's words: team-quota's first line on stderr, its
+# leading "team-quota: " cut, its silence, its timeout, or output that is no team-quota/1 object.
+def read_quota(team, here):
+    try:
+        run = subprocess.run([os.path.join(here, "team-quota"), "status", "--json"], env={**os.environ, "TEAM_HOME": team},
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=QUOTA_SECONDS)
+    except subprocess.TimeoutExpired:
+        return None, f"team-quota status timed out after {QUOTA_SECONDS} s"
+    except OSError as error:
+        return None, f"cannot run team-quota: {error.strerror}"
+    if run.returncode != 0:
+        line = next((line for line in run.stderr.splitlines() if line), "")
+        return None, line.removeprefix("team-quota: ") or f"team-quota status exited {run.returncode} with no message"
+    try:
+        status = json.loads(run.stdout)
+    except ValueError:
+        status = None
+    if not isinstance(status, dict) or status.get("schema") != "team-quota/1" or not isinstance(status.get("windows"), list):
+        return None, "team-quota status printed no team-quota/1 object"
+    return status, None
+
+
+# The quota reading's lines for the last seven days, from report's quota and quota_error.
+def quota_text(report):
+    q = report["quota"]
+    if q is None:
+        return f"The quota reading could not be read: {report['quota_error']}."
+    if q["reading"] is None:
+        return "No quota reading yet: no session has shown a status line since team-quota was set up."
+    rows = [[w["name"], f"{math.floor(w['used'])}%", w["reset_text"]] for w in q["windows"]]
+    r = q["reading"]
+    return (f"The newest quota reading (team-quota status), read on {r['machine'] or 'an unnamed machine'} {q['age_minutes']} min ago"
+            + ("" if q["fresh"] else "; it is stale") + ":\n\n" + table(["Window", "Used", "Reset"], rows))
 
 
 def fm(x):
@@ -2092,11 +2141,12 @@ def render(report):
 
     P("\n## The last seven days\n")
     s = report["seven_days"]
-    P(f"{s['from']} to {s['to']}; the weekly limit's reset time is in no data (claude.ai shows it), so this is a rolling seven days.\n")
+    P(f"{s['from']} to {s['to']}, a rolling seven days; the quota reading below is the week Claude counts.\n")
     rows = [[x["machine"], x["replies"], fm(x["tokens"]), fd(x["w"]), share(x["w"], s["all"]["w"])] for x in s["machines"]]
     if rows:
         rows.append(["**all**", s["all"]["replies"], fm(s["all"]["tokens"]), f"**{fd(s['all']['w'])}**", "100%"])
     P(table(["Machine", "Replies", "Tokens (M)", "$w", "Share"], rows))
+    P("\n" + quota_text(report))
 
     c = report["coordinator"]
     P("\n## Coordinator turns\n")

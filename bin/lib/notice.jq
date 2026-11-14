@@ -1,22 +1,24 @@
 # The notice module: the one lifecycle of every notice the heartbeat gives Daniel in #coordinator
 # of a standing problem, none -> open -> posted -> (reminded)* -> ended -> closed. Its callers judge
 # their notices through it and do the I/O (Discord, the record's file, its lock): bin/team-timers
-# for the health alerts, the offline hold's posts and the login refusal's, and bin/team-uptime for
-# the production outages (through bin/lib/uptime.jq), both through bin/lib/notices.sh. These are
-# pure functions of the record, a source's standing problems, the lease record's taken_at and now;
-# nothing here knows a source's texts or thresholds.
+# for the health alerts, the offline hold's posts, the login refusal's and the quota's crossings,
+# and bin/team-uptime for the production outages (through bin/lib/uptime.jq), both through
+# bin/lib/notices.sh. These are pure functions of the record, a source's standing problems, the
+# lease record's taken_at and now; nothing here knows a source's texts or thresholds.
 # No includes. Included as: jq -L bin/lib 'include "notice"; ...'
 #
 # The record, ~/.local/state/agent-team/notices.json, is team-notices/1, one per machine:
 #   {schema, written (when it was last written),
 #    upgraded: the sources whose old record has been moved in, each never folded again,
 #    notices: {<id>: {
-#      source (health, offline, login-refused or uptime), key (the source's own key: a health
-#        problem's key, "<project>/<name>", or the source's name for a single notice),
+#      source (health, offline, login-refused, uptime or quota), key (the source's own key: a
+#        health problem's key, "<project>/<name>", "<window>/<threshold>/<resets_at>", or the
+#        source's name for a single notice),
 #      state: open (not yet told), posted (told) or ended (its end action is due),
 #      since (when its problem began, as the source dates it, null allowed), text (its open post's
 #        text as last judged, null for a source that writes each post from its own state),
-#      holding (the lease record's taken_at when it opened, null when the lease record had none),
+#      holding (the lease record's taken_at when it opened, null when the lease record had none
+#        or its source is judged with no holding, as quota is),
 #      opened (when it opened), tried (when its open post last failed, null when none has),
 #      posted (when its open post went through, null until then), message (Discord's id of that
 #      post, null when none or Discord gave none), reminded (when its last reminder went through,
@@ -39,7 +41,8 @@ def notice_sources:
   {health: {retry_open: true, end: "edit", unposted_end: false, retry_end: false},
    offline: {retry_open: false, end: "post", unposted_end: true, retry_end: false},
    "login-refused": {retry_open: true, end: null, unposted_end: false, retry_end: false},
-   uptime: {retry_open: true, end: "post", unposted_end: false, retry_end: true}};
+   uptime: {retry_open: true, end: "post", unposted_end: false, retry_end: true},
+   quota: {retry_open: true, end: null, unposted_end: false, retry_end: false}};
 
 # The id of the notice of <source>'s problem <key>: notice_id($source; $key)
 def notice_id($source; $key): if $key == $source then $source else "\($source)/\($key)" end;

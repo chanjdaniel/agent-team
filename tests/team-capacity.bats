@@ -912,7 +912,7 @@ old_cost() {
   at=$(jq -r '.at | fromdateiso8601 | strflocaltime("%H:%M")' "$STATE_DIR/readings.jsonl")
   assert_equal "$output" "$(printf '%s\n' "home-pc at $at: other programs use 6.0 GiB of 32.0 GiB; the team 2.0 GiB" \
     "  T7: 1.1 GiB; builder a1b2c3d4 0.5 GiB, stack conventioner-2 0.6 GiB" "  T9: 0.0 GiB" \
-    "  gate: running a pipeline, 0.6 GiB")"
+    "  gate: running a pipeline, 0.6 GiB" "quota: no reading")"
   run_bin -0 team-capacity status --json
   assert_equal "$(jq -c '[.schema, .machine, .stale, .settings.full_share, .settings.from.full_share, (.reading.tasks | length)]' <<<"$output")" \
     '["team-capacity/1","home-pc",false,0.9,"default",2]'
@@ -932,7 +932,7 @@ old_cost() {
   printf 'MemTotal:       33554432 kB\n' >"$TEAM_MEMINFO"
   run_bin -0 --separate-stderr team-capacity status
   assert_equal "$stderr" "team-capacity: took no reading of the machine's load: no MemTotal and MemAvailable in $TEAM_MEMINFO"
-  assert_equal "$output" "this machine: no reading of the machine's load yet"
+  assert_equal "$output" "$(printf '%s\n' "this machine: no reading of the machine's load yet" "quota: no reading")"
   run_bin -0 team-capacity status --stored --json
   assert_equal "$(jq -c '[.stale, .reading]' <<<"$output")" '[true,null]'
 }

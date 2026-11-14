@@ -416,6 +416,19 @@ def capacity_status_text:
       (select($r.gate.running // false) | "  gate: running a pipeline, \($r.gate.memory | gib)")
     end;
 
+# team-capacity status's quota line from team-quota status --json's object (team-quota/1), or null
+# when team-quota could not be read, <why> saying why: the week's use and reset (its reset_text,
+# as team-quota words it) and the 5-hour window's use, each left out when the reading lacks it,
+# and the reading's age.
+def capacity_quota_line($why):
+  if . == null then "quota: could not be read (\($why))"
+  elif .reading == null then "quota: no reading"
+  else (.windows | map({key: .name, value: .}) | from_entries) as $w
+    | "quota: " + ([($w.seven_day // empty | "week \(.used | floor)% (\(.reset_text))"),
+                    ($w.five_hour // empty | "5h \(.used | floor)%"),
+                    "read \(.age_minutes) min ago"] | join(", "))
+  end;
+
 # The levels, lowest first, and each one's share of the machine under the settings <s>
 # (capacity_settings): full_share, minor_share, or 0 for none.
 def capacity_levels: ["none", "minor", "full"];

@@ -223,7 +223,28 @@
 #                     stopped after 180 s, which holds ten checks of 10 s, the known-good probe's
 #                     10 s and three posts of 20 s, killed 10 s later ("uptime: failed: timed out
 #                     after 180 s").
-#              inbox  On the holder, after the uptime step: team-inbox, which writes the team
+#              quota  On the holder, after the uptime step: team-quota status --json, the newest
+#                     quota reading (bin/team-quota's header), read through bin/lib/quota.sh's
+#                     quota_read, whose windows past a threshold (the week's 70% and 90%, the 5-hour
+#                     window's and each model's week's 90%) are each, at its highest threshold
+#                     crossed, a notice of the quota source (bin/lib/notice.jq), keyed
+#                     "<window>/<threshold>/<resets_at>" and posted once to #coordinator, mentioning
+#                     no one: "Claude usage: the week is at 72%, past 70%; it resets Mon 14:30."
+#                     ("the 5-hour window", "Fable's week"; the reset as team-quota words it, in
+#                     this machine's local time). A notice stays in the record until its window's
+#                     reset comes, whatever later readings say, so a crossing is posted once per
+#                     window, a lease taken back included, and no lower threshold is posted after a
+#                     higher one of the same window; then it closes with no post. One whose post has
+#                     not gone through closes with no post once a higher threshold of its window is
+#                     wanted. Each post, failed post and close is a log line ("quota:
+#                     seven_day/70/2036-11-17T09:00:00Z: posted to #coordinator (message <id>)",
+#                     "quota: <key>: closed with no post (its window reset)"), and with nothing to
+#                     post or close it logs nothing. A team-quota that fails, prints no team-quota/1
+#                     object or is stopped after 60 s, killed 10 s later ("quota: failed: team-quota
+#                     status timed out after 60 s"), a notice record it cannot write and a post
+#                     Discord refuses (tried again next run) each fail the step, so 12 runs in a row
+#                     are the step-quota alert.
+#              inbox  On the holder, after the quota step: team-inbox, which writes the team
 #                     home's waiting.md, so what waits on Daniel is there within five minutes
 #                     whatever changed it. It logs only the one edit that retires the message
 #                     team-inbox kept in #coordinator before waiting.md ("retired <link>"), a
@@ -271,20 +292,21 @@
 #            The checkpoint, queue, uptime, capacity, level, stacks and janitor steps log one line
 #            per line their command prints (a good capacity step prints only the sessions it placed,
 #            and a level step only a change); a step that is off logs nothing. A checkpoint, ledger,
-#            uptime, capacity, level, stacks, pack or janitor step that fails (a level step's post
-#            that Discord refused, kept for its next run, too), or whose stack.json (capacity.json
-#            for the capacity and level steps) is malformed, is logged as "<step>: failed:
-#            <reason>", the steps after it still run (the capacity step's place after its sample
-#            too), and the run exits 1 at its end. A hung GitHub, production or Docker never holds
-#            the run's lock for good: the checkpoint is stopped after 300 s, the queue step (whose
-#            commit pushes) after 60 s, the uptime step after 180 s, each reading and the place
-#            after 60 s, the level step, the sweep and the pack after 300 s and the janitor after
-#            1200 s, each logged as "<step>: failed: timed out after <n> s" (a janitor stopped so
-#            wrote no report, so the next run starts it again), and a whole run, on Linux and macOS
-#            alike, after 70 minutes, with everything it started, logged as "run: failed: timed out
-#            after 4200 s" (exit 1), so the next run takes the lock; the systemd service's
-#            TimeoutStartSec=4500 stands behind that. The sweep, the janitor and the level step need
-#            docker on the PATH enable captured (the sweep and the capacity step claude too), and
+#            uptime, quota, capacity, level, stacks, pack or janitor step that fails (a level step's
+#            post that Discord refused, kept for its next run, too), or whose stack.json
+#            (capacity.json for the capacity and level steps) is malformed, is logged as "<step>:
+#            failed: <reason>", the steps after it still run (the capacity step's place after its
+#            sample too), and the run exits 1 at its end. A hung GitHub, production or Docker never
+#            holds the run's lock for good: the checkpoint is stopped after 300 s, the queue step
+#            (whose commit pushes) after 60 s, the uptime step after 180 s, the quota step after
+#            60 s, each reading and the place after 60 s, the level step, the sweep and the pack
+#            after 300 s and the janitor after 1200 s, each logged as "<step>: failed: timed out
+#            after <n> s" (a janitor stopped so wrote no report, so the next run starts it again),
+#            and a whole run, on Linux and macOS alike, after 70 minutes, with everything it
+#            started, logged as "run: failed: timed out after 4200 s" (exit 1), so the next run
+#            takes the lock; the systemd service's TimeoutStartSec=4500 stands behind that. The
+#            sweep, the janitor and the level step need docker on the PATH enable captured (the
+#            sweep and the capacity step claude too), and
 #            the reading counts the team's stacks as other programs without it: run enable again
 #            once it is there. A run that finds another still going skips. Posts go through
 #            discord_api; times in them are this machine's local time. On macOS, inside the job
@@ -317,42 +339,43 @@
 # saw a session named coordinator, and since which run it has not; the sweep findings it last saw,
 # each with the time of the first look that saw it, and the time of the run's look, none when
 # the run made none), notices.json (the notice record, team-notices/1, bin/lib/notice.jq's: the
-# open alerts, the offline notice and the login-refused notice, each with since when, its text,
-# the holding of the lease it opened in, when it was posted and its message, the login refusal's
-# reason in its detail; written whole under notices.lock, through bin/lib/notices.sh; its first
-# write moves health.json's open alerts, the offline flag's posted, the login-refused file and
-# uptime.json's outages from before it there once, and a run strips an alerts key in health.json,
-# a posted in the offline flag and a login-refused file it finds, uptime.json's alerts being
-# team-uptime run's to strip), notices.lock (one writer of the notice record at a time),
-# heartbeat.log ("<UTC time> <step>: <what happened>", kept to its last 1000 lines once it passes
-# 2000), heartbeat-failures.log (each
-# of its lines that reports a problem, the same line: a failed step, a warning, a failed or refused
-# probe and each run's line of an outage, a lease not checked or not renewed, a failed post, a
-# skipped or timed-out run; kept 30 days, the older lines dropped once a run), heartbeat.lock (one
-# run at a time), offline ({since}: GitHub unreachable since the UTC time, the hold; read by
-# team-lease status, the fence hook, the doctor and the session digest; whether #coordinator was
-# told is the offline notice's), and on macOS heartbeat.err, the job's stderr (systemd keeps it in
-# the journal).
+# open alerts, the offline notice, the login-refused notice and the quota's crossings, each with
+# since when, its text, the holding of the lease it opened in, when it was posted and its message,
+# the login refusal's reason in its detail; written whole under notices.lock, through
+# bin/lib/notices.sh; its first write moves health.json's open alerts, the offline flag's posted,
+# the login-refused file and uptime.json's outages from before it there once, and a run strips an
+# alerts key in health.json, a posted in the offline flag and a login-refused file it finds,
+# uptime.json's alerts being team-uptime run's to strip), notices.lock (one writer of the notice
+# record at a time), heartbeat.log ("<UTC time> <step>: <what happened>", kept to its last 1000
+# lines once it passes 2000), heartbeat-failures.log (each of its lines that reports a problem, the
+# same line: a failed step, a warning, a failed or refused probe and each run's line of an outage, a
+# lease not checked or not renewed, a failed post, a skipped or timed-out run; kept 30 days, the
+# older lines dropped once a run), heartbeat.lock (one run at a time), offline ({since}: GitHub
+# unreachable since the UTC time, the hold; read by team-lease status, the fence hook, the doctor
+# and the session digest; whether #coordinator was told is the offline notice's), and on macOS
+# heartbeat.err, the job's stderr (systemd keeps it in the journal).
 # TEAM_TIMERS_CHECKPOINT_SECONDS, TEAM_TIMERS_QUEUE_SECONDS, TEAM_TIMERS_FINISHED_SECONDS,
 # TEAM_TIMERS_FINISHED_CALL_SECONDS, TEAM_TIMERS_COORDINATOR_SWEEP_SECONDS,
-# TEAM_TIMERS_UPTIME_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS,
-# TEAM_TIMERS_SWEEP_SECONDS, TEAM_TIMERS_JANITOR_SECONDS, TEAM_TIMERS_RUN_SECONDS,
-# TEAM_TIMERS_LOCK_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the checkpoint step's 300 s, the
-# queue step's 60 s, the finished step's 90 s after which no stop starts, its 30 s for each call
-# (the back step's and the coordinator step's session lists' too), the coordinator step's 60 s for
-# its sweep, the uptime step's 180 s, the capacity step's 60 s for each of its commands, the level
-# step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s, enable's 60 s wait for
-# the run's lock and the 10 s after a time limit at which a command still running is killed,
-# TEAM_TIMERS_FAILURES_DAYS the failures log's 30 days, and TEAM_TIMERS_HEALTH_RUNS,
-# TEAM_TIMERS_HEALTH_STALE_MINUTES, TEAM_TIMERS_HEALTH_STEP_RUNS and
-# TEAM_TIMERS_HEALTH_UNATTENDED_MINUTES the health view's and the alerts' 2 runs, 15 minutes, 12
-# runs and 60 minutes, and TEAM_NOTICES_LOCK_SECONDS the 10 s a write of the notice record waits for
-# its lock (the tests' seams).
+# TEAM_TIMERS_UPTIME_SECONDS, TEAM_TIMERS_QUOTA_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS,
+# TEAM_TIMERS_LEVEL_SECONDS, TEAM_TIMERS_SWEEP_SECONDS, TEAM_TIMERS_JANITOR_SECONDS,
+# TEAM_TIMERS_RUN_SECONDS, TEAM_TIMERS_LOCK_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the
+# checkpoint step's 300 s, the queue step's 60 s, the finished step's 90 s after which no stop
+# starts, its 30 s for each call (the back step's and the coordinator step's session lists' too),
+# the coordinator step's 60 s for its sweep, the uptime step's 180 s, the quota step's 60 s, the
+# capacity step's 60 s for each of its commands, the level step's 300 s, the sweep's 300 s, the
+# janitor's 1200 s, the run's 4200 s, enable's 60 s wait for the run's lock and the 10 s after a
+# time limit at which a command still running is killed, TEAM_TIMERS_FAILURES_DAYS the failures
+# log's 30 days, and TEAM_TIMERS_HEALTH_RUNS, TEAM_TIMERS_HEALTH_STALE_MINUTES,
+# TEAM_TIMERS_HEALTH_STEP_RUNS and TEAM_TIMERS_HEALTH_UNATTENDED_MINUTES the health view's and the
+# alerts' 2 runs, 15 minutes, 12 runs and 60 minutes, and TEAM_NOTICES_LOCK_SECONDS the 10 s a write
+# of the notice record waits for its lock (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # shellcheck source=bin/lib/notices.sh
 source "$TEAM_LIB/notices.sh"
+# shellcheck source=bin/lib/quota.sh
+source "$TEAM_LIB/quota.sh"
 
 # The one definition: every INTERVAL minutes, run this checkout's team-timers run.
 INTERVAL=5
@@ -369,20 +392,21 @@ INBOX_TIMEOUT=120
 # Seconds: the most each step after the lease step may take on the holder, each command stopped then
 # and killed KILL_SECONDS later: the checkpoint 300 (CHECKPOINT_TIMEOUT), the queue step 60
 # (QUEUE_TIMEOUT), the coordinator step's session list 30 (FINISHED_CALL_TIMEOUT) and sweep 60
-# (COORDINATOR_SWEEP_TIMEOUT), the uptime step 180 (UPTIME_TIMEOUT), the inbox step 120
-# (INBOX_TIMEOUT above), the finished step 120 (its session list and each stop 30 s,
-# FINISHED_CALL_TIMEOUT, and no stop started once FINISHED_TIMEOUT has passed, so at most 90 s and
-# one last stop's 30), the capacity step's sample and place 60 each, the level step 300, the sweep
-# 300, the pack 300 and the janitor 1200. That is 3090 s in all, 3220 s with the kills (10 s each
-# for the other steps' twelve commands and the finished step's last stop), about 54 minutes. The
-# lease step leaves a lease unrenewed only under 14 minutes old, so a run that hits every limit ends
-# with it about 68 minutes old, past the lease's hour (team-lease's TTL_MINUTES), and the next run
-# starts at the next mark, up to INTERVAL minutes and SLACK_SECONDS later, and renews behind its
-# read of origin. A lease past its ttl is stale, which changes only what team-lease take says on
-# another machine (stale, not fresh): the holder still holds it, and the renewal makes it fresh
-# again. RUN_TIMEOUT, 70 minutes, stops a run that outlasts all of that (a hang before the steps, or
-# in a command no step's limit reaches), so one hang never ends the renewals and checkpoints for
-# good; the systemd service's START_TIMEOUT, 75 minutes, is the backstop behind it.
+# (COORDINATOR_SWEEP_TIMEOUT), the uptime step 180 (UPTIME_TIMEOUT), the quota step 60
+# (QUOTA_TIMEOUT), the inbox step 120 (INBOX_TIMEOUT above), the finished step 120 (its session list
+# and each stop 30 s, FINISHED_CALL_TIMEOUT, and no stop started once FINISHED_TIMEOUT has passed,
+# so at most 90 s and one last stop's 30), the capacity step's sample and place 60 each, the level
+# step 300, the sweep 300, the pack 300 and the janitor 1200. That is 3150 s in all, 3290 s with the
+# kills (10 s each for the other steps' thirteen commands and the finished step's last stop), about
+# 55 minutes. The lease step leaves a lease unrenewed only under 14 minutes old, so a run that hits
+# every limit ends with it about 69 minutes old, past the lease's hour (team-lease's TTL_MINUTES),
+# and the next run starts at the next mark, up to INTERVAL minutes and SLACK_SECONDS later, and
+# renews behind its read of origin. A lease past its ttl is stale, which changes only what
+# team-lease take says on another machine (stale, not fresh): the holder still holds it, and the
+# renewal makes it fresh again. RUN_TIMEOUT, 70 minutes, stops a run that outlasts all of that (a
+# hang before the steps, or in a command no step's limit reaches), so one hang never ends the
+# renewals and checkpoints for good; the systemd service's START_TIMEOUT, 75 minutes, is the
+# backstop behind it.
 CHECKPOINT_TIMEOUT=${TEAM_TIMERS_CHECKPOINT_SECONDS:-300}
 # Seconds past which the checkpoint begins no worktree, two fifths of its limit (120 of 300): one
 # begun by then makes at most two origin calls of 60 s, so its records commit begins in the limit.
@@ -392,6 +416,7 @@ FINISHED_TIMEOUT=${TEAM_TIMERS_FINISHED_SECONDS:-90}
 FINISHED_CALL_TIMEOUT=${TEAM_TIMERS_FINISHED_CALL_SECONDS:-30}
 COORDINATOR_SWEEP_TIMEOUT=${TEAM_TIMERS_COORDINATOR_SWEEP_SECONDS:-60}
 UPTIME_TIMEOUT=${TEAM_TIMERS_UPTIME_SECONDS:-180}
+QUOTA_TIMEOUT=${TEAM_TIMERS_QUOTA_SECONDS:-60}
 CAPACITY_TIMEOUT=${TEAM_TIMERS_CAPACITY_SECONDS:-60}
 LEVEL_TIMEOUT=${TEAM_TIMERS_LEVEL_SECONDS:-300}
 SWEEP_TIMEOUT=${TEAM_TIMERS_SWEEP_SECONDS:-300}
@@ -1276,7 +1301,72 @@ checkpoint_step() {
   fi
 }
 
-# The inbox step, on the holder after the uptime step: team-inbox, logged only when it retired the
+# The quota notices, from team-quota status --json's windows ($status) and the notice record (the
+# input): each window past a threshold wants a notice of its highest one crossed, with its post's
+# text, unless a notice of its window and reset at that threshold or above is already kept; and
+# each kept notice whose reset has not come stays wanted, so a crossing posts once per window
+# whatever later readings say, and closes with no post when its window resets. A kept notice not
+# yet posted is dropped, with no post, once a higher threshold of its window is wanted.
+# shellcheck disable=SC2016 # jq's variables
+QUOTA_PLAN='
+def quota_text($t):
+  "Claude usage: "
+  + (if .name == "seven_day" then "the week" elif .name == "five_hour" then "the 5-hour window"
+     elif (.name | startswith("model:")) then "\(.name[6:])\u0027s week" else "the \(.name) window" end)
+  + " is at \(.used | floor)%, past \($t)%; it \(.reset_text).";
+now as $now
+| [(.notices // {})[] | select(.source == "quota") | . as $n
+   | .key | capture("^(?<window>.+)/(?<threshold>[0-9]+)/(?<resets_at>[^/]+)$")
+   | select((try (.resets_at | fromdateiso8601) catch 0) > $now)
+   | {key: $n.key, state: $n.state, text: $n.text, window, threshold: (.threshold | tonumber), resets_at}] as $kept
+| [$status.windows[] | select(.crossed != []) | (.crossed | max) as $t | . as $w
+   | select(all($kept[]; .window != $w.name or .resets_at != $w.resets_at or .threshold < $t))
+   | {key: "\(.name)/\($t)/\(.resets_at)", window: .name, resets_at, text: quota_text($t)}] as $new
+| ($new | map({key, since: null, detail: null, text})
+   + [$kept[] | . as $k | select(.state != "open" or all($new[]; .window != $k.window or .resets_at != $k.resets_at))
+      | {key, since: null, detail: null, text}]) as $wanted
+| notice_plan("quota"; $wanted; null; $now; null)
+'
+
+# The quota step, on the holder after the uptime step, as the header's quota says: the crossings of
+# team-quota status --json (bin/lib/quota.sh's quota_read) as notices of the quota source
+# (bin/lib/notice.jq), judged with no holding, since a crossing is the team's, not a lease's; each
+# posted once as an alert, and closed with no post when its window resets. A team-quota that fails
+# or is stopped, a notice record it cannot write and a post Discord refuses fail the step.
+quota_step() {
+  local entry id key why=''
+  quota_read "$QUOTA_TIMEOUT" "$KILL_SECONDS" {run_fd}>&-
+  why=$QUOTA_ERROR
+  [[ -n $why ]] || notices_judge quota notice "$QUOTA_PLAN" --argjson status "$QUOTA_STATUS" ||
+    why="cannot judge the quota notices in $NOTICES: $(first_error)"
+  if [[ -n $why ]]; then
+    step_failed quota "$why"
+    return 0
+  fi
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    if [[ $(jq -r .why <<<"$entry") == unposted ]]; then
+      log quota "$(jq -r .notice.key <<<"$entry"): closed with no post (a higher threshold of its window was crossed before it was posted)"
+    else
+      log quota "$(jq -r .notice.key <<<"$entry"): closed with no post (its window reset)"
+    fi
+  done < <(jq -c '.closed[]' <<<"$NOTICE_PLAN")
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    id=$(jq -r .id <<<"$entry") key=$(jq -r .notice.key <<<"$entry")
+    if alert_post "$(jq -r .notice.text <<<"$entry")"; then
+      note_notice "$id" post true "$ALERT_ID" || why="cannot write the notice record $NOTICES: $(first_error)"
+      log quota "$key: posted to #coordinator (message ${ALERT_ID:-none})"
+    else
+      note_notice "$id" post false || true
+      problem quota "$key: the post to #coordinator failed ($POST_ERROR); it is tried again next run"
+      why="the post of $key to #coordinator failed ($POST_ERROR)"
+    fi
+  done < <(jq -c '.actions[] | select(.do == "post")' <<<"$NOTICE_PLAN")
+  if [[ -n $why ]]; then step_failed quota "$why"; else step_ok quota; fi
+}
+
+# The inbox step, on the holder after the quota step: team-inbox, logged only when it retired the
 # message it kept in #coordinator before waiting.md, numbered the list afresh (which no later run
 # would show), or failed, and never failing the run, since the next run writes the list again.
 inbox_step() {
@@ -1682,6 +1772,7 @@ run_heartbeat() {
     write_record ''
     alerts_step
     run_step uptime "$UPTIME_TIMEOUT" team-uptime run
+    quota_step
     inbox_step
     finished_step
     capacity_step

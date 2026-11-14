@@ -141,7 +141,7 @@ stopped_session() {
   assert_contains "$output" "team-tokens time [--since <ISO>] [--until <ISO>]"
   assert_contains "$output" "time prints where each launched worker session's time went"
   assert_contains "$output" "usage/<machine>/time/"
-  assert_contains "$output" "the weekly limit's reset time is in no data"
+  assert_contains "$output" "a rolling seven days; then the newest quota reading"
   assert_contains "$output" "schema team-tokens/1"
   assert_contains "$output" "coordinator turns"
   assert_contains "$output" "Daniel's waits"
@@ -561,7 +561,7 @@ long_fixture() {
     '["laptop",0.96,"laptop","2026-10-21T09:00:00Z 2026-10-21T15:30:00Z",0.96]'
 }
 
-@test "the report prints each table as text, its header and the seven days' caveat" {
+@test "the report prints each table as text, its header and the seven days' quota reading" {
   report_fixture
   run_bin -0 team-tokens --until 2026-10-21T16:00Z
   assert_equal "${lines[0]}" "# Claude usage, 2026-10-20T08:00:00Z to 2026-10-21T16:00:00Z"
@@ -578,7 +578,8 @@ long_fixture() {
   assert_contains "$output" "| stow or handoff | 1 | 1 | 0.62 | 0.62 |"
   assert_contains "$output" "| 2026-10-21T15:30:00Z (current) | 2026-10-21T20:30:00Z | 0.12 | 1 | 0.00 | 0.12 |"
   assert_contains "$output" "The current block opened 2026-10-21T15:30:00Z and ends 2026-10-21T20:30:00Z: 0.12 \$w so far."
-  assert_contains "$output" "the weekly limit's reset time is in no data (claude.ai shows it), so this is a rolling seven days."
+  assert_contains "$output" "2026-10-14T16:00:00Z to 2026-10-21T16:00:00Z, a rolling seven days; the quota reading below is the week Claude counts."
+  assert_contains "$output" "No quota reading yet: no session has shown a status line since team-quota was set up."
   assert_contains "$output" "| **all** | 21 | 1.5 | **6.9** | 100% |"
 }
 

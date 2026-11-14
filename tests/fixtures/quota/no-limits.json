@@ -1,0 +1,7 @@
+{
+  "session_id": "0b7c2e6a-5f1d-4c3e-9a8b-1d2e3f4a5b6c",
+  "model": { "id": "claude-opus-5-5", "display_name": "Opus 5.5" },
+  "context_window": { "context_window_size": 200000, "used_percentage": null, "remaining_percentage": null },
+  "rate_limits_available": false,
+  "rate_limits": null
+}
