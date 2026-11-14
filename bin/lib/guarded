@@ -17,12 +17,12 @@
 # and key files, and files named for a secret or credential), and guardrails, the team's own
 # guards on its code repository: team-merge with the library and jq it runs, the scripts whose
 # events and checks it reads (team-checks, team-heavy, team-next, team-catch-up,
-# team-review-status, team-review-check, and bin/lib/review-app once it exists), team-ask
-# and team-run-approved, team-log, which logs the reviews, words and approvals team-merge reads,
-# team-project, the registry's one reader, the launchers (team-worker, claude-coordinator), the
-# lease, the hooks, the permission settings, the role prompts, the ledger contract and the
+# team-review-status, team-review-check, and bin/lib/review-app, which names the reviewer App),
+# team-ask and team-run-approved, team-log, which logs the reviews, words and approvals team-merge
+# reads, team-project, the registry's one reader, the launchers (team-worker, claude-coordinator),
+# the lease, the hooks, the permission settings, the role prompts, the ledger contract and the
 # lifecycle table (lifecycle.json) the ledger holds events to, data-check, the records and code
-# lists, the command guard's readers (command_text.py, outbound.py) and this file.
+# lists, the command guard's readers (command_rules.py, command_text.py, outbound.py) and this file.
 # team-merge reads this file from its own checkout, so a PR cannot loosen its own check, only the
 # ones after it. A project whose auth code moves to a file of another name has it added here by an
 # agent-team PR.
@@ -43,7 +43,7 @@ secrets .*\.(pem|key|p12|pfx)
 secrets (.*/)?[^/]*(secret|credential)[^/]*
 guardrails@own bin/team-(merge|checks|heavy|review-status|ask|run-approved|worker|lease|log|project)
 guardrails@own bin/claude-coordinator
-guardrails@own bin/lib/(guarded|ledger-contract\.json|lifecycle\.json|data-check|records|code|command_text\.py|outbound\.py)
+guardrails@own bin/lib/(guarded|ledger-contract\.json|lifecycle\.json|data-check|records|code|command_rules\.py|command_text\.py|outbound\.py)
 guardrails@own bin/hooks/.*
 guardrails@own settings/[^/]*\.json
 guardrails@own coordinator\.settings\.json

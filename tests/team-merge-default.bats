@@ -264,6 +264,7 @@ discord_has() {
 }
 
 @test "the team's own project by name is refused on the default word, whatever its repo" {
+  review_app_off
   default_word Daniel
   as_project agent-team
   refused "$OWN_REASON" "$(ask_per_head)"
@@ -271,6 +272,7 @@ discord_has() {
 }
 
 @test "the team's own project by path is refused on the default word" {
+  review_app_off
   merging_the_code
   default_word Daniel
   refused "$OWN_REASON" "$(ask_per_head)"
@@ -580,7 +582,7 @@ file_reasons() {
   local path paths=() expected=()
   for path in bin/team-merge bin/team-checks bin/team-heavy bin/team-review-status bin/team-ask bin/team-run-approved \
     bin/team-worker bin/team-lease bin/claude-coordinator bin/lib/guarded bin/lib/ledger-contract.json bin/lib/data-check \
-    bin/lib/records bin/lib/code bin/lib/command_text.py bin/lib/outbound.py bin/hooks/git/pre-push \
+    bin/lib/records bin/lib/code bin/lib/command_rules.py bin/lib/command_text.py bin/lib/outbound.py bin/hooks/git/pre-push \
     bin/hooks/records-git/pre-commit bin/hooks/lease-fence settings/worker.json settings/reviewer.json coordinator.settings.json \
     bin/lib/team.sh bin/lib/platform.sh bin/lib/ledger.jq bin/lib/messages.jq bin/lib/review-app bin/team-next \
     bin/team-catch-up bin/team-review-check bin/team-log bin/team-project bin/lib/lifecycle.json roles/reviewer.md \
@@ -895,6 +897,7 @@ OWN_LEGACY="the team's own project merges unattended only on a plan Daniel appro
 }
 
 @test "with the reviewer App off, an agent-team PR on Daniel's plan has the one not-set-up reason, whatever the check runs show" {
+  review_app_off
   as_project agent-team
   default_word Daniel
   refused "$OWN_REASON" "$(ask_per_head)"

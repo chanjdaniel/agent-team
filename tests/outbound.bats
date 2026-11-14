@@ -12,7 +12,8 @@ setup() {
 
 REASON="an upload to a host outside the team's own; a file's contents never go to an outside host"
 
-# bin/lib/outbound.py over <command> on stdin, as command-guard runs it: detect <command>
+# bin/lib/outbound.py's own command line over <command> on stdin, which decides each command of the
+# walk as command_rules.py's upload row does: detect <command>
 detect() {
   run --separate-stderr python3 -I "$REPO_ROOT/bin/lib/outbound.py" <<<"$1"
 }

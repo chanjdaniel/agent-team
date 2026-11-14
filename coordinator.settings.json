@@ -2,7 +2,8 @@
   "enabledPlugins": {
     "discord@claude-plugins-official": true,
     "mongodb-atlas@claude-plugins-official": false,
-    "cc-plugin-plugin-authoring@builtin": false
+    "cc-plugin-plugin-authoring@builtin": false,
+    "cc-plugin-easel@builtin": false
   },
   "syncClaudeAiPlugins": false,
   "crossSessionInbound": "accept",
