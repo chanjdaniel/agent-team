@@ -2042,7 +2042,7 @@ YAML
   # Each job's block, from its "  <id>:" line to the next job's.
   job_block() { sed -n "/^jobs:\$/,\$p" "$ci" | sed -n "/^  $1:\$/,/^  [a-z_-]*:\$/p" | sed '$d'; }
   shards=$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\)-shards:$/\1/p' "$ci")
-  assert_equal "$shards" $'test\nmacos'
+  assert_equal "$shards" test
   for id in $shards; do
     job_block "$id-shards" | grep -qx '      matrix: {shard: \[1, 2, 3\]}' || { echo "$id-shards has no three-shard matrix" >&2; return 1; }
     job_block "$id-shards" | grep -qxF '      - run: tests/run bats --shard "$SHARD/3"' || { echo "$id-shards runs no shard" >&2; return 1; }
@@ -2437,9 +2437,9 @@ changed_rebase() {
 }
 
 # tests/shards update in a checkout of its own, on a gh stub whose CI run 4242 has two
-# test-shards jobs, a macos-shards job and two jobs of other names, the test job's log holding a
-# bats line too.
-@test "tests/shards update writes one row per file from the shard jobs' logs, each platform's seconds, an empty one where a platform has none" {
+# test-shards jobs and two jobs of other names, the test job's log holding a bats line too, over
+# timings whose macOS seconds it keeps, since CI runs no macOS job.
+@test "tests/shards update writes one row per file from the shard jobs' logs, its Linux seconds, and its macOS ones kept from the timings, else empty" {
   local copy=$BATS_TEST_TMPDIR/copy
   unset TEAM_HOME
   mkdir -p "$copy/tests"
@@ -2451,45 +2451,48 @@ case "$*" in
   "run view 4242 --json jobs,headSha,createdAt")
     echo '{"headSha": "abcdef1234567890", "createdAt": "2026-10-31T12:00:00Z", "jobs": [
       {"databaseId": 11, "name": "test-shards (1)"}, {"databaseId": 12, "name": "test-shards (2)"},
-      {"databaseId": 21, "name": "macos-shards (1)"}, {"databaseId": 30, "name": "test"},
-      {"databaseId": 40, "name": "shellcheck"}]}' ;;
+      {"databaseId": 30, "name": "test"}, {"databaseId": 40, "name": "shellcheck"}]}' ;;
   "run view 4242 --job 11 --log")
     printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.1Z ok tests/a.bats (12s)\n'
     printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.2Z ok 3 a test inside it\n'
     printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.3Z not ok tests/c.bats (3s)\n' ;;
   "run view 4242 --job 12 --log") printf 'test-shards (2)\tRun tests\t2026-10-31T12:01:00.4Z ok tests/b.bats (7s)\n' ;;
-  "run view 4242 --job 21 --log")
-    printf 'macos-shards (1)\tRun tests\t2026-10-31T12:01:00.5Z ok tests/b.bats (15s)\n'
-    printf 'macos-shards (1)\tRun tests\t2026-10-31T12:01:00.6Z ok tests/a.bats (30s)\n' ;;
   "run view 4242 --job 30 --log") printf 'test\tRun tests\t2026-10-31T12:01:00.7Z ok tests/z.bats (99s)\n' ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
 esac
 SH
+  # a.bats and b.bats keep their macOS seconds; gone.bats, which the run did not time, goes.
+  printf '# timings\nfile\tlinux\tmacos\ntests/a.bats\t10\t30\ntests/b.bats\t5\t15\ntests/gone.bats\t1\t1\n' >"$copy/tests/timings.tsv"
   run -0 --separate-stderr "$copy/tests/shards" update
   assert_equal "$output" "tests/shards: wrote tests/timings.tsv from CI run 4242"
-  assert_equal "$(cat "$copy/tests/timings.tsv")" "# The seconds each bats file took in CI run 4242 (head abcdef1, 2026-10-31T12:00:00Z),
-# on Linux and macOS, as tests/shards weighs them; tests/shards update rewrites it.
+  local header="# The seconds each bats file took on Linux in CI run 4242 (head abcdef1, 2026-10-31T12:00:00Z),
+# and on macOS as the timings before it had them, since CI runs no macOS job; tests/shards update rewrites it."
+  assert_equal "$(cat "$copy/tests/timings.tsv")" "$header
 $(printf 'file\tlinux\tmacos\ntests/a.bats\t12\t30\ntests/b.bats\t7\t15\ntests/c.bats\t3\t')"
   # Only the shard jobs' logs are read.
-  assert_equal "$(stub_calls gh | jq -r 'select(.[3] == "--job") | .[4]' | tr '\n' ' ')" "11 12 21 "
+  assert_equal "$(stub_calls gh | jq -r 'select(.[3] == "--job") | .[4]' | tr '\n' ' ')" "11 12 "
 
-  # A run named on the command line is read without listing the runs.
+  # A run named on the command line is read without listing the runs; with no timings before it,
+  # no file has macOS seconds.
   rm "$copy/tests/timings.tsv"
   : >"$STUB_CALLS/gh.log"
   run -0 --separate-stderr "$copy/tests/shards" update 4242
   assert_equal "$(stub_calls gh | jq -r '.[0:2] | join(" ")' | sort -u)" "run view"
-  [[ -f $copy/tests/timings.tsv ]]
+  assert_equal "$(cat "$copy/tests/timings.tsv")" "$header
+$(printf 'file\tlinux\tmacos\ntests/a.bats\t12\t\ntests/b.bats\t7\t\ntests/c.bats\t3\t')"
 }
 
 # The timings are data tests/shards reads: each row names a bats file that exists, with whole
-# seconds for both platforms, so a removed file takes its row with it.
-@test "tests/timings.tsv names only bats files that exist, each with its seconds on both platforms" {
+# seconds on Linux and on macOS whole seconds or none (a file CI timed only since it ran no macOS
+# job, which tests/shards weighs there by its bytes), so a removed file takes its row with it.
+@test "tests/timings.tsv names only bats files that exist, each with its Linux seconds and its macOS ones or none" {
   local file linux macos rows=0
   while IFS=$'\t' read -r file linux macos; do
     [[ $file == \#* || $file == file ]] && continue
     rows=$((rows + 1))
     [[ -f $REPO_ROOT/$file && $file =~ ^tests/[^/]+\.bats$ ]] || { echo "timings name $file, no bats file" >&2; return 1; }
-    [[ $linux =~ ^[0-9]+$ && $macos =~ ^[0-9]+$ ]] || { echo "$file has no whole seconds for both platforms" >&2; return 1; }
+    [[ $linux =~ ^[0-9]+$ ]] || { echo "$file has no whole seconds on Linux" >&2; return 1; }
+    [[ $macos =~ ^[0-9]*$ ]] || { echo "$file has macOS seconds that are not whole" >&2; return 1; }
   done <"$REPO_ROOT/tests/timings.tsv"
   ((rows > 0))
 }
