@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+# Guards each path variable a test hands git or rm -r, so an empty variable stops its line with
+# bash's "parameter null or not set" instead of reaching the code checkout or the team home.
+# The forms, where <var path> is a word starting with a parameter expansion, quoted or not ($x,
+# "$x/sub", ${x}, "${x[1]}", $1): git -C <var path>, git --git-dir[=]<var path>,
+# git --work-tree[=]<var path>, rm with r or R among its short options or --recursive on a
+# <var path> operand, and cd <var path> on a line that also runs git. The guarded form writes that
+# expansion ${name:?} ("${TEAM_HOME:?}/sub", "${slots[1]:?}").
+# It reads only what the test file's own shell expands: a single-quoted string, a quoted heredoc's
+# body, a comment and an escaped \$x are left as they are; an unquoted heredoc's body is read as
+# code, its quotes as text. A word starting with a command substitution or arithmetic is no
+# <var path>.
+# The files are every tracked shell file under tests/ but tests/vendor/ and tests/fixtures/, by
+# tests/run's shell_scripts rule (.sh, .bash or .bats, or a sh or bash shebang), or those given.
+#
+# Usage: tests/guard-paths [<file>...]           rewrite each unguarded form in place, $name and
+#                                                ${name} to ${name:?}; list each form it cannot
+#                                                rewrite (an expansion with an operator, such as
+#                                                ${x%/*} or ${x:-}, or a special parameter) on
+#                                                stderr as "<file>:<line>: rewrite by hand", and
+#                                                exit 1 if there is one
+#        tests/guard-paths --check [<file>...]   change nothing: print each unguarded line as
+#                                                "<file>:<line>: <the line>" and exit 1, or exit 0
+#                                                with nothing printed
+# Rewrite a form by hand with a guarded local first (local dir=${x%/*}; git -C "${dir:?}"), or a
+# ${x:?} check on the line before. tests/repo.bats runs the check on the tree.
+
+import os
+import re
+import subprocess
+import sys
+
+NAME = r"(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+)"
+PLAIN = re.compile(rf"^({NAME})(\[[^\]]*\])?$")
+GUARDED = re.compile(rf"^({NAME})(\[[^\]]*\])?:\?")
+OPERATORS = set(";&|()<>")
+SHEBANG = re.compile(r"^#!.*\b(ba)?sh\b")
+# git by name or path, or a variable naming it ("$real_git").
+GIT = re.compile(r'^(?:(?:\S*/)?git|"?\$\{?[A-Za-z_]*git[A-Za-z_]*\}?"?)$')
+HEREDOC = re.compile(r"<<(-?)[ \t]*((?:'[^'\n]*'|\"[^\"\n]*\"|\\.|[^\s;&|()<>'\"\\])+)")
+
+
+class Expansion:
+    """A $ expansion the outer shell runs: its span in the text and its kind."""
+
+    def __init__(self, start, end, kind, text=""):
+        self.start, self.end, self.kind, self.text = start, end, kind, text
+
+
+class Word:
+    def __init__(self, start, line):
+        self.start, self.end, self.line = start, start, line
+        self.expansions = []
+        self.redirect = False
+
+
+class Lexer:
+    """Reads shell text into commands, each a list of words, far enough for the forms above."""
+
+    def __init__(self, text, base=0, line_of=None, heredoc=False):
+        self.text, self.base, self.heredoc = text, base, heredoc
+        self.line_of = line_of
+        self.commands = []
+        self.pending = []
+        self.i = 0
+
+    def run(self):
+        self.code(None)
+        return self.commands
+
+    def at(self, k=0):
+        j = self.i + k
+        return self.text[j] if j < len(self.text) else ""
+
+    def code(self, stop):
+        """Reads commands until the stop character (")" or "`") at depth 0, or the text's end."""
+        words, depth, redirect = [], 0, False
+
+        def end():
+            nonlocal words
+            if words:
+                self.commands.append(words)
+            words = []
+
+        while self.i < len(self.text):
+            c = self.at()
+            if c in " \t":
+                self.i += 1
+            elif c == "\\" and self.at(1) == "\n":
+                self.i += 2
+            elif c == "\n":
+                self.i += 1
+                end()
+                self.bodies()
+            elif c == "#":
+                while self.i < len(self.text) and self.at() != "\n":
+                    self.i += 1
+            elif stop == "`" and c == "`":
+                self.i += 1
+                break
+            elif c == ")" and stop == ")" and depth == 0:
+                self.i += 1
+                break
+            elif c in OPERATORS:
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+                if c == "<" and self.text.startswith("<<", self.i) and not self.text.startswith("<<<", self.i):
+                    m = HEREDOC.match(self.text, self.i)
+                    if m:
+                        marker = m.group(2)
+                        quoted = any(q in marker for q in "'\"\\")
+                        self.pending.append((re.sub(r"['\"\\]", "", marker), m.group(1) == "-", quoted))
+                        self.i = m.end()
+                        continue
+                if c in "<>" and self.at(1) == "(":
+                    self.i += 1
+                    redirect = False
+                    continue
+                if c in "<>":
+                    redirect = True
+                    while self.at() in ("<", ">", "&", "|") and self.at():
+                        self.i += 1
+                    continue
+                self.i += 1
+                redirect = False
+                end()
+            else:
+                w = self.word()
+                w.redirect = redirect
+                redirect = False
+                words.append(w)
+        end()
+
+    def bodies(self):
+        """Reads the bodies of the heredocs opened on the line just ended."""
+        pending, self.pending = self.pending, []
+        for marker, tabs, quoted in pending:
+            start = self.i
+            while self.i < len(self.text):
+                eol = self.text.find("\n", self.i)
+                eol = len(self.text) if eol < 0 else eol
+                line = self.text[self.i:eol]
+                if (line.lstrip("\t") if tabs else line) == marker:
+                    body_end = self.i
+                    self.i = min(eol + 1, len(self.text))
+                    break
+                self.i = eol + 1
+            else:
+                body_end = len(self.text)
+            if not quoted:
+                sub = Lexer(self.text[start:body_end], self.base + start, self.line_of, heredoc=True)
+                self.commands.extend(sub.run())
+
+    def word(self):
+        w = Word(self.base + self.i, self.line_of(self.base + self.i))
+        while self.i < len(self.text):
+            c = self.at()
+            if c in " \t\n" or c in OPERATORS:
+                break
+            if c == "\\":
+                self.i += 2
+            elif c == "'" and not self.heredoc:
+                close = self.text.find("'", self.i + 1)
+                self.i = len(self.text) if close < 0 else close + 1
+            elif c == '"':
+                self.i += 1
+                self.double(w)
+            elif c == "$":
+                self.dollar(w)
+            elif c == "`":
+                self.i += 1
+                self.code("`")
+            else:
+                self.i += 1
+        w.end = self.base + self.i
+        return w
+
+    def double(self, w):
+        while self.i < len(self.text):
+            c = self.at()
+            if c == "\\":
+                self.i += 2
+            elif c == '"':
+                self.i += 1
+                return
+            elif c == "$":
+                self.dollar(w)
+            elif c == "`":
+                self.i += 1
+                self.code("`")
+            else:
+                self.i += 1
+
+    def dollar(self, w):
+        start = self.i
+        nxt = self.at(1)
+        if self.text.startswith("$((", self.i):
+            self.i += 3
+            depth = 2
+            while self.i < len(self.text) and depth:
+                depth += {"(": 1, ")": -1}.get(self.at(), 0)
+                self.i += 1
+            w.expansions.append(Expansion(self.base + start, self.base + self.i, "arith"))
+        elif nxt == "(":
+            self.i += 2
+            self.code(")")
+            w.expansions.append(Expansion(self.base + start, self.base + self.i, "command"))
+        elif nxt == "{":
+            self.i += 2
+            depth, inner, scratch = 1, self.i, Word(0, 0)
+            while self.i < len(self.text) and depth:
+                c = self.at()
+                if c == "\\":
+                    self.i += 2
+                elif self.text.startswith("${", self.i):
+                    depth += 1
+                    self.i += 2
+                elif c == "$":
+                    self.dollar(scratch)
+                elif c == '"':
+                    self.i += 1
+                    self.double(scratch)
+                else:
+                    depth -= c == "}"
+                    self.i += 1
+            body = self.text[inner:self.i - 1]
+            kind = "plain" if PLAIN.match(body) else "guarded" if GUARDED.match(body) else "hand"
+            w.expansions.append(Expansion(self.base + start, self.base + self.i, kind, body))
+        elif re.match(r"[A-Za-z_]", nxt):
+            m = re.compile(r"[A-Za-z_][A-Za-z0-9_]*").match(self.text, self.i + 1)
+            self.i = m.end()
+            w.expansions.append(Expansion(self.base + start, self.base + self.i, "plain", m.group()))
+        elif nxt.isdigit():
+            self.i += 2
+            w.expansions.append(Expansion(self.base + start, self.base + self.i, "plain", nxt))
+        elif nxt and nxt in "@*#?$!-":
+            self.i += 2
+            w.expansions.append(Expansion(self.base + start, self.base + self.i, "hand", nxt))
+        elif nxt == "'":
+            self.i += 2
+            while self.i < len(self.text) and self.at() != "'":
+                self.i += 2 if self.at() == "\\" else 1
+            self.i += 1
+        else:
+            self.i += 1
+
+
+def raw(text, w):
+    return text[w.start:w.end]
+
+
+def leading(text, w, offset=0):
+    """The expansion a word starts with at offset, past one opening quote, or None."""
+    pos = w.start + offset
+    if pos < w.end and text[pos] in "\"'":
+        pos += 1
+    for e in w.expansions:
+        if e.start == pos:
+            return e
+    return None
+
+
+def findings(text):
+    """Each unguarded form in the text: (line, expansion)."""
+    starts = [0] + [m.end() for m in re.finditer("\n", text)]
+
+    def line_of(pos):
+        lo, hi = 0, len(starts) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if starts[mid] <= pos:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo + 1
+
+    commands = Lexer(text, line_of=line_of).run()
+    is_git = lambda w: bool(GIT.match(raw(text, w)))
+    git_lines = {w.line for cmd in commands for w in cmd if is_git(w)}
+    targets = []
+    for cmd in commands:
+        words = [w for w in cmd if not w.redirect]
+        for k, w in enumerate(words):
+            name = raw(text, w)
+            if is_git(w):
+                j = k + 1
+                while j < len(words):
+                    opt = raw(text, words[j])
+                    if opt in ("-C", "--git-dir", "--work-tree"):
+                        if j + 1 < len(words):
+                            targets.append((words[j + 1], 0))
+                        j += 2
+                    elif opt.startswith(("--git-dir=", "--work-tree=")):
+                        targets.append((words[j], opt.index("=") + 1))
+                        j += 1
+                    elif opt == "-c":
+                        j += 2
+                    elif opt.startswith("-"):
+                        j += 1
+                    else:
+                        break
+            elif name == "rm" or name.endswith("/rm"):
+                recursive, operands, options = False, [], True
+                for v in words[k + 1:]:
+                    opt = raw(text, v)
+                    if options and opt == "--":
+                        options = False
+                    elif options and opt == "--recursive":
+                        recursive = True
+                    elif options and re.match(r"^-[A-Za-z]+$", opt):
+                        recursive = recursive or bool(re.search("[rR]", opt))
+                    else:
+                        operands.append(v)
+                if recursive:
+                    targets.extend((v, 0) for v in operands)
+            elif name == "cd" and w.line in git_lines:
+                rest = [v for v in words[k + 1:] if raw(text, v) not in ("-P", "-L", "--")]
+                if rest:
+                    targets.append((rest[0], 0))
+    found = {}
+    for w, offset in targets:
+        e = leading(text, w, offset)
+        if e and e.kind in ("plain", "hand"):
+            found[e.start] = (line_of(e.start), e)
+    return sorted(found.values(), key=lambda f: f[1].start)
+
+
+def guarded(e):
+    m = PLAIN.match(e.text)
+    return "${" + m.group(1) + (m.group(2) or "") + ":?}"
+
+
+def shell_files(root):
+    listed = subprocess.run(["git", "-C", root, "ls-files", "-z", "tests"], check=True,
+                            capture_output=True, text=True).stdout.split("\0")
+    files = []
+    for path in sorted(p for p in listed if p):
+        if path.startswith(("tests/vendor/", "tests/fixtures/")):
+            continue
+        full = os.path.join(root, path)
+        if not os.path.isfile(full):
+            continue
+        if path.endswith((".sh", ".bash", ".bats")):
+            files.append(path)
+            continue
+        with open(full, "rb") as f:
+            first = f.readline().decode("utf-8", "replace")
+        if SHEBANG.match(first):
+            files.append(path)
+    return [(path, os.path.join(root, path)) for path in files]
+
+
+def usage():
+    with open(__file__) as f:
+        lines = f.read().splitlines()[1:]
+    header = []
+    for line in lines:
+        if not line.startswith("#"):
+            break
+        header.append(line[2:] if line.startswith("# ") else line[1:])
+    return "\n".join(header)
+
+
+def main(argv):
+    check = False
+    if argv and argv[0] in ("-h", "--help"):
+        print(usage())
+        return 0
+    if argv and argv[0] == "--check":
+        check, argv = True, argv[1:]
+    for arg in argv:
+        if arg.startswith("-"):
+            print(f"tests/guard-paths: unknown option {arg}\n"
+                  "usage: tests/guard-paths [--check] [<file>...]", file=sys.stderr)
+            return 2
+    root = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    files = [(a, a) for a in argv] if argv else shell_files(root)
+    status = 0
+    for shown, path in files:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        found = findings(text)
+        if check:
+            lines = text.split("\n")
+            for line in sorted({n for n, _ in found}):
+                print(f"{shown}:{line}: {lines[line - 1]}")
+                status = 1
+            continue
+        for _, e in reversed([f for f in found if f[1].kind == "plain"]):
+            text = text[:e.start] + guarded(e) + text[e.end:]
+        if any(e.kind == "plain" for _, e in found):
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        for line in sorted({n for n, e in found if e.kind == "hand"}):
+            print(f"{shown}:{line}: rewrite by hand", file=sys.stderr)
+            status = 1
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

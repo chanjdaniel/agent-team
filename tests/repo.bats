@@ -2404,6 +2404,113 @@ ok 2 after it"
   assert_equal "$found" ""
 }
 
+# T281: a test's git -C "$TEAM_HOME" with TEAM_HOME empty ran in the code checkout and switched its
+# branch; ${TEAM_HOME:?} stops the line instead.
+@test "no test runs git or rm -r on an unguarded path variable" {
+  run -0 "$REPO_ROOT/tests/guard-paths" --check
+  assert_equal "$output" ""
+}
+
+# The planted file holds each form unguarded, then what the check leaves alone, then two forms only
+# a hand can rewrite; the guarded file is the planted one as the rewrite leaves it.
+@test "tests/guard-paths names each unguarded form, rewrites it to the guarded form, and leaves a hand form and unexpanded text alone" {
+  local planted=$BATS_TEST_TMPDIR/planted.bats guarded=$BATS_TEST_TMPDIR/guarded.bats i
+  cat >"$planted" <<'PLANTED'
+git -C "$TEAM_HOME" status
+git -C $wt log
+git --git-dir "$mirror" rev-parse HEAD
+git --git-dir="${mirror}" rev-parse HEAD
+git --work-tree "$wt/sub" status
+git -c x.y=z --work-tree=$1 status
+x=$(git -C "${slots[1]}" rev-parse HEAD)
+rm -rf "$scratch"
+rm -r -f "$wt/x" "$other"
+rm --recursive "$dir"
+cd "$wt" && git status
+"$real_git" -C "$TEAM_HOME" log
+done < <(git -C "$root" ls-files)
+echo 'git -C "$TEAM_HOME" status'
+cat <<'SH'
+rm -rf "$x"
+SH
+cat <<SH
+git -C \$wt status
+SH
+git -C "$(pwd)" status
+rm -f "$file"
+cd "$wt" && ls
+# git -C "$TEAM_HOME" status
+tar -C "$dir" -xf a.tar
+git -C "${TEAM_HOME:?}/sub" status
+git -C "${x%/*}" status
+rm -rf "${x:-}"
+PLANTED
+  cat >"$guarded" <<'GUARDED'
+git -C "${TEAM_HOME:?}" status
+git -C ${wt:?} log
+git --git-dir "${mirror:?}" rev-parse HEAD
+git --git-dir="${mirror:?}" rev-parse HEAD
+git --work-tree "${wt:?}/sub" status
+git -c x.y=z --work-tree=${1:?} status
+x=$(git -C "${slots[1]:?}" rev-parse HEAD)
+rm -rf "${scratch:?}"
+rm -r -f "${wt:?}/x" "${other:?}"
+rm --recursive "${dir:?}"
+cd "${wt:?}" && git status
+"$real_git" -C "${TEAM_HOME:?}" log
+done < <(git -C "${root:?}" ls-files)
+echo 'git -C "$TEAM_HOME" status'
+cat <<'SH'
+rm -rf "$x"
+SH
+cat <<SH
+git -C \$wt status
+SH
+git -C "$(pwd)" status
+rm -f "$file"
+cd "$wt" && ls
+# git -C "$TEAM_HOME" status
+tar -C "$dir" -xf a.tar
+git -C "${TEAM_HOME:?}/sub" status
+git -C "${x%/*}" status
+rm -rf "${x:-}"
+GUARDED
+  run -1 "$REPO_ROOT/tests/guard-paths" --check "$planted"
+  local expected=()
+  for i in {1..13} 27 28; do expected+=("$planted:$i: $(sed -n "${i}p" "$planted")"); done
+  assert_equal "$output" "$(printf '%s\n' "${expected[@]}")"
+  run -1 --separate-stderr "$REPO_ROOT/tests/guard-paths" "$planted"
+  assert_equal "$stderr" "$planted:27: rewrite by hand
+$planted:28: rewrite by hand"
+  assert_equal "$(cat "$planted")" "$(cat "$guarded")"
+  run -1 "$REPO_ROOT/tests/guard-paths" --check "$planted"
+  assert_equal "$output" "$planted:27: git -C \"\${x%/*}\" status
+$planted:28: rm -rf \"\${x:-}\""
+  sed -i '27,28d' "$guarded"
+  run -0 "$REPO_ROOT/tests/guard-paths" --check "$guarded"
+  assert_equal "$output" ""
+  run -0 "$REPO_ROOT/tests/guard-paths" "$guarded"
+  assert_equal "$output" ""
+}
+
+@test "a guarded git or rm -r line with its variable empty stops at once, leaving the repository it runs in as it was" {
+  local repo=$BATS_TEST_TMPDIR/repo line before
+  git init -q -b dev "$repo"
+  echo x >"$repo/x"
+  git -C "${repo:?}" add x
+  git -C "${repo:?}" commit -q -m "feat: x"
+  git -C "${repo:?}" remote add origin https://example.invalid/repo.git
+  git -C "${repo:?}" worktree add -q "$repo/wt"
+  before=$(git -C "${repo:?}" symbolic-ref HEAD; git -C "${repo:?}" rev-parse HEAD; git -C "${repo:?}" remote -v; ls "$repo")
+  for line in 'git -C "${TEAM_HOME:?}" checkout -q --detach' 'git -C "${TEAM_HOME:?}/sub" remote remove origin' \
+    'git --git-dir="${mirror:?}" update-ref -d HEAD' 'git --work-tree "${wt:?}" checkout -q -b other' \
+    'rm -rf "${wt:?}/x"' 'rm -r "${slots[1]:?}"' 'cd "${wt:?}" && git switch -q --detach'; do
+    run ! --separate-stderr env -C "$repo" TEAM_HOME= mirror= wt= bash -c "$line"
+    assert_contains "$stderr" "parameter null or not set"
+    assert_equal "$(git -C "${repo:?}" symbolic-ref HEAD; git -C "${repo:?}" rev-parse HEAD; git -C "${repo:?}" remote -v; ls "$repo")" "$before"
+  done
+}
+
 @test "tests/run refuses a TESTS_TEST_SECONDS or TESTS_FILE_MINUTES that is no whole number above 0" {
   local copy=$BATS_TEST_TMPDIR/copy value
   unset TEAM_HOME TESTS_TEST_SECONDS TESTS_FILE_MINUTES
