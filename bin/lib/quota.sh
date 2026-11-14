@@ -11,6 +11,7 @@
 # way. A caller holding a descriptor no child may keep closes it on the call (quota_read 60
 # {run_fd}>&-).
 
+# shellcheck shell=bash
 # How long a report waits for team-quota status, which reads a few files.
 # shellcheck disable=SC2034 # read by the scripts that source this file
 QUOTA_SECONDS=30
