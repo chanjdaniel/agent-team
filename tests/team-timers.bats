@@ -925,11 +925,11 @@ SH
   assert_equal "$(steps "$output")" "lease checkpoint"
 }
 
-# The ids of the processes whose arguments are exactly "sleep 4199", each killed, so a run that
-# leaves one never holds the file's run open.
+# The ids of the processes whose arguments are exactly "sleep $TEAM_TIMERS_RUN_SECONDS", each
+# killed, so a run that leaves one never holds the file's run open.
 leftover_timers() {
   local pid
-  command -p ps -A -o pid=,args= | awk '$2 == "sleep" && $3 == "4199" && NF == 3 { print $1 }' |
+  command -p ps -A -o pid=,args= | awk -v n="$TEAM_TIMERS_RUN_SECONDS" '$2 == "sleep" && $3 == n && NF == 3 { print $1 }' |
     while read -r pid; do
       kill -KILL "$pid" 2>/dev/null || true
       echo "$pid"
@@ -943,7 +943,7 @@ leftover_timers() {
   stub_script ps <<'SH'
 if [[ $* == "-A -o pid=,ppid=" ]]; then
   for ((i = 0; i < 50; i++)); do
-    command -p ps -A -o args= | grep -x 'sleep 4199' >/dev/null && break
+    command -p ps -A -o args= | grep -x "sleep $TEAM_TIMERS_RUN_SECONDS" >/dev/null && break
     command -p sleep 0.1
   done
   command -p ps -A -o pid=,ppid=,comm= | awk '$3 != "sleep" && $3 !~ /\/sleep$/ { print $1, $2 }'
@@ -952,7 +952,9 @@ fi
 command -p ps "$@"
 exit
 SH
-  export TEAM_TIMERS_RUN_SECONDS=4199
+  # A run limit no other run on the machine has, since the test reads every process, another copy
+  # of this file's among them: 5000000 plus this test's process id, which no live test shares.
+  export TEAM_TIMERS_RUN_SECONDS=$((5000000 + $$))
   local start lock=$HOME/.local/state/agent-team/heartbeat.lock
   mkdir -p "${lock%/*}"
 
