@@ -637,7 +637,7 @@ T1 home: archived .scratch/task to tasks/T1/scratch"
 
 @test "the archive leaves out videos, Playwright output and build output, each named, and keeps a probe beside a crowded directory" {
   run_bin -0 team-open home feature feat work "Do the work"
-  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  git -C "${TEAM_HOME:?}" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
   # No address at a real provider is written out (ci.yml's data job and gitleaks read this file).
   local provider=gmail.com dir=$HOME/slots/home/1/.scratch/task
   mkdir -p "$dir/work/probes" "$dir/work/tmp/pytest-0" "$dir/work/cache" "$dir/sweep-out/login" \
@@ -678,11 +678,11 @@ T1 home: left out of tasks/T1/scratch: baseline/dist (build output)
 T1 home: left out of tasks/T1/scratch: vendor.min.js (build output)
 T1 home: archived .scratch/task to tasks/T1/scratch"
   # The records hook takes the checkpoint's commit, which holds the text alone, the probe with it.
-  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch | grep -v /work/cache/)" "tasks/T1/scratch/baseline/notes.md
+  assert_equal "$(git -C "${team_origin:?}" ls-tree -r --name-only dev tasks/T1/scratch | grep -v /work/cache/)" "tasks/T1/scratch/baseline/notes.md
 tasks/T1/scratch/e2e/login.spec.ts
 tasks/T1/scratch/work/findings.md
 tasks/T1/scratch/work/probes/autosave.test.ts"
-  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch/work/cache | wc -l)" "60"
+  assert_equal "$(git -C "${team_origin:?}" ls-tree -r --name-only dev tasks/T1/scratch/work/cache | wc -l)" "60"
 }
 
 @test "a research task's work/probes/ is kept beside a smaller or equal sibling that crowds work/" {

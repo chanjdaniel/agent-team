@@ -68,8 +68,8 @@ out of git; take each out, then commit again:
   local line
   line="$(printf 'var a%d=1;' {1..20000})/*! @author ow <ow@$provider> */$(printf 'var b%d=2;' {1..20000})"
   record tasks/T1/scratch/baseline/dist/assets/index-Bgg7i7NB.js "$line"
-  git -C "$TEAM_HOME" add tasks
-  run -1 --separate-stderr env GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "chore: checkpoint" \
+  git -C "${TEAM_HOME:?}" add tasks
+  run -1 --separate-stderr env GIT_LITERAL_PATHSPECS=1 git -C "${TEAM_HOME:?}" commit -q -m "chore: checkpoint" \
     --only -- tasks/T1/scratch/baseline/dist/assets/index-Bgg7i7NB.js
   assert_contains "${stderr%%$'\n'*}" "refused: tasks/T1/scratch/baseline/dist/assets/index-Bgg7i7NB.js adds an email address at a public provider"
 }

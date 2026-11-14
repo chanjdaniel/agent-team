@@ -388,7 +388,7 @@ read 3 of 3 transcripts; wrote 1 day file"
 # - T5's builder b5 peaks at 100k (0.82), and T5 has two tickets done;
 # - T6's reviewer c6 has one reply of 260k (0.15).
 long_fixture() {
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$TEAM_HOME/usage/home-pc"
   jq -nc '
     {ts: "2026-10-20T07:00:00Z", task: "T5", event: "opened", project: "agent-team"},
@@ -428,7 +428,7 @@ long_fixture() {
 }
 
 @test "the long sessions table shows the top 15 tasks by \$w, and says how many more there are" {
-  rm -r "$HOME/.claude/projects"
+  rm -r "${HOME:?}/.claude/projects"
   mkdir -p "$TEAM_HOME/usage/home-pc"
   # Seventeen tasks, T1 to T17, each a builder of one 300k reply whose $w grows with its number.
   jq -nc 'range(1; 18) as $n

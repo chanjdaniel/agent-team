@@ -84,13 +84,13 @@ index_of() {
   index_of agent-team 20 50
   run_bin -0 team-doctor
   assert_equal "$output" "PASS memory index: 3 memory indexes, each within Claude Code's load cap of 200 lines and 25,000 characters; the fullest, conventioner's, is 200 lines and 24,999 characters"
-  rm -r "$TEAM_HOME/memory/conventioner" "$TEAM_HOME/memory/coordinator"
+  rm -r "${TEAM_HOME:?}/memory/conventioner" "${TEAM_HOME:?}/memory/coordinator"
   run_bin -0 team-doctor
   assert_equal "$output" "PASS memory index: 1 memory index, within Claude Code's load cap of 200 lines and 25,000 characters; agent-team's is 20 lines and 1,019 characters"
 }
 
 @test "with no memory directory, or none holding an index, it passes and says there is none" {
-  rm -rf "$TEAM_HOME/memory"
+  rm -rf "${TEAM_HOME:?}/memory"
   run_bin -0 team-doctor
   assert_equal "$output" "PASS memory index: the team home has no memory/*/MEMORY.md, so no index to load"
   mkdir -p "$TEAM_HOME/memory/conventioner"
