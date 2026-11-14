@@ -14,15 +14,20 @@ quoted name, sudo, env, nohup, timeout and the rest are no way around a row:
     --; a file a shell runs as its script, or source reads, is never rm.
   find with -delete outside its -exec lists, its operands its start paths (its words before the
     first that starts with -, ( or !, past the leading options -H, -L, -P, -E, -X, -d, -s, -x,
-    -D <debug> and -O<level>; . when there are none, a {} never one).
+    -D <debug> and -O<level> and a -- after them; . when there are none, a {} never one), and
+    the list -files0-from reads them from, which the guard cannot read: "-files0-from's list".
   rm run by find's -exec, -execdir, -ok or -okdir, recursive or not, directly or in a string a
     shell there runs: find's start paths are its operands, and its own operands holding no {} are
     checked as well when it is recursive.
   rm or find behind xargs or parallel deletes what they read from input (and parallel's :::
     inputs), which the guard cannot read: its word is "xargs's input" or "parallel's input".
-Each operand is resolved without running anything, from the walk's word (its quotes removed):
-  - a backslash left in it (an escape of $'...', or a quoted backslash) makes it unread;
-  - a brace comma list ({a,b}, nested too) is expanded; a sequence ({1..3}) is unread;
+  Every rm or find above, in a call whose text names extglob and holds a pattern's opening (@(,
+    !(, +(, ?( or *(), which the walk reads as a subshell, deletes "an extglob pattern", unread.
+Each operand is resolved without running anything, from the walk's word (its quotes removed, its
+unquoted brace lists expanded):
+  - a backslash left in it (a quoted backslash), or a word the walk decoded from a $'...' escape
+    or made by a brace range ({1..3}), makes it unread, named as written;
+  - a brace comma list ({a,b}, nested too) left in it is expanded;
   - a leading ~ or ~/ is HOME; ~user, ~+ and ~- are unread;
   - $HOME and $CLAUDE_JOB_DIR (each also as ${...}) are the hook's environment, an unset one
     empty; $CLAUDE_PROJECT_DIR is both the hook's value and empty, every one of which must pass,
@@ -47,11 +52,15 @@ pushd target anywhere in the command (cd alone is HOME), resolved the same way, 
 against every candidate so far, both as the shell's logical cd reads it and as the file system
 does; a cd -, popd, pushd with no directory or a +N or -N, a cd to an unread target, a relative cd
 target while CDPATH is set or named, env's -C or --chdir and sudo's -D or --chdir make every
-relative operand unread, and so does a call with no cwd.
+relative operand unread, and so do a call with no cwd and one whose text names cdable_vars, under
+which cd follows a variable of the name it is given.
 Each path is made absolute, and its symlinks are followed (os.path.realpath), so a link never
 launders a delete. A glob (*, ? or [ in a component) passes when the literal directory before its
 first glob component passes, which holds no kept path then, and that component does not start
-with a dot (which may match ..). An empty operand deletes nothing.
+with a dot (which may match ..); when a component follows its last glob component, the path
+normalized as written must pass too, and so must each directory the glob matches now (to 256)
+joined to the rest and resolved, so a .. or a link after a glob climbs nowhere unseen. An empty
+operand deletes nothing.
 With no root at all (no worktree and no job tmp found), every recursive delete is refused as
 outside, naming its first operand.
 The rows, in order, each naming the first operand of its kind:
@@ -65,6 +74,7 @@ since the guard reads the file system as it is before the command runs.
 """
 
 import functools
+import glob
 import os
 import re
 import sys
@@ -107,6 +117,9 @@ DECLARERS = frozenset(("export", "local", "declare", "typeset", "readonly"))
 # A variable as $NAME or ${NAME}.
 REFERENCE = re.compile(r"\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})")
 GLOB = re.compile(r"[*?\[]")
+# An extglob pattern's opening, which the walk reads as a subshell's (, as Bash does while extglob
+# is off.
+EXTGLOB = re.compile(r"[?*+@!]\(")
 # The trees whose links name the process that reads them.
 LIVE = ("/proc/", "/dev/")
 # What a word may still hold that the shell expands at run time.
@@ -118,6 +131,8 @@ MKTEMP_LONG = frozenset(("directory", "quiet", "dry-run", "suffix", "tmpdir", "h
 # how deep a variable's value may name another, before the guard reads it as unread.
 MAX_PATHS = 64
 MAX_CANDIDATES = 64
+# The most directories one glob a component follows may match before the delete is unread.
+MAX_MATCHES = 256
 MAX_DEPTH = 8
 
 
@@ -328,7 +343,8 @@ def _substitute(text, context, depth):
 
 def _expand(word, context):
     """The word as the paths the shell may make of it, relative ones as they stand."""
-    if "\\" in word:
+    # The walk decoded a $'...' escape or expanded a brace range in a word it marks written.
+    if "\\" in word or getattr(word, "written", None) is not None:
         raise Unread
     out = []
     for braced in _braces(word):
@@ -372,7 +388,8 @@ def _within(path, root):
 def _candidates(context):
     """Each directory the command may be in when it runs a relative delete, resolved: its cwd and
     each cd target; Unread when one cannot be followed."""
-    if context.cwd is None:
+    # cdable_vars makes cd follow a variable of the name it is given.
+    if context.cwd is None or "cdable_vars" in context.text:
         raise Unread
     targets = [target for command in _walked(context) for target in _cd_targets(command)]
     if None in targets:
@@ -404,17 +421,34 @@ def _candidates(context):
     return tuple(found)
 
 
+def _verdicts(path, context):
+    """An absolute path's verdicts, each OUTSIDE, KEPT or None (it passes) and how it is named: the
+    path's own, and for a glob a component follows, where its .. or a link may climb from each
+    directory the glob matches, the path normalized as written and each such match's."""
+    yield _verdict(path, context)
+    parts = path.split("/")
+    last = max((k for k, part in enumerate(parts) if GLOB.search(part)), default=None)
+    if last is None or last == len(parts) - 1:
+        return
+    yield _verdict(os.path.normpath(path), context)
+    rest = "/".join(parts[last + 1 :])
+    for k, match in enumerate(glob.iglob("/".join(parts[: last + 1]))):
+        if k >= MAX_MATCHES:
+            raise Unread
+        yield _verdict(os.path.realpath(os.path.join(match, rest)), context)
+
+
 def _verdict(path, context):
     """An absolute path's verdict, OUTSIDE, KEPT or None (it passes), and how it is named."""
     parts = path.split("/")
-    glob = next((k for k, part in enumerate(parts) if GLOB.search(part)), None)
-    if glob is None:
+    first = next((k for k, part in enumerate(parts) if GLOB.search(part)), None)
+    if first is None:
         directory = shown = os.path.realpath(path)
         dotted = False
     else:
-        directory = os.path.realpath("/".join(parts[:glob]) or "/")
-        shown = directory.rstrip("/") + "/" + "/".join(parts[glob:])
-        dotted = parts[glob].startswith(".")
+        directory = os.path.realpath("/".join(parts[:first]) or "/")
+        shown = directory.rstrip("/") + "/" + "/".join(parts[first:])
+        dotted = parts[first].startswith(".")
     if not any(_within(directory, root) for root in context.roots):
         return OUTSIDE, shown
     if dotted or any(_within(kept, directory) for kept in context.kept):
@@ -436,14 +470,15 @@ def _judge(word, opening, context):
         if any(path.startswith(LIVE) for path in paths):
             raise Unread
     except Unread:
+        written = getattr(word, "written", None) or word
         if not context.roots:
-            return [(OUTSIDE, opening.format(word) + WHY[OUTSIDE])]
-        return [(UNREAD, opening.format(word) + WHY[UNREAD])]
+            return [(OUTSIDE, opening.format(written) + WHY[OUTSIDE])]
+        return [(UNREAD, opening.format(written) + WHY[UNREAD])]
     found = []
     for path in paths:
-        kind, shown = _verdict(path, context)
-        if kind:
-            found.append((kind, opening.format(shown) + WHY[kind]))
+        for kind, shown in _verdicts(path, context):
+            if kind:
+                found.append((kind, opening.format(shown) + WHY[kind]))
     return found
 
 
@@ -464,11 +499,14 @@ def _rm(args):
 
 
 def _starts(args):
-    """find's start paths among its words after its name: past its leading options, its words
-    before the first that starts with -, ( or !; . when there are none; a {} never one."""
+    """find's start paths among its words after its name: past its leading options and a -- that
+    ends them, its words before the first that starts with -, ( or !; . when there are none; a {}
+    never one."""
     k = 0
     while k < len(args) and (FIND_LEADING.fullmatch(args[k]) or args[k] == "-D"):
         k += 2 if args[k] == "-D" else 1
+    if args[k : k + 1] == ["--"]:
+        k += 1
     paths = []
     while k < len(args) and not args[k].startswith(("-", "(", "!")):
         paths.append(args[k])
@@ -476,17 +514,29 @@ def _starts(args):
     return [path for path in paths if path != "{}"] if paths else ["."]
 
 
-def _deletes(args):
-    """Whether find's words hold -delete outside its -exec lists."""
+def _holds(args, option):
+    """Whether find's words hold option outside its -exec lists."""
     k = 0
     while k < len(args):
         if args[k] in FIND_EXEC:
             while k < len(args) and args[k] not in (";", "+"):
                 k += 1
-        elif args[k] == "-delete":
+        elif args[k] == option:
             return True
         k += 1
     return False
+
+
+def _find_starts(args, context):
+    """The verdicts on find's start paths: each of _starts', and its -files0-from list's, which the
+    guard cannot read before it runs (with no root, outside)."""
+    found = []
+    for start in _starts(args):
+        found += _judge(start, FIND, context)
+    if _holds(args, "-files0-from"):
+        kind = OUTSIDE if not context.roots else UNREAD
+        found.append((kind, FIND.format("-files0-from's list") + WHY[kind]))
+    return found
 
 
 @functools.lru_cache(maxsize=None)
@@ -504,8 +554,7 @@ def _judgments(command, context):
             recursive, operands = _rm(args)
             finder = next((w for w in reversed(command.wrappers) if w and command_name(w[0]) == "find"), None)
             if finder is not None:
-                for start in _starts(list(finder[1:])):
-                    found += _judge(start, FIND, context)
+                found += _find_starts(list(finder[1:]), context)
                 operands = [operand for operand in operands if "{}" not in operand]
             elif not recursive:
                 continue
@@ -513,16 +562,17 @@ def _judgments(command, context):
             if recursive:
                 for operand in operands:
                     found += _judge(operand, RM, context)
-        elif name == "find" and _deletes(args):
+        elif name == "find" and _holds(args, "-delete"):
             opening = FIND
-            for start in _starts(args):
-                found += _judge(start, FIND, context)
+            found += _find_starts(args, context)
         else:
             continue
+        kind = OUTSIDE if not context.roots else UNREAD
         feeder = next((ran for ran in reversed(behind) if ran in FEEDERS), None)
         if feeder:
-            kind = OUTSIDE if not context.roots else UNREAD
             found.append((kind, opening.format(f"{feeder}'s input") + WHY[kind]))
+        if "extglob" in context.text and EXTGLOB.search(context.text):
+            found.append((kind, opening.format("an extglob pattern") + WHY[kind]))
     return tuple(found)
 
 

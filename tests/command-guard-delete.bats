@@ -150,6 +150,9 @@ refuses_wrapped() {
 @test "a glob passes only under a directory that passes, holding no kept path, never starting with a dot" {
   refuses_wrapped "a recursive delete of $WT/*, $KEPT" "$DELETE_WAY" "rm -rf ./*"
   refuses "a recursive delete of $WT/*, $KEPT" "$DELETE_WAY" "rm -rf *" "rm -rf $WT/*"
+  # The glob matches link, whose build is outside, and the outside row comes first.
+  refuses "a recursive delete of $OUT/build, $OUTSIDE" "$DELETE_WAY" "rm -rf */build"
+  rm "$WT/link"
   refuses "a recursive delete of $WT/*/build, $KEPT" "$DELETE_WAY" "rm -rf */build"
   refuses "a recursive delete of $WT/.scratch/*, $KEPT" "$DELETE_WAY" "rm -rf .scratch/*"
   refuses "a recursive delete of $WT/.*, $KEPT" "$DELETE_WAY" "rm -rf .*"
@@ -258,4 +261,45 @@ refuses_wrapped() {
   assert_equal "$stderr" "Blocked by command-guard: a kill by name or pattern (pkill), which reaches every task's processes and the team's own sessions; the allowed way: find your own process's PID (pgrep -af <pattern>, or the \$! you noted when you started it) and kill that literal PID in a call of its own, which passes when the process is yours and its working directory is inside your worktree or your job's tmp. A guardrail: do not reach it another way."
   refuses "a recursive delete of $TMP/x, $OUTSIDE" "$DELETE_WAY" 'rm -rf "$T" . /tmp/x'
   refuses "a recursive delete of $WT, $KEPT" "$DELETE_WAY" 'rm -rf "$T" .'
+}
+
+# A name split by quotes or a backslash, a brace list, ANSI-C quoting or a script that printf
+# decodes is the name Bash runs.
+@test "a recursive delete spelled with quotes, a backslash, a brace list, ANSI-C quoting or in a decoded script is refused" {
+  refuses "a recursive delete of $TMP/x, $OUTSIDE" "$DELETE_WAY" "r''m -rf /tmp/x" '"r"m -rf /tmp/x' 'r\m -rf /tmp/x' \
+    "{rm,-rf,/tmp/x}" "sudo {rm,-rf,/tmp/x}" "\$'\\x72m' -rf /tmp/x" "\$'\\162m' -rf /tmp/x" \
+    $'printf \'\\x72m -rf /tmp/x\\n\' > x.sh; bash x.sh' $'printf \'%sm -rf /tmp/x\\n\' r > x.sh; bash x.sh'
+  refuses "$FIND $TMP, $OUTSIDE" "$DELETE_WAY" "fi''nd /tmp -delete" "{find,/tmp,-delete}"
+  passes "echo {rm,-rf,/tmp/x}" "{rm,-rf,build}"
+}
+
+# A glob's matches are where it deletes, and a .. after it climbs from each of them.
+@test "a glob followed by more of the path is judged as written and on what it matches" {
+  refuses "a recursive delete of $BATS_TEST_TMPDIR/x, $OUTSIDE" "$DELETE_WAY" "rm -rf src/*/../../../x" \
+    "rm -rf build/*/../../../x"
+  refuses "a recursive delete of $WT/.scratch/task, $KEPT" "$DELETE_WAY" "rm -rf src/*/../../.scratch/task"
+  ln -s "$OUT" "$WT/build/l"
+  refuses "a recursive delete of $OUT/x, $OUTSIDE" "$DELETE_WAY" "rm -rf build/*/x" "rm -rf build/[l]/x"
+  passes "rm -rf src/*/x" "rm -rf src/*/../build" "rm -rf build/*"
+}
+
+@test "find's -- before its start paths and its -files0-from list are read" {
+  CWD=$WT/src
+  refuses "$FIND $TMP/x, $OUTSIDE" "$DELETE_WAY" "find -- /tmp/x -delete" "find -L -- /tmp/x -delete" \
+    "find -- /tmp/x -exec rm -rf {} +"
+  refuses "$FIND -files0-from's list, $UNREAD" "$UNREAD_WAY" "find -files0-from list -delete" \
+    "find -files0-from list -exec rm -rf {} +"
+  passes "find -- . -delete" "find -files0-from list -print"
+}
+
+# shopt's cdable_vars makes a cd follow a variable, and its extglob makes @(...), !(...), +(...),
+# ?(...) and *(...) patterns, which the walk reads as subshells.
+@test "after cdable_vars a relative delete is unread, and after extglob so is a delete in a call holding a pattern" {
+  refuses "a recursive delete of x, $UNREAD" "$UNREAD_WAY" $'T=/tmp\nshopt -s cdable_vars\ncd T; rm -rf x' \
+    "shopt -s cdable_vars; rm -rf x"
+  refuses "a recursive delete of an extglob pattern, $UNREAD" "$UNREAD_WAY" $'shopt -s extglob\nrm -rf @(.scratch)' \
+    $'shopt -s extglob\nrm -rf +(.scratch)' $'shopt -s extglob\nrm -rf !(build)' \
+    $'shopt -s extglob\nrm -rf build/@(a|b)' $'shopt -s extglob\nrm -rf build/*(x)'
+  refuses "$FIND an extglob pattern, $UNREAD" "$UNREAD_WAY" $'shopt -s extglob\nfind @(.scratch) -delete'
+  passes "shopt -s cdable_vars; rm -rf $WT/build" $'shopt -s extglob\nrm -rf build/x' "rm -rf build/x; (cd src)"
 }
