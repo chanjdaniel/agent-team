@@ -1037,6 +1037,137 @@ inbox: failed: cannot write $TEAM_HOME/waiting.md: it is a directory"
   assert_equal "$(inbox_calls | wc -l)" 1
 }
 
+# Append T<n>'s thread and opened, of project agent-team, to <team home>'s ledger (default
+# TEAM_HOME), as opened_task does for proj: agent_team_task <task> [<team home>]
+agent_team_task() {
+  jq -cn --arg task "$1" '"2026-01-01T00:00:00Z" as $ts
+    | {ts: $ts, task: $task, event: "thread", discord_thread: "1563000000000000000"},
+      {ts: $ts, task: $task, event: "opened", project: "agent-team", path: "feature", type: "feat", title: "X",
+       branch: "feat/\($task)-x", base: "dev", base_sha: "0000000000000000000000000000000000000000",
+       worktree: "/w/\($task)"}' >>"${2:-$TEAM_HOME}/ledger.jsonl"
+}
+
+# A queued item of agent-team that T<n> opened, with T<n>'s opened in the ledger, and with
+# --merged its whole merge too, under <team home> (default TEAM_HOME):
+# opened_item <name> <task> [--merged] [<team home>]
+opened_item() {
+  local home=${4:-$TEAM_HOME}
+  mkdir -p "$home/tasks/queued"
+  printf -- '---\nsummary: the work of %s\nproject: agent-team\npriority: 2\nsize: S\nopened: %s\n---\n# %s\n' \
+    "$1" "$2" "${1%.md}" >"$home/tasks/queued/$1"
+  agent_team_task "$2" "$home"
+  [[ ${3:-} != --merged ]] ||
+    jq -cn --arg task "$2" '{ts: "2026-01-01T00:00:00Z", task: $task, event: "merged", url: "https://github.com/owner/proj/pull/1", phases_left: []}' \
+      >>"$home/ledger.jsonl"
+}
+
+# The queue step's lines of a run's output, without their times.
+queue_lines() {
+  grep -E '^[^ ]+ queue: ' <<<"$1" | cut -d' ' -f3- || true
+}
+
+@test "an item opened as a task leaves the queue after that task's merge and one heartbeat run, with no hand edit" {
+  agent_team_task T5
+  mkdir -p "$TEAM_HOME/tasks/queued"
+  printf -- '---\nsummary: pin Node 24\nproject: agent-team\npriority: 2\nsize: S\n---\n# Pin Node\n' >"$TEAM_HOME/tasks/queued/node-pin.md"
+  git -C "$TEAM_HOME" add -A
+  git -C "$TEAM_HOME" commit -qm "chore: queue node-pin.md"
+  # team-open --queued takes the item for the task it opens.
+  run_bin -0 team-queue take T5 node-pin.md
+  run_bin -0 team-timers run
+  assert_equal "$(queue_lines "$output")" ""
+  jq -cn '{ts: "2026-01-01T00:00:00Z", task: "T5", event: "merged", url: "https://github.com/owner/proj/pull/1"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-timers run
+  assert_equal "$(queue_lines "$output")" "moved node-pin.md to tasks/T5/queued/: T5 merged
+wrote tasks/queued/index.md: 0 files"
+  [[ ! -e $TEAM_HOME/tasks/queued/node-pin.md && -f $TEAM_HOME/tasks/T5/queued/node-pin.md ]]
+  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued tidy"
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$(git -C "$origin" rev-parse dev)"
+  run_bin -0 team-queue index --check
+  run_bin -0 team-timers run
+  assert_equal "$(queue_lines "$output")" ""
+}
+
+@test "the queue step tidies after the ledger step and before the coordinator step, logging each line as queue: <line>" {
+  opened_item node-pin.md T5 --merged
+  # ledger: a line no reader can parse; coordinator: no session named coordinator is live.
+  echo 'not json' >>"$TEAM_HOME/ledger.jsonl"
+  stub_reply claude '[]'
+  run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease checkpoint ledger queue coordinator alert"
+  assert_equal "$(queue_lines "$output")" "moved node-pin.md to tasks/T5/queued/: T5 merged
+wrote tasks/queued/index.md: 0 files"
+}
+
+@test "the queue step never runs off the lease, offline or on a fenced machine, and runs after the back step" {
+  make_machine laptop
+  opened_item laptop.md T5 --merged "$BATS_TEST_TMPDIR/machines/laptop/team"
+  on_machine laptop run_bin -0 team-timers run
+  assert_equal "$(queue_lines "$output")" ""
+  [[ -e $BATS_TEST_TMPDIR/machines/laptop/team/tasks/queued/laptop.md ]]
+
+  opened_item node-pin.md T5 --merged
+  stub_sleep </dev/null
+  discord_answers
+  cut_origin
+  run_bin -75 team-timers run
+  run_bin -75 team-timers run
+  assert_equal "$(queue_lines "$output")" ""
+  [[ -e $TEAM_HOME/tasks/queued/node-pin.md ]]
+  git -C "${TEAM_HOME:?}" remote set-url origin "${origin:?}"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "back checkpoint queue"
+  [[ ! -e $TEAM_HOME/tasks/queued/node-pin.md ]]
+
+  steal_lease laptop home-pc
+  opened_item fenced.md T6 --merged
+  run_bin -0 team-timers run
+  assert_contains "$output" "fenced home-pc"
+  run_bin -0 team-timers run
+  assert_contains "$output" "home-pc is fenced since "
+  assert_equal "$(queue_lines "$output")" ""
+  [[ -e $TEAM_HOME/tasks/queued/fenced.md ]]
+}
+
+@test "a queue step that fails is logged with its reason and fails no other step and not the run" {
+  opened_item node-pin.md T5 --merged
+  mkdir -p "$TEAM_HOME/tasks/T5/queued"
+  echo "an earlier copy" >"$TEAM_HOME/tasks/T5/queued/node-pin.md"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint queue"
+  assert_equal "$(queue_lines "$output")" "wrote tasks/queued/index.md: 1 file
+failed: left node-pin.md queued: tasks/T5/queued/node-pin.md is there already"
+  assert_contains "$(problems)" "queue: failed: left node-pin.md queued: tasks/T5/queued/node-pin.md is there already"
+  assert_equal "$(jq -r '.steps.queue.reason' "$HOME/.local/state/agent-team/health.json")" \
+    "left node-pin.md queued: tasks/T5/queued/node-pin.md is there already"
+}
+
+@test "TEAM_TIMERS_QUEUE_SECONDS replaces the queue step's 60 s, after which it is stopped with what it started, failing its step alone" {
+  local hung=$BATS_TEST_TMPDIR/hung
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  copy_bin "$CODE_CHECKOUT/bin"
+  rm "$CODE_CHECKOUT/bin/team-queue"
+  cat >"$CODE_CHECKOUT/bin/team-queue" <<SH
+#!/usr/bin/env bash
+trap '' TERM
+echo "given: \$*"
+command -p sleep 300 &
+echo "\$!" >>'$hung'
+wait
+SH
+  chmod +x "$CODE_CHECKOUT/bin/team-queue"
+  local start=$SECONDS
+  TEAM_TIMERS_QUEUE_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
+  ((SECONDS - start < 20))
+  assert_equal "$(queue_lines "$output")" "given: tidy
+failed: timed out after 1 s"
+  assert_contains "$(problems)" "queue: failed: timed out after 1 s"
+  assert_equal "$(still_running "$hung")" ""
+  grep -q '^QUEUE_TIMEOUT=${TEAM_TIMERS_QUEUE_SECONDS:-60}$' "$REPO_ROOT/bin/team-timers"
+}
+
 # Conventioner's API as a production check on the stub production, answering <status> with <body>,
 # the known-good site on the stub too, and curl as the fake Discord or the machine's own:
 # production <status> <body>

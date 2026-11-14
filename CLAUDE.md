@@ -22,6 +22,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
     - `drills.jq`: the drills module, the one place that says what a line of the team home's `drills.jsonl` is, when a drill is due and how `team-drill status` shows it.
     - `drills.json`: the drill registry, each drill's name, what it is, who runs it (`coordinator`, or `daniel` when it needs them present) and the code it proves, with the one age past which a drill is due.
+    - `error-view.sh`: a sibling script's failure as the `{error}` a view holds in its place, its last stderr line with `~` for the home directory, for `team-queue`, `team-snapshot` and `team-sweep`.
     - `gate-claude-settings.json`: the settings the gate's Claude takes with `--settings`, its commit attribution off, since it loads no user settings.
     - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode), and reads `agent_args_override`'s list for one agent.
     - `guarded`: the short list, one extended regular expression per line with its area, `@<project>` or `@own` for one project's line, any changed path of which brings a merge on the default word, the approved plan, back to Daniel for the per-head word, read by `team-merge` from its own checkout.
@@ -35,6 +36,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `outbound.py`: whether a Bash command's `curl` or `wget` sends a request body or a file to a literal host outside the team's own local ones, directly or through a proxy, decided on each command of `command_text.py`'s walk, for `command_rules.py`'s upload row.
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
     - `probe.json`: the refusal probe's data, each attempt `team-load-check --probe` has a worker role make and the layer that should refuse it, every deny rule of the worker roles' settings sorted into a family, and their PreToolUse hooks, each with an attempt or the reason it has none.
+    - `queue.jq`: the queue module, the one place that says an item's state, when its `after:` is met, how items rank, the room for one more task, the problems `team-queue index --check` names, the index's and the list's text, the sweep's findings and what `set`, `take` and `tidy` write.
     - `reading.sh`: one reading of the machine's load (its memory, its processes by directory and descent, the team's stacks), which `team-capacity sample` takes.
     - `records`: the team home's paths, which no tracked path matches.
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.

@@ -526,3 +526,157 @@ EOF
   AGENT_TEAM_ROLE=coordinator run_bin -0 --separate-stderr team-open proj feature feat tooling "The team's own tooling"
   assert_equal "$(jq -r .task <<<"$output")" T1
 }
+
+# Write tasks/queued/<name>, a ready item of proj with the front matter lines given after its
+# summary, then a title line when <title> is not empty, and make the team home a git checkout
+# that ignores the ledger's lock, so team-queue take commits: queued_item <name> <title> [<key>: <value>]...
+queued_item() {
+  local name=$1 title=$2
+  shift 2
+  mkdir -p "$TEAM_HOME/tasks/queued"
+  { echo ---; echo "summary: the summary of $name"; printf '%s\n' "$@"; echo ---; [[ -z $title ]] || echo "# $title"; } \
+    >"$TEAM_HOME/tasks/queued/$name"
+  if [[ ! -d $TEAM_HOME/.git ]]; then
+    printf 'ledger.jsonl.lock\n' >"$TEAM_HOME/.gitignore"
+    make_team_home >/dev/null
+  fi
+}
+
+# Nothing taken since the test began: no task number, slot, thread or event.
+nothing_taken() {
+  [[ -z $(find "$TEAM_HOME/tasks" -mindepth 1 -maxdepth 1 -name 'T*') ]]
+  assert_equal "$(git -C "$primary" worktree list | wc -l)" "1"
+  assert_equal "$(stub_calls curl | wc -l)" "0"
+  assert_equal "$(wc -c <"$TEAM_HOME/ledger.jsonl")" "0"
+}
+
+@test "--queued <file> opens the item's task with the arguments it derives, says so in the plan and links the item" {
+  queued_item fix-the-sign-in-limit.md "Fix the sign-in limit" "project: proj" "priority: 1" "size: S"
+  run_bin -0 --separate-stderr team-open --queued fix-the-sign-in-limit.md
+  assert_equal "$(jq -r '[.task, .project, .path, .branch, .title] | join(" ")' <<<"$output")" \
+    "T1 proj small fix/T1-fix-the-sign-in-limit Fix the sign-in limit"
+  assert_equal "$(events opened | jq -r '[.path, .type, .title] | join(" ")')" "small fix Fix the sign-in limit"
+  local plan=$TEAM_HOME/tasks/T1/plan.md
+  assert_equal "$(sed -n '/^## Why$/,/^## Scope$/p' "$plan")" "## Why
+
+$(sed -n '/^## Why$/{n;n;p}' "$REPO_ROOT/templates/plan.md")
+
+From the queue: \`tasks/queued/fix-the-sign-in-limit.md\`: the summary of fix-the-sign-in-limit.md
+
+## Scope"
+  assert_equal "$(grep '^opened:' "$TEAM_HOME/tasks/queued/fix-the-sign-in-limit.md")" "opened: T1"
+  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: queued take T1"
+  assert_contains "$stderr" "team-open: took fix-the-sign-in-limit.md for T1"
+  run_bin -0 team-log --check
+}
+
+@test "--queued <file> takes path feature and type feat for sizes M and L, a long name's slug cut at its last dash, and the summary for a missing title" {
+  # 41 characters, the 41st no "-": cut to 40 at its last "-" within them, so "-setup" goes.
+  queued_item queue-priority-and-diagnosis-of-the-setup.md "" "project: proj" "priority: 2" "size: M"
+  run_bin -0 --separate-stderr team-open --queued queue-priority-and-diagnosis-of-the-setup.md
+  assert_equal "$(jq -r '[.path, .branch, .title] | join(" ")' <<<"$output")" \
+    "feature feat/T1-queue-priority-and-diagnosis-of-the the summary of queue-priority-and-diagnosis-of-the-setup.md"
+  # A "-" as the 41st character cuts at 40, keeping the whole word before it.
+  queued_item queue-priority-and-diagnosis-of-the-abcd-ef.md "Large" "project: proj" "priority: 2" "size: L"
+  stub_reply curl '{"id":"1563000000000000002"}'
+  run_bin -0 --separate-stderr team-open --queued queue-priority-and-diagnosis-of-the-abcd-ef.md
+  assert_equal "$(jq -r '[.path, .branch, .title] | join(" ")' <<<"$output")" \
+    "feature feat/T2-queue-priority-and-diagnosis-of-the-abcd Large"
+}
+
+@test "--queued with every argument takes them as given, and --task and --story combine with both forms" {
+  backlog_story proj E40-history/F01-the-markets/S02-every-write.md E40/F01/S02
+  queued_item given.md "Given" "project: proj" "priority: 2" "size: S"
+  run_bin -0 --separate-stderr team-open --task T13 --story E40/F01/S02 --queued given.md proj bug fix own-slug "Its own title"
+  assert_equal "$(jq -r '[.task, .path, .branch, .title, .story] | join(" ")' <<<"$output")" \
+    "T13 bug fix/T13-own-slug Its own title E40/F01/S02"
+  assert_equal "$(grep '^opened:' "$TEAM_HOME/tasks/queued/given.md")" "opened: T13"
+  queued_item short.md "Short" "project: proj" "priority: 2" "size: M"
+  stub_reply curl '{"id":"1563000000000000002"}'
+  run_bin -0 --separate-stderr team-open --queued short.md --task T14 --story E40/F01/S02
+  assert_equal "$(jq -r '[.task, .path, .branch, .story] | join(" ")' <<<"$output")" "T14 feature feat/T14-short E40/F01/S02"
+  assert_equal "$(grep '^opened:' "$TEAM_HOME/tasks/queued/short.md")" "opened: T14"
+}
+
+@test "--queued refuses an item that is not ready, and a project that is not the item's, before anything is taken" {
+  printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","task":"T4","event":"opened","project":"proj","path":"feature","type":"feat","title":"X","branch":"feat/T4-x","base":"main","base_sha":"0000000000000000000000000000000000000000","worktree":"/w/T4"}' \
+    >"$BATS_TEST_TMPDIR/t4.jsonl"
+  queued_item ready.md "Ready" "project: proj" "priority: 2" "size: S"
+  queued_item unranked.md "Unranked" "project: proj" "priority: 5" "size: S"
+  queued_item waiting.md "Waiting" "project: proj" "priority: 2" "size: S" "after: T4 merged, 2999-01-01" "waits: Daniel's word"
+  queued_item opened.md "Opened" "project: proj" "priority: 2" "size: S" "opened: T4"
+  queued_item bundle.md "Bundle" "project: proj" "priority: 2" "size: M" "takes: taken.md"
+  queued_item taken.md "Taken" "project: proj" "priority: 2" "size: S"
+  # T4 is only in a copy of the ledger until the refusals that read it, so nothing_taken holds.
+  run_bin -1 --separate-stderr team-open --queued gone.md
+  assert_equal "$stderr" "team-open: gone.md is not queued (team-queue list)"
+  run_bin -1 --separate-stderr team-open --queued index.md
+  assert_equal "$stderr" "team-open: index.md is not queued (team-queue list)"
+  run_bin -1 --separate-stderr team-open --queued unranked.md
+  assert_equal "$stderr" "team-open: unranked.md is unranked: priority \"5\" is not 1, 2, 3 or 4; fix it first (team-queue index --check names it)"
+  run_bin -1 --separate-stderr team-open --queued taken.md
+  assert_equal "$stderr" "team-open: taken.md is taken by bundle.md: open its taker instead"
+  run_bin -1 --separate-stderr team-open --queued ready.md other feature feat ready "Ready"
+  assert_equal "$stderr" "team-open: ready.md is proj's, not other's"
+  nothing_taken
+  cp "$BATS_TEST_TMPDIR/t4.jsonl" "$TEAM_HOME/ledger.jsonl"
+  run_bin -1 --separate-stderr team-open --queued waiting.md
+  assert_equal "$stderr" "team-open: waiting.md waits for Daniel's word, T4 merged, 2999-01-01; open it without --queued and link it with team-queue take when that is meant"
+  run_bin -1 --separate-stderr team-open --queued opened.md
+  assert_equal "$stderr" "team-open: opened.md is opened by T4, which builds it"
+  [[ -z $(find "$TEAM_HOME/tasks" -mindepth 1 -maxdepth 1 -name 'T*') ]]
+  assert_equal "$(git -C "$primary" worktree list | wc -l)" "1"
+  assert_equal "$(stub_calls curl | wc -l)" "0"
+  cmp "$BATS_TEST_TMPDIR/t4.jsonl" "$TEAM_HOME/ledger.jsonl"
+  assert_equal "$(grep -c '^opened:' "$TEAM_HOME/tasks/queued/ready.md")" "0"
+}
+
+@test "--queued refuses a derived slug that is no valid one, naming the form with every argument, before anything is taken" {
+  queued_item Big_Item.md "Big" "project: proj" "priority: 2" "size: S"
+  run_bin -1 --separate-stderr team-open --queued Big_Item.md
+  assert_equal "$stderr" "team-open: the slug \"Big_Item\" from Big_Item.md is not lower-case kebab case of at most 40 characters; give every argument: team-open --queued Big_Item.md <project> <path> <type> <slug> <title...>"
+  nothing_taken
+  run_bin -0 team-open --queued Big_Item.md proj small fix big-item "Big"
+  assert_equal "$(grep '^opened:' "$TEAM_HOME/tasks/queued/Big_Item.md")" "opened: T1"
+}
+
+@test "a take that fails after the open is one line on stderr naming the command, and the open succeeds" {
+  queued_item hook-refused.md "Hook refused" "project: proj" "priority: 2" "size: S"
+  printf '#!/bin/sh\necho "refused by the test hook" >&2\nexit 1\n' >"$TEAM_HOME/.git/hooks/pre-commit"
+  chmod +x "$TEAM_HOME/.git/hooks/pre-commit"
+  run_bin -0 --separate-stderr team-open --queued hook-refused.md
+  assert_equal "$(jq -r .task <<<"$output")" "T1"
+  assert_equal "$(grep -c 'team-queue take' <<<"$stderr")" "1"
+  assert_contains "$stderr" "team-open: team-queue take T1 hook-refused.md failed (team-queue: team home: cannot commit the records: refused by the test hook); run it to link the item: team-queue take T1 hook-refused.md"
+  assert_contains "$(cat "$TEAM_HOME/tasks/T1/plan.md")" "From the queue: \`tasks/queued/hook-refused.md\`: the summary of hook-refused.md"
+}
+
+@test "a --queued open that fails after the slot is taken names the command that finishes it, --queued kept, and that command links the item" {
+  queued_item half-open.md "Half open" "project: proj" "priority: 2" "size: S"
+  stub_reply curl '{"message":"Missing Access"}'
+  run_bin -1 --separate-stderr team-open --queued half-open.md
+  assert_contains "$stderr" "T1 is half open in $slots/1; finish it with: team-open --task T1 --queued half-open.md proj small fix half-open Half\\ open"
+  assert_equal "$(grep -c '^opened:' "$TEAM_HOME/tasks/queued/half-open.md" || true)" 0
+
+  local finish
+  finish=$(sed -n 's/^team-open: T1 is half open in .*; finish it with: //p' <<<"$stderr")
+  stub_reply curl '{"id":"1563000000000000009"}'
+  eval "run_bin -0 --separate-stderr $finish"
+  assert_equal "$(jq -r '[.task, .worktree] | join(" ")' <<<"$output")" "T1 $slots/1"
+  assert_equal "$(grep '^opened:' "$TEAM_HOME/tasks/queued/half-open.md")" "opened: T1"
+  assert_contains "$(cat "$TEAM_HOME/tasks/T1/plan.md")" "From the queue: \`tasks/queued/half-open.md\`: the summary of half-open.md"
+  run_bin -0 team-queue list --json
+  assert_equal "$(jq -c '[.ready[].file]' <<<"$output")" "[]"
+}
+
+@test "--queued goes only with a new task, and takes the file alone or every argument" {
+  run_bin -2 team-open --queued
+  run_bin -2 team-open --queued a.md proj feature feat slug
+  assert_contains "$output" "usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] --queued <file> [<project> <path> <type> <slug> <title...>]"
+  run_bin -2 team-open --queued a.md --queued b.md
+  run_bin -2 team-open --task T1 --queued a.md --add proj feat more
+  assert_contains "$output" "--queued goes only with a new task, not with --add, --resume or --ticket"
+  run_bin -2 team-open --task T1 --queued a.md --resume proj
+  run_bin -2 team-open --task T1 --queued a.md --ticket 01
+  assert_equal "$(wc -c <"$TEAM_HOME/ledger.jsonl")" "0"
+}

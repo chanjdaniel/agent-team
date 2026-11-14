@@ -348,6 +348,16 @@ Nothing waits on you."
   jq -e '.ok' <<<"$view"
 }
 
+@test "failing steps' problems come in the run's order, the queue step's after the ledger's and before the uptime's" {
+  local file=$HOME/.config/agent-team/capacity.json
+  mkdir -p "${file%/*}"
+  echo '{"minor_share": "a third"}' >"$file"
+  run_bin -1 team-timers run
+  date_record '.steps.queue = .steps.capacity | .steps.uptime = .steps.capacity'
+  view
+  assert_equal "$(jq -r '[.problems[].key] | join(" ")' <<<"$view")" "step-queue step-uptime step-capacity step-level"
+}
+
 @test "a failed usage export is the step-usage problem, and an export that works clears it" {
   cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
   mkdir -p "$TEAM_HOME/usage/home-pc"

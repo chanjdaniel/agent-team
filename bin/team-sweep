@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Find what the coordinator must not leave unattended, from the ledger, the live session list, the
-# team's stow plan and the heartbeat's health view.
+# team's stow plan, the heartbeat's health view, the queue and the current items.
 #
 # Usage: team-sweep [--json | --wait]
 # Reads only ledger.jsonl, claude agents --json, team-capacity plan --json (from the stored
 # readings), team-timers health --json (the health view, from the heartbeat's health record, the
 # lease record and the fence file, asked for at most 10 s, and only on a machine with a team
 # name), the registry and bin/lib/review-app while an open task awaits merge with its plan approved
-# (which projects are the team's own and whether the reviewer App is on, for merge-due, below)
-# and, through
+# (which projects are the team's own and whether the reviewer App is on, for merge-due, below),
+# team-queue list --json --plan <its plan> while tasks/queued/ exists (the queue, the registry and
+# team-capacity costs --json), team-current check --json while tasks/current.md exists, and,
+# through
 # bin/lib/session-activity, the live sessions' transcripts: their modification times, and from a
 # session's quiet past the default limit only its times, tool names, tool call ids, commands and
 # background task marks (never GitHub, never a tool's output or a message's text, and never a new
@@ -158,6 +160,21 @@
 #                  last line on stderr>: fix what team-timers names". The offline problem and the
 #                  coordinator's own (coordinator, unattended) raise none, and a machine that does
 #                  not hold the lease has no problems
+#   queue-ready    after the health findings, with task and session null: team-queue list's, while
+#                  the level has room for one more task and an item is ready, the top one: "queue:
+#                  <the room's line>: open <file> (<project>, priority <p>, <size>): <summary>;
+#                  next: team-open --queued <file>" (team-queue --help has its words)
+#   queue          after it, with task and session null: team-queue list's, while it names problems
+#                  in tasks/queued/: "queue: <n> problem(s) in tasks/queued/: <the first two>; next:
+#                  fix each file team-queue index --check names"; or, when team-queue fails or prints
+#                  no team-queue/1 view, "queue: <its last line on stderr>: fix what team-queue names"
+#   current-stale  after it, with task and session null: the current items whose task closed, as
+#                  team-current check --json names them: "current: <n> item(s) name a closed task:
+#                  <id> (T181, closed 2026-11-02), ...; next: team-current done <id> for each that is
+#                  done, or add it again under an open task"
+#   current        in its place, with task and session null: team-current check fails (an exit
+#                  above 1) or prints no team-current-check/1 view: "current: <its last line on
+#                  stderr>: fix what team-current names"
 # With --json, the findings as a list of {task, kind, session, name, next, text}.
 # Exit 0 with no findings (and nothing printed but --json's []), 1 with findings, and 1 with the
 # reason on stderr and nothing on stdout when the session list cannot be read.
@@ -176,6 +193,8 @@
 # what it printed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# shellcheck source=bin/lib/error-view.sh
+source "$TEAM_LIB/error-view.sh"
 
 # --wait: seconds between looks, how long a new finding must stand, how long one there at the
 # first look must, and how long the session list may stay unreadable.
@@ -268,6 +287,20 @@ health_view() {
   rm -f "$out" "$err"
 }
 
+# The view of one of the scripts whose findings follow health's, as one compact line: its JSON
+# object when it prints one of <schema> (exit 1 with problems is a view all the same), or {error}
+# with the last line it said on stderr (~ for the home directory): script_view <schema> <script>
+# <args>...
+script_view() {
+  local schema=$1 script=$2 out err rc=0
+  out=$(mktemp) err=$(mktemp)
+  TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/$script" "${@:3}" >"$out" 2>"$err" </dev/null || rc=$?
+  if ((rc > 1)) || ! jq -ce --arg schema "$schema" 'select(type == "object" and .schema == $schema)' "$out" 2>/dev/null; then
+    error_view "$err" "$script $3 $(if ((rc)); then echo "exited $rc with no reason given"; else echo "printed no $schema view"; fi)"
+  fi
+  rm -f "$out" "$err"
+}
+
 # The registered projects that are the team's own and the reviewer App's id, own_projects' JSON in
 # bin/lib/team.sh, read only while an open task awaits merge with its plan approved
 # (default_may_hold), else no project and no App; null with a registry it cannot read, saying why
@@ -289,26 +322,45 @@ own_covered() {
 # stow plan and the live sessions' transcripts; fails with the reason on stderr when the session
 # list cannot be read.
 look() {
-  local sessions plan activity plan_file own health plan_pid health_pid
+  local sessions plan activity plan_file own health plan_pid health_pid queue current queue_pid='' current_pid='' found
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
   plan_file=$(mktemp)
   printf '%s\n' "$sessions" >"$plan_file.sessions"
+  echo null >"$plan_file.queue"
+  echo null >"$plan_file.current"
   level_plan "$plan_file.sessions" >"$plan_file" &
   plan_pid=$!
   health_view >"$plan_file.health" &
   health_pid=$!
+  if [[ -f $TEAM_HOME/tasks/current.md ]]; then
+    script_view team-current-check/1 team-current check --json >"$plan_file.current" &
+    current_pid=$!
+  fi
   activity=$(session_activity "$sessions")
   wait "$plan_pid" || true
+  # The queue reads the plan just written, beside the ledger pass below.
+  if [[ -d $TEAM_HOME/tasks/queued ]]; then
+    script_view team-queue/1 team-queue list --json --plan "$plan_file" >"$plan_file.queue" &
+    queue_pid=$!
+  fi
   wait "$health_pid" || true
   plan=$(cat "$plan_file")
   health=$(cat "$plan_file.health")
-  rm -f "$plan_file" "$plan_file.sessions" "$plan_file.health"
   [[ -n $plan ]] || plan='{"error": "team-capacity plan printed nothing"}'
   [[ -n $health ]] || health='{"error": "team-timers health printed nothing"}'
   own=$(own_covered)
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $own; $health; $self)' -nRc \
+  found=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity; $own; $health; $self)' -nRc \
     --argjson sessions "$sessions" --argjson plan "$plan" --argjson activity "$activity" --argjson own "$own" \
     --argjson health "$health" --arg self "${CLAUDE_CODE_SESSION_ID:-}" "$ledger")
+  [[ -z $queue_pid ]] || wait "$queue_pid" || true
+  [[ -z $current_pid ]] || wait "$current_pid" || true
+  queue=$(cat "$plan_file.queue")
+  current=$(cat "$plan_file.current")
+  rm -f "$plan_file" "$plan_file.sessions" "$plan_file.health" "$plan_file.queue" "$plan_file.current"
+  [[ -n $queue ]] || queue='{"error": "team-queue list printed nothing"}'
+  [[ -n $current ]] || current='{"error": "team-current check printed nothing"}'
+  FINDINGS=$(ledger_jq '. + sweep_views($queue; $current)' -c --argjson queue "$queue" --argjson current "$current" \
+    <<<"$found")
 }
 
 # The sweep watch: see --wait in the header.
