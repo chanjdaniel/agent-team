@@ -5,9 +5,10 @@ Usage: python3 -I command_text.py              (the command on stdin; prints the
        python3 -I command_text.py --commands   (the command on stdin; prints its walk, below)
 
 bin/lib/command_rules.py, the rule table bin/hooks/command-guard runs, imports code_parts,
-read_command and commands, the walk of each simple command, from it, with heads_behind and the
-other readings of where a command's name may stand, which kill_rules.py reads too; outbound.py imports commands
-and the option readers long_options and short_cluster, and team-tokens without_heredocs.
+blank_heredocs and commands, the walk of each simple command, from it, with heads_behind and the
+other readings of where a command's name may stand, which kill_rules.py reads too; outbound.py
+imports commands and the option readers long_options and short_cluster, and team-tokens
+without_heredocs.
 It reads the command far enough to know its quotes ('...', "..." and $'...'), backslashes, comments,
 arithmetic ($[, and $(( or (( whose two closing parentheses are adjacent, matched as Bash's
 parse_matched_pair does, past quotes, backticks and a $(...) read by this scan: ((cmd) ) is two
@@ -55,7 +56,23 @@ of the text sees more commands there, never fewer.
 code_parts(command) gives the same text as a list, the command first, then each added line: a
 line may leave a quote open (find -exec's string to its line's end, its closing quote with it, or
 a fed string's apostrophe), which in the joined text would hide every line after it, so a reader
-walks each part alone.
+walks each part alone; blank_heredocs(part) blanks the operator and marker of each heredoc a part
+still opens, so a walk of it reads the lines after it, and a body a shell reads, as code.
+A script the command writes to a file and runs is code too, its parts after the command's, read by
+code_parts in its turn, a script it writes and runs among them, to 20 scripts deep, past which it
+raises. Written are a heredoc's body, a here-string, and what echo and printf print (echo's text as
+written and again with its escapes decoded, as sh's echo writes it, or only decoded under -e;
+printf's format used again while its arguments last, %b decoded; printf -v writes no file), when
+the output of their pipeline segment, of a later segment it is piped into, or of the segment
+holding a group or compound command they stand in, goes to a file: > f, >> f, >| f, &> f, >& f or
+1> f, or tee's files (tee f, tee -a f). The pieces one file is written are read joined, in the
+order found. It is run when, anywhere in the command, its text, an added part or a script read so,
+a Command of the walk (below) has the file as its first word, its path normalized: a shell's script
+file or a sourced one (bash x.sh, sh ./x.sh, source x.sh, . x.sh) or a command word naming it
+(./x.sh, or x.sh itself); a run before the write counts too, since a loop may run it later. A file
+never run so keeps its text out, as do a file a shell reads on stdin (bash < x.sh), a variable's
+value (x=...; echo "$x" > f), a script written by an earlier call or by the Write tool, and a file
+run under another name (a copy, a link, a path through a cd).
 
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
@@ -619,7 +636,14 @@ def code_text(command):
 def code_parts(command):
     """The command's code text in parts: the command with its heredoc bodies out, then each string
     and fed text added, each a part of its own, so a walk of each alone leaves no quote, group or
-    heredoc one opens to hide another."""
+    heredoc one opens to hide another, then the parts of each script it writes and runs."""
+    return _code_parts(command, 0)
+
+
+def _code_parts(command, depth):
+    """code_parts of a command, or of a script written depth scripts deep in one."""
+    if depth > DEPTH:
+        raise ValueError(f"a written script nested deeper than {DEPTH}")
     reading = read_command(command)
     bodies = {h.body[0]: h.end for h in reading.heredocs}
     shells = [
@@ -658,7 +682,215 @@ def code_parts(command):
                 for simple in SIMPLE.split(piped.replace("'", "").replace('"', "")):
                     words = simple.split(None, 1)
                     added += words[1:]
-    return [text] + [inner for inner in added if inner]
+    parts = [text] + [inner for inner in added if inner]
+    return parts + _scripts(command, reading, parts, depth)
+
+
+def blank_heredocs(part):
+    """A part of the command's code text, with the operator and marker of each heredoc it still
+    opens blanked, so a walk reads every line of it as code: a body a shell reads, kept whole, and
+    the lines after a heredoc whose body is left out."""
+    out, start = [], 0
+    for heredoc in sorted(read_command(part).heredocs, key=lambda heredoc: heredoc.marker[0]):
+        begin, end = heredoc.marker
+        out += [part[start:begin], " " * (end - begin)]
+        start = end
+    return "".join(out) + part[start:]
+
+
+def _scripts(command, reading, parts, depth):
+    """The code parts of each script the command writes to a file (_writes) and runs, as the header
+    says: each file's pieces joined in the order they were found, as written and with echo's
+    escapes decoded, each a script read by code_parts in its turn, whose runs count too."""
+    pieces = {}
+    writes = _writes(command, reading) + [found for part in parts[1:] for found in _writes(part)]
+    for file, piece in writes:
+        found = pieces.setdefault(os.path.normpath(file), []) if file else [piece]
+        if piece not in found:
+            found.append(piece)
+    if not pieces:
+        return []
+    runs = _runs([command], blank=False) | _runs(parts)
+    out, kept = [], set()
+    while new := [file for file in pieces if file in runs and file not in kept]:
+        for file in new:
+            kept.add(file)
+            written = ["".join(piece[variant] for piece in pieces[file]) for variant in (0, -1)]
+            for script in dict.fromkeys(written):
+                found = _code_parts(script, depth + 1)
+                out += found
+                runs |= _runs(found)
+    return out
+
+
+def _runs(texts, blank=True):
+    """Each file the texts may run as a script, normalized: the first word of each Command their
+    walk yields, a shell's script file and a sourced file among them; with blank, each text is a
+    code part, whose open heredocs are blanked first."""
+    return {
+        os.path.normpath(found.words[0])
+        for text in texts
+        for found in commands(blank_heredocs(text) if blank else text)
+        if found.words and found.words[0]
+    }
+
+
+def _writes(text, reading=None):
+    """Each file the text writes a piece of text to, with that piece as variants (as written, and
+    decoded as another echo would), in the order found: a heredoc's body, a here-string and what
+    echo and printf print, when the output of their pipeline segment, of a later segment it is
+    piped into, or of a segment holding the group or compound command it stands in, goes to a file
+    (> f, >> f, >| f, &> f, >& f, 1> f, or tee's files)."""
+    reading = reading or read_command(text)
+    bodies = {h.body[0]: h.end for h in reading.heredocs}
+    own, simple = [], []
+    for _, segments in reading.pipelines:
+        own.append([])
+        simple.append([])
+        for start, end in segments:
+            redirects = []
+            found = _segment_commands(text, start, end, bodies, reading.subscripts, redirects)
+            files = [target for operator, target in redirects if _to_file(operator, target)]
+            for words in found:
+                _, words, _, _ = _command(list(words))
+                if words and os.path.basename(words[0]) == "tee":
+                    files += _tee_files(words[1:])
+            own[-1].append(files)
+            simple[-1].append(found)
+
+    def reached(pipeline, segment):
+        files = []
+        while True:
+            files += [file for later in own[pipeline][segment:] for file in later]
+            if reading.pipelines[pipeline][0] is None:
+                return files
+            pipeline, segment = reading.pipelines[pipeline][0]
+
+    pieces = []
+    for heredoc in reading.heredocs:
+        lines = text[heredoc.body[0] : heredoc.body[1]].split("\n")[:-1]
+        body = "".join(line + "\n" for line in lines)
+        pieces += [(file, (body,)) for file in reached(heredoc.pipeline, heredoc.segment)]
+    for pipeline, segment, word in reading.strings:
+        pieces += [(file, (word + "\n",)) for file in reached(pipeline, segment)]
+    for pipeline, segments in enumerate(simple):
+        for segment, found in enumerate(segments):
+            files = reached(pipeline, segment)
+            for words in found if files else ():
+                printed = _printed(words)
+                pieces += [(file, printed) for file in files if printed]
+    return pieces
+
+
+def _to_file(operator, target):
+    """Whether a redirection sends standard output to the file target."""
+    fd, operator = re.fullmatch(r"([0-9]*|\{\w+\})(.*)", operator).groups()
+    if operator in ("&>", "&>>"):
+        return not fd
+    if operator in (">", ">>", ">|"):
+        return fd in ("", "1")
+    return operator == ">&" and fd in ("", "1") and not re.fullmatch(r"[0-9]*-?", target)
+
+
+def _tee_files(args):
+    """tee's files: its operands, past its options up to a --."""
+    files, options = [], True
+    for word in args:
+        if options and word == "--":
+            options = False
+        elif not (options and word.startswith("-") and word != "-"):
+            files.append(word)
+    return files
+
+
+# An escape echo -e, printf's format and its %b decode: \c ends the output, octal is \0 and up to
+# three digits for echo and %b, one to three for the format, and \x, \u and \U take hex digits.
+ESCAPE = re.compile(
+    r"\\(?:([abeEfnrtv\\'\"?])|(0[0-7]{0,3}|[0-7]{1,3})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})"
+    r"|U([0-9A-Fa-f]{1,8})|(c))"
+)
+ESCAPES = dict(zip("abeEfnrtv", "\a\b\x1b\x1b\f\n\r\t\v"))
+# A conversion of printf's format: %% or one with its flags, width and precision.
+CONVERSION = re.compile(r"%(?:%|[-+ #0']*(\*|[0-9]*)(?:\.(\*|[0-9]*))?([A-Za-z]))")
+
+
+def _decoded(text, format_=False):
+    """The text with its escapes decoded, as echo -e and %b do it, or as printf's format does with
+    format_ (its octal needs no leading 0); and whether a \\c ended it."""
+    out, i = [], 0
+    for found in ESCAPE.finditer(text):
+        out.append(text[i : found.start()])
+        i = found.end()
+        plain, octal, hex_, short, long_, stop = found.groups()
+        if stop:
+            return "".join(out), True
+        if plain:
+            out.append(ESCAPES.get(plain, plain))
+        elif octal is not None:
+            if not format_ and not octal.startswith("0"):
+                out.append(found.group())
+            else:
+                digits = octal[1:] if not format_ and octal.startswith("0") else octal
+                out.append(chr(int(digits or "0", 8) & 0xFF))
+        else:
+            code = int(hex_ or short or long_, 16)
+            out.append(chr(code) if code < 0x110000 else found.group())
+    return "".join(out) + text[i:], False
+
+
+def _printed(words):
+    """What echo or printf prints with words, past its wrappers, as variants: echo's text as written
+    and decoded, as another shell's echo or echo -e decodes it; printf's output, its format used
+    again while its arguments last; empty for any other command, or printf -v, which prints none."""
+    _, words, _, _ = _command(list(words))
+    if not words:
+        return ()
+    name, args = os.path.basename(words[0]), words[1:]
+    if name == "echo":
+        flags = ""
+        while args and re.fullmatch(r"-[neE]+", args[0]):
+            flags += args.pop(0)[1:]
+        text = " ".join(args)
+        decoded, stopped = _decoded(text)
+        end = "" if "n" in flags or stopped else "\n"
+        if flags.rfind("e") > flags.rfind("E"):
+            return (decoded + end,)
+        return tuple(dict.fromkeys((text + ("" if "n" in flags else "\n"), decoded + end)))
+    if name != "printf":
+        return ()
+    if args[:1] == ["--"]:
+        args = args[1:]
+    if not args or args[0].startswith("-v"):
+        return ()
+    form, values, out = args[0], args[1:], []
+    while True:
+        used, i = 0, 0
+        for found in CONVERSION.finditer(form):
+            literal, stopped = _decoded(form[i : found.start()], format_=True)
+            out.append(literal)
+            if stopped:
+                return ("".join(out),)
+            i = found.end()
+            width, precision, kind = found.groups()
+            if found.group() == "%%":
+                out.append("%")
+                continue
+            used += (width == "*") + (precision == "*")
+            value = values[used] if used < len(values) else ""
+            used += 1
+            if kind == "b":
+                value, stopped = _decoded(value)
+                out.append(value)
+                if stopped:
+                    return ("".join(out),)
+            else:
+                quoted = shlex.quote(value) if kind == "q" and value else value
+                out.append(value[:1] if kind == "c" else quoted)
+        literal, stopped = _decoded(form[i:], format_=True)
+        out.append(literal)
+        values = values[used:]
+        if stopped or not used or not values:
+            return ("".join(out),)
 
 
 # The reserved words a simple command's words may start with, which are no part of it.
@@ -727,10 +959,12 @@ def _command_word(text, i, end):
     return "".join(out), i
 
 
-def _segment_commands(text, start, end, bodies, subscripts):
+def _segment_commands(text, start, end, bodies, subscripts, redirects=None):
     """The simple commands of the segment from start to end, each its words, as simple_commands
     says; bodies maps where each heredoc body starts to where its closing line ends, and subscripts
-    where each subscript read_command read as one bracket pair starts its word to just past its ]."""
+    where each subscript read_command read as one bracket pair starts its word to just past its ].
+    With a redirects list, each redirection with a word as its target is appended to it as its
+    operator (the fd before it included) and that word."""
     commands, words, i = [], [], start
 
     def close():
@@ -760,7 +994,9 @@ def _segment_commands(text, start, end, bodies, subscripts):
             if text[i : i + 2] in ("<(", ">("):
                 i = _group_end(text, i + 2)
             elif i < end and text[i] not in METACHARACTERS:
-                i = _command_word(text, i, end)[1]
+                target, i = _command_word(text, i, end)
+                if redirects is not None:
+                    redirects.append((found.group(), target))
         elif c == "(":
             # A subshell or an arithmetic command, whose commands are a group of their own.
             arith = _arith_end(text, i) if text.startswith("((", i) else None
