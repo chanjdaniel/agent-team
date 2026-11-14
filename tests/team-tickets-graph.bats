@@ -325,7 +325,7 @@ HTML
 }
 
 @test "a task with no tickets gets a page saying so, with no legend and no graph" {
-  rm -r "$tickets"
+  rm -r "${tickets:?}"
   run_bin -0 --separate-stderr team-tickets T172 --html "$page"
   assert_equal "$output" ""
   assert_equal "$stderr" "team-tickets: T172 has no tickets in its open worktrees"
@@ -557,7 +557,7 @@ tickets.png"
 }
 
 @test "--graph refuses a task with no tickets, writing nothing" {
-  rm -r "$tickets"
+  rm -r "${tickets:?}"
   stub_chrome
   run_bin -1 --separate-stderr team-tickets T172 --graph
   assert_equal "$output" ""

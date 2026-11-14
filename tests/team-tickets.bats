@@ -405,7 +405,7 @@ team-tickets: $wt2/.work/task/scope.txt:3: bin/team-c is in no ticket's Touches:
 }
 
 @test "a task with no tickets lists none; an unknown task is refused" {
-  rm -r "$tickets"
+  rm -r "${tickets:?}"
   run_bin -0 --separate-stderr team-tickets T172
   assert_equal "$output" ""
   assert_equal "$stderr" "team-tickets: T172 has no tickets in its open worktrees"

@@ -9,7 +9,7 @@ setup() {
 
 @test "no em dash in tracked Markdown or templates" {
   local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -z -- '*.md' 'templates/**' | tr '\0' '\n')
+  files=$(git -C "${REPO_ROOT:?}" ls-files -z -- '*.md' 'templates/**' | tr '\0' '\n')
   [[ -n $files ]]
   hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -n $'—' -- <<<"$files" || true)
   assert_equal "$hits" ""
@@ -55,7 +55,7 @@ layout_breaks() {
 # atlas_host_files <dir>
 atlas_host_files() {
   local files
-  files=$(git -C "$1" ls-files -z | tr '\0' '\n')
+  files=$(git -C "${1:?}" ls-files -z | tr '\0' '\n')
   [[ -n $files ]]
   (cd "$1" && xargs -d '\n' grep -I -H -i -o -E '[a-z0-9-]+\.[a-z0-9-]+\.mongodb\.net' -- <<<"$files" \
     | grep -v -i '\.example\.mongodb\.net$' | cut -d: -f1 | sort -u || true)
@@ -74,7 +74,7 @@ atlas_host_files() {
   git init -q "$copy"
   mkdir "$copy/toolkits"
   echo "host: made-up.zz9zz9z.$domain" >"$copy/toolkits/one.md"
-  git -C "$copy" add toolkits/one.md
+  git -C "${copy:?}" add toolkits/one.md
   run -0 atlas_host_files "$copy"
   assert_equal "$output" "toolkits/one.md"
   echo "host: MADE-UP.ZZ9ZZ9Z.${domain^^}" >"$copy/toolkits/one.md"
@@ -82,7 +82,7 @@ atlas_host_files() {
   assert_equal "$output" "toolkits/one.md"
   echo "host: X.EXAMPLE.${domain^^}" >"$copy/toolkits/one.md"
   echo "host: x.example.$domain" >"$copy/toolkits/two.md"
-  git -C "$copy" add toolkits/two.md
+  git -C "${copy:?}" add toolkits/two.md
   run -0 atlas_host_files "$copy"
   assert_equal "$output" ""
 }
@@ -106,14 +106,14 @@ unassigned_paths() {
     done
     [[ $in_code == 1 ]] || echo "$path: not code"
     [[ $in_records == 0 ]] || echo "$path: a record"
-  done < <(git -C "$1" ls-files -z)
+  done < <(git -C "${1:?}" ls-files -z)
 }
 
 # A sandbox copy of this checkout's tracked paths (empty files, the two lists as they are) at
 # <dir>: path_copy <dir>
 path_copy() {
   git init -q "$1"
-  git -C "$REPO_ROOT" ls-files -s -z | git -C "$1" update-index -z --index-info
+  git -C "${REPO_ROOT:?}" ls-files -s -z | git -C "${1:?}" update-index -z --index-info
   mkdir -p "$1/bin/lib"
   cp "$REPO_ROOT/bin/lib/code" "$REPO_ROOT/bin/lib/records" "$1/bin/lib/"
 }
@@ -130,7 +130,7 @@ path_copy() {
   run -0 unassigned_paths "$copy"
   assert_equal "$output" ""
   touch "$copy/NOTES.md" "$copy/ledger.jsonl"
-  git -C "$copy" add NOTES.md ledger.jsonl
+  git -C "${copy:?}" add NOTES.md ledger.jsonl
   echo 'sops/machine-setup.md' >>"$copy/bin/lib/records"
   run -0 unassigned_paths "$copy"
   assert_equal "$output" "NOTES.md: not code
@@ -144,7 +144,7 @@ sops/machine-setup.md: a record"
   path_copy "$copy"
   mkdir -p "$copy/usage/home-pc/time"
   touch "$copy/usage/home-pc/2026-10-26.jsonl" "$copy/usage/home-pc/time/2026-10-26.jsonl"
-  git -C "$copy" add usage
+  git -C "${copy:?}" add usage
   run -0 unassigned_paths "$copy"
   assert_equal "$output" "usage/home-pc/2026-10-26.jsonl: not code
 usage/home-pc/2026-10-26.jsonl: a record
@@ -185,9 +185,9 @@ usage/home-pc/time/2026-10-26.jsonl"
     or (.by | IN("coordinator", "daniel") | not) or (.proves | length) == 0) | .name] | join(" ")' "$registry")" ""
   while IFS= read -r path; do
     if [[ $path == */ ]]; then
-      [[ -n $(git -C "$REPO_ROOT" ls-files -- "$path") ]] || missing+=("$path")
+      [[ -n $(git -C "${REPO_ROOT:?}" ls-files -- "$path") ]] || missing+=("$path")
     else
-      git -C "$REPO_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || missing+=("$path")
+      git -C "${REPO_ROOT:?}" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || missing+=("$path")
     fi
   done < <(jq -r '[.drills[].proves[]] | unique[]' "$registry")
   assert_equal "${missing[*]}" ""
@@ -1346,7 +1346,7 @@ COMMANDS
 # The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
 @test "the production launchers, the MCP servers' bodies and their 1Password read are not executable" {
   local modes
-  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
+  modes=$(git -C "${REPO_ROOT:?}" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
     servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/op-secret.mjs | awk '{print $1, $4}')
   assert_equal "$(wc -l <<<"$modes")" 6
   if grep -v '^100644 ' <<<"$modes"; then echo "executable in git (above)" >&2; return 1; fi
@@ -1727,7 +1727,7 @@ Bash(gh-axi pr ready *)'
   done
   # No brief starts a wait on CI, which the coordinator's checks wait takes after a pass; the rule
   # stays for a worker's wait by hand.
-  if git -C "$REPO_ROOT" grep -n team-ci-wait -- templates; then return 1; fi
+  if git -C "${REPO_ROOT:?}" grep -n team-ci-wait -- templates; then return 1; fi
   allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
   allows builder "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
   allows builder "$REPO_ROOT/bin/team-ci-wait --no-agent-review https://github.com/me/shop/pull/5"
@@ -1799,7 +1799,7 @@ COMMANDS
 # zizmor config file, which would ignore by file or wholesale: zizmor_problems <dir>
 zizmor_problems() {
   local config files
-  files=$(git -C "$1" ls-files -z -- '*.yml' '*.yaml' | tr '\0' '\n')
+  files=$(git -C "${1:?}" ls-files -z -- '*.yml' '*.yaml' | tr '\0' '\n')
   if [[ -n $files ]]; then
     (cd "$1" && xargs -d '\n' grep -H -n -E 'zizmor: *ignore' -- <<<"$files" \
       | grep -v -E ':[0-9]+:.*zizmor: ignore\[[a-z0-9-]+(, *[a-z0-9-]+)*\] +[^ ]' \
@@ -1927,10 +1927,10 @@ YAML
     container: archlinux:latest # zizmor:ignore[unpinned-images] spelled without its space
 YAML
   printf '    container: archlinux:latest # zizmor: ignore[unpinned-images]   \n' >>"$copy/.github/workflows/one.yml"
-  git -C "$copy" add .github/workflows/one.yml
+  git -C "${copy:?}" add .github/workflows/one.yml
   run -0 zizmor_problems "$copy"
   assert_equal "$output" $'.github/workflows/one.yml:3\n.github/workflows/one.yml:4\n.github/workflows/one.yml:5\n.github/workflows/one.yml:6'
-  git -C "$copy" rm -q --cached .github/workflows/one.yml
+  git -C "${copy:?}" rm -q --cached .github/workflows/one.yml
   touch "$copy/zizmor.yaml" "$copy/.github/zizmor.yml"
   run -0 zizmor_problems "$copy"
   assert_equal "$output" $'zizmor.yaml: a zizmor config\n.github/zizmor.yml: a zizmor config'
@@ -2058,10 +2058,10 @@ SH
   done
   echo '@test "it runs team-zzalpha" { true; }' >"$copy/tests/names-alpha.bats"
   echo '# the rules' >"$copy/sops/rules.md"
-  git -C "$copy" init -q
-  git -C "$copy" add -A
-  git -C "$copy" commit -qm base
-  git -C "$copy" tag base
+  git -C "${copy:?}" init -q
+  git -C "${copy:?}" add -A
+  git -C "${copy:?}" commit -qm base
+  git -C "${copy:?}" tag base
 }
 
 # A change to one script reaches its own file, every file naming it, its caller's file, and
@@ -2077,13 +2077,13 @@ SH
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" "$reached"
   [[ ! -e $STUB_CALLS/bats-ran ]]
-  git -C "$copy" switch -qc work
-  git -C "$copy" commit -qam 'change team-zzalpha'
+  git -C "${copy:?}" switch -qc work
+  git -C "${copy:?}" commit -qam 'change team-zzalpha'
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" "$reached"
   [[ ! -e $STUB_CALLS/bats-ran ]]
   # The base defaults to origin/dev.
-  git -C "$copy" update-ref refs/remotes/origin/dev base
+  git -C "${copy:?}" update-ref refs/remotes/origin/dev base
   run -0 --separate-stderr "$copy/tests/run" bats --changed --list
   assert_equal "$output" "$reached"
 }
@@ -2130,9 +2130,9 @@ bats: 3 tests passed; 0 of 1 files failed"
 # Commits the copy's working tree and moves its base tag there, so a test's fixture files are no
 # change.
 changed_rebase() {
-  git -C "$1" add -A
-  git -C "$1" commit -qm fixture
-  git -C "$1" tag -f base >/dev/null
+  git -C "${1:?}" add -A
+  git -C "${1:?}" commit -qm fixture
+  git -C "${1:?}" tag -f base >/dev/null
 }
 
 # A change outside the code's scripts, tests and settings (sops/, a new file there) reaches
@@ -2146,7 +2146,7 @@ changed_rebase() {
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" tests/repo.bats
   echo '@test "it reads the rules" { grep -q rules "$BATS_TEST_DIRNAME/../sops/rules.md"; }' >"$copy/tests/manual.bats"
-  git -C "$copy" checkout -q -- sops/rules.md
+  git -C "${copy:?}" checkout -q -- sops/rules.md
   changed_rebase "$copy"
   echo 'more' >>"$copy/sops/rules.md"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
@@ -2167,7 +2167,7 @@ changed_rebase() {
     echo '# changed' >>"$copy/$path"
     run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
     assert_equal "$output" "$(cd "$copy" && printf '%s\n' tests/*.bats | LC_ALL=C sort)"
-    git -C "$copy" checkout -q -- "$path"
+    git -C "${copy:?}" checkout -q -- "$path"
   done
 }
 
@@ -2219,7 +2219,7 @@ changed_rebase() {
   echo 'def zz: 2;' >"$copy/bin/lib/zzmod.jq"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/coordinator-manual.bats\ntests/repo.bats\ntests/team-zzgamma.bats'
-  git -C "$copy" checkout -q -- bin/lib/zzmod.jq
+  git -C "${copy:?}" checkout -q -- bin/lib/zzmod.jq
   echo 'more' >>"$copy/bin/lib/zzkey"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/coordinator-manual.bats\ntests/repo.bats\ntests/team-zzgamma.bats'
@@ -2242,7 +2242,7 @@ changed_rebase() {
   echo 'zzi() { false; }' >"$copy/tests/helpers/zzi.bash"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/a-loads.bats\ntests/repo.bats'
-  git -C "$copy" checkout -q -- tests/helpers/zzi.bash
+  git -C "${copy:?}" checkout -q -- tests/helpers/zzi.bash
   echo '# a new brief' >"$copy/templates/briefs/y.md"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/briefs-reader.bats\ntests/coordinator-manual.bats\ntests/repo.bats'
@@ -2258,15 +2258,15 @@ changed_rebase() {
   echo '@test "old" { cat OLD.md; }' >"$copy/tests/old-reader.bats"
   echo '@test "new" { cat NEW.md; }' >"$copy/tests/new-reader.bats"
   changed_rebase "$copy"
-  git -C "$copy" mv OLD.md NEW.md
+  git -C "${copy:?}" mv OLD.md NEW.md
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/new-reader.bats\ntests/old-reader.bats\ntests/repo.bats'
-  git -C "$copy" commit -qm rename
+  git -C "${copy:?}" commit -qm rename
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/new-reader.bats\ntests/old-reader.bats\ntests/repo.bats'
-  git -C "$copy" switch -qc dropped base
-  git -C "$copy" rm -q bin/team-zzalpha
-  git -C "$copy" commit -qm 'drop team-zzalpha'
+  git -C "${copy:?}" switch -qc dropped base
+  git -C "${copy:?}" rm -q bin/team-zzalpha
+  git -C "${copy:?}" commit -qm 'drop team-zzalpha'
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" $'tests/coordinator-manual.bats\ntests/names-alpha.bats\ntests/repo.bats\ntests/team-zzalpha.bats\ntests/team-zzbeta.bats'
 }

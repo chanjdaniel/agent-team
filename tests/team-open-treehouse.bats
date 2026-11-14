@@ -9,13 +9,13 @@ setup() {
   sandbox
   primary=$(make_repo proj)
   echo ".scratch/" >"$primary/.gitignore"
-  git -C "$primary" add .gitignore
-  git -C "$primary" commit -q -m "chore: ignore scratch"
-  git -C "$primary" push -q origin main
+  git -C "${primary:?}" add .gitignore
+  git -C "${primary:?}" commit -q -m "chore: ignore scratch"
+  git -C "${primary:?}" push -q origin main
   pool=$HOME/.treehouse/proj-abc123
   slots=("$pool/1/proj" "$pool/2/proj")
   local slot
-  for slot in "${slots[@]}"; do git -C "$primary" worktree add -q --detach "$slot" origin/main; done
+  for slot in "${slots[@]}"; do git -C "${primary:?}" worktree add -q --detach "$slot" origin/main; done
   printf '%s\n' "${slots[@]}" >"$BATS_TEST_TMPDIR/free"
   fake_pool_commands "$primary"
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
@@ -47,7 +47,7 @@ events() {
   git config --global branch.autoSetupMerge always
   run_bin -0 --separate-stderr team-open proj bug fix sign-in-limit "Rate-limit sign-in"
   local worktree=${slots[0]} base_sha
-  base_sha=$(git -C "$primary" rev-parse origin/main)
+  base_sha=$(git -C "${primary:?}" rev-parse origin/main)
   assert_equal "$(stub_calls th-lease.sh)" "$(jq -cn --arg cwd "$primary" '{cwd: $cwd, args: ["T1"]}')"
   assert_equal "$(stub_calls th-return.sh)" ""
   assert_equal "$stderr" ""
@@ -56,28 +56,28 @@ events() {
     task: "T1", project: "proj", path: "bug", title: "Rate-limit sign-in",
     branch: "fix/T1-sign-in-limit", base: "main", base_sha: $sha, worktree: $wt,
     task_dir: "\($wt)/.scratch/task", thread: "1563000000000000001", plan: "\($home)/tasks/T1/plan.md"}')"
-  assert_equal "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" "fix/T1-sign-in-limit"
-  assert_equal "$(git -C "$worktree" rev-parse HEAD)" "$base_sha"
-  run -128 git -C "$worktree" rev-parse --abbrev-ref '@{upstream}'
+  assert_equal "$(git -C "${worktree:?}" rev-parse --abbrev-ref HEAD)" "fix/T1-sign-in-limit"
+  assert_equal "$(git -C "${worktree:?}" rev-parse HEAD)" "$base_sha"
+  run -128 git -C "${worktree:?}" rev-parse --abbrev-ref '@{upstream}'
   [[ -d $worktree/.scratch/task ]]
   assert_equal "$(events opened | jq -r '"\(.task) \(.branch) \(.worktree)"')" "T1 fix/T1-sign-in-limit $worktree"
   run_bin -0 team-log --check
 }
 
 @test "the slot leaves whatever branch it was on for the new branch at the fetched base" {
-  git -C "${slots[0]}" switch -q -c fix/T9-old origin/main
-  git -C "${slots[0]}" commit -q --allow-empty -m "fix: old work"
+  git -C "${slots[0]:?}" switch -q -c fix/T9-old origin/main
+  git -C "${slots[0]:?}" commit -q --allow-empty -m "fix: old work"
   local other=$BATS_TEST_TMPDIR/other ahead
   git clone -q "$BATS_TEST_TMPDIR/origin/proj.git" "$other" 2>/dev/null
-  git -C "$other" commit -q --allow-empty -m "feat: moved on"
-  git -C "$other" push -q origin main
-  ahead=$(git -C "$other" rev-parse HEAD)
+  git -C "${other:?}" commit -q --allow-empty -m "feat: moved on"
+  git -C "${other:?}" push -q origin main
+  ahead=$(git -C "${other:?}" rev-parse HEAD)
 
   run_bin -0 --separate-stderr team-open proj feature feat next "Next"
   assert_equal "$(jq -r '"\(.worktree) \(.base_sha)"' <<<"$output")" "${slots[0]} $ahead"
-  assert_equal "$(git -C "${slots[0]}" rev-parse --abbrev-ref HEAD)" "feat/T1-next"
-  assert_equal "$(git -C "${slots[0]}" rev-parse HEAD)" "$ahead"
-  git -C "$primary" show-ref -q --verify refs/heads/fix/T9-old
+  assert_equal "$(git -C "${slots[0]:?}" rev-parse --abbrev-ref HEAD)" "feat/T1-next"
+  assert_equal "$(git -C "${slots[0]:?}" rev-parse HEAD)" "$ahead"
+  git -C "${primary:?}" show-ref -q --verify refs/heads/fix/T9-old
 }
 
 @test "a pool the registry spells otherwise than treehouse and git list it is the same pool (report F6)" {
@@ -86,7 +86,7 @@ events() {
   sed -i "s#\".treehouse/#\"${other##*/}/#g" "$TEAM_HOME/projects.toml"
   run_bin -0 --separate-stderr team-open proj bug fix one "One"
   assert_equal "$(jq -r .worktree <<<"$output")" "$other/proj-abc123/1/proj"
-  assert_equal "$(git -C "${slots[0]}" rev-parse --abbrev-ref HEAD)" "fix/T1-one"
+  assert_equal "$(git -C "${slots[0]:?}" rev-parse --abbrev-ref HEAD)" "fix/T1-one"
   # A slot leased to a task is named by its holder, the next lease is the free slot, and a
   # re-run takes the slot it left leased again.
   echo changed >>"${slots[1]}/README.md"
@@ -94,7 +94,7 @@ events() {
   assert_contains "$stderr" "the leased slot $other/proj-abc123/2/proj is not clean"
   run_bin -1 --separate-stderr team-open --task T2 proj bug fix two "Two"
   assert_contains "$stderr" "${slots[1]} is already leased to T2, by an earlier run; it is taken again"
-  git -C "${slots[1]}" checkout -q -- README.md
+  git -C "${slots[1]:?}" checkout -q -- README.md
   run_bin -75 --separate-stderr team-open proj bug fix three "Three"
   assert_contains "$stderr" "  $other/proj-abc123/1/proj: T1 (leased; fix/T1-one)
   $other/proj-abc123/2/proj: T2 (leased; detached HEAD)"
@@ -103,7 +103,7 @@ events() {
 @test "a numbered slot in the pool's folder that the registry does not list is taken, and found again by a re-run (T45)" {
   # treehouse numbers a new slot past an empty folder, so the slot it makes can be one the registry lacks.
   local slot=$pool/5/proj
-  git -C "$primary" worktree add -q --detach "$slot" origin/main
+  git -C "${primary:?}" worktree add -q --detach "$slot" origin/main
   printf '%s\n' "$slot" "${slots[@]}" >"$BATS_TEST_TMPDIR/free"
   stub_reply curl '{"message":"Missing Access"}'
   run_bin -1 --separate-stderr team-open proj feature feat five "Five"
@@ -113,7 +113,7 @@ events() {
   run_bin -0 --separate-stderr team-open --task T1 proj feature feat five "Five"
   assert_equal "$(jq -r .worktree <<<"$output")" "$slot"
   assert_equal "$(pool_calls th-lease.sh)" "T1"
-  assert_equal "$(git -C "$slot" rev-parse --abbrev-ref HEAD)" "feat/T1-five"
+  assert_equal "$(git -C "${slot:?}" rev-parse --abbrev-ref HEAD)" "feat/T1-five"
   # It is listed with the registry's slots.
   : >"$BATS_TEST_TMPDIR/free"
   run_bin -75 --separate-stderr team-open proj feature feat six "Six"
@@ -123,14 +123,14 @@ events() {
 
 @test "a leased path outside the trusted slots is returned at once and refused" {
   local stray=$HOME/.treehouse/proj-zzz999/1/proj
-  git -C "$primary" worktree add -q --detach "$stray" origin/main
+  git -C "${primary:?}" worktree add -q --detach "$stray" origin/main
   echo "$stray" >"$BATS_TEST_TMPDIR/free"
   run_bin -1 --separate-stderr team-open proj feature feat stray "Stray"
   assert_contains "$stderr" "the lease command handed out $stray, which is not one of proj's slots"
   assert_contains "$stderr" "handed $stray back to $primary/scripts/th-return.sh, discarding what its lease changed"
   assert_equal "$(stub_calls th-return.sh)" "$(jq -cn --arg cwd "$primary" --arg p "$stray" \
     '{cwd: $cwd, args: [$p, "--force", "--if-lease-holder", "T1"]}')"
-  assert_equal "$(git -C "$stray" rev-parse --abbrev-ref HEAD)" "HEAD"
+  assert_equal "$(git -C "${stray:?}" rev-parse --abbrev-ref HEAD)" "HEAD"
   assert_equal "$(pool_leases)" ""
   [[ ! -e $TEAM_HOME/tasks/T1 ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
@@ -147,8 +147,8 @@ events() {
   [[ $stderr != *rewritten* ]]
   assert_equal "$(pool_calls th-return.sh)" "${slots[0]} --force --if-lease-holder T1"
   assert_equal "$(pool_leases)" ""
-  assert_equal "$(git -C "${slots[0]}" status --porcelain)" ""
-  assert_equal "$(git -C "${slots[0]}" rev-parse --abbrev-ref HEAD)" "HEAD"
+  assert_equal "$(git -C "${slots[0]:?}" status --porcelain)" ""
+  assert_equal "$(git -C "${slots[0]:?}" rev-parse --abbrev-ref HEAD)" "HEAD"
   [[ ! -e $TEAM_HOME/tasks/T1 ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
@@ -189,12 +189,12 @@ events() {
   assert_equal "$(pool_leases)" "${slots[0]} T1"
 
   # Daniel discarded the changes: the next run opens the task there.
-  git -C "${slots[0]}" checkout -q -- README.md
+  git -C "${slots[0]:?}" checkout -q -- README.md
   run_bin -0 --separate-stderr team-open proj feature feat dirty "Dirty"
   assert_equal "$(jq -r .worktree <<<"$output")" "${slots[0]}"
   assert_equal "$(pool_calls th-lease.sh)" "T1"
   assert_equal "$(pool_leases)" "${slots[0]} T1"
-  assert_equal "$(git -C "${slots[1]}" rev-parse --abbrev-ref HEAD)" "HEAD"
+  assert_equal "$(git -C "${slots[1]:?}" rev-parse --abbrev-ref HEAD)" "HEAD"
 }
 
 @test "a pool treehouse cannot read is refused before any lease" {
@@ -227,7 +227,7 @@ events() {
 
 @test "a failing lease command is exit 75 with its message, and gives the number back" {
   : >"$BATS_TEST_TMPDIR/free"
-  git -C "${slots[0]}" switch -q -c feat/T3-busy origin/main
+  git -C "${slots[0]:?}" switch -q -c feat/T3-busy origin/main
   run_bin -75 --separate-stderr team-open proj feature feat late "Late"
   assert_equal "$output" ""
   assert_contains "$stderr" "team-open: proj's lease command found no free slot:"
@@ -258,20 +258,20 @@ events() {
   assert_equal "$(jq -r '"\(.worktree) \(.thread)"' <<<"$output")" "${slots[0]} 1563000000000000009"
   assert_equal "$(pool_calls th-lease.sh)" "T1"
   assert_equal "$(stub_calls th-return.sh)" ""
-  assert_equal "$(git -C "${slots[1]}" rev-parse --abbrev-ref HEAD)" "HEAD"
+  assert_equal "$(git -C "${slots[1]:?}" rev-parse --abbrev-ref HEAD)" "HEAD"
   assert_equal "$(events opened | jq -r .worktree)" "${slots[0]}"
 }
 
 @test "a task directory git does not ignore is refused, the branch dropped and the slot returned" {
-  git -C "$primary" rm -q .gitignore
-  git -C "$primary" commit -q -m "chore: stop ignoring scratch"
-  git -C "$primary" push -q origin main
+  git -C "${primary:?}" rm -q .gitignore
+  git -C "${primary:?}" commit -q -m "chore: stop ignoring scratch"
+  git -C "${primary:?}" push -q origin main
   run_bin -1 --separate-stderr team-open proj feature feat leak "Leak"
   assert_contains "$stderr" "git does not ignore .scratch/task in proj"
   assert_equal "$(pool_calls th-return.sh)" "${slots[0]}"
-  assert_equal "$(git -C "${slots[0]}" rev-parse --abbrev-ref HEAD)" "HEAD"
-  assert_equal "$(git -C "${slots[0]}" status --porcelain --ignored)" ""
-  run git -C "$primary" branch --list 'feat/T1-leak'
+  assert_equal "$(git -C "${slots[0]:?}" rev-parse --abbrev-ref HEAD)" "HEAD"
+  assert_equal "$(git -C "${slots[0]:?}" status --porcelain --ignored)" ""
+  run git -C "${primary:?}" branch --list 'feat/T1-leak'
   assert_equal "$output" ""
   [[ ! -e $TEAM_HOME/tasks/T1 ]]
 }

@@ -226,7 +226,7 @@ merged_events() {
 with_local_checks() {
   local primary
   primary=$(make_repo proj dev)
-  git -C "$primary" checkout -q -b feat/T14-tooling
+  git -C "${primary:?}" checkout -q -b feat/T14-tooling
   cat >"$primary/check.sh" <<'SH'
 #!/usr/bin/env bash
 echo "$PWD $(git rev-parse HEAD)" >>"$GH_DIR/ran"
@@ -235,11 +235,11 @@ if [[ -f $GH_DIR/check.extra ]]; then source "$GH_DIR/check.extra"; fi
 exit "$(cat "$GH_DIR/check.status" 2>/dev/null || echo 0)"
 SH
   chmod +x "$primary/check.sh"
-  git -C "$primary" add check.sh
-  git -C "$primary" commit -q -m "test: the local check"
-  git -C "$primary" push -q origin feat/T14-tooling
-  git -C "$primary" checkout -q dev
-  head=$(git -C "$primary" rev-parse feat/T14-tooling)
+  git -C "${primary:?}" add check.sh
+  git -C "${primary:?}" commit -q -m "test: the local check"
+  git -C "${primary:?}" push -q origin feat/T14-tooling
+  git -C "${primary:?}" checkout -q dev
+  head=$(git -C "${primary:?}" rev-parse feat/T14-tooling)
   sed -i 's|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["./check.sh"]|' "$TEAM_HOME/projects.toml"
   green_pr
 }
@@ -254,47 +254,47 @@ SH
 moved_head() {
   local primary step n=0
   primary=$(make_repo proj dev)
-  git -C "$primary" checkout -q -b feat/T14-tooling
+  git -C "${primary:?}" checkout -q -b feat/T14-tooling
   echo A >"$primary/a.txt"
-  git -C "$primary" add a.txt
-  git -C "$primary" commit -q -m "feat: A"
-  approved=$(git -C "$primary" rev-parse HEAD) own=''
+  git -C "${primary:?}" add a.txt
+  git -C "${primary:?}" commit -q -m "feat: A"
+  approved=$(git -C "${primary:?}" rev-parse HEAD) own=''
   for step in "$@"; do
     n=$((n + 1))
     if [[ $step == own ]]; then
-      git -C "$primary" commit -q --allow-empty -m "fix: after the ask"
-      own=${own:-$(git -C "$primary" rev-parse HEAD)}
+      git -C "${primary:?}" commit -q --allow-empty -m "fix: after the ask"
+      own=${own:-$(git -C "${primary:?}" rev-parse HEAD)}
       continue
     fi
-    git -C "$primary" checkout -q dev
+    git -C "${primary:?}" checkout -q dev
     if [[ $step == conflict ]]; then
       echo "dev $n" >"$primary/a.txt"
-      git -C "$primary" add a.txt
-      git -C "$primary" commit -q -m "feat: another task on dev, on a.txt"
+      git -C "${primary:?}" add a.txt
+      git -C "${primary:?}" commit -q -m "feat: another task on dev, on a.txt"
     else
-      git -C "$primary" commit -q --allow-empty -m "feat: another task on dev"
+      git -C "${primary:?}" commit -q --allow-empty -m "feat: another task on dev"
     fi
-    git -C "$primary" push -q origin dev
-    git -C "$primary" checkout -q feat/T14-tooling
+    git -C "${primary:?}" push -q origin dev
+    git -C "${primary:?}" checkout -q feat/T14-tooling
     case $step in
-      base) git -C "$primary" merge -q --no-ff -m "Merge origin/dev" dev ;;
+      base) git -C "${primary:?}" merge -q --no-ff -m "Merge origin/dev" dev ;;
       conflict)
-        git -C "$primary" merge -q --no-ff -m "Merge origin/dev" dev >/dev/null 2>&1 || true
+        git -C "${primary:?}" merge -q --no-ff -m "Merge origin/dev" dev >/dev/null 2>&1 || true
         echo "resolved $n" >"$primary/a.txt"
-        git -C "$primary" add a.txt
-        git -C "$primary" commit -q --no-edit
+        git -C "${primary:?}" add a.txt
+        git -C "${primary:?}" commit -q --no-edit
         ;;
       evil)
-        git -C "$primary" merge -q --no-ff --no-commit dev >/dev/null 2>&1
+        git -C "${primary:?}" merge -q --no-ff --no-commit dev >/dev/null 2>&1
         echo evil >"$primary/evil.txt"
-        git -C "$primary" add evil.txt
-        git -C "$primary" commit -q -m "Merge origin/dev"
+        git -C "${primary:?}" add evil.txt
+        git -C "${primary:?}" commit -q -m "Merge origin/dev"
         ;;
     esac
   done
-  git -C "$primary" push -q origin feat/T14-tooling
-  git -C "$primary" checkout -q dev
-  head=$(git -C "$primary" rev-parse feat/T14-tooling)
+  git -C "${primary:?}" push -q origin feat/T14-tooling
+  git -C "${primary:?}" checkout -q dev
+  head=$(git -C "${primary:?}" rev-parse feat/T14-tooling)
   green_pr
   jq -c 'select(.event != "pr" and .event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
@@ -306,7 +306,7 @@ moved_head() {
 # on origin: caught_up [<from>] [<head>]
 caught_up() {
   event T14 caught-up "{url: \"https://github.com/owner/proj/pull/5\", from: \"${1:-$approved}\", head: \"${2:-$head}\",
-    base: \"$(git -C "$HOME/projects/proj" rev-parse origin/dev)\"}"
+    base: \"$(git -C "${HOME:?}/projects/proj" rev-parse origin/dev)\"}"
 }
 
 # A review of PR #5 at <head> with <verdict>, logged now: review <head> <verdict>
@@ -316,7 +316,7 @@ review() {
 
 # The worktrees of proj's primary checkout, one path per line.
 proj_worktrees() {
-  git -C "$HOME/projects/proj" worktree list --porcelain | sed -n 's/^worktree //p'
+  git -C "${HOME:?}/projects/proj" worktree list --porcelain | sed -n 's/^worktree //p'
 }
 
 # proj is the code: a bare origin whose dev is proj's base, named https://github.com/owner/proj.git
@@ -329,11 +329,11 @@ merging_the_code() {
   export PROJ_ORIGIN=$BATS_TEST_TMPDIR/origin/proj.git
   git init -q --bare -b dev "$PROJ_ORIGIN"
   git clone -q "$PROJ_ORIGIN" "$start" 2>/dev/null
-  git -C "$start" checkout -q -B dev
+  git -C "${start:?}" checkout -q -B dev
   echo "code" >"$start/README.md"
-  git -C "$start" add README.md
-  git -C "$start" commit -q -m "chore: start the code"
-  git -C "$start" push -q origin dev
+  git -C "${start:?}" add README.md
+  git -C "${start:?}" commit -q -m "chore: start the code"
+  git -C "${start:?}" push -q origin dev
   git config --global url."$PROJ_ORIGIN".insteadOf https://github.com/owner/proj.git
   sed -i 's|^path = "projects/proj"$|path = "agent-team"|' "$TEAM_HOME/projects.toml"
   git clone -q https://github.com/owner/proj.git "$HOME/agent-team"
@@ -341,12 +341,12 @@ merging_the_code() {
   # shellcheck disable=SC2034 # the tests read code
   code=$CODE_CHECKOUT
   git clone -q "$PROJ_ORIGIN" "$pr_clone"
-  git -C "$pr_clone" checkout -q -b feat/T14-tooling
+  git -C "${pr_clone:?}" checkout -q -b feat/T14-tooling
   echo "tool" >"$pr_clone/tool.sh"
-  git -C "$pr_clone" add tool.sh
-  git -C "$pr_clone" commit -q -m "feat: the tooling"
-  git -C "$pr_clone" push -q origin feat/T14-tooling
-  head=$(git -C "$pr_clone" rev-parse HEAD)
+  git -C "${pr_clone:?}" add tool.sh
+  git -C "${pr_clone:?}" commit -q -m "feat: the tooling"
+  git -C "${pr_clone:?}" push -q origin feat/T14-tooling
+  head=$(git -C "${pr_clone:?}" rev-parse HEAD)
   green_pr
   cat >"$GH_DIR/merge.sh" <<'SH'
 clone=$GH_DIR/merging

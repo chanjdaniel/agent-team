@@ -1041,7 +1041,7 @@ due() {
   export CODE_CHECKOUT
   CODE_CHECKOUT=$(make_repo proj)
   copy_bin "$CODE_CHECKOUT/bin"
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:owner/proj.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin git@github.com:owner/proj.git
   run_bin -0 team-sweep
   # conv is, by its path, the code checkout, whose origin is no project's: its PR is never due,
   # while proj's is.

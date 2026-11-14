@@ -237,15 +237,15 @@ toolkit_checkout() {
 @test "the planner runs in a fresh worktree of the code checkout, detached at its HEAD, which is removed at the end" {
   inventory --- tdd
   run_bin -0 team-load-check
-  assert_equal "$(cat "$BATS_TEST_TMPDIR/launch")" "$(printf '%s\n' "$wt" "$(git -C "$code" rev-parse HEAD)" detached '.scratch ignored')"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/launch")" "$(printf '%s\n' "$wt" "$(git -C "${code:?}" rev-parse HEAD)" detached '.scratch ignored')"
   left_nothing
 
   # What an earlier run left there, registered or not, is replaced by a fresh worktree.
-  git -C "$code" worktree add -q -b stale "$wt"
+  git -C "${code:?}" worktree add -q -b stale "$wt"
   touch "$wt/stale.txt"
   run_bin -0 team-load-check
-  assert_equal "$(cat "$BATS_TEST_TMPDIR/launch")" "$(printf '%s\n' "$wt" "$(git -C "$code" rev-parse HEAD)" detached '.scratch ignored')"
-  git -C "$code" branch -q -D stale
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/launch")" "$(printf '%s\n' "$wt" "$(git -C "${code:?}" rev-parse HEAD)" detached '.scratch ignored')"
+  git -C "${code:?}" branch -q -D stale
   left_nothing
   mkdir -p "$wt"
   touch "$wt/junk.txt"
@@ -347,7 +347,7 @@ toolkit_checkout() {
 
 # isolation_pass: the PASS line of a planner none of whose worktree's markers reached it
 isolation_pass() {
-  echo "PASS planner: no marker of its worktree reached it (the line in CLAUDE.md, the file in .claude/rules/, the SessionStart hook in .claude/settings.json), its project instructions are headed 'Project instructions: code, from origin/main at $(git -C "$code" rev-parse origin/main)', its memory directory is $TEAM_HOME/memory/code, and it works in $wt"
+  echo "PASS planner: no marker of its worktree reached it (the line in CLAUDE.md, the file in .claude/rules/, the SessionStart hook in .claude/settings.json), its project instructions are headed 'Project instructions: code, from origin/main at $(git -C "${code:?}" rev-parse origin/main)', its memory directory is $TEAM_HOME/memory/code, and it works in $wt"
 }
 
 @test "the planner's worktree gets a CLAUDE.md line, a .claude/rules/ file and a .claude/settings.json hook and allow rule, and a planner that reports none of them passes" {
@@ -356,8 +356,8 @@ isolation_pass() {
   # instructions' ref.
   mkdir -p "$code/.claude"
   echo '{"worktree": {"bgIsolation": "none"}}' >"$code/.claude/settings.json"
-  git -C "$code" add .claude/settings.json
-  git -C "$code" commit -q -m "chore: settings"
+  git -C "${code:?}" add .claude/settings.json
+  git -C "${code:?}" commit -q -m "chore: settings"
   run_bin -0 team-load-check
   assert_contains "$output" "$(isolation_pass)"
   assert_equal "${lines[-1]}" PASS
@@ -387,7 +387,7 @@ isolation_pass() {
 
 @test "each worktree marker that reaches the planner and each wrong value it reports is its own FAIL line, and the worktree is still removed" {
   inventory --- tdd
-  sha=$(git -C "$code" rev-parse origin/main)
+  sha=$(git -C "${code:?}" rev-parse origin/main)
   # fails_with <fixture> <FAIL line>: the planner with <fixture> fails on that line alone
   fails_with() {
     run_bin -1 team-load-check
@@ -438,12 +438,12 @@ isolation_pass() {
 lease_setup() {
   primary=$(make_repo proj)
   printf '%s\n' .scratch/ node_modules/ >"$primary/.gitignore"
-  git -C "$primary" add .gitignore
-  git -C "$primary" commit -q -m "chore: ignore scratch"
-  git -C "$primary" push -q origin main
+  git -C "${primary:?}" add .gitignore
+  git -C "${primary:?}" commit -q -m "chore: ignore scratch"
+  git -C "${primary:?}" push -q origin main
   local pool=$HOME/.treehouse/proj-abc123 slot
   slots=("$pool/1/proj" "$pool/2/proj")
-  for slot in "${slots[@]}"; do git -C "$primary" worktree add -q --detach "$slot" origin/main; done
+  for slot in "${slots[@]}"; do git -C "${primary:?}" worktree add -q --detach "$slot" origin/main; done
   printf '%s\n' "${slots[@]}" >"$BATS_TEST_TMPDIR/free"
   fake_pool_commands "$primary"
   registry "$(printf '%s\n' '[proj.pool]' 'provider = "treehouse"' 'lease = "scripts/th-lease.sh"' \
@@ -482,7 +482,7 @@ lease_holder() {
 @test "a numbered slot in the pool's folder that the registry does not list is rehearsed as a slot (T45)" {
   lease_setup
   local slot=$HOME/.treehouse/proj-abc123/5/proj
-  git -C "$primary" worktree add -q --detach "$slot" origin/main
+  git -C "${primary:?}" worktree add -q --detach "$slot" origin/main
   echo "$slot" >"$BATS_TEST_TMPDIR/free"
   run_bin -0 team-load-check
   assert_contains "$output" "PASS lease proj: slot $slot leased, pre-warmed and clean, returned"
@@ -496,7 +496,7 @@ lease_holder() {
   assert_contains "$output" "FAIL lease proj: slot ${slots[0]} is not clean after the pre-warm: changes to tracked files: README.md; untracked files: new.lock; returned"
   assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
   assert_equal "$(pool_leases)" ""
-  assert_equal "$(git -C "${slots[0]}" status --porcelain)" ""
+  assert_equal "$(git -C "${slots[0]:?}" status --porcelain)" ""
 
   # A non-empty task directory fails it as team-open would.
   rm "$BATS_TEST_TMPDIR/prewarm"
@@ -544,7 +544,7 @@ lease_holder() {
   wait "$pid" || status=$?
   assert_equal "$status" 143
   assert_equal "$(pool_leases)" ""
-  assert_equal "$(git -C "${slots[0]}" status --porcelain)" ""
+  assert_equal "$(git -C "${slots[0]:?}" status --porcelain)" ""
   assert_equal "$(stub_calls claude)" ""
 }
 
@@ -565,7 +565,7 @@ ops_setup() {
   registry "$(printf '%s\n' '[proj.pool]' 'provider = "git"' 'slots = []')"
   clone=$(make_repo proj)
   wt=$HOME/wt/proj-1
-  git -C "$clone" worktree add -q -b load "$wt"
+  git -C "${clone:?}" worktree add -q -b load "$wt"
   stub_script claude <<'SH'
 transcript=$HOME/.claude/projects/-wt/6f93fe38-4a6e-4b35-8f39-776a26bc624b.jsonl
 case $1 in
@@ -1293,7 +1293,7 @@ reviewer    45003       2               2            0"
   assert_equal "${lines[0]}" "FAIL os: Ubuntu 24.04.3 LTS is neither Arch Linux nor macOS, so no tool is checked; fix: run the team on Arch Linux or macOS"
   assert_equal "$stderr" "load check: team-doctor reports a FAIL above; fix it, then run the load check again"
   [[ ! -e $wt ]]
-  assert_equal "$(git -C "$code" worktree list --porcelain | grep -c '^worktree ')" 1
+  assert_equal "$(git -C "${code:?}" worktree list --porcelain | grep -c '^worktree ')" 1
   # claude was asked only the doctor's questions, its login, its plugins and its trust probes of
   # the team home and of code, the one project with a checkout here (which the stub's reply never
   # starts): no session of the load check's.
@@ -1329,7 +1329,7 @@ planner     42006       3               3            0"
 
 @test "a FAIL of the code checkout's own project stops the load check before any worktree, as does every FAIL but another project's and the gate's" {
   # The code checkout's own project is the one at its main checkout, run from a linked worktree.
-  git -C "$code" worktree add -q --detach "$HOME/code-wt"
+  git -C "${code:?}" worktree add -q --detach "$HOME/code-wt"
   export TEAM_LOAD_CHECK_CHECKOUT=$HOME/code-wt
   local check
   for check in 'trust code' 'checkout code' 'claude login' 'trust team home' projects 'trust nowhere' 'tool jq'; do
@@ -1338,7 +1338,7 @@ planner     42006       3               3            0"
     assert_equal "${lines[2]}" "FAIL $check: broken; fix: repair it"
     assert_equal "$stderr" "$stopped"
     [[ ! -e $wt ]]
-    assert_equal "$(git -C "$code" worktree list --porcelain | grep -c '^worktree ')" 2
+    assert_equal "$(git -C "${code:?}" worktree list --porcelain | grep -c '^worktree ')" 2
     assert_equal "$(stub_calls claude)" ""
   done
 }
@@ -1418,12 +1418,12 @@ $(going_on 'gate proj')"
   run_bin -0 team-load-check --toolkit served --toolkit plain
   # Run from the toolkit checkout, which is no repository, team-drill cannot read its HEAD.
   assert_contains "$output" "load check: not recorded: team-drill: cannot read the HEAD of the code checkout $CODE_CHECKOUT"
-  git -C "$CODE_CHECKOUT" init -q
-  git -C "$CODE_CHECKOUT" add -A
-  git -C "$CODE_CHECKOUT" commit -q -m "chore: the toolkit checkout"
+  git -C "${CODE_CHECKOUT:?}" init -q
+  git -C "${CODE_CHECKOUT:?}" add -A
+  git -C "${CODE_CHECKOUT:?}" commit -q -m "chore: the toolkit checkout"
   run_bin -0 team-load-check --toolkit served --toolkit plain
   assert_equal "$(jq -r '[.drill, .verdict, .detail, .commit] | join(" ")' "$TEAM_HOME/drills.jsonl")" \
-    "load-check-planner pass toolkits: served plain $(git -C "$CODE_CHECKOUT" rev-parse HEAD)"
+    "load-check-planner pass toolkits: served plain $(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)"
 }
 
 @test "a planner form that ends early after its launch records fail: no inventory within 5 minutes" {

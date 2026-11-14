@@ -14,9 +14,9 @@ setup() {
   sandbox
   home=$(make_repo home)
   printf '.scratch/\n' >"$home/.gitignore"
-  git -C "$home" add .gitignore
-  git -C "$home" commit -q -m "chore: ignore scratch"
-  git -C "$home" push -q origin main
+  git -C "${home:?}" add .gitignore
+  git -C "${home:?}" commit -q -m "chore: ignore scratch"
+  git -C "${home:?}" push -q origin main
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
 [home]
 repo = "owner/home"
@@ -84,9 +84,9 @@ SH
   wt=$HOME/slots/home/1
   echo "spec" >"$wt/.scratch/task/spec.md"
   echo "a" >"$wt/a.txt"
-  git -C "$wt" add a.txt
-  git -C "$wt" commit -q -m "feat: a"
-  head=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add a.txt
+  git -C "${wt:?}" commit -q -m "feat: a"
+  head=$(git -C "${wt:?}" rev-parse HEAD)
   # The live builder's launch, as team-worker logs it.
   jq -cn --arg wt "$wt" '{ts: (now | todate), task: "T1", event: "launch", role: "builder", session: "81f08540",
     worktree: $wt, toolkits: [], machine: "home-pc"}' >>"$TEAM_HOME/ledger.jsonl"
@@ -124,8 +124,8 @@ coordinator_launches() {
 # Everything a refused resume must leave as it was on laptop: its team home's HEAD and status,
 # the lease, its units, its Claude config, its slots and its reports.
 laptop_state() {
-  git -C "$laptop/team" rev-parse HEAD
-  git -C "$laptop/team" status --porcelain
+  git -C "${laptop:?}/team" rev-parse HEAD
+  git -C "${laptop:?}/team" status --porcelain
   lease_json
   find "$laptop/home/.config/systemd" "$laptop/home/.claude" "$laptop/home/slots" "$laptop/team/tasks" \
     -name sessions.json -prune -o -print 2>/dev/null | sort
@@ -140,8 +140,8 @@ laptop_state() {
   assert_equal "${lines[0]}" "github: origin answers; the lease is released by home-pc, epoch 1"
   assert_contains "$output" "doctor: WARN lease: released, epoch 1"
   assert_contains "$output" "doctor: 1 passed, 1 warned"
-  assert_contains "$output" "team home: dev fast-forwarded to $(git -C "$team_origin" rev-parse --short=7 dev)"
-  assert_contains "$output" "code: dev is up to date at $(git -C "$CODE_ORIGIN" rev-parse --short=7 dev)"
+  assert_contains "$output" "team home: dev fast-forwarded to $(git -C "${team_origin:?}" rev-parse --short=7 dev)"
+  assert_contains "$output" "code: dev is up to date at $(git -C "${CODE_ORIGIN:?}" rev-parse --short=7 dev)"
   assert_contains "$output" "lease: laptop holds the lease, epoch 2"
   assert_contains "$output" "heartbeat: "
   # The sandbox's paths are not under /home/<name>, so the recorded slot is not re-rooted: the
@@ -155,7 +155,7 @@ laptop_state() {
   assert_equal "$(cat "$BATS_TEST_TMPDIR/doctor.runs")" "$laptop/home"
 
   # The team home is origin's, with the handoff's commit; the config is applied.
-  assert_equal "$(git -C "$laptop/team" rev-parse HEAD)" "$(git -C "$team_origin" rev-parse dev)"
+  assert_equal "$(git -C "${laptop:?}/team" rev-parse HEAD)" "$(git -C "${team_origin:?}" rev-parse dev)"
   assert_equal "$(cat "$laptop/home/.claude/CLAUDE.md")" "Shared instructions."
 
   # The lease is laptop's, and its heartbeat runs.
@@ -164,8 +164,8 @@ laptop_state() {
   assert_equal "$(jq -c '[.installed, .enabled]' <<<"$output")" "[true,true]"
 
   # The worktree is at home-pc's pushed head, with home-pc's scratch.
-  assert_equal "$(git -C "$laptop/home/slots/home/1" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$laptop/home/slots/home/1" branch --show-current)" "feat/T1-work"
+  assert_equal "$(git -C "${laptop:?}/home/slots/home/1" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${laptop:?}/home/slots/home/1" branch --show-current)" "feat/T1-work"
   assert_equal "$(cat "$laptop/home/slots/home/1/.scratch/task/spec.md")" "spec"
 
   # The report.
@@ -215,7 +215,7 @@ laptop_state() {
   assert_equal "$(jq -c '.tasks[0].worktrees[0] | [.worktree, .moved, .head]' "$report")" "[\"$wt\",false,\"$head\"]"
   assert_equal "$(jq -c 'select(.event == "worktree-moved")' "$TEAM_HOME/ledger.jsonl")" ""
   # The worktree and its scratch are as they were left.
-  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${wt:?}" rev-parse HEAD)" "$head"
   assert_equal "$(cat "$wt/.scratch/task/spec.md")" "spec"
 }
 
@@ -223,9 +223,9 @@ laptop_state() {
   # home-pc lost power with T1's builder at work: no stowed, and the restart ended every session.
   # The builder's work since its last commit is in the live worktree.
   "$REPO_ROOT/bin/team-config" capture >/dev/null
-  git -C "$TEAM_HOME" add machine
-  git -C "$TEAM_HOME" commit -q -m "chore: capture the config"
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" add machine
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: capture the config"
+  git -C "${TEAM_HOME:?}" push -q origin dev
   echo "live" >"$wt/a.txt"
   echo '[]' >"$HOME/sessions.json"
 
@@ -246,9 +246,9 @@ laptop_state() {
   age_lease 4
   # home-pc has moved dev on since laptop cloned it: a pull would change laptop's team home.
   echo "note" >"$TEAM_HOME/manual-steps.md"
-  git -C "$TEAM_HOME" add manual-steps.md
-  git -C "$TEAM_HOME" commit -q -m "docs: a note"
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" add manual-steps.md
+  git -C "${TEAM_HOME:?}" commit -q -m "docs: a note"
+  git -C "${TEAM_HOME:?}" push -q origin dev
   local before
   before=$(laptop_state)
 
@@ -262,7 +262,7 @@ laptop_state() {
 @test "--wait, started before the handoff, says once the doctor passed that this machine is ready, then resumes on the release" {
   local out=$BATS_TEST_TMPDIR/wait.out pid i code_head moved
   # origin's code is ahead: the check before the wait says so, and moves nothing.
-  code_head=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+  code_head=$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)
   moved=$(push_to_dev "$CODE_ORIGIN" bin/team-new)
   TEAM_RESUME_POLL_SECONDS=1 on_machine laptop "$CODE_CHECKOUT/bin/team-resume" --wait >"$out" 2>&1 3>&- &
   pid=$!
@@ -273,14 +273,14 @@ laptop_state() {
   # The ready line comes once, after the doctor's and the checks of both checkouts, and is
   # Daniel's cue to say "hand off".
   assert_equal "$(grep -A3 '^doctor: [0-9]' "$out")" "doctor: 1 passed, 1 warned
-team home: before the wait: dev is up to date at $(git -C "$laptop/team" rev-parse --short=7 HEAD)
+team home: before the wait: dev is up to date at $(git -C "${laptop:?}/team" rev-parse --short=7 HEAD)
 code: before the wait: dev can fast-forward to ${moved:0:7}
 lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coordinator there now (waiting for its release, reading it every 1s; Ctrl+C stops, changing nothing)"
   # Still waiting a few reads later: nothing taken, nothing pulled.
   sleep 2
   assert_equal "$(lease_json | jq -r .holder)" home-pc
   [[ ! -e $laptop/home/.claude/CLAUDE.md ]]
-  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$code_head"
+  assert_equal "$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)" "$code_head"
 
   hand_off
   wait "$pid"
@@ -290,7 +290,7 @@ lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coo
   assert_contains "$(cat "$out")" "lease: laptop holds the lease, epoch 2"
   # The pull came after the release, so laptop has the handoff's stowed.
   assert_equal "$(jq -c 'select(.event == "stowed") | .roles' "$laptop/team/ledger.jsonl")" '["builder"]'
-  assert_equal "$(git -C "$laptop/home/slots/home/1" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${laptop:?}/home/slots/home/1" rev-parse HEAD)" "$head"
   assert_equal "$(coordinator_launches | wc -l)" 1
 }
 
@@ -311,8 +311,8 @@ lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coo
 
 @test "--wait refuses before the wait a team home with commits origin's lacks, which the handoff's push would leave diverged" {
   echo "mine" >"$laptop/team/mine.md"
-  git -C "$laptop/team" add mine.md
-  git -C "$laptop/team" commit -q -m "docs: a commit of its own"
+  git -C "${laptop:?}/team" add mine.md
+  git -C "${laptop:?}/team" commit -q -m "docs: a commit of its own"
   local before
   before=$(laptop_state)
 
@@ -327,20 +327,20 @@ lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coo
 @test "--wait refuses before the wait a code checkout that has diverged, or that is on a detached HEAD" {
   push_to_dev "$CODE_ORIGIN" README.md >/dev/null
   echo "mine" >"$CODE_CHECKOUT/mine.txt"
-  git -C "$CODE_CHECKOUT" add mine.txt
-  git -C "$CODE_CHECKOUT" commit -q -m "chore: a commit of its own"
+  git -C "${CODE_CHECKOUT:?}" add mine.txt
+  git -C "${CODE_CHECKOUT:?}" commit -q -m "chore: a commit of its own"
   local before code_head
-  before=$(laptop_state) code_head=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+  before=$(laptop_state) code_head=$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)
 
   on_machine laptop run_bin -1 --separate-stderr team-resume --wait
   assert_contains "$output" "team home: before the wait: dev is up to date at"
   assert_equal "$stderr" "team-resume: code: dev has diverged from origin's; bring $CODE_CHECKOUT level with origin's dev, then run \`team-resume --wait\` again (checked before the wait: nothing changed, and home-pc still runs the team)"
   [[ $output != *'this machine is ready'* ]]
-  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$code_head"
+  assert_equal "$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)" "$code_head"
   assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
   assert_equal "$(laptop_state)" "$before"
 
-  git -C "$CODE_CHECKOUT" switch -q --detach
+  git -C "${CODE_CHECKOUT:?}" switch -q --detach
   on_machine laptop run_bin -1 --separate-stderr team-resume --wait
   assert_equal "$stderr" "team-resume: code: $CODE_CHECKOUT is on a detached HEAD; check out its branch, then run \`team-resume --wait\` again (checked before the wait: nothing changed, and home-pc still runs the team)"
   assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
@@ -419,7 +419,7 @@ team-doctor-trust-home"
   assert_equal "$stderr" ""
   assert_equal "$(grep -E '^(team home|code|config|lease): ' <<<"$output" | cut -d: -f1 | uniq | paste -sd ' ')" "team home code config lease"
   assert_contains "$output" "code: dev fast-forwarded to ${moved:0:7}"
-  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$moved"
+  assert_equal "$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)" "$moved"
   [[ -e $CODE_CHECKOUT/bin/team-new ]]
 }
 
@@ -427,14 +427,14 @@ team-doctor-trust-home"
   hand_off
   push_to_dev "$CODE_ORIGIN" README.md >/dev/null
   echo "mine" >"$CODE_CHECKOUT/mine.txt"
-  git -C "$CODE_CHECKOUT" add mine.txt
-  git -C "$CODE_CHECKOUT" commit -q -m "chore: a commit of its own"
-  before=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+  git -C "${CODE_CHECKOUT:?}" add mine.txt
+  git -C "${CODE_CHECKOUT:?}" commit -q -m "chore: a commit of its own"
+  before=$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_contains "$output" "team home: dev fast-forwarded to"
   assert_equal "$stderr" "team-resume: code: dev has diverged from origin's; bring $CODE_CHECKOUT level with origin's dev, then run team-resume again"
-  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)" "$before"
   [[ ! -e $laptop/home/.claude/CLAUDE.md ]]
   assert_equal "$(lease_json | jq -r .state)" released
   assert_equal "$(coordinator_launches)" ""
@@ -444,11 +444,11 @@ team-doctor-trust-home"
   hand_off
   moved=$(push_to_dev "$CODE_ORIGIN" tool.sh)
   echo "mine" >"$CODE_CHECKOUT/tool.sh"
-  before=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+  before=$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_equal "$stderr" "team-resume: code: local changes to tool.sh are in the way; bring $CODE_CHECKOUT level with origin's dev, then run team-resume again"
-  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "${CODE_CHECKOUT:?}" rev-parse HEAD)" "$before"
   assert_equal "$(cat "$CODE_CHECKOUT/tool.sh")" mine
 
   # Out of the way, a change to another file stays, and the resume goes on.
@@ -461,7 +461,7 @@ team-doctor-trust-home"
 
 @test "a code checkout on a detached HEAD refuses the resume" {
   hand_off
-  git -C "$CODE_CHECKOUT" switch -q --detach
+  git -C "${CODE_CHECKOUT:?}" switch -q --detach
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_equal "$stderr" "team-resume: code: $CODE_CHECKOUT is on a detached HEAD; check out its branch, then run team-resume again"
@@ -470,7 +470,7 @@ team-doctor-trust-home"
 
 @test "offline, the resume exits 75 at its first step, before the doctor, changing nothing" {
   hand_off
-  git -C "$laptop/team" remote set-url origin "https://127.0.0.1:9/agent-team.git"
+  git -C "${laptop:?}/team" remote set-url origin "https://127.0.0.1:9/agent-team.git"
   local before
   before=$(laptop_state)
 
@@ -487,11 +487,11 @@ team-doctor-trust-home"
   hand_off
   # laptop has its own commit on T1's branch, which origin lacks.
   local primary=$laptop/home/projects/home
-  git -C "$primary" checkout -q -b feat/T1-work
+  git -C "${primary:?}" checkout -q -b feat/T1-work
   echo "mine" >"$primary/mine.txt"
-  git -C "$primary" add mine.txt
-  git -C "$primary" commit -q -m "feat: mine"
-  git -C "$primary" checkout -q main
+  git -C "${primary:?}" add mine.txt
+  git -C "${primary:?}" commit -q -m "feat: mine"
+  git -C "${primary:?}" checkout -q main
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
   report=$(reported)
@@ -517,7 +517,7 @@ team-doctor-trust-home"
   assert_contains "$output" " | not re-homed: home on laptop: feat/T1-work here has commits that "
   # Once Daniel drops laptop's commit, team-open --resume (as the resume skill runs it) makes the
   # worktree, and the failure is cleared.
-  git -C "$primary" branch -q -D feat/T1-work
+  git -C "${primary:?}" branch -q -D feat/T1-work
   on_machine laptop run_bin -0 team-open --task T1 --resume home
   on_machine laptop run_bin -0 team-state T1 --json
   assert_equal "$(jq -c .rehome_failures <<<"$output")" '[]'
@@ -528,9 +528,9 @@ team-doctor-trust-home"
   local conv slots=() laptop_slots=() pool=.treehouse/conv-abc123
   conv=$(make_repo conv)
   printf '.scratch/\n' >"$conv/.gitignore"
-  git -C "$conv" add .gitignore
-  git -C "$conv" commit -q -m "chore: ignore scratch"
-  git -C "$conv" push -q origin main
+  git -C "${conv:?}" add .gitignore
+  git -C "${conv:?}" commit -q -m "chore: ignore scratch"
+  git -C "${conv:?}" push -q origin main
   cat >>"$TEAM_HOME/projects.toml" <<TOML
 
 [conv]
@@ -550,23 +550,23 @@ lease = "scripts/th-lease.sh"
 return = "scripts/th-return.sh"
 slots = ["$pool/1/conv", "$pool/2/conv"]
 TOML
-  git -C "$TEAM_HOME" commit -q -m "chore: register conv" projects.toml
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: register conv" projects.toml
+  git -C "${TEAM_HOME:?}" push -q origin dev
   slots=("$HOME/$pool/1/conv" "$HOME/$pool/2/conv")
-  git -C "$conv" worktree add -q --detach "${slots[0]}" origin/main
-  git -C "$conv" worktree add -q --detach "${slots[1]}" origin/main
+  git -C "${conv:?}" worktree add -q --detach "${slots[0]}" origin/main
+  git -C "${conv:?}" worktree add -q --detach "${slots[1]}" origin/main
   printf '%s\n' "${slots[@]}" >"$BATS_TEST_TMPDIR/free"
   fake_pool_commands "$conv"
   run_bin -0 team-open conv feature feat move "Move it"
-  git -C "${slots[0]}" push -q origin HEAD:refs/heads/feat/T2-move
+  git -C "${slots[0]:?}" push -q origin HEAD:refs/heads/feat/T2-move
   hand_off
 
   # laptop's clone of conv and its own pool, whose pre-warm rewrites a tracked file.
   local lconv=$laptop/home/projects/conv
   git clone -q "$BATS_TEST_TMPDIR/origin/conv.git" "$lconv" 2>/dev/null
   laptop_slots=("$laptop/home/$pool/1/conv" "$laptop/home/$pool/2/conv")
-  git -C "$lconv" worktree add -q --detach "${laptop_slots[0]}" origin/main
-  git -C "$lconv" worktree add -q --detach "${laptop_slots[1]}" origin/main
+  git -C "${lconv:?}" worktree add -q --detach "${laptop_slots[0]}" origin/main
+  git -C "${lconv:?}" worktree add -q --detach "${laptop_slots[1]}" origin/main
   printf '%s\n' "${laptop_slots[@]}" | tee "$BATS_TEST_TMPDIR/free" >"$BATS_TEST_TMPDIR/pool"
   : >"$BATS_TEST_TMPDIR/leases"
   fake_pool_commands "$lconv"
@@ -582,7 +582,7 @@ TOML
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_contains "$stderr" "team-resume: T2 conv: not re-homed: "
   assert_equal "$(pool_leases)" ""
-  assert_equal "$(git -C "${laptop_slots[0]}" status --porcelain)$(git -C "${laptop_slots[1]}" status --porcelain)" ""
+  assert_equal "$(git -C "${laptop_slots[0]:?}" status --porcelain)$(git -C "${laptop_slots[1]:?}" status --porcelain)" ""
   # One rehome-failed per run, each with only the first line of what team-open printed, which
   # also said it handed the slot back.
   report=$(reported)
@@ -614,9 +614,9 @@ TOML
 @test "a stale lease is refused naming --steal, and --steal takes it with the holder's name typed" {
   # home-pc died without a handoff; the team's config was shared earlier.
   "$REPO_ROOT/bin/team-config" capture >/dev/null
-  git -C "$TEAM_HOME" add machine
-  git -C "$TEAM_HOME" commit -q -m "chore: capture the config"
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" add machine
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: capture the config"
+  git -C "${TEAM_HOME:?}" push -q origin dev
   age_lease 75
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_equal "$stderr" "team-resume: home-pc holds the lease, but has not renewed it for 75 min: if home-pc is gone for good, run \`team-resume --steal\` here, typing its name when asked"
@@ -634,10 +634,10 @@ TOML
 @test "after home-pc crashed, --steal resumes T1 from its last checkpoint, and home-pc fences itself and lists what to salvage" {
   # The team's config was shared earlier; home-pc pushed T1's branch and launched its builder.
   "$REPO_ROOT/bin/team-config" capture >/dev/null
-  git -C "$TEAM_HOME" add machine
-  git -C "$TEAM_HOME" commit -q -m "chore: capture the config"
-  git -C "$TEAM_HOME" push -q origin dev
-  git -C "$wt" push -q origin HEAD:refs/heads/feat/T1-work
+  git -C "${TEAM_HOME:?}" add machine
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: capture the config"
+  git -C "${TEAM_HOME:?}" push -q origin dev
+  git -C "${wt:?}" push -q origin HEAD:refs/heads/feat/T1-work
   jq -cn --arg wt "$wt" '{ts: (now | todate), task: "T1", event: "launch", role: "builder", session: "81f08540",
     worktree: $wt, toolkits: [], machine: "home-pc"}' >>"$TEAM_HOME/ledger.jsonl"
   # A checkpoint of a tracked edit and a new file.
@@ -645,14 +645,14 @@ TOML
   echo "b" >"$wt/b.txt"
   run_bin -0 team-checkpoint --force
   local wip at checkpoint
-  wip=$(git -C "$team_origin" rev-parse wip/home/T1)
-  at=$(git -C "$team_origin" show -s --format=%ct "$wip")
-  checkpoint=$(git -C "$team_origin" log -1 --format=%ct dev -- tasks/T1/scratch | jq -r 'tonumber | todate')
+  wip=$(git -C "${team_origin:?}" rev-parse wip/home/T1)
+  at=$(git -C "${team_origin:?}" show -s --format=%ct "$wip")
+  checkpoint=$(git -C "${team_origin:?}" log -1 --format=%ct dev -- tasks/T1/scratch | jq -r 'tonumber | todate')
   # home-pc worked on, then died: no handoff, and no heartbeat run since.
   echo "later" >"$wt/a.txt"
   echo "c" >"$wt/c.txt"
-  git -C "$wt" add c.txt
-  git -C "$wt" commit -q -m "feat: c"
+  git -C "${wt:?}" add c.txt
+  git -C "${wt:?}" commit -q -m "feat: c"
   age_lease 75
 
   local tty=$BATS_TEST_TMPDIR/steal-tty lt=$laptop/home/slots/home/1
@@ -664,8 +664,8 @@ TOML
   assert_contains "$output" "T1 home: applied wip/home/T1 ${wip:0:7} (the checkpoint of $(jq -nr --argjson t "$at" '$t | todate')) to $lt as uncommitted changes"
   assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; resuming from the checkpoint of $checkpoint, to relaunch: builder"
   # The worktree is the pushed branch with the checkpoint's changes uncommitted, not the later ones.
-  assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$lt" status --porcelain)" "$(printf '%s\n' " M a.txt" "?? b.txt")"
+  assert_equal "$(git -C "${lt:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${lt:?}" status --porcelain)" "$(printf '%s\n' " M a.txt" "?? b.txt")"
   assert_equal "$(cat "$lt/a.txt")" "edited"
   [[ ! -e $lt/c.txt ]]
   # The report marks T1 crashed, with the checkpoint's time and the snapshot applied.
@@ -691,15 +691,15 @@ TOML
 
 @test "a crash before T1's branch was ever pushed resumes it from wip/home/T1: the branch's commits, and the checkpoint's changes uncommitted" {
   "$REPO_ROOT/bin/team-config" capture >/dev/null
-  git -C "$TEAM_HOME" add machine
-  git -C "$TEAM_HOME" commit -q -m "chore: capture the config"
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" add machine
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: capture the config"
+  git -C "${TEAM_HOME:?}" push -q origin dev
   jq -cn --arg wt "$wt" '{ts: (now | todate), task: "T1", event: "launch", role: "builder", session: "81f08540",
     worktree: $wt, toolkits: [], machine: "home-pc"}' >>"$TEAM_HOME/ledger.jsonl"
   # The builder's commit (feat: a) was never pushed; a checkpoint saw it with an uncommitted edit.
   echo "edited" >"$wt/a.txt"
   run_bin -0 team-checkpoint --force
-  run -1 git -C "$BATS_TEST_TMPDIR/origin/home.git" rev-parse -q --verify refs/heads/feat/T1-work
+  run -1 git -C "${BATS_TEST_TMPDIR:?}/origin/home.git" rev-parse -q --verify refs/heads/feat/T1-work
   age_lease 75
 
   local tty=$BATS_TEST_TMPDIR/steal-tty lt=$laptop/home/slots/home/1
@@ -709,15 +709,15 @@ TOML
   assert_equal "$stderr" ""
   assert_contains "$output" "T1 home: feat/T1-work is not on origin; it is taken from wip/home/T1, at ${head:0:7}"
   assert_contains "$output" "T1 home: applied wip/home/T1 "
-  assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$lt" log -1 --format=%s)" "feat: a"
-  assert_equal "$(git -C "$lt" status --porcelain)" " M a.txt"
+  assert_equal "$(git -C "${lt:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${lt:?}" log -1 --format=%s)" "feat: a"
+  assert_equal "$(git -C "${lt:?}" status --porcelain)" " M a.txt"
   assert_equal "$(jq -r '.tasks[0].worktrees[0].snapshot | "\(.parent) \(.applied)"' "$report")" "$head true"
 }
 
 @test "a crash relaunches each role whose latest launch since the last stowed nothing ended; no checkpoint is said" {
   "$REPO_ROOT/bin/team-config" capture >/dev/null
-  git -C "$wt" push -q origin HEAD:refs/heads/feat/T1-work
+  git -C "${wt:?}" push -q origin HEAD:refs/heads/feat/T1-work
   # A planner before an earlier handoff; since it, a builder that finished its ticket, a reviewer
   # that reviewed, then a builder and a reviewer that nothing ended.
   local event
@@ -735,9 +735,9 @@ TOML
 {"event": "launch", "role": "builder"}
 {"event": "launch", "role": "reviewer"}
 EVENTS
-  git -C "$TEAM_HOME" add ledger.jsonl machine
-  git -C "$TEAM_HOME" commit -q -m "chore: the ledger"
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" add ledger.jsonl machine
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: the ledger"
+  git -C "${TEAM_HOME:?}" push -q origin dev
   age_lease 75
 
   local tty=$BATS_TEST_TMPDIR/steal-tty
@@ -747,12 +747,12 @@ EVENTS
   assert_contains "$output" "T1 home: wip/home/T1 not applied: the team home's origin has no wip/home/T1: no checkpoint saved this task's work"
   assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; no checkpoint of it was found, to relaunch: builder, reviewer"
   assert_equal "$(jq -c '.tasks[0].crashed' "$report")" '{"machine":"home-pc","checkpoint":null,"roles":["builder","reviewer"]}'
-  assert_equal "$(git -C "$laptop/home/slots/home/1" status --porcelain)" ""
+  assert_equal "$(git -C "${laptop:?}/home/slots/home/1" status --porcelain)" ""
 }
 
 @test "a crashed task whose last launch was ops lists no role to relaunch: Daniel asks again" {
   "$REPO_ROOT/bin/team-config" capture >/dev/null
-  git -C "$wt" push -q origin HEAD:refs/heads/feat/T1-work
+  git -C "${wt:?}" push -q origin HEAD:refs/heads/feat/T1-work
   # A planner before an earlier handoff; since it, only an ops session on Daniel's request.
   local event
   while IFS= read -r event; do
@@ -764,9 +764,9 @@ EVENTS
 {"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["planner"]}
 {"event": "launch", "role": "ops", "toolkits": ["prod-read"], "request": "https://discord.com/channels/1/2/3"}
 EVENTS
-  git -C "$TEAM_HOME" add ledger.jsonl machine
-  git -C "$TEAM_HOME" commit -q -m "chore: the ledger"
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" add ledger.jsonl machine
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: the ledger"
+  git -C "${TEAM_HOME:?}" push -q origin dev
   age_lease 75
 
   local tty=$BATS_TEST_TMPDIR/steal-tty
@@ -811,8 +811,8 @@ open_ticket() {
   printf '# %s: t\n\nBlocked by: None\n' "$1" >"$wt/.scratch/task/tickets/$1-t.md"
   twt=$(TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-open" --task T1 --ticket "$1" 2>/dev/null | jq -r .worktree)
   echo "$1" >"$twt/ticket-$1.txt"
-  git -C "$twt" add "ticket-$1.txt"
-  git -C "$twt" commit -q -m "feat: ticket $1"
+  git -C "${twt:?}" add "ticket-$1.txt"
+  git -C "${twt:?}" commit -q -m "feat: ticket $1"
   printf '%s\n' "$twt"
 }
 
@@ -821,15 +821,15 @@ open_ticket() {
   local side twt thead lt
   side=$(make_repo side)
   printf '.scratch/\n' >"$side/.gitignore"
-  git -C "$side" add .gitignore
-  git -C "$side" commit -q -m "chore: ignore scratch"
-  git -C "$side" push -q origin main
+  git -C "${side:?}" add .gitignore
+  git -C "${side:?}" commit -q -m "chore: ignore scratch"
+  git -C "${side:?}" push -q origin main
   git clone -q "$BATS_TEST_TMPDIR/origin/side.git" "$laptop/home/projects/side" 2>/dev/null
   local entry
   entry=$(sed -n '/^\[home\]/,$p' "$TEAM_HOME/projects.toml" | sed 's/home/side/g')
   printf '%s\n' "$entry" >>"$TEAM_HOME/projects.toml"
   twt=$(open_ticket 02)
-  thead=$(git -C "$twt" rev-parse HEAD)
+  thead=$(git -C "${twt:?}" rev-parse HEAD)
   echo "ticket 02's note" >"$twt/.scratch/task/note.md"
   run_bin -0 team-open --task T1 --add side feat side
   echo "side spec" >"$HOME/slots/side/1/.scratch/task/spec.md"
@@ -845,10 +845,10 @@ open_ticket() {
     "T1 home--02: $lt on feat/T1-work--02, moved from $twt, scratch restored from tasks/T1/scratch--02")"
   # The ticket worktree is its ticket branch at home-pc's head, which only the wip ref kept, with
   # its own task directory.
-  assert_equal "$(git -C "$lt" branch --show-current)" "feat/T1-work--02"
-  assert_equal "$(git -C "$lt" rev-parse HEAD)" "$thead"
+  assert_equal "$(git -C "${lt:?}" branch --show-current)" "feat/T1-work--02"
+  assert_equal "$(git -C "${lt:?}" rev-parse HEAD)" "$thead"
   assert_equal "$(cat "$lt/.scratch/task/note.md")" "ticket 02's note"
-  assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/home.git" for-each-ref refs/heads/feat/T1-work--02)" ""
+  assert_equal "$(git -C "${BATS_TEST_TMPDIR:?}/origin/home.git" for-each-ref refs/heads/feat/T1-work--02)" ""
   # The report and the ledger name each by its project and ticket.
   assert_equal "$(jq -c '.tasks[0] | {worktrees: (.worktrees | map([.project, .ticket, .branch, .moved])), failures}' "$report")" \
     '{"worktrees":[["home",null,"feat/T1-work",true],["side",null,"feat/T1-side",true],["home","02","feat/T1-work--02",true]],"failures":[]}'
@@ -862,10 +862,10 @@ open_ticket() {
 @test "T287: a ticket worktree that cannot be re-made is a rehome-failed with its ticket, while the task's worktree resumes" {
   local twt thead
   twt=$(open_ticket 02)
-  thead=$(git -C "$twt" rev-parse HEAD)
+  thead=$(git -C "${twt:?}" rev-parse HEAD)
   hand_off
   # The checkpoint's wip/home/T1--02 is gone from the team home's origin.
-  git -C "$team_origin" update-ref -d refs/heads/wip/home/T1--02
+  git -C "${team_origin:?}" update-ref -d refs/heads/wip/home/T1--02
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
   report=$(reported)
@@ -879,9 +879,9 @@ open_ticket() {
   # team-state shows it apart from the task's worktree, made since, until the ticket's is made.
   on_machine laptop run_bin -0 team-state T1
   assert_contains "$output" " | not re-homed: home--02 on laptop: $reason"
-  git -C "$twt" push -q "$team_origin" "HEAD:refs/heads/wip/home/T1--02"
+  git -C "${twt:?}" push -q "$team_origin" "HEAD:refs/heads/wip/home/T1--02"
   on_machine laptop run_bin -0 team-open --task T1 --resume home --ticket 02
-  assert_equal "$(git -C "$laptop/home/slots/home/2" rev-parse HEAD)" "$thead"
+  assert_equal "$(git -C "${laptop:?}/home/slots/home/2" rev-parse HEAD)" "$thead"
   on_machine laptop run_bin -0 team-state T1 --json
   assert_equal "$(jq -c .rehome_failures <<<"$output")" '[]'
 }

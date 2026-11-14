@@ -15,7 +15,7 @@ setup() {
   home_slots=("$HOME/slots/home/1" "$HOME/slots/home/2" "$HOME/slots/home/3")
   conv_slots=("$HOME/.treehouse/conv-abc123/1/conv" "$HOME/.treehouse/conv-abc123/2/conv")
   local slot
-  for slot in "${conv_slots[@]}"; do git -C "$conv" worktree add -q --detach "$slot" origin/main; done
+  for slot in "${conv_slots[@]}"; do git -C "${conv:?}" worktree add -q --detach "$slot" origin/main; done
   printf '%s\n' "${conv_slots[@]}" >"$BATS_TEST_TMPDIR/free"
   fake_pool_commands "$conv"
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
@@ -57,9 +57,9 @@ TOML
 # Commit and push a .gitignore with .scratch/ in the primary checkout <path>.
 ignore_scratch() {
   echo ".scratch/" >"$1/.gitignore"
-  git -C "$1" add .gitignore
-  git -C "$1" commit -q -m "chore: ignore scratch"
-  git -C "$1" push -q origin main
+  git -C "${1:?}" add .gitignore
+  git -C "${1:?}" commit -q -m "chore: ignore scratch"
+  git -C "${1:?}" push -q origin main
 }
 
 events() {
@@ -86,9 +86,9 @@ open_task() {
   printf '# spec\n\nParallel: 2\n' >"$dir/spec.md"
   echo "note one" >"$dir/build-notes/01.md"
   echo a >"$wt/a.txt"
-  git -C "$wt" add a.txt
-  git -C "$wt" commit -q -m "feat: a"
-  tip=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add a.txt
+  git -C "${wt:?}" commit -q -m "feat: a"
+  tip=$(git -C "${wt:?}" rev-parse HEAD)
 }
 
 @test "--ticket gives a ticket a git-pool worktree on its ticket branch from the task branch's local tip, offline" {
@@ -101,9 +101,9 @@ open_task() {
     task: "T1", project: "home", branch: "feat/T1-one--02", base: "feat/T1-one", base_sha: $sha,
     worktree: $wt, task_dir: "\($wt)/.scratch/task", ticket: "02"}')"
   assert_equal "$stderr" ""
-  assert_equal "$(git -C "$ticket_wt" rev-parse --abbrev-ref HEAD)" "feat/T1-one--02"
-  assert_equal "$(git -C "$ticket_wt" rev-parse HEAD)" "$tip"
-  run -128 git -C "$ticket_wt" rev-parse --abbrev-ref '@{upstream}'
+  assert_equal "$(git -C "${ticket_wt:?}" rev-parse --abbrev-ref HEAD)" "feat/T1-one--02"
+  assert_equal "$(git -C "${ticket_wt:?}" rev-parse HEAD)" "$tip"
+  run -128 git -C "${ticket_wt:?}" rev-parse --abbrev-ref '@{upstream}'
 
   # The task directory is a copy of the task worktree's.
   local file
@@ -136,8 +136,8 @@ open_task() {
     "feat/T1-one--01 $ticket_wt $tip 01"
   assert_equal "$(stub_calls th-lease.sh | jq -c .args)" "$(printf '%s\n' '["T1"]' '["T1--01"]')"
   assert_equal "$(pool_leases | awk '{ print $2 }' | sort | paste -sd " ")" "T1 T1--01"
-  assert_equal "$(git -C "$ticket_wt" rev-parse --abbrev-ref HEAD)" "feat/T1-one--01"
-  assert_equal "$(git -C "$ticket_wt" rev-parse HEAD)" "$tip"
+  assert_equal "$(git -C "${ticket_wt:?}" rev-parse --abbrev-ref HEAD)" "feat/T1-one--01"
+  assert_equal "$(git -C "${ticket_wt:?}" rev-parse HEAD)" "$tip"
   assert_equal "$(cat "$ticket_wt/.scratch/task/build-notes/01.md")" "note one"
   assert_equal "$(events worktree-added | jq -r '"\(.ticket) \(.worktree)"')" "01 $ticket_wt"
 }
@@ -147,7 +147,7 @@ open_task() {
   run_bin -0 --separate-stderr team-open --task T1 --ticket 02
   local first=$output
   # The task branch moves on; the open ticket worktree is the one there is.
-  git -C "$wt" commit -q --allow-empty -m "feat: more"
+  git -C "${wt:?}" commit -q --allow-empty -m "feat: more"
   run_bin -0 --separate-stderr team-open --task T1 --ticket 02
   assert_equal "$(jq -c . <<<"$output")" "$(jq -c . <<<"$first")"
   assert_equal "$stderr" "team-open: T1's ticket 02 already has its worktree ${home_slots[1]}"
@@ -157,23 +157,23 @@ open_task() {
 
 @test "an existing ticket branch the task branch holds is moved to its tip; one with other commits is refused" {
   open_task home
-  git -C "$home" branch feat/T1-one--02 origin/main
+  git -C "${home:?}" branch feat/T1-one--02 origin/main
   run_bin -0 --separate-stderr team-open --task T1 --ticket 02
-  assert_equal "$stderr" "team-open: moved feat/T1-one--02 from $(git -C "$home" rev-parse origin/main | cut -c 1-8) to the task branch's tip ${tip:0:8}"
-  assert_equal "$(git -C "${home_slots[1]}" rev-parse HEAD)" "$tip"
+  assert_equal "$stderr" "team-open: moved feat/T1-one--02 from $(git -C "${home:?}" rev-parse origin/main | cut -c 1-8) to the task branch's tip ${tip:0:8}"
+  assert_equal "$(git -C "${home_slots[1]:?}" rev-parse HEAD)" "$tip"
   assert_equal "$(jq -r .base_sha <<<"$output")" "$tip"
 
   # Ticket 01's branch was left with a commit of its own.
-  git -C "$home" branch feat/T1-one--01 "$tip"
+  git -C "${home:?}" branch feat/T1-one--01 "$tip"
   local other=$BATS_TEST_TMPDIR/other
-  git -C "$home" worktree add -q "$other" feat/T1-one--01
-  git -C "$other" commit -q --allow-empty -m "feat: lost work"
+  git -C "${home:?}" worktree add -q "$other" feat/T1-one--01
+  git -C "${other:?}" commit -q --allow-empty -m "feat: lost work"
   local head
-  head=$(git -C "$other" rev-parse HEAD)
-  git -C "$home" worktree remove "$other"
+  head=$(git -C "${other:?}" rev-parse HEAD)
+  git -C "${home:?}" worktree remove "$other"
   run_bin -1 --separate-stderr team-open --task T1 --ticket 01
   assert_equal "$stderr" "team-open: the branch feat/T1-one--01 exists at ${head:0:8} with commits the task branch lacks; integrate or remove it first"
-  assert_equal "$(git -C "$home" rev-parse feat/T1-one--01)" "$head"
+  assert_equal "$(git -C "${home:?}" rev-parse feat/T1-one--01)" "$head"
   [[ ! -e ${home_slots[2]} ]]
   assert_equal "$(events worktree-added | jq -r .ticket)" "02"
 }
@@ -216,13 +216,13 @@ open_task() {
 @test "--ticket on a full git pool exits 75 naming the holders, the ticket branch made nowhere" {
   open_task home
   run_bin -0 --separate-stderr team-open --task T1 --ticket 01
-  git -C "$home" worktree add -q --detach "${home_slots[2]}" origin/main
+  git -C "${home:?}" worktree add -q --detach "${home_slots[2]}" origin/main
   run_bin -75 --separate-stderr team-open --task T1 --ticket 02
   assert_equal "$output" ""
   assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of home is taken:" \
     "  ${home_slots[0]}: T1 (feat/T1-one)" "  ${home_slots[1]}: T1 (feat/T1-one--01)" \
     "  ${home_slots[2]}: no task (detached HEAD)")"
-  run git -C "$home" branch --list 'feat/T1-one--02'
+  run git -C "${home:?}" branch --list 'feat/T1-one--02'
   assert_equal "$output" ""
 }
 
@@ -234,7 +234,7 @@ open_task() {
   assert_contains "$stderr" "T1's ticket 02 is half open in ${home_slots[1]}; finish it with: team-open --task T1 --ticket 02"
   chmod 644 "$TEAM_HOME/ledger.jsonl.lock"
   # The task branch moved on meanwhile: the base the slot was cut from is what is logged.
-  git -C "$wt" commit -q --allow-empty -m "feat: more"
+  git -C "${wt:?}" commit -q --allow-empty -m "feat: more"
 
   run_bin -0 --separate-stderr team-open --task T1 --ticket 02
   assert_equal "$(jq -r '"\(.worktree) \(.base_sha)"' <<<"$output")" "${home_slots[1]} $tip"

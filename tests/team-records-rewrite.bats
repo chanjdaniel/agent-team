@@ -32,8 +32,8 @@ Co-Authored-By: Someone <noreply@anthropic.com>"
   git rm -q -r projects/conventioner/lavish
   commit_paths "docs: the S02 story names the fixture only, after $bulk" tasks/T1/plan.md
   git push -q origin dev
-  git -C "$origin" branch wip/home/T1 "$pr_head"
-  refs_before=$(git -C "$origin" for-each-ref --format='%(refname) %(objectname)')
+  git -C "${origin:?}" branch wip/home/T1 "$pr_head"
+  refs_before=$(git -C "${origin:?}" for-each-ref --format='%(refname) %(objectname)')
   work=$BATS_TEST_TMPDIR/rewrite
 }
 
@@ -54,8 +54,8 @@ rewrite_by_hand() {
   check=$BATS_TEST_TMPDIR/check
   git clone -q --no-local --mirror "$origin" "$check/old.git"
   git clone -q --no-local --mirror "$check/old.git" "$check/new.git"
-  git -C "$check/new.git" for-each-ref --format='%(refname)' | { grep -vxE 'refs/heads/(dev|lease)' || true; } |
-    xargs -r -n1 git -C "$check/new.git" update-ref -d
+  git -C "${check:?}/new.git" for-each-ref --format='%(refname)' | { grep -vxE 'refs/heads/(dev|lease)' || true; } |
+    xargs -r -n1 git -C "${check:?}/new.git" update-ref -d
   (cd "$check/new.git" && python3 "$REPO_ROOT/bin/lib/vendor/git-filter-repo/git-filter-repo" --sensitive-data-removal \
     --no-fetch "$@" --prune-empty never --prune-degenerate never) >/dev/null 2>&1
 }
@@ -74,9 +74,9 @@ said() {
 
 @test "a rehearsal drops the bulk and the scrubbed pages, keeps every record byte-identical, and prints no push while the lease is held" {
   local old
-  old=$(git -C "$origin" rev-parse dev)
+  old=$(git -C "${origin:?}" rev-parse dev)
   run_bin -0 team-records-rewrite "$work"
-  assert_equal "$(said origin)" "$origin, dev at $old, lease at $(git -C "$origin" rev-parse lease)"
+  assert_equal "$(said origin)" "$origin, dev at $old, lease at $(git -C "${origin:?}" rev-parse lease)"
   assert_equal "$(said verify | grep -v '^passed')" "commits compared: 7
 commits whose tree is unchanged: 3
 dropped paths, summed over commits: 38
@@ -86,7 +86,7 @@ messages changed by the message expressions: 1
 drop-list paths left in the new history: 0
 pull refs whose history holds a dropped path: 1 of 1
 failures: 0"
-  assert_equal "$(said lease)" "unchanged at $(git -C "$origin" rev-parse lease)"
+  assert_equal "$(said lease)" "unchanged at $(git -C "${origin:?}" rev-parse lease)"
   [[ $(said 'pack before') =~ ^[0-9.]+\ MiB,\ [0-9]+\ objects$ ]]
   [[ $(said 'pack after') =~ ^[0-9.]+\ MiB,\ [0-9]+\ objects$ ]]
   assert_equal "$(said rehearsal)" "origin's lease is held, not released, so the team was not frozen: no push from this run"
@@ -95,40 +95,40 @@ failures: 0"
 
   # The rewritten dev: only the records, the S02 story naming the fixture alone, the message scrubbed.
   local rw=$work/rewrite.git
-  assert_equal "$(git -C "$rw" for-each-ref --format='%(refname)')" "refs/heads/dev
+  assert_equal "$(git -C "${rw:?}" for-each-ref --format='%(refname)')" "refs/heads/dev
 refs/heads/lease"
-  assert_equal "$(git -C "$rw" log --format= --name-only dev | sort -u | grep .)" "$(printf '%s\n' "$S02" \
+  assert_equal "$(git -C "${rw:?}" log --format= --name-only dev | sort -u | grep .)" "$(printf '%s\n' "$S02" \
     ledger.jsonl projects/conventioner/wayfinding/map.png tasks/T1/plan.md tasks/T1/scratch/notes.md \
     tasks/T49/scratch/evidence/notes.md | sort)"
-  assert_equal "$(git -C "$rw" show "dev:$S02")" "From the export: vendor@example.com wrote in.
+  assert_equal "$(git -C "${rw:?}" show "dev:$S02")" "From the export: vendor@example.com wrote in.
 The fixture: vendor@example.com"
-  assert_equal "$(git -C "$rw" log --format=%B -n1 dev~1)" "docs: as [email removed] asked
+  assert_equal "$(git -C "${rw:?}" log --format=%B -n1 dev~1)" "docs: as [email removed] asked
 
 Co-Authored-By: Someone <noreply@anthropic.com>"
   # Every kept file is the same blob at the tip, and lease is the same commit.
-  assert_equal "$(git -C "$rw" rev-parse dev:tasks/T1/plan.md dev:ledger.jsonl)" \
-    "$(git -C "$origin" rev-parse dev:tasks/T1/plan.md dev:ledger.jsonl)"
-  assert_equal "$(git -C "$rw" rev-parse lease)" "$(git -C "$origin" rev-parse lease)"
+  assert_equal "$(git -C "${rw:?}" rev-parse dev:tasks/T1/plan.md dev:ledger.jsonl)" \
+    "$(git -C "${origin:?}" rev-parse dev:tasks/T1/plan.md dev:ledger.jsonl)"
+  assert_equal "$(git -C "${rw:?}" rev-parse lease)" "$(git -C "${origin:?}" rev-parse lease)"
   [[ -s $rw/filter-repo/first-changed-commits ]]
 
   # Nothing on origin moved, and nothing new is in the team home.
-  assert_equal "$(git -C "$origin" for-each-ref --format='%(refname) %(objectname)')" "$refs_before"
+  assert_equal "$(git -C "${origin:?}" for-each-ref --format='%(refname) %(objectname)')" "$refs_before"
   assert_equal "$(cat "$work/refs-before.txt")" "$refs_before"
   # The mirror keeps every ref but no origin, so no bare push there reaches GitHub.
-  assert_equal "$(git -C "$work/mirror.git" for-each-ref --format='%(refname) %(objectname)')" "$refs_before"
-  assert_equal "$(git -C "$work/mirror.git" remote)" ""
-  run ! git -C "$work/mirror.git" push
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  assert_equal "$(git -C "${work:?}/mirror.git" for-each-ref --format='%(refname) %(objectname)')" "$refs_before"
+  assert_equal "$(git -C "${work:?}/mirror.git" remote)" ""
+  run ! git -C "${work:?}/mirror.git" push
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" ""
 }
 
 @test "with the lease released, it prints the force push with its lease on the old dev, which pushes dev alone; the rollback restores it" {
   local old new lease
   "$REPO_ROOT/bin/team-lease" release >/dev/null
-  refs_before=$(git -C "$origin" for-each-ref --format='%(refname) %(objectname)')
-  old=$(git -C "$origin" rev-parse dev)
-  lease=$(git -C "$origin" rev-parse lease)
+  refs_before=$(git -C "${origin:?}" for-each-ref --format='%(refname) %(objectname)')
+  old=$(git -C "${origin:?}" rev-parse dev)
+  lease=$(git -C "${origin:?}" rev-parse lease)
   run_bin -0 team-records-rewrite "$work"
-  new=$(git -C "$work/rewrite.git" rev-parse dev)
+  new=$(git -C "${work:?}/rewrite.git" rev-parse dev)
   [[ $new != "$old" ]]
   assert_equal "$(said rehearsal)" ""
   local push rollback
@@ -140,16 +140,16 @@ Co-Authored-By: Someone <noreply@anthropic.com>"
 
   # Daniel's push: dev moves, every other ref stays.
   eval "$push" 2>/dev/null
-  assert_equal "$(git -C "$origin" rev-parse dev)" "$new"
-  assert_equal "$(git -C "$origin" for-each-ref --format='%(refname) %(objectname)' | grep -v '^refs/heads/dev ')" \
+  assert_equal "$(git -C "${origin:?}" rev-parse dev)" "$new"
+  assert_equal "$(git -C "${origin:?}" for-each-ref --format='%(refname) %(objectname)' | grep -v '^refs/heads/dev ')" \
     "$(grep -v '^refs/heads/dev ' <<<"$refs_before")"
   # Its lease refuses a dev that moved since.
   push_to_dev "$origin" tasks/T2/plan.md >/dev/null
   run ! eval "$push"
   # The rollback, onto the pushed dev, puts the old history back.
-  git -C "$origin" update-ref refs/heads/dev "$new"
+  git -C "${origin:?}" update-ref refs/heads/dev "$new"
   eval "$rollback" 2>/dev/null
-  assert_equal "$(git -C "$origin" rev-parse dev)" "$old"
+  assert_equal "$(git -C "${origin:?}" rev-parse dev)" "$old"
 }
 
 @test "it refuses a work directory inside a checkout or one not empty, before reading origin" {
@@ -166,8 +166,8 @@ Co-Authored-By: Someone <noreply@anthropic.com>"
 }
 
 @test "an origin with only dev and lease rewrites and verifies, with no pull ref to count" {
-  git -C "$origin" update-ref -d refs/heads/wip/home/T1
-  git -C "$origin" update-ref -d refs/pull/1/head
+  git -C "${origin:?}" update-ref -d refs/heads/wip/home/T1
+  git -C "${origin:?}" update-ref -d refs/pull/1/head
   run_bin -0 team-records-rewrite "$work"
   assert_contains "$output" "verify: pull refs whose history holds a dropped path: 0 of 0"
   assert_contains "$output" "verify: failures: 0"
@@ -181,7 +181,7 @@ Co-Authored-By: Someone <noreply@anthropic.com>"
   run_bin -0 team-records-rewrite "$work"
   assert_contains "$output" "verify: drop-list paths left in the new history: 0"
   assert_contains "$output" "verify: failures: 0"
-  [[ -z $(git -C "$work/rewrite.git" ls-tree -r --name-only dev -- shots tasks/T1/scratch/node_modules) ]]
+  [[ -z $(git -C "${work:?}/rewrite.git" ls-tree -r --name-only dev -- shots tasks/T1/scratch/node_modules) ]]
   # A rewrite that dropped everything but those two names: verify sees them left.
   printf '%s\n' 'glob:tasks/*/node_modules/left-pad/*' 'regex:^tasks/.+\.git/' tasks/T31/scratch/dl/ \
     projects/conventioner/lavish/ mvp-findings.html shots/b.png tasks/T76/scratch/baseline/ \
@@ -200,7 +200,7 @@ Co-Authored-By: Someone <noreply@anthropic.com>"
   run -1 verify_by_hand
   assert_contains "$output" ": unexpected D tasks/T1/scratch/notes.md"
   # The rewrite it checked was never written to.
-  assert_equal "$(git -C "$check/new.git" for-each-ref --format='%(refname)')" "refs/heads/dev
+  assert_equal "$(git -C "${check:?}/new.git" for-each-ref --format='%(refname)')" "refs/heads/dev
 refs/heads/lease"
 }
 
@@ -211,7 +211,7 @@ refs/heads/lease"
   assert_contains "$output" "failures: 1"
   assert_contains "$output" ": the message is not the old one through the message expressions and the commit map"
   # With them, the same rewrite passes.
-  rm -rf "$check"
+  rm -rf "${check:?}"
   rewrite_by_hand --invert-paths --paths-from-file "$REPO_ROOT/bin/lib/records-rewrite/drop.txt" \
     --replace-message "$REPO_ROOT/bin/lib/records-rewrite/message-expressions.txt" \
     --file-info-callback "$REPO_ROOT/bin/lib/records-rewrite/s02-callback.py"
@@ -219,7 +219,7 @@ refs/heads/lease"
   assert_contains "$output" "messages changed by the message expressions: 1"
   assert_contains "$output" "messages changed only by hash rewriting: 1"
   # filter-repo leaves the hash of a commit it has not rewritten yet as written, which passes too.
-  rm -rf "$check"
+  rm -rf "${check:?}"
   rewrite_by_hand --invert-paths --paths-from-file "$REPO_ROOT/bin/lib/records-rewrite/drop.txt" \
     --replace-message "$REPO_ROOT/bin/lib/records-rewrite/message-expressions.txt" \
     --file-info-callback "$REPO_ROOT/bin/lib/records-rewrite/s02-callback.py" --preserve-commit-hashes

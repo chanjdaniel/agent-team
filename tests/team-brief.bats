@@ -101,7 +101,7 @@ reviewer_app() {
   export CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
   mkdir -p "$CODE_CHECKOUT"
   git init -q "$CODE_CHECKOUT"
-  git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
+  git -C "${CODE_CHECKOUT:?}" remote add origin https://github.com/chanjdaniel/agent-team.git
   copy_bin "$CODE_CHECKOUT/bin"
   ln -s "$REPO_ROOT/templates" "$CODE_CHECKOUT/templates"
   if [[ $1 == on ]]; then review_app_on; else rm -f "$CODE_CHECKOUT/bin/lib/review-app"; fi
@@ -121,20 +121,20 @@ task_files() {
 # printing the commit's full sha.
 commit() {
   echo "${4:-$2}" >"$1/$2"
-  git -C "$1" add "$2"
-  git -C "$1" commit -q -m "$3"
-  git -C "$1" rev-parse HEAD
+  git -C "${1:?}" add "$2"
+  git -C "${1:?}" commit -q -m "$3"
+  git -C "${1:?}" rev-parse HEAD
 }
 
 # on_base <worktree> <base> <file> <subject> [<text>]: a commit on <base>, pushed to origin, the
 # branch checked out again; prints nothing.
 on_base() {
   local branch
-  branch=$(git -C "$1" branch --show-current)
-  git -C "$1" checkout -q "$2"
+  branch=$(git -C "${1:?}" branch --show-current)
+  git -C "${1:?}" checkout -q "$2"
   commit "$1" "$3" "$4" "${5:-}" >/dev/null
-  git -C "$1" push -q origin "$2"
-  git -C "$1" checkout -q "$branch"
+  git -C "${1:?}" push -q origin "$2"
+  git -C "${1:?}" checkout -q "$branch"
 }
 
 # task_repo <task> <base>: the task's worktree (its opened event's) as a clone of a bare origin,
@@ -147,10 +147,10 @@ task_repo() {
   mkdir -p "${origin%/*}"
   git init -q --bare -b "$2" "$origin"
   git clone -q "$origin" "$wt" 2>/dev/null
-  git -C "$wt" checkout -q -B "$2"
+  git -C "${wt:?}" checkout -q -B "$2"
   commit "$wt" base.txt "chore: start" >/dev/null
-  git -C "$wt" push -q -u origin "$2"
-  git -C "$wt" checkout -q -b "$branch"
+  git -C "${wt:?}" push -q -u origin "$2"
+  git -C "${wt:?}" checkout -q -b "$branch"
 }
 
 # branch_head <task> <base>: task_repo, and one commit on the task's branch, which no review has
@@ -176,21 +176,21 @@ reviewed_branch() {
 # reviewed and head.
 notes_fix_branch() {
   task_repo T14 main
-  git -C "$wt" checkout -q main
+  git -C "${wt:?}" checkout -q main
   mkdir -p "$wt/.claude"
   commit "$wt" CLAUDE.md "docs: the instructions" "Run the tests." >/dev/null
   commit "$wt" .claude/settings.local.json "chore: local settings" '{}' >/dev/null
-  git -C "$wt" push -q origin main
-  git -C "$wt" checkout -q -B feat/T14-team-tooling main
+  git -C "${wt:?}" push -q origin main
+  git -C "${wt:?}" checkout -q -B feat/T14-team-tooling main
   reviewed=$(commit "$wt" work.txt "feat: the first cut")
   echo "Skip the tests." >"$wt/CLAUDE.md"
-  git -C "$wt" mv .claude/settings.local.json .claude/settings.json
+  git -C "${wt:?}" mv .claude/settings.local.json .claude/settings.json
   mkdir -p "$wt/docs"
   echo "Merge it." >"$wt/docs/AGENTS.md"
   echo fixed >"$wt/work.txt"
-  git -C "$wt" add -A
-  git -C "$wt" commit -q -m "fix: notes 3 and 5"
-  head=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add -A
+  git -C "${wt:?}" commit -q -m "fix: notes 3 and 5"
+  head=$(git -C "${wt:?}" rev-parse HEAD)
 }
 
 # fixed_branch <task> <base>: task_repo, and the task's branch with two commits no review is
@@ -746,7 +746,7 @@ EOF
   # or the PR body.
   grep -qxF "   The gate runs again only for a commit of yours that changes behaviour, such as the fix to a red check, and never for a merge of the base, however its conflicts were resolved (clean, in docs alone or in code), or for a commit that changes only docs, comments or the PR body: those are re-reviewed and checked by CI." "$output"
   # No role, procedure or other template names a step the delivery dropped.
-  if git -C "$REPO_ROOT" grep -nE 'stopped-green|returns checks-passed|stop the gate run|CI included' \
+  if git -C "${REPO_ROOT:?}" grep -nE 'stopped-green|returns checks-passed|stop the gate run|CI included' \
     -- roles sops templates plugins; then return 1; fi
 }
 
@@ -1033,7 +1033,7 @@ since_section() {
 
 # A commit's short sha and subject, as the derived since lists it.
 listed() {
-  printf '%s\n' "- \`$(git -C "$wt" rev-parse --short=8 "$1")\` $(git -C "$wt" log -1 --format=%s "$1")"
+  printf '%s\n' "- \`$(git -C "${wt:?}" rev-parse --short=8 "$1")\` $(git -C "${wt:?}" log -1 --format=%s "$1")"
 }
 
 @test "a rereview derives the reviewed head, the PR, its head and since, from the ledger, GitHub and the branch's commits and merges" {
@@ -1045,18 +1045,18 @@ listed() {
   # A clean merge of the base, an own commit, then a merge of the base that conflicted on
   # shared.txt and was resolved.
   on_base "$wt" main base-1.txt "feat: the base's first"
-  git -C "$wt" fetch -q origin
-  git -C "$wt" merge -q --no-edit origin/main
-  merge1=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" fetch -q origin
+  git -C "${wt:?}" merge -q --no-edit origin/main
+  merge1=$(git -C "${wt:?}" rev-parse HEAD)
   fix6=$(commit "$wt" shared.txt "fix: finding 6" "the branch's line")
   on_base "$wt" main shared.txt "feat: the base's second" "the base's line"
-  git -C "$wt" fetch -q origin
-  run git -C "$wt" merge -q --no-edit origin/main
+  git -C "${wt:?}" fetch -q origin
+  run git -C "${wt:?}" merge -q --no-edit origin/main
   assert_equal "$status" 1
   echo "both lines" >"$wt/shared.txt"
-  git -C "$wt" add shared.txt
-  git -C "$wt" commit -q --no-edit
-  merge2=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add shared.txt
+  git -C "${wt:?}" commit -q --no-edit
+  merge2=$(git -C "${wt:?}" rev-parse HEAD)
   on_github "$pr" "$merge2"
   # A build note older than the review, and one written after it.
   mkdir -p "$wt/.work/task/build-notes"
@@ -1069,7 +1069,7 @@ listed() {
   # GitHub's head wins over the ledger's, said on stderr.
   assert_equal "$stderr" "team-brief: $pr is at $merge2 on GitHub, not at the ledger's $reviewed; the brief names GitHub's"
   grep -qxF "PR: $pr against \`main\`, reviewed at \`$reviewed\`, now at head \`$merge2\`." "$output"
-  short=$(git -C "$wt" rev-parse --short=8 "$reviewed")
+  short=$(git -C "${wt:?}" rev-parse --short=8 "$reviewed")
   local expected
   expected=$(
     cat <<SINCE
@@ -1084,7 +1084,7 @@ $(listed "$merge1"): a merge of \`origin/main\`, no conflicts
 $(listed "$fix6")
 $(listed "$merge2"): a merge of \`origin/main\`, conflicts in \`shared.txt\`
 
-The other 2 commits in \`$short..$(git -C "$wt" rev-parse --short=8 "$merge2")\` came from \`origin/main\` and are not to be reviewed.
+The other 2 commits in \`$short..$(git -C "${wt:?}" rev-parse --short=8 "$merge2")\` came from \`origin/main\` and are not to be reviewed.
 
 Build notes changed since the last review: \`.work/task/build-notes/05.md\`.
 
@@ -1100,7 +1100,7 @@ SINCE
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   reviewed_branch T14 main
   # The reviewed commit rewritten: the new head is built on its parent.
-  git -C "$wt" checkout -q --detach "$reviewed^"
+  git -C "${wt:?}" checkout -q --detach "$reviewed^"
   local rewritten
   rewritten=$(commit "$wt" work.txt "feat: the first cut, rewritten" "rewritten")
   run_bin -0 team-brief T14 rereview --name rereview-2 --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
@@ -1112,7 +1112,7 @@ SINCE
 
 The last review, of \`${reviewed:0:8}\`, had findings, and sent back 5.
 
-The branch was rewritten: \`$(git -C "$wt" rev-parse --short=8 "$reviewed")\` is not an ancestor of \`$(git -C "$wt" rev-parse --short=8 "$rewritten")\`, so compare with \`git range-diff $reviewed...$rewritten\`.
+The branch was rewritten: \`$(git -C "${wt:?}" rev-parse --short=8 "$reviewed")\` is not an ancestor of \`$(git -C "${wt:?}" rev-parse --short=8 "$rewritten")\`, so compare with \`git range-diff $reviewed...$rewritten\`.
 
 ## Instruction and settings files
 SINCE
@@ -1127,7 +1127,7 @@ SINCE
   run_bin -0 team-brief T14 rereview --name rereview-2 --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head="$head"
   local short
-  short=$(git -C "$wt" rev-parse --short=8 "$head")
+  short=$(git -C "${wt:?}" rev-parse --short=8 "$head")
   assert_equal "$(since_section "$output")" "$(printf '%s\n' '## Since the last review' '' \
     "The last review, of \`${head:0:8}\`, passed." '' "No commit since \`$short\`." '' '## Instruction and settings files')"
   # A pass that sent its notes back, as the ledger held one before team-log logged it as findings, says so.
@@ -1142,7 +1142,7 @@ SINCE
   run_bin -0 team-brief T12 rereview --name rereview --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
     --set head="$head" --set reviewed="$head"
   assert_equal "$(since_section "$output")" "$(printf '%s\n' '## Since the last review' '' \
-    "No commit since \`$(git -C "$wt" rev-parse --short=8 "$head")\`." '' '## Instruction and settings files')"
+    "No commit since \`$(git -C "${wt:?}" rev-parse --short=8 "$head")\`." '' '## Instruction and settings files')"
 }
 
 @test "GitHub unreadable is refused naming --set head=, an unreachable fetch is exit 75, and neither writes anything" {
@@ -1157,13 +1157,13 @@ SINCE
   assert_equal "$output" "team-brief: cannot read the head of $pr on GitHub (GraphQL: Could not resolve to a PullRequest with the number of 9.); pass --set head=<full sha>"
   assert_equal "$(task_files)" "$before"
   # The fetch of the base cannot reach origin.
-  git -C "$wt" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
+  git -C "${wt:?}" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
   run_bin -75 team-brief T14 rereview --name rereview-2 --set head="$head"
   assert_contains "$output" "team-brief: cannot fetch origin/main into ~/agent-team/.claude/worktrees/2 ("
   assert_contains "$output" "); try again later"
   assert_equal "$(task_files)" "$before"
   # A worktree with no git is refused.
-  rm -rf "$wt/.git"
+  rm -rf "${wt:?}/.git"
   run_bin -1 team-brief T14 rereview --name rereview-2 --set head="$head"
   assert_equal "$output" "team-brief: cannot read the worktree ~/agent-team/.claude/worktrees/2 to derive since and instruction_files: not a git checkout"
   assert_equal "$(task_files)" "$before"
@@ -1191,10 +1191,10 @@ SINCE
   printf '%s\n' 'Read the new test first.' 'It covers finding 5.' >"$BATS_TEST_TMPDIR/since.md"
   # The pr, reviewed and head set by hand: no GitHub call, and since counts from the set head.
   run_bin -0 --separate-stderr team-brief T14 rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/10 \
-    --set reviewed="$(git -C "$wt" rev-parse "$first^")" --set head="$head" --set-file since="$BATS_TEST_TMPDIR/since.md"
+    --set reviewed="$(git -C "${wt:?}" rev-parse "$first^")" --set head="$head" --set-file since="$BATS_TEST_TMPDIR/since.md"
   assert_equal "$stderr" ""
   assert_equal "$(stub_calls gh)" ""
-  grep -qxF "PR: https://github.com/chanjdaniel/agent-team/pull/10 against \`main\`, reviewed at \`$(git -C "$wt" rev-parse "$first^")\`, now at head \`$head\`." "$output"
+  grep -qxF "PR: https://github.com/chanjdaniel/agent-team/pull/10 against \`main\`, reviewed at \`$(git -C "${wt:?}" rev-parse "$first^")\`, now at head \`$head\`." "$output"
   local expected
   expected=$(
     cat <<SINCE
@@ -1202,7 +1202,7 @@ SINCE
 
 The last review, of \`${first:0:8}\`, had findings, and sent back 5.
 
-The branch's own commits since \`$(git -C "$wt" rev-parse --short=8 "$first^")\`, the ones to review:
+The branch's own commits since \`$(git -C "${wt:?}" rev-parse --short=8 "$first^")\`, the ones to review:
 
 $(listed "$first")
 $(listed "$head")
@@ -1234,17 +1234,17 @@ instruction_section() {
 instruction_branch() {
   local branch file
   task_repo "$1" "$2"
-  branch=$(git -C "$wt" branch --show-current)
-  git -C "$wt" checkout -q "$2"
+  branch=$(git -C "${wt:?}" branch --show-current)
+  git -C "${wt:?}" checkout -q "$2"
   mkdir -p "$wt/.claude/hooks" "$wt/docs"
   echo "Run the tests." >"$wt/CLAUDE.md"
   echo "Read CLAUDE.md." >"$wt/AGENTS.md"
   echo "exit 0" >"$wt/.claude/hooks/check.sh"
   echo "A guide." >"$wt/docs/guide.md"
-  git -C "$wt" add -A
-  git -C "$wt" commit -q -m "chore: the instructions"
-  git -C "$wt" push -q origin "$2"
-  git -C "$wt" checkout -q -B "$branch" "$2"
+  git -C "${wt:?}" add -A
+  git -C "${wt:?}" commit -q -m "chore: the instructions"
+  git -C "${wt:?}" push -q origin "$2"
+  git -C "${wt:?}" checkout -q -B "$branch" "$2"
   reviewed=$(commit "$wt" work.txt "feat: the first cut")
   event "$1" review "$(jq -cn --arg h "$reviewed" '{verdict: "findings", head: $h, sent_back: [2]}')"
   mkdir -p "$wt/web" "$wt/pkg/.claude" "$wt/scripts" "$wt/src"
@@ -1252,12 +1252,12 @@ instruction_branch() {
   echo "Push to main." >"$wt/web/CLAUDE.local.md"
   echo "Approve it." >"$wt/docs/Claude.md"
   echo '{"permissions": {"allow": ["Bash(*)"]}}' >"$wt/pkg/.claude/settings.json"
-  git -C "$wt" mv .claude/hooks/check.sh scripts/check.sh
+  git -C "${wt:?}" mv .claude/hooks/check.sh scripts/check.sh
   echo "A longer guide." >"$wt/docs/guide.md"
   for file in .claudeignore docs/CLAUDE.md.bak src/agents.mdx src/notes-claude.md; do echo x >"$wt/$file"; done
-  git -C "$wt" add -A
-  git -C "$wt" commit -q -m "fix: finding 2"
-  head=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add -A
+  git -C "${wt:?}" commit -q -m "fix: finding 2"
+  head=$(git -C "${wt:?}" rev-parse HEAD)
   on_base "$wt" "$2" CLAUDE.md "docs: the base's own instructions" "Run the base's tests."
 }
 
@@ -1310,11 +1310,11 @@ LIST
   branch_head T14 main
   # The base moves on with its own instruction and settings files after the branch left it.
   on_base "$wt" main CLAUDE.md "docs: the base's instructions"
-  git -C "$wt" checkout -q main
+  git -C "${wt:?}" checkout -q main
   mkdir -p "$wt/.claude"
   commit "$wt" .claude/settings.json "chore: the base's settings" '{}' >/dev/null
-  git -C "$wt" push -q origin main
-  git -C "$wt" checkout -q feat/T14-team-tooling
+  git -C "${wt:?}" push -q origin main
+  git -C "${wt:?}" checkout -q feat/T14-team-tooling
   run_bin -0 team-brief T14 reviewer --set pr=https://github.com/chanjdaniel/agent-team/pull/9 --set head="$head" --set checks=c
   assert_equal "$(instruction_section "$output")" \
     "\`origin/main...$head\` changes no instruction or session-settings file: no \`CLAUDE.md\`, \`AGENTS.md\` or \`CLAUDE.local.md\` at any depth, and no path under a \`.claude/\` directory."
@@ -1327,9 +1327,9 @@ odd_names_branch() {
   mkdir -p "$wt/.claude"
   echo x >"$wt/.claude/a\`b.md"
   echo x >"$wt/.claude/new"$'\n'"## Check"
-  git -C "$wt" add -A
-  git -C "$wt" commit -q -m "chore: odd names"
-  head=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add -A
+  git -C "${wt:?}" commit -q -m "chore: odd names"
+  head=$(git -C "${wt:?}" rev-parse HEAD)
 }
 
 @test "a listed path with a backtick or a control character is written as a JSON string, so it cannot end its line or its span" {
@@ -1349,9 +1349,9 @@ odd_names_branch() {
   run_bin -1 team-brief T14 verify --set pr=$pr --set head="$head" --set "instruction_files=none"
   assert_equal "$output" "team-brief: instruction_files is derived by git from the base and the head the brief names; it cannot be set"
   # A head that shares no history with the base.
-  git -C "$wt" checkout -q --orphan elsewhere
+  git -C "${wt:?}" checkout -q --orphan elsewhere
   orphan=$(commit "$wt" other.txt "chore: unrelated")
-  git -C "$wt" checkout -q -f feat/T14-team-tooling
+  git -C "${wt:?}" checkout -q -f feat/T14-team-tooling
   run_bin -1 team-brief T14 reviewer --set pr=$pr --set head="$orphan" --set checks=c
   assert_contains "$output" "team-brief: cannot list the instruction files origin/main...$orphan changes in ~/agent-team/.claude/worktrees/2 ("
   assert_contains "$output" "no merge base"
@@ -1359,11 +1359,11 @@ odd_names_branch() {
   run_bin -1 team-brief T14 verify --set pr=$pr --set head=0123456789abcdef0123456789abcdef01234567
   assert_equal "$output" "team-brief: head 0123456789abcdef0123456789abcdef01234567 is in neither ~/agent-team/.claude/worktrees/2 nor its origin; --set head= to a commit it holds"
   # The base cannot be fetched: try again later.
-  git -C "$wt" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
+  git -C "${wt:?}" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
   run_bin -75 team-brief T14 verify --set pr=$pr --set head="$head"
   assert_contains "$output" "team-brief: cannot fetch origin/main into ~/agent-team/.claude/worktrees/2 ("
   # A worktree that is no git checkout.
-  rm -rf "$wt/.git"
+  rm -rf "${wt:?}/.git"
   run_bin -1 team-brief T14 verify --set pr=$pr --set head="$head"
   assert_equal "$output" "team-brief: cannot read the worktree ~/agent-team/.claude/worktrees/2 to derive instruction_files: not a git checkout"
   assert_equal "$(task_files)" "$before"
@@ -2234,28 +2234,28 @@ findings_files() {
   local origin=$BATS_TEST_TMPDIR/shop.git wt=$BATS_TEST_TMPDIR/wt primary=$BATS_TEST_TMPDIR/primary
   git init -q --bare -b dev "$origin"
   git clone -q "$origin" "$wt"
-  git -C "$wt" commit -q --allow-empty -m base
-  git -C "$wt" push -q origin HEAD:dev
-  git -C "$wt" switch -q -c "$branch"
+  git -C "${wt:?}" commit -q --allow-empty -m base
+  git -C "${wt:?}" push -q origin HEAD:dev
+  git -C "${wt:?}" switch -q -c "$branch"
   # With no origin/<branch> (a Disclosure task's), the merge is left out and the check passes.
-  (cd "$wt" && git fetch -q origin && eval "$check")
-  git -C "$wt" commit -q --allow-empty -m fix
-  git -C "$wt" push -q origin "$branch"
+  (cd "${wt:?}" && git fetch -q origin && eval "$check")
+  git -C "${wt:?}" commit -q --allow-empty -m fix
+  git -C "${wt:?}" push -q origin "$branch"
   # team-catch-up's clean merge of the base, pushed from the primary checkout.
   git clone -q "$origin" "$primary"
-  git -C "$primary" commit -q --allow-empty -m 'another task'
-  git -C "$primary" push -q origin HEAD:dev
-  git -C "$primary" fetch -q origin "$branch"
-  git -C "$primary" push -q origin "$(git -C "$primary" commit-tree -p "origin/$branch" -p HEAD -m 'merge dev' 'HEAD^{tree}'):refs/heads/$branch"
-  (cd "$wt" && git fetch -q origin && ! eval "$check")
+  git -C "${primary:?}" commit -q --allow-empty -m 'another task'
+  git -C "${primary:?}" push -q origin HEAD:dev
+  git -C "${primary:?}" fetch -q origin "$branch"
+  git -C "${primary:?}" push -q origin "$(git -C "${primary:?}" commit-tree -p "origin/$branch" -p HEAD -m 'merge dev' 'HEAD^{tree}'):refs/heads/$branch"
+  (cd "${wt:?}" && git fetch -q origin && ! eval "$check")
   (cd "$wt" && eval "$step" && eval "$check")
-  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$origin" rev-parse "$branch")"
-  git -C "$wt" commit -q --allow-empty -m 'fix round'
-  git -C "$wt" push -q origin "$branch"
+  assert_equal "$(git -C "${wt:?}" rev-parse HEAD)" "$(git -C "${origin:?}" rev-parse "$branch")"
+  git -C "${wt:?}" commit -q --allow-empty -m 'fix round'
+  git -C "${wt:?}" push -q origin "$branch"
   # A local commit origin lacks makes the fast-forward fail, as the step's BLOCKED says.
-  git -C "$primary" fetch -q origin "$branch"
-  git -C "$primary" push -q origin "$(git -C "$primary" commit-tree -p "origin/$branch" -m 'elsewhere' 'HEAD^{tree}'):refs/heads/$branch"
-  git -C "$wt" commit -q --allow-empty -m 'local only'
+  git -C "${primary:?}" fetch -q origin "$branch"
+  git -C "${primary:?}" push -q origin "$(git -C "${primary:?}" commit-tree -p "origin/$branch" -m 'elsewhere' 'HEAD^{tree}'):refs/heads/$branch"
+  git -C "${wt:?}" commit -q --allow-empty -m 'local only'
   run bash -c "cd '$wt' && $step"
   assert_equal "$status" 128
 }
@@ -2397,7 +2397,7 @@ ci_failed() {
   run_bin -0 team-brief T14 rereview --name rereview-2 --set pr="$pr" --set head="$fix"
   assert_equal "$(since_section "$output")" "$(printf '%s\n' '## Since the last review' '' \
     "The last review, of \`${cut:0:8}\`, passed; then the checks test-shards (2) and lint failed on it, which this round fixed." '' \
-    "The branch's own commits since \`$(git -C "$tree" rev-parse --short=8 "$cut")\`, the ones to review:" '' \
+    "The branch's own commits since \`$(git -C "${tree:?}" rev-parse --short=8 "$cut")\`, the ones to review:" '' \
     "$(listed "$fix")" '' '## Instruction and settings files')"
 }
 

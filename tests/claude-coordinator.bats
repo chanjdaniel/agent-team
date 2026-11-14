@@ -470,7 +470,7 @@ JSON
 }
 
 @test "with GitHub unreachable it refuses: a coordinator never starts offline" {
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 --separate-stderr claude-coordinator
   assert_contains "$stderr" "team-lease: GitHub is unreachable"
   assert_contains "$stderr" "claude-coordinator: GitHub unreachable; a coordinator never starts offline"

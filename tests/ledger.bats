@@ -840,8 +840,8 @@ awaiting() {
 }
 
 @test "ledger_push never fails its caller: a commit that fails with nothing on stderr is the one line with its fallback reason, and the script goes on" {
-  git -C "$TEAM_HOME" init -q -b dev
-  git -C "$TEAM_HOME" remote add origin "$BATS_TEST_TMPDIR/origin.git"
+  git -C "${TEAM_HOME:?}" init -q -b dev
+  git -C "${TEAM_HOME:?}" remote add origin "$BATS_TEST_TMPDIR/origin.git"
   opened_task T7
   local script=$BATS_TEST_TMPDIR/bin/team-log
   cat >"$script" <<SCRIPT

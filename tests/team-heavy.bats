@@ -353,7 +353,7 @@ SH
 @test "a cost sample that cannot be written is a line on stderr and the run's status stands" {
   as_macos
   # No team home, so no admission needs the state directory either.
-  rm -r "$HOME/.local/state/agent-team/capacity"
+  rm -r "${HOME:?}/.local/state/agent-team/capacity"
   touch "$HOME/.local/state/agent-team/capacity"
   run -5 --separate-stderr env -u TEAM_HOME "$REPO_ROOT/bin/team-heavy" run -- bash -c 'sleep 1; exit 5'
   assert_contains "$stderr" "team-heavy: could not write the cost sample to ~/.local/state/agent-team/capacity/costs.jsonl"

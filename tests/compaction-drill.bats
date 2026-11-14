@@ -94,8 +94,8 @@ drill_lines() {
 
 # The one compaction line a run should have recorded, but at: drill_line <verdict> <detail>
 drill_line() {
-  jq -cn --arg commit "$(git -C "$REPO_ROOT" rev-parse HEAD)" --argjson dirty \
-    "$([[ -z $(git -C "$REPO_ROOT" status --porcelain --untracked-files=no) ]] && echo false || echo true)" \
+  jq -cn --arg commit "$(git -C "${REPO_ROOT:?}" rev-parse HEAD)" --argjson dirty \
+    "$([[ -z $(git -C "${REPO_ROOT:?}" status --porcelain --untracked-files=no) ]] && echo false || echo true)" \
     --arg verdict "$1" --arg detail "$2" \
     '{drill: "compaction", machine: "home-pc", commit: $commit, dirty: $dirty, claude: "2.1.321",
       verdict: $verdict, detail: $detail}'
@@ -138,8 +138,8 @@ turn 2 (/compact): 20 2000 40000 200 0.50
 turn 3 (the question): 30 3000 60000 300 0.75
 total: 60 6000 120000 600 1.50
 == 10 of 10 checks passed
-team-drill: recorded compaction pass on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
-  assert_equal "${lines[-1]}" "team-drill: recorded compaction pass on home-pc at $(git -C "$REPO_ROOT" rev-parse --short=7 HEAD)"
+team-drill: recorded compaction pass on home-pc at $(git -C "${REPO_ROOT:?}" rev-parse --short=7 HEAD)"
+  assert_equal "${lines[-1]}" "team-drill: recorded compaction pass on home-pc at $(git -C "${REPO_ROOT:?}" rev-parse --short=7 HEAD)"
   # One line in the team home the drill was run with, never the sandbox's.
   assert_equal "$(drill_lines)" "$(drill_line pass "10 of 10 checks passed, 1.50 USD")"
 }

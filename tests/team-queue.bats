@@ -20,8 +20,8 @@ setup() {
 
 # The subject of the team home's last commit, and the paths it changed, on one line each.
 last_commit() {
-  git -C "$TEAM_HOME" log -1 --format=%s
-  git -C "$TEAM_HOME" show --name-only --format= HEAD
+  git -C "${TEAM_HOME:?}" log -1 --format=%s
+  git -C "${TEAM_HOME:?}" show --name-only --format= HEAD
 }
 
 @test "index lists each file by name, its front matter's summary and task, else its title, and commits the index alone" {
@@ -35,12 +35,12 @@ Written by \`team-queue index\` from each file's front matter (its title when it
 - node-pin.md: Node pin"
   assert_equal "$(last_commit)" "chore: queued index
 tasks/queued/index.md"
-  [[ -z $(git -C "$TEAM_HOME" status --porcelain -- tasks/queued/index.md) ]]
+  [[ -z $(git -C "${TEAM_HOME:?}" status --porcelain -- tasks/queued/index.md) ]]
   # A run that changes nothing commits nothing.
   local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   run_bin -0 team-queue index
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
 }
 
 @test "--check names each malformed file and a stale index, writing nothing" {
@@ -119,11 +119,11 @@ tasks/queued/bootstrap-drill.md
 tasks/queued/index.md
 tasks/queued/node-pin.md"
   local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   run_bin -0 team-queue migrate
   assert_equal "$output" "migrated 0 lines into 0 files
 wrote tasks/queued/index.md: 2 files"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
 }
 
 @test "migrate keeps a line whose where names no file in tasks/queued/, naming it, after migrating the rest" {

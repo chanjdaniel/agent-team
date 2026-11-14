@@ -77,7 +77,7 @@ if [[ $what == bats && $# -gt 1 && $2 == --changed ]]; then
     [[ ${#rest[@]} -eq 1 && ${rest[0]} == --list ]] || usage_error "$usage"
     list=1
   fi
-  if ! git -C "$root" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+  if ! git -C "${root:?}" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
     [[ $# -gt 2 && $3 == "$base" ]] || die "no $base to compare with in $root: fetch it, or name a base (tests/run bats --changed <base>)"
     usage_error "--changed: no commit $base; $usage"
   fi
@@ -138,12 +138,12 @@ bats_files() {
 # The paths --changed starts from (see the header), one per line, relative to the checkout.
 changed_paths() {
   local entry
-  git -C "$root" diff --name-only --no-renames "$base...HEAD"
+  git -C "${root:?}" diff --name-only --no-renames "$base...HEAD"
   while IFS= read -r -d '' entry; do
     echo "${entry:3}"
     # A rename or copy's entry is followed by its source's path.
     if [[ ${entry:0:2} == *[RC]* ]]; then IFS= read -r -d '' entry && echo "$entry"; fi
-  done < <(git -C "$root" status --porcelain=v1 -z --untracked-files=all)
+  done < <(git -C "${root:?}" status --porcelain=v1 -z --untracked-files=all)
 }
 
 # The files the selection reads, from the checkout's root: the bats files that grep "$@" matches,

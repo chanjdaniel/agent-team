@@ -10,7 +10,7 @@ load helpers/common
 setup() {
   sandbox
   make_team_home >/dev/null
-  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  git -C "${TEAM_HOME:?}" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
   provider=gmail.com
 }
 
@@ -22,24 +22,24 @@ record() {
 
 # Commit in the team home with bats' run, stderr apart: commit <status> [git commit arguments...]
 commit() {
-  run "$1" --separate-stderr git -C "$TEAM_HOME" commit -q -m "chore: records" "${@:2}"
+  run "$1" --separate-stderr git -C "${TEAM_HOME:?}" commit -q -m "chore: records" "${@:2}"
 }
 
 @test "a records commit adding an address at a public provider is refused, naming the path, never the address" {
   local head
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   record tasks/T1/plan.md "Discord: reply to ann.applicant@$provider"
   record tasks/T1/brief.md "nothing private"
-  git -C "$TEAM_HOME" add tasks
+  git -C "${TEAM_HOME:?}" add tasks
   commit -1
   assert_equal "$stderr" "data-check: refused: tasks/T1/plan.md adds an email address at a public \
 provider or an image, which the records never take: other people's addresses and screenshots stay \
 out of git; take each out, then commit again:
   tasks/T1/plan.md: 1 email address at a public provider"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
   # Taken out, the commit goes ahead.
   record tasks/T1/plan.md "Discord: reply to the applicant"
-  git -C "$TEAM_HOME" add tasks
+  git -C "${TEAM_HOME:?}" add tasks
   commit -0
   assert_equal "$stderr" ""
 }
@@ -47,7 +47,7 @@ out of git; take each out, then commit again:
 @test "a commit of named paths only (commit_records' --only) is scanned through its own index" {
   record ledger.jsonl '{"kind": "note"}'
   record tasks/T1/notes.md "bo@$provider"
-  git -C "$TEAM_HOME" add tasks
+  git -C "${TEAM_HOME:?}" add tasks
   # The staged notes stay out of a commit of the ledger alone, as commit_records makes it.
   commit -0 --only -- ledger.jsonl
   record ledger.jsonl "{\"from\": \"cy@$provider\"}"
@@ -58,19 +58,19 @@ out of git; take each out, then commit again:
 
 @test "a commit made with literal pathspecs (commit_records' GIT_LITERAL_PATHSPECS) is scanned all the same" {
   record tasks/T1/notes.md "write to bo@$provider"
-  git -C "$TEAM_HOME" add tasks
-  run -1 --separate-stderr env GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "chore: records" --only -- tasks/T1/notes.md
+  git -C "${TEAM_HOME:?}" add tasks
+  run -1 --separate-stderr env GIT_LITERAL_PATHSPECS=1 git -C "${TEAM_HOME:?}" commit -q -m "chore: records" --only -- tasks/T1/notes.md
   assert_contains "${stderr%%$'\n'*}" "refused: tasks/T1/notes.md adds an email address at a public provider"
 }
 
 @test "a screenshot is refused, and git's own address is not" {
-  git -C "$TEAM_HOME" config user.email "Daniel@$provider"
+  git -C "${TEAM_HOME:?}" config user.email "Daniel@$provider"
   record tasks/T1/notes.md "signed in as daniel@$provider"
-  git -C "$TEAM_HOME" add tasks
+  git -C "${TEAM_HOME:?}" add tasks
   commit -0
   mkdir -p "$TEAM_HOME/tasks/T1/scratch"
   printf '\x89PNG\r\n\x1a\n%s' "$RANDOM" >"$TEAM_HOME/tasks/T1/scratch/shot.png"
-  git -C "$TEAM_HOME" add tasks
+  git -C "${TEAM_HOME:?}" add tasks
   commit -1
   assert_contains "$stderr" "commit again:
   tasks/T1/scratch/shot.png: an image"

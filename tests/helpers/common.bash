@@ -68,7 +68,7 @@ shared_make() {
   else
     ln "$new/it" "$dir/$1" 2>/dev/null || true
   fi
-  rm -rf "$new"
+  rm -rf "${new:?}"
 }
 
 # link_shared <name> <source> <dest>: <dest> as `cp -R <source> <dest>` makes it, but each file
@@ -98,7 +98,7 @@ shared_stubs() {
   for cmd in "${SANDBOX_STUBS[@]}"; do ln "$dir/stub" "$new/it/$cmd"; done
   # A directory another test made meanwhile stays: either is the same.
   mv -T "$new/it" "$dir/stubs" 2>/dev/null || true
-  rm -rf "$new"
+  rm -rf "${new:?}"
 }
 
 # copy_bin <dest>: a copy of this checkout's bin/ at <dest>, its files linked to the run's shared
@@ -250,14 +250,14 @@ code_checkout() {
     CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
     git init -q --bare -b dev "$CODE_ORIGIN"
     git clone -q "$CODE_ORIGIN" "$CODE_CHECKOUT" 2>/dev/null
-    git -C "$CODE_CHECKOUT" checkout -q -B dev
+    git -C "${CODE_CHECKOUT:?}" checkout -q -B dev
     echo "code" >"$CODE_CHECKOUT/README.md"
-    git -C "$CODE_CHECKOUT" add README.md
-    git -C "$CODE_CHECKOUT" commit -q -m "chore: start the code"
-    git -C "$CODE_CHECKOUT" push -q -u origin dev
+    git -C "${CODE_CHECKOUT:?}" add README.md
+    git -C "${CODE_CHECKOUT:?}" commit -q -m "chore: start the code"
+    git -C "${CODE_CHECKOUT:?}" push -q -u origin dev
   fi
   local path exclude
-  exclude=$(git -C "$CODE_CHECKOUT" rev-parse --path-format=absolute --git-path info/exclude)
+  exclude=$(git -C "${CODE_CHECKOUT:?}" rev-parse --path-format=absolute --git-path info/exclude)
   copy_bin "$CODE_CHECKOUT/bin"
   for path in roles settings templates plugins toolkits coordinator.settings.json; do
     cp -R "$REPO_ROOT/$path" "$CODE_CHECKOUT/$path"
@@ -359,13 +359,13 @@ push_to_dev() {
   local clone
   clone=$(mktemp -d "$BATS_TEST_TMPDIR/push.XXXXXX")
   git clone -q "$1" "$clone"
-  git -C "$clone" checkout -q dev
+  git -C "${clone:?}" checkout -q dev
   mkdir -p "$(dirname "$clone/$2")"
   echo "$RANDOM" >>"$clone/$2"
-  git -C "$clone" add "$2"
-  git -C "$clone" commit -q -m "feat: change $2"
-  git -C "$clone" push -q origin dev
-  git -C "$clone" rev-parse HEAD
+  git -C "${clone:?}" add "$2"
+  git -C "${clone:?}" commit -q -m "feat: change $2"
+  git -C "${clone:?}" push -q origin dev
+  git -C "${clone:?}" rev-parse HEAD
 }
 
 # The stub <cmd> prints <stdout> and exits with <status> (default 0).
@@ -716,12 +716,12 @@ make_repo() {
   local origin=$BATS_TEST_TMPDIR/origin/$name.git clone=$HOME/projects/$name
   git init -q --bare -b "$branch" "$origin"
   git clone -q "$origin" "$clone" 2>/dev/null
-  git -C "$clone" checkout -q -B "$branch"
+  git -C "${clone:?}" checkout -q -B "$branch"
   echo "$name" >"$clone/README.md"
-  git -C "$clone" add README.md
-  git -C "$clone" commit -q -m "chore: start $name"
-  git -C "$clone" push -q -u origin "$branch"
-  git -C "$clone" remote set-head origin "$branch"
+  git -C "${clone:?}" add README.md
+  git -C "${clone:?}" commit -q -m "chore: start $name"
+  git -C "${clone:?}" push -q -u origin "$branch"
+  git -C "${clone:?}" remote set-head origin "$branch"
   echo "$clone"
 }
 
@@ -744,12 +744,12 @@ make_team_home() {
   local origin
   origin=$BATS_TEST_TMPDIR/origin/agent-team.git
   git init -q --bare -b dev "$origin"
-  git -C "$TEAM_HOME" init -q -b dev
-  git -C "$TEAM_HOME" remote add origin "$origin"
-  git -C "$TEAM_HOME" remote set-branches origin dev lease
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: start the team home"
-  git -C "$TEAM_HOME" push -q -u origin dev
+  git -C "${TEAM_HOME:?}" init -q -b dev
+  git -C "${TEAM_HOME:?}" remote add origin "$origin"
+  git -C "${TEAM_HOME:?}" remote set-branches origin dev lease
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: start the team home"
+  git -C "${TEAM_HOME:?}" push -q -u origin dev
   mkdir -p "$HOME/.config/agent-team"
   echo "${1:-home-pc}" >"$HOME/.config/agent-team/machine"
   echo "$origin"
@@ -782,22 +782,23 @@ add_loose() {
   local dir i shas tree commit
   dir=$(mktemp -d "$BATS_TEST_TMPDIR/loose.XXXXXX")
   for ((i = 1; i <= $1; i++)); do echo "$dir $i" >"$dir/$i"; done
-  shas=$(find "$dir" -type f | git -C "$TEAM_HOME" hash-object -w --stdin-paths)
+  shas=$(find "$dir" -type f | git -C "${TEAM_HOME:?}" hash-object -w --stdin-paths)
   [[ ${2:-} != --unreachable ]] || return 0
-  tree=$(awk '{printf "100644 blob %s\tf%d\n", $1, NR}' <<<"$shas" | git -C "$TEAM_HOME" mktree)
-  commit=$(git -C "$TEAM_HOME" commit-tree "$tree" -m "test: loose objects")
-  git -C "$TEAM_HOME" update-ref "refs/keep/${dir##*.}" "$commit"
+  tree=$(awk '{printf "100644 blob %s\tf%d\n", $1, NR}' <<<"$shas" | git -C "${TEAM_HOME:?}" mktree)
+  commit=$(git -C "${TEAM_HOME:?}" commit-tree "$tree" -m "test: loose objects")
+  git -C "${TEAM_HOME:?}" update-ref "refs/keep/${dir##*.}" "$commit"
 }
 
 # The team home's loose objects, as git counts them.
 loose_count() {
-  git -C "$TEAM_HOME" count-objects -v | sed -n 's/^count: //p'
+  git -C "${TEAM_HOME:?}" count-objects -v | sed -n 's/^count: //p'
 }
 
 # lease_json [<git dir>]: the lease on the lease branch of the team home's origin (make_team_home),
 # or of <git dir>.
 lease_json() {
-  git -C "${1:-$BATS_TEST_TMPDIR/origin/agent-team.git}" show lease:lease.json
+  local origin=${1:-$BATS_TEST_TMPDIR/origin/agent-team.git}
+  git -C "${origin:?}" show lease:lease.json
 }
 
 # Rewrite the lease on the team home's origin as if its holder last renewed <minutes> ago: a new
@@ -806,10 +807,10 @@ age_lease() {
   local origin blob tree commit
   origin=$BATS_TEST_TMPDIR/origin/agent-team.git
   blob=$(lease_json | jq -c --argjson m "$1" '.renewed_at = (now - $m * 60 | floor | todate)' |
-    git -C "$origin" hash-object -w --stdin)
-  tree=$(printf '100644 blob %s\tlease.json\n' "$blob" | git -C "$origin" mktree)
-  commit=$(git -C "$origin" commit-tree "$tree" -p lease -m "test: age the lease")
-  git -C "$origin" update-ref refs/heads/lease "$commit"
+    git -C "${origin:?}" hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tlease.json\n' "$blob" | git -C "${origin:?}" mktree)
+  commit=$(git -C "${origin:?}" commit-tree "$tree" -p lease -m "test: age the lease")
+  git -C "${origin:?}" update-ref refs/heads/lease "$commit"
 }
 
 # Build a second machine named <name> (make_team_home first): its own HOME, with this HOME's git
@@ -824,7 +825,7 @@ make_machine() {
   cp "$HOME/.claude/channels/discord/.env" "$root/home/.claude/channels/discord/.env"
   echo "$name" >"$root/home/.config/agent-team/machine"
   git clone -q --single-branch --branch dev "$BATS_TEST_TMPDIR/origin/agent-team.git" "$root/team"
-  git -C "$root/team" remote set-branches --add origin lease
+  git -C "${root:?}/team" remote set-branches --add origin lease
   for origin in "$BATS_TEST_TMPDIR"/origin/*.git; do
     repo=${origin##*/}
     repo=${repo%.git}

@@ -89,7 +89,7 @@ phase_of() {
 # combined status from $GH_DIR/status.json: app_on
 app_on() {
   code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/proj.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin https://github.com/owner/proj.git
   rm -f "$CODE_CHECKOUT/bin/lib/review-app"
   printf 'id=123456\nslug=team-reviewer\n' >"$CODE_CHECKOUT/bin/lib/review-app"
   export GH_DIR=$BATS_TEST_TMPDIR/gh GH_HEAD=$head
@@ -589,12 +589,12 @@ reply_line() {
   event T14 pr "{url: \"https://github.com/owner/proj/pull/5\", head: \"$head\", project: \"proj\"}"
   app_on
   # proj is not the team's own once the code checkout's origin is another repo.
-  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/other.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin https://github.com/owner/other.git
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.pr | [.review_app, .review_check, .agent_review, .error]' <<<"$output")" '[null,null,"success",null]'
   [[ -z $(stub_calls gh | jq -c 'select(.[1] // "" | test("/commits/"))') ]]
   # The team's own again, with GitHub refusing the check runs.
-  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/proj.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin https://github.com/owner/proj.git
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature in-review | no live worker | PR #5 GitHub unavailable"
 }
@@ -965,7 +965,7 @@ files_read() {
   approved
   # proj's repo is the code checkout's origin, so proj is the team's own.
   code_checkout
-  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/proj.git
+  git -C "${CODE_CHECKOUT:?}" remote set-url origin https://github.com/owner/proj.git
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.pr.merge_authority | [.word, .words[1].reasons]' <<<"$output")" \
     "[null,[\"the team's own project merges unattended only behind the reviewer App's check, which is not set up\"]]"

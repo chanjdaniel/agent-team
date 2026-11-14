@@ -365,11 +365,11 @@ channels/$THREAD/messages?after=1564000000000000002&limit=100"
   say_with 1564000000000000001 "$DANIEL" "Like this" "$(attachment sketch.png)"
   cdn_file sketch.png png
   run_bin -0 team-thread wait T7
-  git -C "$TEAM_HOME" init -q
+  git -C "${TEAM_HOME:?}" init -q
   # The rule the doctor's captures line holds the team home's .gitignore to.
   echo 'tasks/*/ui/' >"$TEAM_HOME/.gitignore"
-  git -C "$TEAM_HOME" check-ignore -q "$(jq -r '.attachments[0].saved' <<<"$output")"
-  [[ $(git -C "$TEAM_HOME" status --porcelain --untracked-files=all) != *sketch* ]]
+  git -C "${TEAM_HOME:?}" check-ignore -q "$(jq -r '.attachments[0].saved' <<<"$output")"
+  [[ $(git -C "${TEAM_HOME:?}" status --porcelain --untracked-files=all) != *sketch* ]]
 }
 
 @test "another member's attachment is never fetched, and Daniel's beside it is" {

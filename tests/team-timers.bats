@@ -81,7 +81,7 @@ problems() {
 
 # The commit at the tip of origin's lease branch.
 lease_tip() {
-  git -C "$origin" rev-parse lease
+  git -C "${origin:?}" rev-parse lease
 }
 
 # The PATH a script sees once the library is sourced: on macOS, Homebrew's GNU tools first.
@@ -663,18 +663,18 @@ EOF
   mkdir -p "$TEAM_HOME/memory/home" "$state"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
   touch -d '-3 minutes' "$state/last-checkpoint"
-  tip=$(git -C "$origin" rev-parse dev)
+  tip=$(git -C "${origin:?}" rev-parse dev)
   run_bin -0 team-timers run
   assert_contains "$output" "lease: home-pc holds the lease"
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: not due: the last checkpoint was 3 minutes ago (--force makes one now)"$ ]]
-  assert_equal "$(git -C "$origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${origin:?}" rev-parse dev)" "$tip"
 
   # The heartbeat's next run, 5 minutes on, makes one, and so does the one after.
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
   # It takes the waiting list the first run's inbox step wrote, a record too.
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md
+  assert_equal "$(git -C "${origin:?}" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md
 waiting.json
 waiting.md"
   assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
@@ -683,23 +683,23 @@ waiting.md"
   touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
-  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md"
+  assert_equal "$(git -C "${origin:?}" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md"
 
   # A machine that does not hold the lease never checkpoints, however old the last one.
   run -0 "$REPO_ROOT/bin/team-lease" release
   echo "- another note" >>"$TEAM_HOME/memory/home/MEMORY.md"
   touch -d '-30 minutes' "$state/last-checkpoint"
-  tip=$(git -C "$origin" rev-parse dev)
+  tip=$(git -C "${origin:?}" rev-parse dev)
   run_bin -0 team-timers run
   assert_equal "$(grep -c checkpoint: <<<"$output")" 0
-  assert_equal "$(git -C "$origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${origin:?}" rev-parse dev)" "$tip"
 }
 
 @test "a checkpoint that fails is logged and fails the run" {
   local state=$HOME/.local/state/agent-team
   mkdir -p "$TEAM_HOME/memory/home"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   run_bin -1 team-timers run
   [[ $(grep -E '^[^ ]+ checkpoint: ' <<<"$output" | tail -n 1) =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
   [[ ! -e $state/last-checkpoint ]]
@@ -711,7 +711,7 @@ waiting.md"
 
   mkdir -p "$TEAM_HOME/memory/home"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   touch -d '-5 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
   run_bin -1 team-timers run
   # The ledger's commit and the last one each fail, so two lines, the same in both logs and on
@@ -724,7 +724,7 @@ checkpoint: failed: team home: not on a branch, so the records are not committed
   assert_equal "$(grep ' checkpoint: failed: ' <<<"$output")" "$line"
 
   # Back on its branch: the next run's good lines are in the heartbeat log alone.
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   touch -d '-5 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
   run_bin -0 team-timers run
   assert_contains "$output" " checkpoint: team home: committed "
@@ -737,9 +737,9 @@ checkpoint: failed: team home: not on a branch, so the records are not committed
 open_task_refused_wip() {
   make_repo home >/dev/null
   printf '.scratch/\n' >"$HOME/projects/home/.gitignore"
-  git -C "$HOME/projects/home" add .gitignore
-  git -C "$HOME/projects/home" commit -q -m "chore: ignore scratch"
-  git -C "$HOME/projects/home" push -q origin main
+  git -C "${HOME:?}/projects/home" add .gitignore
+  git -C "${HOME:?}/projects/home" commit -q -m "chore: ignore scratch"
+  git -C "${HOME:?}/projects/home" push -q origin main
   cat >>"$TEAM_HOME/projects.toml" <<'TOML'
 
 [home]
@@ -784,7 +784,7 @@ SH
 
   # More failures are more lines, in the checkpoint's order: a detached team home fails its
   # ledger commit, first, and its last commit.
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   run_bin -1 team-timers run
   [[ $(grep ' checkpoint: failed: ' <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$'\n'[0-9T:Z-]+" checkpoint: failed: T1 home: cannot push wip/home/T1 to the team home's origin: "[^$'\n']+$'\n'[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
 }
@@ -877,7 +877,7 @@ checkpoint: failed: timed out after 1 s"
   add_loose 200
   mkdir -p "$TEAM_HOME/memory/home"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   run_bin -1 team-timers run
   # With no good checkpoint yet, its first failure alerts, before the later steps.
   assert_equal "$(steps "$output")" "lease checkpoint alert pack janitor"
@@ -887,7 +887,7 @@ checkpoint: failed: timed out after 1 s"
   [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
 
   # 75: another checkpoint still running, or GitHub unreachable.
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   rm "$(day_report)"
   add_loose 200
   fake_checkpoint <<'SH'
@@ -1407,7 +1407,8 @@ finished: stopped T9-builder 44444444: its work is handed on"
 
 # Origin unreachable for the team home: a closed local port.
 cut_origin() {
-  git -C "${1:-${TEAM_HOME:?}}" remote set-url origin https://127.0.0.1:9/agent-team.git
+  local home=${1:-${TEAM_HOME:?}}
+  git -C "${home:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
 }
 
 # git's reason for a cut origin, whose wording after "Failed to connect to 127.0.0.1" changes
@@ -2382,7 +2383,7 @@ EOF2
   assert_equal "$(posts)" "$(grep ' level: ' <<<"$output" | cut -d ' ' -f 3- | jq -R .)"
   assert_equal "$(jq -c '[.mode, .level, .by]' <(tail -n 1 "$TEAM_HOME/level.jsonl"))" '["auto","full","auto"]'
   # The level record went into the checkpoint.
-  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s -- level.jsonl)" "$(git -C "$TEAM_HOME" log -1 --format=%s)"
+  assert_equal "$(git -C "${TEAM_HOME:?}" log -1 --format=%s -- level.jsonl)" "$(git -C "${TEAM_HOME:?}" log -1 --format=%s)"
   # A run with nothing to change logs nothing for it.
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"

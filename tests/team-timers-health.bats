@@ -122,7 +122,7 @@ http_origin() {
 
 @test "a failed checkpoint run is a checkpoint problem with its reason, alerting from the second run in a row, which counts once however often the record is written" {
   run_bin -0 team-timers run
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   checkpoint_due
   run_bin -1 team-timers run
   view
@@ -152,7 +152,7 @@ http_origin() {
   jq -e 'any(.[]; .kind == "checkpoint-stale")' <<<"$output"
 
   # Back on its branch, the next run clears it.
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   run_bin -0 team-timers run
   view
   assert_equal "$view_status" 0
@@ -173,7 +173,7 @@ http_origin() {
   assert_equal "$(waiting_shown)" "**Waiting on you**
 Nothing waits on you."
 
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   checkpoint_due
   run_bin -1 team-timers run
   checkpoint_due
@@ -446,7 +446,7 @@ SH
   assert_equal "${lines[3]}" "last good run: $good"
   assert_contains "${lines[4]}" "health: ok - last checkpoint "
 
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   checkpoint_due
   run_bin -1 team-timers run
   last=$(tail -n 1 "$log" | cut -d' ' -f1)
@@ -527,7 +527,7 @@ open_alert() {
 
 # Fail the checkpoint as a team home off its branch does, and make it due.
 fail_checkpoint() {
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   checkpoint_due
 }
 
@@ -566,7 +566,7 @@ fail_checkpoint() {
   # The next good checkpoint edits the message in place and posts nothing new.
   local posts
   posts=$(grep -c '^POST channels/[0-9]*/messages$' "$STUB_FIXTURES/inbox/calls")
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   checkpoint_due
   run_bin -0 team-timers run
   local text
@@ -644,7 +644,7 @@ alert: checkpoint: the post to #coordinator failed (curl: (22) The requested URL
 
   # The message is gone: the edit fails, is logged, and the incident is closed all the same.
   rm "$STUB_FIXTURES/inbox/$id.json"
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   checkpoint_due
   run_bin -0 team-timers run
   assert_equal "$(alert_lines | tail -n 1)" "alert: checkpoint: ended, but message $id could not be marked resolved (curl: (22) The requested URL returned error: 404); closed all the same"
@@ -827,7 +827,7 @@ alert: cannot judge the alerts: another writer held $lock for 1 s"
   local id
   id=$(alerts_shown | jq -r .id)
   # The checkpoint would now work, but no run here judges the alerts.
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
   local before
   before=$(alert_lines | wc -l)
 

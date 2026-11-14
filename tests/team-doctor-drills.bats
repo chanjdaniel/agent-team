@@ -27,10 +27,10 @@ drill_count() {
 code_commit() {
   mkdir -p "$(dirname "$CODE_CHECKOUT/$1")"
   echo "$RANDOM" >>"$CODE_CHECKOUT/$1"
-  git -C "$CODE_CHECKOUT" add -- "$1"
+  git -C "${CODE_CHECKOUT:?}" add -- "$1"
   local commit
-  commit=$(git -C "$CODE_CHECKOUT" commit-tree -p HEAD -m "feat: change $1" "$(git -C "$CODE_CHECKOUT" write-tree)")
-  git -C "$CODE_CHECKOUT" update-ref HEAD "$commit"
+  commit=$(git -C "${CODE_CHECKOUT:?}" commit-tree -p HEAD -m "feat: change $1" "$(git -C "${CODE_CHECKOUT:?}" write-tree)")
+  git -C "${CODE_CHECKOUT:?}" update-ref HEAD "$commit"
   echo "$commit"
 }
 

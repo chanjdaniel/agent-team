@@ -185,15 +185,15 @@ wrapper() {
 # The team home is cloned with its dev guard on, and home-pc holds the lease.
 fresh() {
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
-  rm -rf "$HOME/.local/state/agent-team" "$HOME/.config/agent-team/machine" "$HOME/.config/agent-team/home"
+  rm -rf "${HOME:?}/.local/state/agent-team" "${HOME:?}/.config/agent-team/machine" "${HOME:?}/.config/agent-team/home"
   if [[ $1 == macos ]]; then
     on_macos
     "$REPO_ROOT/bin/team-timers" disable >/dev/null
     export SHELL=/bin/zsh
   fi
   tools_at "$1" -
-  rm -rf "$HOME/.claude/settings.json" "$HOME/.claude/skills" "$HOME/.no-mistakes" "$CONVENTIONER" "$SITE"
-  rm -rf "$CODE_CHECKOUT/servers/node_modules"
+  rm -rf "${HOME:?}/.claude/settings.json" "${HOME:?}/.claude/skills" "${HOME:?}/.no-mistakes" "${CONVENTIONER:?}" "${SITE:?}"
+  rm -rf "${CODE_CHECKOUT:?}/servers/node_modules"
   echo '[]' >"$STUB_FIXTURES/plugins.json"
   echo '[]' >"$STUB_FIXTURES/marketplaces.json"
   : >"$STUB_FIXTURES/gates"
@@ -220,7 +220,7 @@ install_calls() {
 # own logs and fixtures aside) and the team home.
 footprint() {
   find "$HOME" "$TEAM_HOME" -path "$TEAM_HOME/.git" -prune -o -printf '%p %s %T@\n' | sort
-  git -C "$TEAM_HOME" status --porcelain
+  git -C "${TEAM_HOME:?}" status --porcelain
 }
 
 # The install of no-mistakes: a build of Daniel's fork at the lock's commit, on either OS.

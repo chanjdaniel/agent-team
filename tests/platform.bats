@@ -173,7 +173,7 @@ $brew/opt/python@3.12/libexec/bin/python3"
 
 @test "on macOS a script refuses, naming the brew install line, while a GNU tool is missing" {
   stub_reply uname Darwin
-  rm -r "$brew/opt/gnu-sed" "$brew/opt/flock"
+  rm -r "${brew:?}/opt/gnu-sed" "${brew:?}/opt/flock"
   run_bin -1 --separate-stderr team-state --help
   assert_equal "$output" ""
   assert_equal "$stderr" 'team-state: missing Homebrew packages: gnu-sed flock; run `brew install gnu-sed flock`'

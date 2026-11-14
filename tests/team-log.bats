@@ -2389,7 +2389,7 @@ ticket_launched() {
   # What the hook takes is taken: a fixture address, a service, and the team home's own user.email.
   run_bin -0 team-log T7 waiting on=Daniel "reason=mail team@example.com, noreply@$provider"
   git init -q "$TEAM_HOME"
-  git -C "$TEAM_HOME" config user.email "daniel@$provider"
+  git -C "${TEAM_HOME:?}" config user.email "daniel@$provider"
   run_bin -0 team-log T7 waiting on=Daniel "reason=mail daniel@$provider"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$(($(wc -l <<<"$before") + 2))"
   # The line is judged as written, as the hook reads it: a control character right before the
@@ -2408,7 +2408,7 @@ push_home() {
 
 # The subject of the commit at the tip of the team home's dev on its origin.
 origin_subject() {
-  git -C "$team_origin" log -1 --format=%s dev
+  git -C "${team_origin:?}" log -1 --format=%s dev
 }
 
 @test "every push kind team-log writes is committed alone and on origin at once, with no checkpoint; no other kind commits" {
@@ -2429,19 +2429,19 @@ origin_subject() {
       (select($k == "paused") | "cause=limit"), (select($k == "held") | "discord_message=\($soon)"),
       (select($k == "resumed") | "all=true"),
       (.kinds[$k].one_of // [] | .[] | "\(.[0])=x y")' "$CONTRACT")
-    tip=$(git -C "$team_origin" rev-parse dev)
+    tip=$(git -C "${team_origin:?}" rev-parse dev)
     run_bin -0 --separate-stderr team-log T14 "$kind" "${args[@]}"
     assert_equal "$output" ""
     assert_equal "$stderr" ""
     if jq -e --arg k "$kind" '.kinds[$k].push == true' "$CONTRACT" >/dev/null; then
       pushed+=("$kind")
       assert_equal "$(origin_subject)" "chore: ledger T14 $kind"
-      assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$tip"
-      assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
-      assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl)" "$(cat "$TEAM_HOME/ledger.jsonl")"
-      assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$(git -C "$team_origin" rev-parse dev)"
+      assert_equal "$(git -C "${team_origin:?}" rev-parse dev^)" "$tip"
+      assert_equal "$(git -C "${team_origin:?}" diff-tree -r --no-commit-id --name-only dev)" "ledger.jsonl"
+      assert_equal "$(git -C "${team_origin:?}" show dev:ledger.jsonl)" "$(cat "$TEAM_HOME/ledger.jsonl")"
+      assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$(git -C "${team_origin:?}" rev-parse dev)"
     else
-      assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+      assert_equal "$(git -C "${team_origin:?}" rev-parse dev)" "$tip"
     fi
   done < <(jq -r '.kinds | to_entries[] | select(([.value.writer] | flatten | index("team-log")) and (.value.retired | not)) | .key' "$CONTRACT")
   # The answered among them is one given at the terminal, with no discord_message, and the
@@ -2456,12 +2456,12 @@ origin_subject() {
   open_t7
   launched T7 builder b0000001
   local tip head
-  tip=$(git -C "$team_origin" rev-parse dev) head=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  tip=$(git -C "${team_origin:?}" rev-parse dev) head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD)
   run_bin -0 --separate-stderr team-log T7 --from-message 'T7 DONE 01 a1b2c3d done'
   assert_equal "$stderr" ""
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .event)" "done"
-  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
 }
 
 @test "a push that fails leaves the exit and stdout as they were, says why in one line, and the next checkpoint pushes the commit" {
@@ -2469,24 +2469,24 @@ origin_subject() {
   plan_registry
   opened T14 proj
   plan_md T14
-  git -C "$TEAM_HOME" remote set-url origin "$BATS_TEST_TMPDIR/gone.git"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$BATS_TEST_TMPDIR/gone.git"
   local tip
-  tip=$(git -C "$team_origin" rev-parse dev)
+  tip=$(git -C "${team_origin:?}" rev-parse dev)
   run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
   assert_equal "$output" ""
   assert_equal "$stderr" "team-log: the ledger is not on origin yet (cannot push dev: '$BATS_TEST_TMPDIR/gone.git' does not appear to be a git repository); the next checkpoint pushes it"
-  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: ledger T14 plan-approved"
-  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" log -1 --format=%s)" "chore: ledger T14 plan-approved"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev)" "$tip"
 
-  git -C "$TEAM_HOME" remote set-url origin "$team_origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$team_origin"
   run_bin -0 team-checkpoint --force
-  assert_equal "$(git -C "$team_origin" log --format=%s "$tip..dev" | grep -c '^chore: ledger T14 plan-approved$')" 1
-  assert_equal "$(git -C "$team_origin" show dev:ledger.jsonl | tail -n 1 | jq -r .event)" "plan-approved"
+  assert_equal "$(git -C "${team_origin:?}" log --format=%s "$tip..dev" | grep -c '^chore: ledger T14 plan-approved$')" 1
+  assert_equal "$(git -C "${team_origin:?}" show dev:ledger.jsonl | tail -n 1 | jq -r .event)" "plan-approved"
 }
 
 @test "a ledger the records hook refuses is the same one line with the hook's reason, and the exit stands" {
   push_home
-  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
+  git -C "${TEAM_HOME:?}" config core.hooksPath "$REPO_ROOT/bin/hooks/records-git"
   # A line written before the ledger's check, holding an address at a public provider.
   local provider=gmail.com head tip
   plan_registry
@@ -2494,14 +2494,14 @@ origin_subject() {
   plan_md T14
   jq -cn --arg a "someone@$provider" '{ts: "2026-10-22T02:00:00Z", task: "T14", event: "paused", reason: "mail \($a)"}' \
     >>"$TEAM_HOME/ledger.jsonl"
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD) tip=$(git -C "${team_origin:?}" rev-parse dev)
   run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
   assert_equal "$output" ""
   assert_equal "$(wc -l <<<"$stderr")" 1
   # The hook's first line, which names the ledger, without the list of refusals it ends with.
   assert_equal "$stderr" "team-log: the ledger is not on origin yet (cannot commit the records: data-check: refused: ledger.jsonl adds an email address at a public provider or an image, which the records never take: other people's addresses and screenshots stay out of git; take each out, then commit again); the next checkpoint pushes it"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev)" "$tip"
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .event)" "plan-approved"
 }
 
@@ -2511,13 +2511,13 @@ origin_subject() {
   opened T14 proj
   plan_md T14
   local head tip
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD) tip=$(git -C "${team_origin:?}" rev-parse dev)
   echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
   run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
   assert_equal "$output" ""
   assert_equal "$stderr" "team-log: the ledger is not on origin yet (home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine commits and pushes no ledger)"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev)" "$tip"
 
   rm "$HOME/.local/state/agent-team/fenced"
   make_machine laptop
@@ -2527,8 +2527,8 @@ origin_subject() {
   run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
   assert_equal "$output" ""
   [[ $stderr == "team-log: the ledger is not on origin yet (home-pc no longer holds the lease: origin names laptop ("*"): a machine that lost the lease commits and pushes no ledger)" ]]
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev)" "$tip"
   assert_equal "$(logged_after 1 | jq -r .event)" "plan-approved
 plan-approved"
 }
@@ -2539,16 +2539,16 @@ plan-approved"
   opened T14 proj
   plan_md T14
   local head tip
-  head=$(git -C "$TEAM_HOME" rev-parse HEAD) tip=$(git -C "$team_origin" rev-parse dev)
+  head=$(git -C "${TEAM_HOME:?}" rev-parse HEAD) tip=$(git -C "${team_origin:?}" rev-parse dev)
   echo '{"since": "2026-10-22T14:00:00Z"}' >"$HOME/.local/state/agent-team/offline"
   rm -f "$HOME/.local/state/agent-team/probe.json"
   # An origin that would hang every call: the skip makes none.
-  git -C "$TEAM_HOME" remote set-url origin "http://127.0.0.1:9/agent-team.git"
+  git -C "${TEAM_HOME:?}" remote set-url origin "http://127.0.0.1:9/agent-team.git"
   run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
   assert_equal "$output" ""
   assert_equal "$stderr" "team-log: the ledger is not on origin yet (GitHub is unreachable since $(date -d 2026-10-22T14:00:00Z +%H:%M), and the team is holding); the next checkpoint pushes it"
-  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
-  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$tip"
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev)" "$tip"
   [[ ! -e $HOME/.local/state/agent-team/probe.json ]]
 
   # A fenced machine says it is fenced, offline or not.
@@ -2565,11 +2565,11 @@ plan-approved"
   run_bin -0 --separate-stderr team-log T14 plan-approved by=coordinator
   assert_equal "$output" ""
   assert_equal "$stderr" ""
-  git -C "$TEAM_HOME" init -q -b dev
+  git -C "${TEAM_HOME:?}" init -q -b dev
   run_bin -0 --separate-stderr team-log T14 retro-schedule every_hours=48 discord_message="$(soon)"
   assert_equal "$output" ""
   assert_equal "$stderr" ""
-  assert_equal "$(git -C "$TEAM_HOME" rev-list --all | wc -l)" 0
+  assert_equal "$(git -C "${TEAM_HOME:?}" rev-list --all | wc -l)" 0
   assert_equal "$(logged_after 1 | jq -r .event)" "plan-approved
 retro-schedule"
 }

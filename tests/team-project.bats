@@ -744,7 +744,7 @@ SCRIPT
   local url
   for url in git@github.com:Owner/Code.git https://github.com/owner/code https://github.com/OWNER/code.git/ \
     ssh://git@github.com/owner/Code.git; do
-    git -C "$CODE_CHECKOUT" remote set-url origin "$url"
+    git -C "${CODE_CHECKOUT:?}" remote set-url origin "$url"
     own_registry beta beta owner/CODE
     run_bin -0 team-own beta
     assert_equal "$output" own
@@ -761,7 +761,7 @@ SCRIPT
 # which run_bin then runs from: own_worktree
 own_worktree() {
   local wt=$HOME/projects/tools-wt
-  git -C "$CODE_CHECKOUT" worktree add -q --detach "$wt"
+  git -C "${CODE_CHECKOUT:?}" worktree add -q --detach "$wt"
   copy_bin "$wt/bin"
   CODE_CHECKOUT=$wt
 }
@@ -777,7 +777,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 if own_project "$1"; then echo own; else echo other; fi
 SCRIPT
   chmod +x "$CODE_CHECKOUT/bin/team-own"
-  git -C "$main" remote set-url origin git@github.com:owner/tools.git
+  git -C "${main:?}" remote set-url origin git@github.com:owner/tools.git
   own_registry tools projects/tools owner/elsewhere
   run_bin -0 team-own tools
   assert_equal "$output" own

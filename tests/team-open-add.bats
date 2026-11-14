@@ -14,7 +14,7 @@ setup() {
   home_slots=("$HOME/slots/home/1" "$HOME/slots/home/2")
   conv_slots=("$HOME/.treehouse/conv-abc123/1/conv" "$HOME/.treehouse/conv-abc123/2/conv")
   local slot
-  for slot in "${conv_slots[@]}"; do git -C "$conv" worktree add -q --detach "$slot" origin/main; done
+  for slot in "${conv_slots[@]}"; do git -C "${conv:?}" worktree add -q --detach "$slot" origin/main; done
   printf '%s\n' "${conv_slots[@]}" >"$BATS_TEST_TMPDIR/free"
   fake_pool_commands "$conv"
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
@@ -56,19 +56,19 @@ TOML
 # Commit and push a .gitignore with .scratch/ in the primary checkout <path>.
 ignore_scratch() {
   echo ".scratch/" >"$1/.gitignore"
-  git -C "$1" add .gitignore
-  git -C "$1" commit -q -m "chore: ignore scratch"
-  git -C "$1" push -q origin main
+  git -C "${1:?}" add .gitignore
+  git -C "${1:?}" commit -q -m "chore: ignore scratch"
+  git -C "${1:?}" push -q origin main
 }
 
 # Push a commit to <project>'s origin main from a second clone; prints the new head.
 advance_origin() {
   local other=$BATS_TEST_TMPDIR/other-$1
   [[ -d $other ]] || git clone -q "$BATS_TEST_TMPDIR/origin/$1.git" "$other" 2>/dev/null
-  git -C "$other" pull -q
-  git -C "$other" commit -q --allow-empty -m "feat: $2"
-  git -C "$other" push -q origin main
-  git -C "$other" rev-parse HEAD
+  git -C "${other:?}" pull -q
+  git -C "${other:?}" commit -q --allow-empty -m "feat: $2"
+  git -C "${other:?}" push -q origin main
+  git -C "${other:?}" rev-parse HEAD
 }
 
 events() {
@@ -98,9 +98,9 @@ ledger_line() {
   assert_equal "$stderr" "team-open: the primary checkout $conv: main fast-forwarded to ${ahead:0:7}"
 
   assert_equal "$(stub_calls th-lease.sh)" "$(jq -cn --arg cwd "$conv" '{cwd: $cwd, args: ["T1"]}')"
-  assert_equal "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" "chore/T1-move-planning-out"
-  assert_equal "$(git -C "$worktree" rev-parse HEAD)" "$ahead"
-  run -128 git -C "$worktree" rev-parse --abbrev-ref '@{upstream}'
+  assert_equal "$(git -C "${worktree:?}" rev-parse --abbrev-ref HEAD)" "chore/T1-move-planning-out"
+  assert_equal "$(git -C "${worktree:?}" rev-parse HEAD)" "$ahead"
+  run -128 git -C "${worktree:?}" rev-parse --abbrev-ref '@{upstream}'
   [[ -d $worktree/.scratch/task ]]
 
   assert_equal "$(events worktree-added | jq -c 'del(.ts)')" "$(jq -cn --arg wt "$worktree" --arg sha "$ahead" '{
@@ -110,7 +110,7 @@ ledger_line() {
   assert_equal "$(events thread | wc -l)" "1"
   assert_equal "$(stub_calls curl | wc -l)" "1"
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/plan.md")" "$plan"
-  assert_equal "$(git -C "${home_slots[0]}" rev-parse --abbrev-ref HEAD)" "chore/T1-import-planning"
+  assert_equal "$(git -C "${home_slots[0]:?}" rev-parse --abbrev-ref HEAD)" "chore/T1-import-planning"
   run_bin -0 team-log --check
 }
 
@@ -123,9 +123,9 @@ ledger_line() {
   local worktree=${home_slots[0]}
   assert_equal "$(jq -r '"\(.project) \(.branch) \(.worktree) \(.base_sha)"' <<<"$output")" \
     "home chore/T1-import-planning $worktree $ahead"
-  assert_equal "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" "chore/T1-import-planning"
-  assert_equal "$(git -C "$worktree" rev-parse HEAD)" "$ahead"
-  run -128 git -C "$worktree" rev-parse --abbrev-ref '@{upstream}'
+  assert_equal "$(git -C "${worktree:?}" rev-parse --abbrev-ref HEAD)" "chore/T1-import-planning"
+  assert_equal "$(git -C "${worktree:?}" rev-parse HEAD)" "$ahead"
+  run -128 git -C "${worktree:?}" rev-parse --abbrev-ref '@{upstream}'
   assert_equal "$(events worktree-added | jq -r '"\(.task) \(.project) \(.worktree)"')" "T1 home $worktree"
   assert_equal "$(stub_calls th-lease.sh | wc -l)" "1"
   assert_equal "$(events opened | wc -l)" "1"
@@ -190,8 +190,8 @@ ledger_line() {
 
 @test "with every git slot taken --add exits 75 naming the holders" {
   run_bin -0 team-open conv feature feat one "One"
-  git -C "$home" worktree add -q "${home_slots[0]}" -b feat/T3-busy origin/main
-  git -C "$home" worktree add -q --detach "${home_slots[1]}" origin/main
+  git -C "${home:?}" worktree add -q "${home_slots[0]}" -b feat/T3-busy origin/main
+  git -C "${home:?}" worktree add -q --detach "${home_slots[1]}" origin/main
   run_bin -75 --separate-stderr team-open --task T1 --add home chore two
   assert_equal "$output" ""
   assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of home is taken:" \
@@ -225,20 +225,20 @@ ledger_line() {
   assert_contains "$stderr" "handed ${conv_slots[0]} back to $conv/scripts/th-return.sh, discarding what its lease changed"
   assert_equal "$(pool_calls th-return.sh)" "${conv_slots[0]} --force --if-lease-holder T1"
   assert_equal "$(pool_leases)" ""
-  run git -C "$conv" branch --list 'chore/T1-two'
+  run git -C "${conv:?}" branch --list 'chore/T1-two'
   assert_equal "$output" ""
   assert_equal "$(events worktree-added)" ""
 }
 
 @test "--add refuses a project whose git does not ignore the task directory, removing the slot" {
   run_bin -0 team-open conv feature feat one "One"
-  git -C "$home" rm -q .gitignore
-  git -C "$home" commit -q -m "chore: stop ignoring scratch"
-  git -C "$home" push -q origin main
+  git -C "${home:?}" rm -q .gitignore
+  git -C "${home:?}" commit -q -m "chore: stop ignoring scratch"
+  git -C "${home:?}" push -q origin main
   run_bin -1 team-open --task T1 --add home chore two
   assert_contains "$output" "git does not ignore .scratch/task in home"
   [[ ! -e ${home_slots[0]} ]]
-  run git -C "$home" branch --list 'chore/T1-two'
+  run git -C "${home:?}" branch --list 'chore/T1-two'
   assert_equal "$output" ""
   assert_equal "$(events worktree-added)" ""
   [[ -d $TEAM_HOME/tasks/T1 ]]
@@ -250,7 +250,7 @@ ledger_line() {
   chmod 000 "$TEAM_HOME/ledger.jsonl.lock"
   run_bin -1 --separate-stderr team-open --task T1 --add home chore two
   assert_contains "$stderr" "T1 is half open in ${home_slots[0]}; finish it with: team-open --task T1 --add home chore two"
-  assert_equal "$(git -C "${home_slots[0]}" rev-parse --abbrev-ref HEAD)" "chore/T1-two"
+  assert_equal "$(git -C "${home_slots[0]:?}" rev-parse --abbrev-ref HEAD)" "chore/T1-two"
   chmod 644 "$TEAM_HOME/ledger.jsonl.lock"
 
   run_bin -0 --separate-stderr team-open --task T1 --add home chore two

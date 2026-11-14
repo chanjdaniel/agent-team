@@ -23,7 +23,7 @@ setup() {
   ignore_scratch "$conv"
   conv_slots=("$HOME/.treehouse/conv-abc123/1/conv" "$HOME/.treehouse/conv-abc123/2/conv")
   local slot
-  for slot in "${conv_slots[@]}"; do git -C "$conv" worktree add -q --detach "$slot" origin/dev; done
+  for slot in "${conv_slots[@]}"; do git -C "${conv:?}" worktree add -q --detach "$slot" origin/dev; done
   printf '%s\n' "${conv_slots[@]}" >"$BATS_TEST_TMPDIR/free"
   fake_pool_commands "$conv"
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
@@ -75,9 +75,9 @@ TOML
 # Commit and push a .gitignore with .scratch/ in the primary checkout <path>.
 ignore_scratch() {
   echo ".scratch/" >"$1/.gitignore"
-  git -C "$1" add .gitignore
-  git -C "$1" commit -q -m "chore: ignore scratch"
-  git -C "$1" push -q origin dev
+  git -C "${1:?}" add .gitignore
+  git -C "${1:?}" commit -q -m "chore: ignore scratch"
+  git -C "${1:?}" push -q origin dev
 }
 
 # claude: --bg starts a session (the next id of $BATS_TEST_TMPDIR/ids, busy and working) and lists
@@ -197,10 +197,10 @@ daniel_says() {
 # full head.
 commit_and_push() {
   echo "$2" >"$1/$2"
-  git -C "$1" add "$2"
-  git -C "$1" commit -q -m "feat: add $2"
-  git -C "$1" push -q origin HEAD
-  git -C "$1" rev-parse HEAD
+  git -C "${1:?}" add "$2"
+  git -C "${1:?}" commit -q -m "feat: add $2"
+  git -C "${1:?}" push -q origin HEAD
+  git -C "${1:?}" rev-parse HEAD
 }
 
 # The delivering builder opens PR <n> of <repo> for <worktree>'s branch; CI's test check passes
@@ -208,8 +208,8 @@ commit_and_push() {
 open_pr() {
   local repo=$1 number=$2 worktree=$3 file
   file=$GH_DIR/${repo//\//_}-$number
-  jq -n --arg repo "$repo" --argjson n "$number" --arg branch "$(git -C "$worktree" branch --show-current)" \
-    --arg head "$(git -C "$worktree" rev-parse HEAD)" '{number: $n, title: "The work",
+  jq -n --arg repo "$repo" --argjson n "$number" --arg branch "$(git -C "${worktree:?}" branch --show-current)" \
+    --arg head "$(git -C "${worktree:?}" rev-parse HEAD)" '{number: $n, title: "The work",
       url: "https://github.com/\($repo)/pull/\($n)", state: "OPEN", isDraft: false, mergeable: "MERGEABLE",
       baseRefName: "dev", headRefName: $branch, headRefOid: $head, mergeCommit: null, autoMergeRequest: null}' \
     >"$file.json"
@@ -347,7 +347,7 @@ level_reading() {
   ok team-open --task T1 --add conv feat tooling
   conv_wt=$(jq -r .worktree <<<"$output")
   assert_equal "$conv_wt" "${conv_slots[0]}"
-  assert_equal "$(git -C "$conv_wt" branch --show-current)" feat/T1-tooling
+  assert_equal "$(git -C "${conv_wt:?}" branch --show-current)" feat/T1-tooling
   step planning no-worker:-
 
   # 2. Plan in home: brief and launch the planner; a brief needs the project once the task has two.
@@ -454,7 +454,7 @@ level_reading() {
   step awaiting-merge
   ok team-merge T1 --pr "$home_url"
   local merge
-  merge=$(git --git-dir "$BATS_TEST_TMPDIR/origin/home.git" rev-parse dev)
+  merge=$(git --git-dir "${BATS_TEST_TMPDIR:?}/origin/home.git" rev-parse dev)
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg url "$home_url" --arg merge "$merge" --arg head "$home_head" \
     '{task: "T1", pr: $url, merge: $merge, head: $head, by: "Discord message \($message) in the task'"'"'s thread 1563, from daniel (757)"}' --arg message "$home_message")"
   # conv's PR still waits for its merge.
@@ -477,10 +477,10 @@ level_reading() {
   [[ -f $TEAM_HOME/tasks/T1/scratch/tickets/01-thing.md ]]
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch-conv/build-notes/02.md")" "# 02"
   [[ ! -e $home_wt ]]
-  [[ $(git -C "$home" worktree list) != *"$home_wt"* ]]
+  [[ $(git -C "${home:?}" worktree list) != *"$home_wt"* ]]
   [[ -f $plan ]]
   # The treehouse slot is back in its pool, detached and empty of the task.
-  assert_equal "$(git -C "$conv_wt" branch --show-current)" ""
+  assert_equal "$(git -C "${conv_wt:?}" branch --show-current)" ""
   [[ ! -e $conv_wt/.scratch/task/build-notes ]]
   assert_contains "$(cat "$BATS_TEST_TMPDIR/free")" "$conv_wt"
   assert_closed_and_clean
@@ -583,7 +583,7 @@ launched T1-reviewer 6c7d8e9f"
   assert_equal "$(tail -n 1 <<<"$output")" "merge on the default word: run team-merge T1 for $url at $fix, agent-review success, checks green"
   # The sweep sends the coordinator to that merge.
   step awaiting-merge merge-due:-
-  [[ $(git --git-dir "$BATS_TEST_TMPDIR/origin/home.git" rev-parse dev) != "$fix" ]]
+  [[ $(git --git-dir "${BATS_TEST_TMPDIR:?}/origin/home.git" rev-parse dev) != "$fix" ]]
 
   # The ledger holds every turn, each written by a script, and meets its contract.
   run_bin -0 team-log --check

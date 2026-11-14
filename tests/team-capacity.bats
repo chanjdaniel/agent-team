@@ -677,9 +677,9 @@ team_reading() {
   # its ticket branch, not logged yet: half open).
   local primary=$HOME/agent-team wt2=$HOME/agent-team/.claude/worktrees/3 wt3=$HOME/agent-team/.claude/worktrees/4
   git init -q -b dev "$primary"
-  git -C "$primary" commit -q --allow-empty -m "chore: start"
-  git -C "$primary" worktree add -q -b feat/T9-work--02 "$wt2"
-  git -C "$primary" worktree add -q -b feat/T9-work--03 "$wt3"
+  git -C "${primary:?}" commit -q --allow-empty -m "chore: start"
+  git -C "${primary:?}" worktree add -q -b feat/T9-work--02 "$wt2"
+  git -C "${primary:?}" worktree add -q -b feat/T9-work--03 "$wt3"
   jq -cn --arg wt "$wt2" '{ts: "2026-11-01T10:05:00Z", task: "T9", event: "worktree-added", project: "agent-team",
     branch: "feat/T9-work--02", base: "feat/T9-work", base_sha: "abc1234", worktree: $wt, ticket: "02"}' >>"$TEAM_HOME/ledger.jsonl"
   proc 200 1 300 40 "$wt2"

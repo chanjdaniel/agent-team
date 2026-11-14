@@ -14,9 +14,9 @@ setup() {
   sandbox
   home=$(make_repo home)
   printf '.scratch/\n' >"$home/.gitignore"
-  git -C "$home" add .gitignore
-  git -C "$home" commit -q -m "chore: ignore scratch"
-  git -C "$home" push -q origin main
+  git -C "${home:?}" add .gitignore
+  git -C "${home:?}" commit -q -m "chore: ignore scratch"
+  git -C "${home:?}" push -q origin main
   home_origin=$BATS_TEST_TMPDIR/origin/home.git
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
 [home]
@@ -67,9 +67,9 @@ SH
   launch builder 81f08540
   echo "spec" >"$wt/.scratch/task/spec.md"
   echo "a" >"$wt/a.txt"
-  git -C "$wt" add a.txt
-  git -C "$wt" commit -q -m "feat: a"
-  head=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add a.txt
+  git -C "${wt:?}" commit -q -m "feat: a"
+  head=$(git -C "${wt:?}" rev-parse HEAD)
 }
 
 # Log T1's launch of <role> in session <id> on home-pc, as team-worker does.
@@ -85,9 +85,9 @@ with_stack() {
   mkdir -p "$wt/scripts"
   cp "$REPO_ROOT/tests/fixtures/stack/compose.sh" "$wt/scripts/compose.sh"
   cp "$REPO_ROOT/tests/fixtures/stack/docker-compose.yml" "$wt/docker-compose.yml"
-  git -C "$wt" add scripts docker-compose.yml
-  git -C "$wt" commit -q -m "feat: add the stack"
-  head=$(git -C "$wt" rev-parse HEAD)
+  git -C "${wt:?}" add scripts docker-compose.yml
+  git -C "${wt:?}" commit -q -m "feat: add the stack"
+  head=$(git -C "${wt:?}" rev-parse HEAD)
   printf '\n[home.stack]\ncompose = "scripts/compose.sh"\nseed = "scripts/seed.sh"\nlog_services = ["web"]\n' >>"$TEAM_HOME/projects.toml"
   docker_stub "$wt"
   capacity_room $((16 * 1024 * 1024 * 1024))
@@ -117,17 +117,17 @@ stowed_events() {
 
 # The subjects of the commits on the team home's origin, newest first.
 team_subjects() {
-  git -C "$team_origin" log --format=%s dev
+  git -C "${team_origin:?}" log --format=%s dev
 }
 
 # Everything a refused handoff must leave as it was: the ledger, the team home's HEAD and status,
 # every ref on both origins, the session list and the heartbeat's units.
 untouched_state() {
   cat "$TEAM_HOME/ledger.jsonl"
-  git -C "$TEAM_HOME" rev-parse HEAD
-  git -C "$TEAM_HOME" status --porcelain
-  git -C "$team_origin" for-each-ref --format='%(objectname) %(refname)'
-  git -C "$home_origin" for-each-ref --format='%(objectname) %(refname)'
+  git -C "${TEAM_HOME:?}" rev-parse HEAD
+  git -C "${TEAM_HOME:?}" status --porcelain
+  git -C "${team_origin:?}" for-each-ref --format='%(objectname) %(refname)'
+  git -C "${home_origin:?}" for-each-ref --format='%(objectname) %(refname)'
   cat "$BATS_TEST_TMPDIR/sessions.json"
   find "$HOME/.config/systemd" -type f | sort
 }
@@ -146,19 +146,19 @@ interrupt_after() {
     "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"],\"cause\":\"handoff\"}"
   assert_equal "$(team_subjects | grep -c '^chore: handoff from home-pc$')" 1
   # The stowed lands in the handoff's own commit, whatever step was interrupted.
-  assert_contains "$(git -C "$team_origin" show "$(git -C "$team_origin" log --format=%H --grep '^chore: handoff' dev)" -- ledger.jsonl)" '"event":"stowed"'
-  assert_equal "$(git -C "$team_origin" log --format=%s lease | grep -c release)" 1
+  assert_contains "$(git -C "${team_origin:?}" show "$(git -C "${team_origin:?}" log --format=%H --grep '^chore: handoff' dev)" -- ledger.jsonl)" '"event":"stowed"'
+  assert_equal "$(git -C "${team_origin:?}" log --format=%s lease | grep -c release)" 1
   assert_equal "$(stops_and_removes)" "stop 81f08540
 rm 81f08540"
-  assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
+  assert_equal "$(git -C "${home_origin:?}" rev-parse feat/T1-work)" "$head"
   assert_equal "$(lease_json | jq -r .state)" released
 
-  lease_commits=$(git -C "$team_origin" rev-parse lease dev)
+  lease_commits=$(git -C "${team_origin:?}" rev-parse lease dev)
   run_bin -0 team-handoff
   assert_equal "${lines[0]}" "lease: released by this handoff already, epoch 1"
   [[ ${lines[-2]} == "Released at "* ]]
   assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
-  assert_equal "$(git -C "$team_origin" rev-parse lease dev)" "$lease_commits"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse lease dev)" "$lease_commits"
   assert_equal "$(stowed_events | wc -l)" 1
 }
 
@@ -177,7 +177,7 @@ rm 81f08540"
   assert_contains "$output" "config: captured CLAUDE.md (new)"
   assert_contains "$output" "sessions: T1: stopped and removed T1-builder (81f08540)"
   assert_contains "$output" "stacks: T1: no stack"
-  assert_contains "$output" "team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: handoff from home-pc and pushed dev"
+  assert_contains "$output" "team home: committed $(git -C "${TEAM_HOME:?}" rev-parse --short HEAD) chore: handoff from home-pc and pushed dev"
   assert_contains "$output" "heartbeat: "
   assert_contains "$output" "lease: home-pc released the lease, epoch 1"
   [[ ${lines[-2]} =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."$ ]]
@@ -186,7 +186,7 @@ rm 81f08540"
   [[ $output == *"sessions: T1: stopped and removed T1-builder"*"checkpoint: T1 home: "* ]]
 
   # Origin has the task branch at the worktree's commit.
-  assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
+  assert_equal "$(git -C "${home_origin:?}" rev-parse feat/T1-work)" "$head"
 
   # One stowed, with that head and the live builder's role.
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" \
@@ -199,13 +199,13 @@ rm 81f08540"
   # The team home's origin: the handoff's commit holds the stowed ledger, the scratch, the plan,
   # the captured config, the steps and the backlog, and the checkout is clean.
   assert_equal "$(team_subjects | head -n 1)" "chore: handoff from home-pc"
-  assert_contains "$(git -C "$team_origin" show dev:ledger.jsonl)" '"event":"stowed"'
-  assert_equal "$(git -C "$team_origin" show dev:tasks/T1/scratch/spec.md)" "spec"
-  assert_equal "$(git -C "$team_origin" show dev:machine/claude/CLAUDE.md)" "Shared instructions."
-  git -C "$team_origin" cat-file -e dev:tasks/T1/plan.md
-  assert_equal "$(git -C "$team_origin" show dev:manual-steps.md)" "steps"
-  assert_equal "$(git -C "$team_origin" show dev:projects/home/backlog/s.md)" "a story"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  assert_contains "$(git -C "${team_origin:?}" show dev:ledger.jsonl)" '"event":"stowed"'
+  assert_equal "$(git -C "${team_origin:?}" show dev:tasks/T1/scratch/spec.md)" "spec"
+  assert_equal "$(git -C "${team_origin:?}" show dev:machine/claude/CLAUDE.md)" "Shared instructions."
+  git -C "${team_origin:?}" cat-file -e dev:tasks/T1/plan.md
+  assert_equal "$(git -C "${team_origin:?}" show dev:manual-steps.md)" "steps"
+  assert_equal "$(git -C "${team_origin:?}" show dev:projects/home/backlog/s.md)" "a story"
+  assert_equal "$(git -C "${TEAM_HOME:?}" status --porcelain)" ""
 
   # The heartbeat is disabled and the lease released.
   run -0 "$REPO_ROOT/bin/team-timers" status --json
@@ -215,7 +215,7 @@ rm 81f08540"
   # The other machine takes the lease and finds everything there.
   on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" take
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .state]')" '["laptop",2,"held"]'
-  on_machine laptop git -C "$BATS_TEST_TMPDIR/machines/laptop/team" pull -q
+  on_machine laptop git -C "${BATS_TEST_TMPDIR:?}/machines/laptop/team" pull -q
   assert_equal "$(jq -r 'select(.event == "stowed") | .worktrees[0].head' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" "$head"
 }
 
@@ -226,8 +226,8 @@ rm 81f08540"
   TEAM_HANDOFF_STOP_AFTER=3 run_bin -1 team-handoff
   echo '{"ts":"2026-11-01T14:05:00Z","mode":"manual","level":"minor","by":"Daniel","machine":"home-pc"}' >"$TEAM_HOME/level.jsonl"
   run_bin -0 team-handoff
-  assert_contains "$(git -C "$team_origin" show --name-only --format= "$(git -C "$team_origin" log --format=%H --grep '^chore: handoff' dev)")" "level.jsonl"
-  assert_equal "$(git -C "$team_origin" show dev:level.jsonl | jq -r .level)" minor
+  assert_contains "$(git -C "${team_origin:?}" show --name-only --format= "$(git -C "${team_origin:?}" log --format=%H --grep '^chore: handoff' dev)")" "level.jsonl"
+  assert_equal "$(git -C "${team_origin:?}" show dev:level.jsonl | jq -r .level)" minor
 }
 
 @test "the handoff's commit holds this machine's usage to now, today's included" {
@@ -242,9 +242,9 @@ rm 81f08540"
   assert_contains "$output" "usage: usage/home-pc/$today.jsonl: 1 reply, 1 new
 usage: read 1 of 4 transcripts; wrote 1 day file
 team home: committed"
-  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev -- usage)" "usage/home-pc/$today.jsonl"
-  assert_equal "$(git -C "$team_origin" show "dev:usage/home-pc/$today.jsonl" | jq -r .request)" req_T1
-  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev usage | wc -l)" 3
+  assert_equal "$(git -C "${team_origin:?}" diff-tree -r --no-commit-id --name-only dev -- usage)" "usage/home-pc/$today.jsonl"
+  assert_equal "$(git -C "${team_origin:?}" show "dev:usage/home-pc/$today.jsonl" | jq -r .request)" req_T1
+  assert_equal "$(git -C "${team_origin:?}" ls-tree -r --name-only dev usage | wc -l)" 3
 }
 
 @test "a failed export is said, and the handoff goes on" {
@@ -283,11 +283,11 @@ SH
 
   # The snapshot holds what the session left as it stopped, the secret aside.
   local wip
-  wip=$(git -C "$team_origin" rev-parse wip/home/T1)
-  assert_equal "$(git -C "$team_origin" rev-parse "$wip^")" "$head"
-  assert_equal "$(git -C "$team_origin" show "$wip:a.txt")" "edited"
-  assert_equal "$(git -C "$team_origin" show "$wip:late.txt")" "late"
-  assert_equal "$(git -C "$team_origin" ls-tree --name-only "$wip" | paste -sd ' ')" ".gitignore README.md a.txt b.txt late.txt"
+  wip=$(git -C "${team_origin:?}" rev-parse wip/home/T1)
+  assert_equal "$(git -C "${team_origin:?}" rev-parse "$wip^")" "$head"
+  assert_equal "$(git -C "${team_origin:?}" show "$wip:a.txt")" "edited"
+  assert_equal "$(git -C "${team_origin:?}" show "$wip:late.txt")" "late"
+  assert_equal "$(git -C "${team_origin:?}" ls-tree --name-only "$wip" | paste -sd ' ')" ".gitignore README.md a.txt b.txt late.txt"
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" "$(jq -cn --arg h "$head" --arg wt "$wt" '{task: "T1", event: "stowed",
     machine: "home-pc", worktrees: [{project: "home", branch: "feat/T1-work", head: $h, uncommitted: true}],
     roles: ["builder"], sessions: ["builder"], note: "untracked files left out of wip/home/T1 stay on home-pc in \($wt): .env.local",
@@ -401,7 +401,7 @@ team-handoff: stow: T1 is not stowed, as team-stow says; fix what it names, then
   assert_equal "$(jq -c '{machine, epoch, here, tasks: [.tasks[] | {task, roles}]}' <<<"$output")" \
     '{"machine":"home-pc","epoch":1,"here":true,"tasks":[{"task":"T1","roles":["builder"]}]}'
   [[ $(jq -r .message <<<"$output") =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc for a restart here. After the restart, run \`team-resume\` here."$ ]]
-  assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
+  assert_equal "$(git -C "${home_origin:?}" rev-parse feat/T1-work)" "$head"
   assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","released"]'
   run -0 "$REPO_ROOT/bin/team-timers" status --json
   assert_equal "$(jq -c .enabled <<<"$output")" false
@@ -453,19 +453,19 @@ team-handoff: stow: T1 is not stowed, as team-stow says; fix what it names, then
 }
 
 @test "a task branch that has diverged from origin refuses the handoff before its worker stops, with nothing released" {
-  git -C "$wt" push -q origin feat/T1-work
-  git -C "$wt" reset -q --hard HEAD~1
+  git -C "${wt:?}" push -q origin feat/T1-work
+  git -C "${wt:?}" reset -q --hard HEAD~1
   echo "b" >"$wt/b.txt"
-  git -C "$wt" add b.txt
-  git -C "$wt" commit -q -m "feat: b"
+  git -C "${wt:?}" add b.txt
+  git -C "${wt:?}" commit -q -m "feat: b"
   local ours
-  ours=$(git -C "$wt" rev-parse HEAD)
+  ours=$(git -C "${wt:?}" rev-parse HEAD)
 
   run_bin -1 --separate-stderr team-handoff
   assert_equal "$stderr" "team-stow: T1 is not stowed: feat/T1-work (home) has diverged from origin: 1 commits here and 1 there; bring it level with origin, then run team-stow again
 team-handoff: stow: T1 is not stowed, as team-stow says; fix what it names, then run team-handoff again; nothing was released"
-  assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
-  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$ours"
+  assert_equal "$(git -C "${home_origin:?}" rev-parse feat/T1-work)" "$head"
+  assert_equal "$(git -C "${wt:?}" rev-parse HEAD)" "$ours"
   assert_equal "$(stowed_events)" ""
   assert_equal "$(stops_and_removes)" ""
   assert_equal "$(lease_json | jq -r .state)" held
@@ -504,12 +504,12 @@ team-handoff: stow: T1 is not stowed, as team-stow says; fix what it names, then
 
   # Offline.
   before=$(untouched_state)
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -75 --separate-stderr team-handoff --check
   assert_contains "$stderr" "team-handoff: GitHub unreachable; no handoff while offline"
   run_bin -75 --separate-stderr team-handoff
   assert_contains "$stderr" "team-handoff: GitHub unreachable; no handoff while offline"
-  git -C "$TEAM_HOME" remote set-url origin "$team_origin"
+  git -C "${TEAM_HOME:?}" remote set-url origin "$team_origin"
   assert_equal "$(untouched_state)" "$before"
   assert_equal "$(stops_and_removes)" ""
 }

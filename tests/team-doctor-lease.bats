@@ -69,11 +69,11 @@ EOF
   run_bin -0 team-doctor
   assert_equal "$(line_of lease)" "WARN lease: held by laptop, epoch 2, renewed 0 minutes ago; fix: team-resume --wait here, then hand off on laptop once it says this machine is ready"
 
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 team-doctor
   assert_equal "$(line_of lease)" "FAIL lease: GitHub unreachable, so the lease is unconfirmed; fix: check the network, then run team-doctor again"
 
-  git -C "$TEAM_HOME" remote remove origin
+  git -C "${TEAM_HOME:?}" remote remove origin
   run_bin -1 team-doctor
   assert_equal "$(line_of lease)" "FAIL lease: the team home $TEAM_HOME has no git remote origin, where the lease lives; fix: fix what team-lease names, then run team-doctor again"
 }
@@ -89,7 +89,7 @@ EOF
   assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: team-resume --wait here, then hand off on the machine that holds the lease once it says this machine is ready (its take clears the fence)"
   assert_equal "$(line_of heartbeat)" "PASS heartbeat: disabled, and this machine does not hold the lease"
 
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 team-doctor
   assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: team-resume --wait here, then hand off on the machine that holds the lease once it says this machine is ready (its take clears the fence)"
 }
@@ -103,7 +103,7 @@ EOF
   local n wt=() slots=$HOME/site-wt recorded
   for n in 1 2 3 4 5; do
     wt[n]=$slots/$n
-    git -C "$SITE" worktree add -q -b "feat/T$n-x" "${wt[n]}" origin/main
+    git -C "${SITE:?}" worktree add -q -b "feat/T$n-x" "${wt[n]}" origin/main
     recorded=${wt[n]}
     ((n != 2)) || recorded=$(other_spelling "$slots")/2
     jq -cn --arg t "T$n" --arg wt "$recorded" --arg b "feat/T$n-x" '{ts: "2026-10-23T09:00:00Z", task: $t,
@@ -111,13 +111,13 @@ EOF
       base_sha: "0000000", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
   done
   echo one >"${wt[1]}/one.txt"
-  git -C "${wt[1]}" add one.txt
-  git -C "${wt[1]}" commit -q -m "feat: one"
-  git -C "$SITE" update-ref refs/remotes/team-home/wip/site/T1 \
-    "$(git -C "${wt[1]}" commit-tree -p HEAD -m wip "$(git -C "${wt[1]}" rev-parse 'HEAD^{tree}')")"
+  git -C "${wt[1]:?}" add one.txt
+  git -C "${wt[1]:?}" commit -q -m "feat: one"
+  git -C "${SITE:?}" update-ref refs/remotes/team-home/wip/site/T1 \
+    "$(git -C "${wt[1]:?}" commit-tree -p HEAD -m wip "$(git -C "${wt[1]:?}" rev-parse 'HEAD^{tree}')")"
   echo edited >"${wt[2]}/README.md"
   echo new >"${wt[2]}/new.txt"
-  git -C "$SITE" worktree remove --force "${wt[4]}"
+  git -C "${SITE:?}" worktree remove --force "${wt[4]}"
   echo stray >"${wt[5]}/stray.txt"
   echo '{"ts":"2026-10-23T10:00:00Z","task":"T5","event":"closed","archive":[],"returned":[],"kept":[]}' \
     >>"$TEAM_HOME/ledger.jsonl"
@@ -134,7 +134,7 @@ EOF
   TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   # The salvage goes to the team home's origin, never the project's, which may be public.
   local team_origin
-  team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
+  team_origin=$(git -C "${TEAM_HOME:?}" remote get-url origin)
   assert_equal "$(worktree_salvage)" \
 "FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push $team_origin HEAD:refs/heads/salvage/site/T1-home-pc
 FAIL salvage T2 site: ~/SITE-WT/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/SITE-WT/2 add -A && git -C ~/SITE-WT/2 commit -m \"wip: salvage from home-pc\", then git -C ~/SITE-WT/2 push $team_origin HEAD:refs/heads/salvage/site/T2-home-pc"
@@ -145,9 +145,9 @@ FAIL salvage T2 site: ~/SITE-WT/2 has uncommitted changes (changes to tracked fi
   # line passes.
   local fix
   while IFS= read -r fix; do eval "$fix" >/dev/null 2>&1; done < <(grep '^FAIL salvage' <<<"$output" | sed 's/.*; fix: //; s/, then / \&\& /')
-  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1-home-pc)" "$(git -C "${wt[1]}" rev-parse HEAD)"
-  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T2-home-pc)" "$(git -C "${wt[2]}" rev-parse HEAD)"
-  assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/site.git" for-each-ref refs/heads/salvage/)" ""
+  assert_equal "$(git -C "${team_origin:?}" rev-parse refs/heads/salvage/site/T1-home-pc)" "$(git -C "${wt[1]:?}" rev-parse HEAD)"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse refs/heads/salvage/site/T2-home-pc)" "$(git -C "${wt[2]:?}" rev-parse HEAD)"
+  assert_equal "$(git -C "${BATS_TEST_TMPDIR:?}/origin/site.git" for-each-ref refs/heads/salvage/)" ""
   run_bin -1 team-doctor
   assert_equal "$(worktree_salvage)" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
 
@@ -159,10 +159,10 @@ FAIL salvage T2 site: ~/SITE-WT/2 has uncommitted changes (changes to tracked fi
 FAIL salvage T2 site"
 
   # A commit pushed to origin's branch, and clean, passes too.
-  git -C "${wt[1]}" add two.txt
-  git -C "${wt[1]}" commit -q -m "feat: two"
-  git -C "${wt[2]}" checkout -q -- new.txt
-  git -C "$SITE" update-ref refs/remotes/origin/feat/T1-x "$(git -C "${wt[1]}" rev-parse HEAD)"
+  git -C "${wt[1]:?}" add two.txt
+  git -C "${wt[1]:?}" commit -q -m "feat: two"
+  git -C "${wt[2]:?}" checkout -q -- new.txt
+  git -C "${SITE:?}" update-ref refs/remotes/origin/feat/T1-x "$(git -C "${wt[1]:?}" rev-parse HEAD)"
   run_bin -1 team-doctor
   assert_equal "$(worktree_salvage)" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
 }
@@ -173,31 +173,31 @@ FAIL salvage T2 site"
   # T1's task worktree and its ticket 02's, each with a commit on no origin branch (a ticket
   # branch is never pushed).
   local task_wt=$HOME/site-wt/1 ticket_wt=$HOME/site-wt/2 team_origin fix
-  git -C "$SITE" worktree add -q -b feat/T1-x "$task_wt" origin/main
-  git -C "$SITE" worktree add -q -b feat/T1-x--02 "$ticket_wt" feat/T1-x
+  git -C "${SITE:?}" worktree add -q -b feat/T1-x "$task_wt" origin/main
+  git -C "${SITE:?}" worktree add -q -b feat/T1-x--02 "$ticket_wt" feat/T1-x
   jq -cn --arg wt "$task_wt" '{ts: "2026-10-23T09:00:00Z", task: "T1", event: "opened", project: "site",
     path: "small", type: "feat", title: "x", branch: "feat/T1-x", base: "main", base_sha: "0000000", worktree: $wt}' \
     >>"$TEAM_HOME/ledger.jsonl"
   jq -cn --arg wt "$ticket_wt" '{ts: "2026-10-23T09:30:00Z", task: "T1", event: "worktree-added", project: "site",
     branch: "feat/T1-x--02", base: "feat/T1-x", base_sha: "0000000", worktree: $wt, ticket: "02"}' \
     >>"$TEAM_HOME/ledger.jsonl"
-  git -C "$task_wt" commit -q --allow-empty -m "feat: the task's"
-  git -C "$ticket_wt" commit -q --allow-empty -m "feat: ticket 02's"
+  git -C "${task_wt:?}" commit -q --allow-empty -m "feat: the task's"
+  git -C "${ticket_wt:?}" commit -q --allow-empty -m "feat: ticket 02's"
 
   make_machine laptop
   steal_lease laptop home-pc
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
   echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
   run_bin -1 team-doctor
-  team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
+  team_origin=$(git -C "${TEAM_HOME:?}" remote get-url origin)
   assert_equal "$(worktree_salvage)" \
 "FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push $team_origin HEAD:refs/heads/salvage/site/T1-home-pc
 FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git -C ~/site-wt/2 push $team_origin HEAD:refs/heads/salvage/site/T1--02-home-pc"
 
   # Both fixes keep both heads, neither overwriting the other, and the line passes.
   while IFS= read -r fix; do eval "$fix" >/dev/null 2>&1; done < <(worktree_salvage | sed 's/.*; fix: //')
-  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1-home-pc)" "$(git -C "$task_wt" rev-parse HEAD)"
-  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1--02-home-pc)" "$(git -C "$ticket_wt" rev-parse HEAD)"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse refs/heads/salvage/site/T1-home-pc)" "$(git -C "${task_wt:?}" rev-parse HEAD)"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse refs/heads/salvage/site/T1--02-home-pc)" "$(git -C "${ticket_wt:?}" rev-parse HEAD)"
   run_bin -1 team-doctor
   assert_equal "$(worktree_salvage)" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
 }
@@ -206,12 +206,12 @@ FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git
   only_checks 230-salvage.sh
   tools_at arch
   local team_origin dev
-  team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
+  team_origin=$(git -C "${TEAM_HOME:?}" remote get-url origin)
   # Level with origin: what the doctor's machine wrote is committed and pushed.
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: the machine"
-  git -C "$TEAM_HOME" push -q origin dev
-  dev=$(git -C "$team_origin" rev-parse dev)
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: the machine"
+  git -C "${TEAM_HOME:?}" push -q origin dev
+  dev=$(git -C "${team_origin:?}" rev-parse dev)
   # Two ledger lines appended since the last commit.
   local event='{"ts":"2026-10-23T09:00:00Z","task":"T1","event":"paused","reason":"x"}'
   printf '%s\n' "$event" "$event" >>"$TEAM_HOME/ledger.jsonl"
@@ -232,7 +232,7 @@ FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git
     "FAIL salvage records: $TEAM_HOME has uncommitted records (ledger.jsonl: 2 new lines); fix: $commit $fix"
 
   # Committed but not pushed: the count of commits origin's dev lacks.
-  git -C "$TEAM_HOME" commit -q -m "chore: ledger" ledger.jsonl
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: ledger" ledger.jsonl
   run_bin -1 team-doctor
   assert_equal "$(line_of "salvage records")" "FAIL salvage records: $TEAM_HOME has 1 commit origin's dev lacks; fix: $fix"
 
@@ -249,9 +249,9 @@ FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git
   local out
   out=$(line_of "salvage records" | sed 's/.*; fix: //; s/, then / \&\& /')
   eval "$out" >/dev/null 2>&1
-  assert_equal "$(git -C "$team_origin" show refs/heads/salvage/records/home-pc-1:ledger.jsonl | grep -c '"paused"')" 3
-  assert_equal "$(git -C "$team_origin" show refs/heads/salvage/records/home-pc-1:ledger.jsonl)" "$(cat "$TEAM_HOME/ledger.jsonl")"
-  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$dev"
+  assert_equal "$(git -C "${team_origin:?}" show refs/heads/salvage/records/home-pc-1:ledger.jsonl | grep -c '"paused"')" 3
+  assert_equal "$(git -C "${team_origin:?}" show refs/heads/salvage/records/home-pc-1:ledger.jsonl)" "$(cat "$TEAM_HOME/ledger.jsonl")"
+  assert_equal "$(git -C "${team_origin:?}" rev-parse dev)" "$dev"
   run_bin -1 team-doctor
   assert_equal "$(line_of "salvage records")" "PASS salvage records: the team home holds no records that neither origin's dev nor a salvage branch keeps"
 
@@ -261,8 +261,8 @@ FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git
   assert_equal "$(line_of "salvage records" | cut -d: -f1)" "FAIL salvage records"
 
   # Level with origin's dev and nothing uncommitted passes too.
-  git -C "$TEAM_HOME" commit -q -m "chore: ledger" ledger.jsonl
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: ledger" ledger.jsonl
+  git -C "${TEAM_HOME:?}" push -q origin dev
   run_bin -1 team-doctor
   assert_equal "$(line_of "salvage records")" "PASS salvage records: the team home holds no records that neither origin's dev nor a salvage branch keeps"
 }
@@ -271,10 +271,10 @@ FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git
   only_checks 230-salvage.sh
   tools_at arch
   local team_origin
-  team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
-  git -C "$TEAM_HOME" add -A
-  git -C "$TEAM_HOME" commit -q -m "chore: the machine"
-  git -C "$TEAM_HOME" push -q origin dev
+  team_origin=$(git -C "${TEAM_HOME:?}" remote get-url origin)
+  git -C "${TEAM_HOME:?}" add -A
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: the machine"
+  git -C "${TEAM_HOME:?}" push -q origin dev
   make_machine laptop
   steal_lease laptop home-pc
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
@@ -284,9 +284,9 @@ FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git
   echo '{"schema": "team-waiting/1", "items": [], "standing": [], "posted": null}' >"$TEAM_HOME/waiting.json"
   run_bin -1 team-doctor
   assert_equal "$(line_of "salvage records")" "PASS salvage records: the team home holds no records that neither origin's dev nor a salvage branch keeps"
-  git -C "$TEAM_HOME" add waiting.md waiting.json
-  git -C "$TEAM_HOME" commit -q -m "chore: waiting"
-  git -C "$TEAM_HOME" push -q origin dev
+  git -C "${TEAM_HOME:?}" add waiting.md waiting.json
+  git -C "${TEAM_HOME:?}" commit -q -m "chore: waiting"
+  git -C "${TEAM_HOME:?}" push -q origin dev
   echo "Nothing waits on you." >>"$TEAM_HOME/waiting.md"
   echo '{}' >"$TEAM_HOME/waiting.json"
   run_bin -1 team-doctor
@@ -339,7 +339,7 @@ FAIL salvage T1 site--02: ~/site-wt/2 has 1 commit on no origin branch; fix: git
   assert_equal "$(line_of heartbeat)" "FAIL heartbeat: enabled, but this machine does not hold the lease; fix: team-timers disable"
 
   # With the lease unconfirmed, the doctor cannot say which it should be.
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "${TEAM_HOME:?}" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 team-doctor
   assert_equal "$(line_of heartbeat)" "WARN heartbeat: enabled, but whether it should be waits on the lease line; fix: the lease line's fix, then run team-doctor again"
 
@@ -379,12 +379,12 @@ EOF
   [[ $(line_of health) =~ ^"PASS health: ok - last checkpoint "[0-9T:-]+"Z (0 minutes ago), lease renewed "[0-9T:-]+"Z (0 minutes ago), coordinator live"$ ]]
 
   # A failing checkpoint fails, naming it, with the failures log and a forced checkpoint as the fix.
-  git -C "$TEAM_HOME" checkout -q --detach
+  git -C "${TEAM_HOME:?}" checkout -q --detach
   touch -d '-5 minutes' "$state/last-checkpoint"
   run -1 "$CODE_CHECKOUT/bin/team-timers" run
   run_bin -1 team-doctor
   [[ $(line_of health) =~ ^"FAIL health: checkpoint failing since "[0-9T:-]+"Z (1 run): team home: not on a branch, so the records are not committed; fix: $fix"$ ]]
-  git -C "$TEAM_HOME" checkout -q dev
+  git -C "${TEAM_HOME:?}" checkout -q dev
 
   # Any other problem warns: the inbox step failing.
   waiting_unwritable

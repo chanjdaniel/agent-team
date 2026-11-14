@@ -360,7 +360,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
 
 @test "no tracked Markdown names a retired merge word but sops/merging.md's history of them and the fixtures" {
   local found
-  found=$(cd "$REPO_ROOT" && git ls-files -z -- '*.md' ':!:tests/fixtures/**' | xargs -0 grep -nE "$retired_words" -- |
+  found=$(cd "${REPO_ROOT:?}" && git ls-files -z -- '*.md' ':!:tests/fixtures/**' | xargs -0 grep -nE "$retired_words" -- |
     grep -v '^sops/merging\.md:' || true)
   assert_equal "$found" ""
   # In the SOP, only its section on the retired words names them.
@@ -461,7 +461,7 @@ retired_words='merge_with_plan|merge-preapprov|merge-standing|plan-time|standing
   jq -er '.kinds.review.about | contains("or a plain note on a line the PR adds or changes, never one before lists")' \
     "$REPO_ROOT/bin/lib/ledger-contract.json"
   # Nothing still says the old rule, that every plain note is a follow-up.
-  if git -C "$REPO_ROOT" grep -nE 'plain `note` (is a follow-up|for anything else, which becomes)|every other note became a follow-up|queue each plain `note`' \
+  if git -C "${REPO_ROOT:?}" grep -nE 'plain `note` (is a follow-up|for anything else, which becomes)|every other note became a follow-up|queue each plain `note`' \
     -- roles templates bin plugins sops; then return 1; fi
 }
 

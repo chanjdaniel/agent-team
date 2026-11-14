@@ -102,7 +102,7 @@ READ_INPUT='{"database":"conventioner","collection":"markets","filter":{"phase":
   # Without a tool name the hook cannot tell a read from a write, so it blocks.
   hook -2 '{"hook_event_name": "PreToolUse", "tool_input": {}}'
   # A missing log directory is a log that cannot be written.
-  rm -r "$taskdir"
+  rm -r "${taskdir:?}"
   hook -2 "$(hook_input PreToolUse mcp__prod-write__insert-many '{"documents":[]}')"
 }
 
