@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 # hooks/lease-fence: the PreToolUse hook that keeps a machine that lost the lease quiet. It blocks
 # the coordinator's Discord posts, and its git push, team-merge, team-catch-up, team-open and
-# team-close, when this machine is fenced or the lease on origin names another holder, a worker's
-# git push when fenced, and a worker's git push, gh and team-thread wait while the team holds
-# offline. home-pc holds the lease on a bare origin; laptop is the other machine.
+# team-close, when this machine is fenced or the lease on origin names another holder, the
+# assistant's git push, team-assistant and team-current then too, a worker's git push when fenced,
+# and a worker's git push, gh and team-thread wait, and the assistant's git push and gh, while the
+# team holds offline. home-pc holds the lease on a bare origin; laptop is the other machine.
 
 load helpers/common
 
@@ -139,6 +140,12 @@ age_probe() {
   homeless Bash '{"command": "git push"}' --coordinator
   assert_equal "$status" 2
   assert_contains "$stderr" "$cannot"
+  homeless Bash '{"command": "team-current"}' --assistant
+  assert_equal "$status" 2
+  assert_contains "$stderr" "$cannot"
+  # The assistant's gh reads only the offline hold.
+  homeless Bash '{"command": "gh pr view 6"}' --assistant
+  assert_equal "$status:$stderr" 0:
   # A worker's push reads only this machine's fence, and other calls nothing.
   homeless Bash '{"command": "git push"}'
   assert_equal "$status:$stderr" 0:
@@ -175,7 +182,7 @@ age_probe() {
 
 @test "a wrong argument on its command line refuses every call" {
   run_bin -2 --separate-stderr hooks/lease-fence --bogus <<<'{"tool_name": "Read", "tool_input": {}}'
-  assert_equal "$stderr" "lease-fence: usage: lease-fence [--coordinator]"
+  assert_equal "$stderr" "lease-fence: usage: lease-fence [--coordinator | --assistant]"
 }
 
 @test "origin is asked at most once a minute: a reply within it uses the cached probe" {
@@ -411,4 +418,71 @@ age_probe() {
     bash_call -2 "$command"
     assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine waits on no interview; stop, since the coordinator on the holder takes the task on."
   done
+}
+
+# The hook on the assistant's Bash call <command>, with --assistant: assistant_call <status> <command>
+assistant_call() {
+  run_bin "$1" --separate-stderr hooks/lease-fence --assistant <<<"$(jq -cn --arg c "$2" \
+    '{hook_event_name: "PreToolUse", cwd: env.TEAM_HOME, tool_name: "Bash", tool_input: {command: $c}}')"
+}
+
+@test "the assistant's push, team-assistant and team-current are blocked when fenced or when origin names another holder" {
+  local command lost fenced writes=("git push" "git -C ~/agent-team-records push origin dev" "cd x && git push"
+    "team-assistant note --file n.md" "/home/x/agent-team/bin/team-assistant thread 'A topic'"
+    "TZ=UTC ~/agent-team/bin/team-current add --file x.md" $'team-log T7 note\nteam-current' "(team-assistant list)")
+  local others=("git status" "git log --grep push" "echo team-assistant" "grep -rn 'team-current' bin"
+    "team-assistants list" "cat bin/team-current" "gh pr view 6" "team-lease status")
+  for command in "${writes[@]}" "${others[@]}"; do
+    assistant_call -0 "$command"
+  done
+  assert_equal "$(probes)" 1
+
+  lost="Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease pushes, hands off and keeps no list; another machine runs the team now, and the assistant there takes Daniel's messages."
+  steal_lease laptop home-pc
+  age_probe 61
+  for command in "${writes[@]}"; do
+    assistant_call -2 "$command"
+    assert_equal "$stderr" "$lost"
+  done
+  for command in "${others[@]}"; do assistant_call -0 "$command"; done
+
+  # Fenced: blocked from the fence alone, before origin is asked.
+  fenced="Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine pushes, hands off and keeps no list; another machine runs the team now, and the assistant there takes Daniel's messages."
+  fence
+  age_probe 61
+  : >"$STUB_CALLS/git-net.log"
+  for command in "${writes[@]}"; do
+    assistant_call -2 "$command"
+    assert_equal "$stderr" "$fenced"
+  done
+  for command in "${others[@]}"; do assistant_call -0 "$command"; done
+  assert_equal "$(probes)" 0
+  # The posts every role is held to hold for the assistant too.
+  assistant_call -2 "team-post --coordinator --file q.md"
+  assert_contains "$stderr" "a fenced machine posts nothing to Discord"
+
+  # A worker's and the coordinator's Bash are not the assistant's: its scripts are not theirs to gate.
+  rm "$state/fenced"
+  bash_call -0 "team-current"
+  coordinator_call -0 "team-assistant list"
+}
+
+@test "while the team holds offline, the assistant's gh, gh-axi and git push are blocked with the hold; other commands pass" {
+  mkdir -p "$state"
+  echo '{"since": "2026-10-22T13:05:00Z", "posted": true}' >"$state/offline"
+  local command hold
+  hold="Blocked: GitHub is unreachable (since $(date -d 2026-10-22T13:05:00Z +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
+  for command in "git push" "git -C ~/agent-team-records push" "gh pr view 6" "gh-axi pr list" \
+    "cd x && gh api repos/o/p" "GH_REPO=a/b gh issue list" "(gh pr view 6)"; do
+    assistant_call -2 "$command"
+    assert_equal "$stderr" "$hold"
+  done
+  for command in "git status" "grep -rn 'gh pr' bin" "echo gh-axi" "ghost run" "team-assistant list" \
+    "team-current" "team-ci-wait https://github.com/o/p/pull/6"; do
+    assistant_call -0 "$command"
+  done
+  # Origin is unreachable while offline, so the lease part passes; the hold is read from the flag.
+  rm "$state/offline"
+  assistant_call -0 "gh pr view 6"
+  assistant_call -0 "git push"
 }

@@ -388,5 +388,43 @@
     "CODEGRAPH_TELEMETRY": "0",
     "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1",
     "CHROME_DEVTOOLS_AXI_MCP_PATH": "@TEAM_CODE@/servers/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__react|mcp__plugin_discord_discord__edit_message|mcp__plugin_discord_discord__fetch_messages|mcp__plugin_discord_discord__download_attachment",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"@TEAM_CODE@/bin/hooks/lease-fence\"",
+            "onFailure": "block",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "\"@TEAM_CODE@/bin/hooks/assistant-discord-guard\"",
+            "onFailure": "block",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"@TEAM_CODE@/bin/hooks/lease-fence\" --assistant",
+            "onFailure": "block",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "\"@TEAM_CODE@/bin/hooks/command-guard\"",
+            "onFailure": "block",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }

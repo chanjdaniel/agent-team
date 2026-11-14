@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# PreToolUse hook on the assistant's Discord tools (assistant.settings.json) that keeps it in
+# #assistant: exit 2 blocks the call and shows stderr to the agent; exit 0 passes it.
+#
+# Usage: assistant-discord-guard   (the hook's input on stdin)
+#   reply, react, edit_message and download_attachment (their chat_id) and fetch_messages (its
+#     channel) pass only in ASSISTANT_CHANNEL (bin/lib/team.sh) or a thread whose parent_id is
+#     it, so the Discord plugin's own outbound gate is not the only wall. A thread is read once
+#     with discord_api GET channels/<id> and then kept in ~/.local/state/agent-team/assistant-threads,
+#     one known-good id per line, which team-assistant thread writes too; a channel that is
+#     neither is not kept, and is read again on its next call.
+#   reply's files pass only when each, an absolute path, resolves (symlinks followed) to a file
+#     under ~/.local/state/agent-team/assistant-files/ or the team home's assistant/, so a link
+#     there into ~/.claude/channels/ or the records attaches nothing.
+# When it cannot decide it refuses, saying so, as a guard does: input that is not a JSON object
+# with a tool_name string and the call's chat id string; a tool other than those five, which its
+# settings entry should never send it; no ASSISTANT_CHANNEL set; a thread it cannot read from
+# Discord (no token, or a failed call); files it cannot judge with no team home; and any command
+# of its own that fails, which ends as an exit 2 naming the hook and the exit code (team_guard
+# in bin/lib/team.sh).
+set -euo pipefail
+# A guard decides or refuses (bin/lib/team.sh); it needs the team home only for a reply's files,
+# and with none it refuses those itself.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_guard=assistant-discord-guard team_home_report=1
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+(($# == 0)) || usage_error "usage: assistant-discord-guard"
+
+# What a guard that cannot decide tells the agent.
+CANNOT="a guard that cannot decide refuses, so tell Daniel and do not reach it another way."
+# The rule a reply's files are held to, as the refusal says it.
+FILES_RULE="the assistant attaches only files under ~/.local/state/agent-team/assistant-files/ or the team home's assistant/"
+
+block() {
+  echo "Blocked: $1" >&2
+  exit 2
+}
+
+state=$HOME/.local/state/agent-team
+threads=$state/assistant-threads
+
+input=$(cat)
+tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<"$input" 2>/dev/null) ||
+  block "assistant-discord-guard could not read the hook's input (JSON with a tool_name); $CANNOT"
+case $tool in
+  mcp__plugin_discord_discord__fetch_messages) field=channel ;;
+  mcp__plugin_discord_discord__reply | mcp__plugin_discord_discord__react | mcp__plugin_discord_discord__edit_message | mcp__plugin_discord_discord__download_attachment)
+    field=chat_id
+    ;;
+  *) block "assistant-discord-guard judges only the Discord plugin's tools, not $tool, so its settings entry matches too much; $CANNOT" ;;
+esac
+chat=$(jq -er --arg f "$field" '.tool_input | objects | .[$f] | strings' <<<"$input" 2>/dev/null) ||
+  block "assistant-discord-guard could not read the call's $field from the hook's input; $CANNOT"
+[[ -n $ASSISTANT_CHANNEL ]] ||
+  block "no assistant channel is set (TEAM_ASSISTANT_CHANNEL is empty), so assistant-discord-guard cannot tell #assistant; $CANNOT"
+
+# The chat: #assistant itself, a thread kept as known-good, or one Discord says is a thread of it.
+# A chat id is a snowflake, checked before it goes into a URL.
+[[ $chat =~ ^[1-9][0-9]{0,19}$ ]] ||
+  block "'$chat' is not a Discord channel id; the assistant reaches only #assistant ($ASSISTANT_CHANNEL) and its threads."
+if [[ $chat != "$ASSISTANT_CHANNEL" ]] && ! grep -qxF -- "$chat" "$threads" 2>/dev/null; then
+  # Discord's reason, kept by hand: an EXIT trap here would take the place of team_guard's.
+  err=$(mktemp) rc=0
+  channel=$(discord_api "channels/$chat" 2>"$err") || rc=$?
+  reason=$(grep -m1 . "$err" || echo "no reason given")
+  rm -f "$err"
+  ((rc == 0)) ||
+    block "assistant-discord-guard could not read channel $chat from Discord ($reason), so it cannot tell whether it is a thread of #assistant; $CANNOT"
+  parent=$(jq -r 'if type == "object" then (.parent_id // "none") | tostring else "unreadable" end' <<<"$channel" 2>/dev/null) ||
+    parent=unreadable
+  thread=$(jq -r 'if type == "object" and ([.type] | inside([10, 11, 12])) then "yes" else "no" end' <<<"$channel" 2>/dev/null) ||
+    thread=no
+  if [[ $thread == yes && $parent == "$ASSISTANT_CHANNEL" ]]; then
+    mkdir -p "$state"
+    echo "$chat" >>"$threads"
+  elif [[ $thread == yes ]]; then
+    block "channel $chat is a thread of $parent, not of #assistant ($ASSISTANT_CHANNEL); the assistant reaches only #assistant and its threads."
+  else
+    block "channel $chat is not #assistant ($ASSISTANT_CHANNEL) or a thread of it; the assistant reaches only #assistant and its threads."
+  fi
+fi
+
+# A reply's files: each an absolute path to a file under one of the two directories.
+[[ $tool == mcp__plugin_discord_discord__reply ]] || exit 0
+files=$(jq -c '.tool_input.files // [] | if type == "array" and all(type == "string" and (contains("\n") | not)) then . else empty end' <<<"$input")
+[[ -n $files ]] ||
+  block "assistant-discord-guard could not read the reply's files (a list of paths, none with a newline); $CANNOT"
+[[ $files != '[]' ]] || exit 0
+homeless=$TEAM_HOME_PROBLEM
+[[ -n $homeless || -d $TEAM_HOME ]] || homeless="the team home $TEAM_HOME is not a directory"
+[[ -z $homeless ]] || block "assistant-discord-guard cannot judge the reply's files, since $homeless; $CANNOT"
+roots=("$(realpath -m -- "$state/assistant-files")" "$(realpath -m -- "$TEAM_HOME/assistant")")
+while IFS= read -r file; do
+  real=''
+  [[ $file == /* ]] && real=$(realpath -e -- "$file" 2>/dev/null) && [[ -f $real ]] ||
+    block "$FILES_RULE, and $file is not an absolute path to a file."
+  [[ $real == "${roots[0]}"/* || $real == "${roots[1]}"/* ]] ||
+    block "$FILES_RULE, and $file is not one$([[ $real == "$file" ]] || echo " (it resolves to $real)")."
+done < <(jq -r '.[]' <<<"$files")
+exit 0

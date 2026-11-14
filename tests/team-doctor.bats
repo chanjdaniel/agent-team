@@ -61,16 +61,19 @@ guard_is() {
   chmod +x "$hook"
 }
 
-@test "the guard hooks line runs each guard on a harmless Bash call and fails naming each one that does not pass" {
+@test "the guard hooks line runs each guard on a harmless call and fails naming each one that does not pass" {
   only_checks 092-guard-hooks.sh
   tools_at arch
-  local passes="PASS guard hooks: scratch-only-edits, command-guard, lease-fence and lease-fence --coordinator each pass a harmless Bash call (ls)"
+  local passes="PASS guard hooks: scratch-only-edits, command-guard, lease-fence, lease-fence --coordinator and lease-fence --assistant each pass a harmless Bash call (ls), and assistant-discord-guard a read of #assistant"
   run_bin -0 team-doctor
   assert_equal "$(line_of 'guard hooks')" "$passes"
   # --json gives the line too.
   run_bin -0 --separate-stderr team-doctor --json
   jq -e '.[] | select(.check == "guard hooks") | .verdict == "PASS" and .fix == ""' <<<"$output"
-  # With no team home named, each still decides on ls: lease-fence refuses only what the lease decides.
+  # The Discord guard read #assistant itself, asking Discord nothing.
+  assert_equal "$(stub_calls curl)" ""
+  # With no team home named, each still decides on ls: lease-fence refuses only what the lease
+  # decides, and the Discord guard needs it only for a reply's files.
   rm "$HOME/.config/agent-team/home"
   run env -u TEAM_HOME "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'guard hooks')" "$passes"
@@ -80,14 +83,20 @@ guard_is() {
   fails_on_call jq '.cwd // empty'
   run_bin -1 team-doctor
   local fix="fix: fix each hook named in $CODE_CHECKOUT/bin/hooks, then run team-doctor again"
-  assert_equal "$(line_of 'guard hooks')" "FAIL guard hooks: on a harmless Bash call (ls), scratch-only-edits exited 2 (\"Blocked by scratch-only-edits: it failed with exit 5 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way.\"), so each blocks every call it guards; $fix"
+  assert_equal "$(line_of 'guard hooks')" "FAIL guard hooks: on a harmless call (ls, or a read of #assistant), scratch-only-edits exited 2 (\"Blocked by scratch-only-edits: it failed with exit 5 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way.\"), so each blocks every call it guards; $fix"
   rm "$BATS_TEST_TMPDIR/stubs/jq"
   # A guard that dies on its own, with or without a word on stderr, and one past its timeout.
   guard_is scratch-only-edits <<<'echo "line 3: broken" >&2; echo more >&2; exit 1'
   guard_is command-guard <<<'exit 127'
   guard_is lease-fence <<<'[[ $# -eq 0 ]] || exit 124; exit 0'
   run_bin -1 team-doctor
-  assert_equal "$(line_of 'guard hooks')" "FAIL guard hooks: on a harmless Bash call (ls), scratch-only-edits exited 1 (\"line 3: broken\"); command-guard exited 127; lease-fence --coordinator did not answer within its 60 s, so each blocks every call it guards; $fix"
+  assert_equal "$(line_of 'guard hooks')" "FAIL guard hooks: on a harmless call (ls, or a read of #assistant), scratch-only-edits exited 1 (\"line 3: broken\"); command-guard exited 127; lease-fence --coordinator did not answer within its 60 s; lease-fence --assistant did not answer within its 60 s, so each blocks every call it guards; $fix"
+  # The Discord guard fails on its own input: with no #assistant set, it cannot decide.
+  guard_is scratch-only-edits <<<'exit 0'
+  guard_is command-guard <<<'exit 0'
+  guard_is lease-fence <<<'exit 0'
+  TEAM_ASSISTANT_CHANNEL='' run_bin -1 team-doctor
+  assert_equal "$(line_of 'guard hooks')" "FAIL guard hooks: on a harmless call (ls, or a read of #assistant), assistant-discord-guard exited 2 (\"Blocked: no assistant channel is set (TEAM_ASSISTANT_CHANNEL is empty), so assistant-discord-guard cannot tell #assistant; a guard that cannot decide refuses, so tell Daniel and do not reach it another way.\"), so each blocks every call it guards; $fix"
 }
 
 @test "the team home line names the team home and what named it: TEAM_HOME or ~/.config/agent-team/home" {

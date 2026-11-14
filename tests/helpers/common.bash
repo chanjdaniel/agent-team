@@ -190,7 +190,7 @@ sandbox() {
   # (worker_refusal), nor the parallelism team-checks gives the suite (TEAM_JOBS), nor a bound on
   # Docker's answers (TEAM_DOCKER_SECONDS), nor the heartbeat job's mark (TEAM_HEARTBEAT_JOB), nor
   # the id of the Claude session running the suite (CLAUDE_CODE_SESSION_ID, team-sweep's own).
-  unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
+  unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL TEAM_ASSISTANT_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
   unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS TEAM_HEARTBEAT_JOB CLAUDE_CODE_SESSION_ID
   # The state and cache directories and Claude Code's config directory are HOME's, as the
   # sandbox's HOME is.
