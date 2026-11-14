@@ -889,8 +889,8 @@ lease_refusal() {
 }
 
 # Print why this session may not <does>, which is the coordinator's, or fail when it may: a worker session (its
-# settings' AGENT_TEAM_ROLE names a role other than the coordinator, the assistant's included, its
-# article "an" for a role starting with a vowel; Daniel's own shell and the heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
+# settings' AGENT_TEAM_ROLE names a role other than the coordinator, "an assistant session" for the
+# assistant's; Daniel's own shell and the heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
 # when the caller passes --interview, for the interview thread's post and wait. Worker settings
 # deny most of the same commands by their bare name, and command-guard refuses team-ask,
 # team-answer, team-inbox, team-thread T<n> and team-run-approved by any path where a command
@@ -904,7 +904,7 @@ worker_refusal() {
     echo "a planner session of ${own:-no task} $2 for $1: a planner talks with Daniel only in its own task's interview thread"
   else
     local article=a
-    [[ $role != [aeiouAEIOU]* ]] || article=an
+    [[ $role != assistant ]] || article=an
     echo "$article $role session $2: that is the coordinator's; send it your message"
   fi
 }
