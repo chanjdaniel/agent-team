@@ -87,14 +87,14 @@ fake_quota() {
   run_bin -0 --separate-stderr team-capacity status --stored
   assert_equal "$stderr" ""
   assert_equal "$output" "$(printf '%s\n' "home-pc: no reading of the machine's load yet" \
-    "quota: could not be read (team-quota: cannot read the readings)")"
+    "quota: could not be read (cannot read the readings)")"
   run_bin -0 team-capacity status --stored --json
   assert_equal "$(jq -c '[.schema, .quota, .quota_error]' <<<"$output")" \
-    '["team-capacity/1",null,"team-quota: cannot read the readings"]'
+    '["team-capacity/1",null,"cannot read the readings"]'
   fake_quota capacity-quota-says-nothing $'#!/usr/bin/env bash\necho "{}"'
   run_bin -0 team-capacity status --stored
   assert_equal "${lines[-1]}" "quota: could not be read (team-quota status printed no team-quota/1 object)"
   fake_quota capacity-quota-fails-silently $'#!/usr/bin/env bash\nexit 3'
   run_bin -0 team-capacity status --stored
-  assert_equal "${lines[-1]}" "quota: could not be read (team-quota status failed with no message)"
+  assert_equal "${lines[-1]}" "quota: could not be read (team-quota status exited 3 with no message)"
 }

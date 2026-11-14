@@ -417,17 +417,14 @@ def capacity_status_text:
     end;
 
 # team-capacity status's quota line from team-quota status --json's object (team-quota/1), or null
-# when team-quota could not be read, <why> saying why: the week's use and reset in the machine's
-# local time and the 5-hour window's use, each left out when the reading lacks it, and the
-# reading's age; the day's name in the C locale's words, as the caller runs jq under LC_ALL=C.
+# when team-quota could not be read, <why> saying why: the week's use and reset (its reset_text,
+# as team-quota words it) and the 5-hour window's use, each left out when the reading lacks it,
+# and the reading's age.
 def capacity_quota_line($why):
   if . == null then "quota: could not be read (\($why))"
   elif .reading == null then "quota: no reading"
-  else now as $now
-    | (.windows | map({key: .name, value: .}) | from_entries) as $w
-    | "quota: " + ([($w.seven_day // empty | (.resets_at | fromdateiso8601) as $t
-                     | "week \(.used | floor)% (\(if $t <= $now then "reset at \($t | strflocaltime("%a %H:%M")), since this reading"
-                                                  else "resets \($t | strflocaltime("%a %H:%M"))" end))"),
+  else (.windows | map({key: .name, value: .}) | from_entries) as $w
+    | "quota: " + ([($w.seven_day // empty | "week \(.used | floor)% (\(.reset_text))"),
                     ($w.five_hour // empty | "5h \(.used | floor)%"),
                     "read \(.age_minutes) min ago"] | join(", "))
   end;

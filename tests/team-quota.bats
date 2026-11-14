@@ -251,6 +251,12 @@ reading() {
     >"$TEAM_HOME/usage/laptop/quota/$(date -u +%F).jsonl"
   run_bin -0 team-quota status --json
   assert_equal "$(jq -c '.windows | map({name, crossed})' <<<"$output")" '[{"name":"five_hour","crossed":[]},{"name":"seven_day","crossed":[70]}]'
+  # Each window says whether it has reset and its reset in the words every reader shows.
+  local past reset
+  past=$(TZ=UTC date -d "$(jq -r .windows[0].resets_at <<<"$output")" '+%a %H:%M')
+  reset=$(TZ=UTC date -d "$(jq -r .windows[1].resets_at <<<"$output")" '+%a %H:%M')
+  assert_equal "$(jq -c '.windows | map({reset, reset_text})' <<<"$output")" \
+    "[{\"reset\":true,\"reset_text\":\"reset at $past, since this reading\"},{\"reset\":false,\"reset_text\":\"resets $reset\"}]"
   run_bin -0 team-quota status
   assert_contains "${lines[1]}" "five_hour 97% (reset at "
   assert_contains "${lines[1]}" ", since this reading)"
@@ -262,6 +268,32 @@ reading() {
   echo '{"at": 5}' >>"$TEAM_HOME/usage/laptop/quota/$(date -u +%F).jsonl"
   run_bin -0 team-quota status --json
   assert_equal "$(jq -c '{age_minutes, used: .windows[0].used}' <<<"$output")" '{"age_minutes":40,"used":30}'
+}
+
+@test "status leaves out a stored window or model window with a field missing or of another type, and a line left with none" {
+  local file reset
+  file=$TEAM_HOME/usage/laptop/quota/$(date -u +%F).jsonl reset=$(from_now 24)
+  reading laptop "$(ago 40)" 30
+  # A newer line whose every window is bad is no reading: the older one stands.
+  jq -cn --arg at "$(ago 30)" --arg reset "$reset" \
+    '{at: $at, machine: "laptop", windows: {seven_day: {used: 50}, five_hour: {used: "95", resets_at: $reset}},
+      models: [{name: "Fable", used: 95}]}' >>"$file"
+  run_bin -0 --separate-stderr team-quota status --json
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c '{age_minutes, windows: (.windows | map({name, used, crossed}))}' <<<"$output")" \
+    '{"age_minutes":40,"windows":[{"name":"seven_day","used":30,"crossed":[]}]}'
+  # A newer line with one good window gives that window alone.
+  jq -cn --arg at "$(ago 20)" --arg reset "$reset" \
+    '{at: $at, machine: "laptop", windows: {seven_day: {used: 72, resets_at: $reset}, five_hour: {used: "95", resets_at: $reset},
+      seven_day_opus: {used: 10, resets_at: "soon"}},
+      models: [{name: "Fable", used: 95, resets_at: 5}, {name: "", used: 95, resets_at: $reset}, {name: "Sol", used: 91, resets_at: $reset}]}' >>"$file"
+  run_bin -0 --separate-stderr team-quota status --json
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c '{age_minutes, windows: (.windows | map({name, used, crossed}))}' <<<"$output")" \
+    '{"age_minutes":20,"windows":[{"name":"seven_day","used":72,"crossed":[70]},{"name":"model:Sol","used":91,"crossed":[90]}]}'
+  run_bin -0 --separate-stderr team-quota status
+  assert_equal "$stderr" ""
+  assert_equal "${#lines[@]}" 3
 }
 
 @test "a reading team-quota line wrote is the one status reads" {

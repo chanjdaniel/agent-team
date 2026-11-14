@@ -115,7 +115,8 @@ fake_quota() {
 Claude usage: the 5-hour window is at 95%, past 90%; it resets $hour.
 Claude usage: the week is at 91%, past 90%; it resets $week.
 Claude usage: Fable's week is at 90%, past 90%; it resets $week."
-  assert_equal "$(quota_keys)" "[\"five_hour/90/$HOUR_RESETS\",\"model:Fable/90/$WEEK_RESETS\",\"seven_day/90/$WEEK_RESETS\"]"
+  # The week's 70% notice stays beside its 90% one until the week resets.
+  assert_equal "$(quota_keys)" "[\"five_hour/90/$HOUR_RESETS\",\"model:Fable/90/$WEEK_RESETS\",\"seven_day/70/$WEEK_RESETS\",\"seven_day/90/$WEEK_RESETS\"]"
 
   run_bin -0 team-timers run
   assert_equal "$(alerts_posted | wc -l)" 4
@@ -127,14 +128,42 @@ Claude usage: Fable's week is at 90%, past 90%; it resets $week."
   assert_equal "$(alerts_posted)" "Claude usage: the week is at 93%, past 90%; it resets $(local_clock "$WEEK_RESETS")."
 }
 
+@test "a lower reading after a higher one in the same window posts nothing: a crossing posted stays until its window resets" {
+  reading 91
+  run_bin -0 team-timers run
+  # A newer reading below 90%, as another machine whose clock runs behind can give.
+  reading 89
+  run_bin -0 team-timers run
+  reading 91
+  run_bin -0 team-timers run
+  assert_equal "$(alerts_posted)" "Claude usage: the week is at 91%, past 90%; it resets $(local_clock "$WEEK_RESETS")."
+  assert_equal "$(quota_keys)" "[\"seven_day/90/$WEEK_RESETS\"]"
+  run grep ' quota: .*closed with no post' "$log"
+  assert_equal "$status" 1
+}
+
+@test "a crossing whose post failed is dropped with no post once a higher one of its window is wanted" {
+  reading 72
+  echo "1 503" >"$STUB_FIXTURES/inbox/fail-post"
+  run_bin -1 team-timers run
+  rm "$STUB_FIXTURES/inbox/fail-post"
+  reading 92
+  run_bin -0 team-timers run
+  assert_equal "$(alerts_posted)" "Claude usage: the week is at 92%, past 90%; it resets $(local_clock "$WEEK_RESETS")."
+  assert_equal "$(quota_keys)" "[\"seven_day/90/$WEEK_RESETS\"]"
+  grep -E "quota: seven_day/70/$WEEK_RESETS: closed with no post \(a higher threshold of its window was crossed before it was posted\)$" "$log"
+}
+
 @test "a reading whose window has reset closes the old notice with no post, and the new week posts afresh" {
   reading 75
   run_bin -0 team-timers run
+  # Its reset comes: the record's notice now names a time that has passed, as the reading does.
+  sed -i "s/$WEEK_RESETS/2026-01-05T09:00:00Z/g" "$state/notices.json"
   week_resets=2026-01-05T09:00:00Z reading 75
   run_bin -0 team-timers run
   assert_equal "$(alerts_posted | wc -l)" 1
   assert_equal "$(quota_keys)" "[]"
-  grep -E "quota: seven_day/70/$WEEK_RESETS: no longer crossed \(its window reset, or it passed a higher threshold\); closed with no post$" "$log"
+  grep -E "quota: seven_day/70/2026-01-05T09:00:00Z: closed with no post \(its window reset\)$" "$log"
   assert_equal "$(grep -c '^PATCH ' "$STUB_FIXTURES/inbox/calls" || true)" 0
 
   # The next week's crossing is a new key, so it posts again.
@@ -178,11 +207,11 @@ EOF
 exec sleep 30
 EOF
   TEAM_TIMERS_QUOTA_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
-  grep -E "quota: failed: timed out after 1 s$" "$log"
+  grep -E "quota: failed: team-quota status timed out after 1 s$" "$log"
 
   fake_quota <<'EOF'
 echo "not json"
 EOF
   run_bin -1 team-timers run
-  grep -E "quota: failed: team-quota status --json printed no team-quota/1 object$" "$log"
+  grep -E "quota: failed: team-quota status printed no team-quota/1 object$" "$log"
 }

@@ -43,9 +43,9 @@ seven_days() {
   section=$(seven_days <<<"$output")
   assert_contains "$section" "a rolling seven days; the quota reading below is the week Claude counts."
   assert_contains "$section" "The newest quota reading (team-quota status), read on laptop 12 min ago:"
-  assert_contains "$section" "| five_hour | 23% | Mon 14:00 |"
-  assert_contains "$section" "| seven_day | 72% | Mon 09:00 |"
-  assert_contains "$section" "| model:Fable | 91% | Mon 09:00 |"
+  assert_contains "$section" "| five_hour | 23% | resets Mon 14:00 |"
+  assert_contains "$section" "| seven_day | 72% | resets Mon 09:00 |"
+  assert_contains "$section" "| model:Fable | 91% | resets Mon 09:00 |"
   [[ $output != *"in no data"* ]]
 }
 
@@ -55,7 +55,7 @@ seven_days() {
   cat "$BATS_TEST_TMPDIR/r" >"$(echo "$TEAM_HOME"/usage/laptop/quota/*.jsonl)"
   run_bin -0 team-tokens
   assert_contains "$output" "The newest quota reading (team-quota status), read on laptop 600 min ago; it is stale:"
-  assert_contains "$output" "| five_hour | 23% | Mon 14:00, since this reading |"
+  assert_contains "$output" "| five_hour | 23% | reset at Mon 14:00, since this reading |"
 }
 
 @test "with no reading the last seven days say there is none yet" {
@@ -88,10 +88,10 @@ seven_days() {
   assert_equal "$stderr" ""
   assert_contains "$output" "## Coordinator turns"
   assert_contains "$(seven_days <<<"$output")" \
-    "The quota reading could not be read: team-quota: cannot read the readings."
+    "The quota reading could not be read: cannot read the readings."
   run_bin -0 team-tokens --json
   assert_equal "$(jq -c '[.quota, .quota_error, .seven_days.all.replies]' <<<"$output")" \
-    '[null,"team-quota: cannot read the readings",0]'
+    '[null,"cannot read the readings",0]'
   # Output that is no team-quota/1 object is a failure too.
   ln -f "$(shared quota-says-nothing <<<$'#!/usr/bin/env bash\necho "{}"')" "$CODE_CHECKOUT/bin/team-quota"
   run_bin -0 team-tokens --json

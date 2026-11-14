@@ -31,16 +31,19 @@
 # was, so the next line tries again. It exits 0 whatever happens, printing what it can (at least
 # the model, read from the text when it is not JSON) and writing nothing on any error.
 # status: the newest reading across every machine's usage/*/quota/ (each machine's latest day file)
-# and this machine's state file, by its at; lines that are not a reading are skipped. It prints
-# "read on <machine> <n> min ago" (": stale, over 180 minutes old" past QUOTA_FRESH_MINUTES), then
-# one line per window, five_hour, seven_day, every other window by name and each model window as
-# model:<name>: "<name> <n>% (resets <ddd HH:MM>)", or "(reset at <ddd HH:MM>, since this reading)"
-# once that time has passed, with ", past <thresholds>" for the thresholds it has crossed. A
-# window crosses a threshold of QUOTA_THRESHOLDS when its use is at least the threshold and it has
-# not reset since the reading. With no reading anywhere it prints "no quota reading yet: no session
-# has shown a status line since team-quota was set up". With --json (schema team-quota/1):
-# {schema, reading (or null), age_minutes (or null), fresh (age_minutes at most 180), windows:
-# [{name, used, resets_at, crossed}]}. Reads only, and exits 0 whenever the team home reads.
+# and this machine's state file, by its at; a stored window or model window that breaks the rules
+# above is left out, and a line that is not a reading, or is left with no window, is skipped. It
+# prints "read on <machine> <n> min ago" (": stale, over 180 minutes old" past QUOTA_FRESH_MINUTES),
+# then one line per window, five_hour, seven_day, every other window by name and each model window
+# as model:<name>: "<name> <n>% (<reset_text>)", with ", past <thresholds>" for the thresholds it
+# has crossed. A window's reset_text is "resets <ddd HH:MM>", or "reset at <ddd HH:MM>, since this
+# reading" once that time has passed, in the machine's local time: the words every reader of the
+# status shows. A window crosses a threshold of QUOTA_THRESHOLDS when its use is at least the
+# threshold and it has not reset since the reading. With no reading anywhere it prints "no quota
+# reading yet: no session has shown a status line since team-quota was set up". With --json (schema
+# team-quota/1): {schema, reading (or null), age_minutes (or null), fresh (age_minutes at most 180),
+# windows: [{name, used, resets_at, reset (true once resets_at has passed), reset_text, crossed}]}.
+# Reads only, and exits 0 whenever the team home reads.
 # Exit 0 done, 1 refused, 2 usage error.
 set -euo pipefail
 
@@ -161,7 +164,9 @@ quota_line() {
   wait "$!" || true
 }
 
-# The newest reading of every machine's latest day file and this machine's state file, or null.
+# The newest reading of every machine's latest day file and this machine's state file, or null:
+# each window and model window held to the rules the line writes them by, one that breaks them
+# left out, and a line left with none skipped, as a line that is no reading is.
 newest_reading() {
   local files=() dir latest
   for dir in "$TEAM_HOME"/usage/*/quota; do
@@ -171,9 +176,15 @@ newest_reading() {
   done
   [[ ! -f $STATE ]] || files+=("$STATE")
   ((${#files[@]})) || { echo null; return; }
-  cat -- "${files[@]}" | jq -cRn '[inputs | fromjson? | select(type == "object" and (.at | type) == "string"
-      and (.at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-      and (.windows | type) == "object" and (.models | type) == "array")]
+  cat -- "${files[@]}" | jq -cRn "$QUOTA_JQ"'
+    def utc: type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
+    [inputs | fromjson? | select(type == "object" and (.at | utc)
+      and (.windows | type) == "object" and (.models | type) == "array")
+    | .windows |= with_entries(select((.value | type) == "object" and (.value.used | is_number)
+        and .value.used >= 0 and (.value.resets_at | utc)))
+    | .models |= map(select(type == "object" and (.name | type) == "string" and .name != ""
+        and (.used | is_number) and .used >= 0 and .used <= 1000 and (.resets_at | utc)))
+    | select(.windows != {} or .models != [])]
     | max_by(.at)'
 }
 
@@ -184,8 +195,10 @@ now as $now
 | if . == null then {schema: "team-quota/1", reading: null, age_minutes: null, fresh: false, windows: []}
   else . as $r
   | ((($now - ($r.at | fromdateiso8601)) / 60 | floor) | if . < 0 then 0 else . end) as $age
-  | def crossing($thresholds): . as $w | . + {crossed: (if (.resets_at | fromdateiso8601) <= $now then []
-      else [$thresholds[] | select($w.used >= .)] end)};
+  | def crossing($thresholds): (.resets_at | fromdateiso8601) as $t | ($t <= $now) as $reset | . as $w
+    | . + {reset: $reset,
+           reset_text: (if $reset then "reset at \($t | clock), since this reading" else "resets \($t | clock)" end),
+           crossed: (if $reset then [] else [$thresholds[] | select($w.used >= .)] end)};
     ($r.windows | to_entries | map({name: .key, used: .value.used, resets_at: .value.resets_at})
       | sort_by(if .name == "five_hour" then 0 elif .name == "seven_day" then 1 else 2 end, .name)
       | map(crossing($thresholds[.name] // []))) as $windows
@@ -196,12 +209,10 @@ now as $now
 
 # The status's text from its object on stdin.
 # shellcheck disable=SC2016 # jq's variables
-STATUS_TEXT_JQ=$QUOTA_JQ'
-now as $now
-| if .reading == null then "no quota reading yet: no session has shown a status line since team-quota was set up"
+STATUS_TEXT_JQ='
+if .reading == null then "no quota reading yet: no session has shown a status line since team-quota was set up"
   else "read on \(.reading.machine // "an unnamed machine") \(.age_minutes) min ago\(if .fresh then "" else ": stale, over \($fresh) minutes old" end)",
-    (.windows[] | (.resets_at | fromdateiso8601) as $reset
-      | "\(.name) \(.used | floor)% (\(if $reset <= $now then "reset at \($reset | clock), since this reading" else "resets \($reset | clock)" end))"
+    (.windows[] | "\(.name) \(.used | floor)% (\(.reset_text))"
         + (if .crossed == [] then "" else ", past \(.crossed | map("\(.)%") | if length > 1 then (.[:-1] | join(", ")) + " and " + .[-1] else .[0] end)" end))
   end
 '
@@ -215,11 +226,11 @@ quota_status() {
     esac
     shift
   done
-  status=$(newest_reading | jq -c --argjson thresholds "$QUOTA_THRESHOLDS" --argjson fresh "$QUOTA_FRESH_MINUTES" "$STATUS_JQ")
+  status=$(newest_reading | LC_ALL=C jq -c --argjson thresholds "$QUOTA_THRESHOLDS" --argjson fresh "$QUOTA_FRESH_MINUTES" "$STATUS_JQ")
   if [[ -n $json ]]; then
     printf '%s\n' "$status"
   else
-    LC_ALL=C jq -r --argjson fresh "$QUOTA_FRESH_MINUTES" "$STATUS_TEXT_JQ" <<<"$status"
+    jq -r --argjson fresh "$QUOTA_FRESH_MINUTES" "$STATUS_TEXT_JQ" <<<"$status"
   fi
 }
 

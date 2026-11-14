@@ -35,6 +35,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `outbound.py`: whether a Bash command's `curl` or `wget` sends a request body or a file to a literal host outside the team's own local ones, directly or through a proxy, decided on each command of `command_text.py`'s walk, for `command_rules.py`'s upload row.
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
     - `probe.json`: the refusal probe's data, each attempt `team-load-check --probe` has a worker role make and the layer that should refuse it, every deny rule of the worker roles' settings sorted into a family, and their PreToolUse hooks, each with an attempt or the reason it has none.
+    - `quota.sh`: the one Bash reader of `team-quota status --json`, its timeout and its reasons, which `team-capacity status` and the heartbeat's quota step take, and `team-tokens` keeps in Python.
     - `reading.sh`: one reading of the machine's load (its memory, its processes by directory and descent, the team's stacks), which `team-capacity sample` takes.
     - `records`: the team home's paths, which no tracked path matches.
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.

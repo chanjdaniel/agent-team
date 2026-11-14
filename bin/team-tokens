@@ -81,10 +81,11 @@
 #                    replies, tokens and $w in the seven days to --until, per machine and in all,
 #                    a rolling seven days; then the newest quota reading, team-quota status --json's
 #                    (Claude's own reading of the plan's limits, the week it counts included), now's
-#                    whatever --until, --task and --machine say: each window's use and reset in
-#                    the machine's local time and the reading's age, or that there is no reading
-#                    yet, or that team-quota could not be read (it failed, printed no team-quota/1
-#                    object or took over 30 seconds), which changes nothing else
+#                    whatever --until, --task and --machine say: each window's use and reset (as
+#                    team-quota words it, in the machine's local time) and the reading's age, or
+#                    that there is no reading yet, or that team-quota could not be read (it
+#                    failed, printed no team-quota/1 object or took over 30 seconds), which
+#                    changes nothing else
 #   coordinator turns
 #                    from this machine's transcripts of the sessions claude-coordinator named
 #                    coordinator, each turn: from what woke the coordinator (a message from Daniel,
@@ -1916,28 +1917,30 @@ def build_report(opts):
     return report
 
 
-# How long the report waits for team-quota status, which reads a few files.
+# How long the report waits for team-quota status, which reads a few files: bin/lib/quota.sh's
+# QUOTA_SECONDS, the Bash readers'.
 QUOTA_SECONDS = 30
 
 
 # The newest quota reading, team-quota status --json's object, and None; or None and why it could
-# not be read: team-quota's first line on stderr, its silence, its timeout, or output that is no
-# team-quota/1 object.
+# not be read, in bin/lib/quota.sh's quota_read's words: team-quota's first line on stderr, its
+# leading "team-quota: " cut, its silence, its timeout, or output that is no team-quota/1 object.
 def read_quota(team, here):
     try:
         run = subprocess.run([os.path.join(here, "team-quota"), "status", "--json"], env={**os.environ, "TEAM_HOME": team},
                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=QUOTA_SECONDS)
     except subprocess.TimeoutExpired:
-        return None, f"team-quota status did not answer in {QUOTA_SECONDS} seconds"
+        return None, f"team-quota status timed out after {QUOTA_SECONDS} s"
     except OSError as error:
         return None, f"cannot run team-quota: {error.strerror}"
     if run.returncode != 0:
-        return None, (run.stderr.splitlines() or ["team-quota status failed with no message"])[0]
+        line = next((line for line in run.stderr.splitlines() if line), "")
+        return None, line.removeprefix("team-quota: ") or f"team-quota status exited {run.returncode} with no message"
     try:
         status = json.loads(run.stdout)
     except ValueError:
         status = None
-    if not isinstance(status, dict) or status.get("schema") != "team-quota/1":
+    if not isinstance(status, dict) or status.get("schema") != "team-quota/1" or not isinstance(status.get("windows"), list):
         return None, "team-quota status printed no team-quota/1 object"
     return status, None
 
@@ -1949,15 +1952,10 @@ def quota_text(report):
         return f"The quota reading could not be read: {report['quota_error']}."
     if q["reading"] is None:
         return "No quota reading yet: no session has shown a status line since team-quota was set up."
-    now = datetime.now(timezone.utc)
-    rows = []
-    for w in q["windows"]:
-        reset = datetime.strptime(w["resets_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        clock = reset.astimezone().strftime("%a %H:%M")
-        rows.append([w["name"], f"{math.floor(w['used'])}%", clock + (", since this reading" if reset <= now else "")])
+    rows = [[w["name"], f"{math.floor(w['used'])}%", w["reset_text"]] for w in q["windows"]]
     r = q["reading"]
     return (f"The newest quota reading (team-quota status), read on {r['machine'] or 'an unnamed machine'} {q['age_minutes']} min ago"
-            + ("" if q["fresh"] else "; it is stale") + ":\n\n" + table(["Window", "Used", "Resets"], rows))
+            + ("" if q["fresh"] else "; it is stale") + ":\n\n" + table(["Window", "Used", "Reset"], rows))
 
 
 def fm(x):
