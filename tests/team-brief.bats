@@ -2379,7 +2379,7 @@ ci_failed() {
   event "$1" ci "$(jq -cn --arg url "$2" --arg h "$3" --arg j "$job" '{url: $url, head: $h, outcome: "failed", failed: [
     {name: "test", class: "rollup", kind: "rollup", link: "\($j)/9", step: null},
     {name: "test-shards (2)", class: "pr", kind: "failed", link: "\($j)/8", step: "Run the tests"},
-    {name: "macos-shards (1)", class: "infrastructure", kind: "never-started", link: "\($j)/10", step: null},
+    {name: "smoke-shards (1)", class: "infrastructure", kind: "never-started", link: "\($j)/10", step: null},
     {name: "lint", class: "pr", kind: "failed", link: "\($j)/11", step: "Lint"}]}')"
 }
 
