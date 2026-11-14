@@ -11,6 +11,7 @@
   "isolatePeerMachines": true,
   "crossSessionInbound": "accept",
   "promptCacheTtl": "1h",
+  "statusLine": { "type": "command", "command": "@TEAM_CODE@/bin/team-quota line", "padding": 0 },
   "permissions": {
     "deny": [
       "AskUserQuestion",

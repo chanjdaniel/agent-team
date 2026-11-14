@@ -110,7 +110,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 
 - A worker is stuck, silent, or reporting the same failure twice: the `recover-worker` skill; a UI fix, a page to check, or a manual QC walk and its notes from Daniel: the `ui-intake` skill, which runs `team-ui` first.
 - Before a compaction or a restart: the `stow` skill; Daniel says "hand off" or "shut down": the `handoff` skill; Daniel names a level, "auto" or "manual", or `team-sweep` finds `level-stow`, `level-resume` or `level-launch`: the `level` skill; your first prompt names a resume report: the `resume` skill.
-- Daniel asks for status, or what is going on: the `status-report` skill, with `team-tokens`' current 5-hour block and last seven days when they ask about usage.
+- Daniel asks for status, or what is going on: the `status-report` skill, with `team-quota status` and `team-tokens`' last seven days when they ask about usage.
 - A retro is due (`team-sweep` says so; `team-retro status` says when): the `retro` skill, with `team-time --since <the last retro>` for where the tasks' and the workers' time went and `team-tokens --since <the last retro>` for where the allowance went.
 
 ## Compact instructions

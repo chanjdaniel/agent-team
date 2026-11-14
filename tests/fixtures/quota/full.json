@@ -1,0 +1,24 @@
+{
+  "session_id": "0b7c2e6a-5f1d-4c3e-9a8b-1d2e3f4a5b6c",
+  "transcript_path": "/somewhere/0b7c2e6a.jsonl",
+  "cwd": "/somewhere",
+  "model": { "id": "claude-opus-5-5", "display_name": "Opus 5.5" },
+  "workspace": { "current_dir": "/somewhere", "project_dir": "/somewhere", "added_dirs": [] },
+  "version": "2.1.325",
+  "output_style": { "name": "default" },
+  "cost": { "total_cost_usd": 1.25, "total_duration_ms": 60000, "total_api_duration_ms": 30000, "total_lines_added": 10, "total_lines_removed": 2 },
+  "context_window": {
+    "total_input_tokens": 85400,
+    "total_output_tokens": 1200,
+    "context_window_size": 200000,
+    "used_percentage": 42.7,
+    "remaining_percentage": 57.3
+  },
+  "exceeds_200k_tokens": false,
+  "rate_limits": {
+    "five_hour": { "used_percentage": 23.4, "resets_at": 2109938400 },
+    "seven_day": { "used_percentage": 61.9, "resets_at": 2110298400 },
+    "seven_day_sonnet": { "used_percentage": 12, "resets_at": 2110298400 },
+    "model_scoped": [{ "display_name": "Fable", "utilization": 91.2, "resets_at": "2036-11-17T09:00:00.000Z" }]
+  }
+}
