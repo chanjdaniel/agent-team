@@ -332,6 +332,8 @@ fi
 # Each value is typed by the contract when it names the field, and by whether it parses as JSON
 # otherwise (typed_value in bin/lib/ledger.jq), so the checks below read the values the line
 # will hold; ledger_append then checks the event against the contract and the lifecycle table.
+# The pairs follow --args --, so a value that starts with a dash (a worker's note) is never read
+# as an option of jq.
 typed=$(ledger_jq '
   if $contract.kinds | has($event) | not then "unknown event kind '"'"'\($event)'"'"'; team-log --help lists the kinds" | halt_error(1) else
   field_types($contract.kinds[$event]) as $types
@@ -340,7 +342,7 @@ typed=$(ledger_jq '
       $pairs[$i] as $key | ($pairs[$i + 1] | typed_value($key; $types[$key])) as $typed
       | .line[$key] = $typed.value | .problems += ($typed.problems // []))
   | if .problems == [] then .line | review_sent_back else .problems | join("; ") | halt_error(1) end end' \
-  -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}" 2>&1) || die "${typed%$'\n'}"
+  -nc --arg task "$task" --arg event "$event" --args -- "${pairs[@]}" 2>&1) || die "${typed%$'\n'}"
 
 # A park carries its cause (bin/lib/lifecycle.json's causes): a cause= given is kept; a held is
 # Daniel's hold and needs their message; a waiting on Daniel is daniel, on anyone else outside; a

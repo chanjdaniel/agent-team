@@ -347,8 +347,8 @@ echo "\$\$" >>'$hung'
 command -p sleep 300
 SH
   forget_launchctl
-  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
-  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=8 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 8 s"$ ]]
   assert_equal "$(still_running "$hung")" ""
   jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
   assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
@@ -357,8 +357,9 @@ SH
 
 @test "on macOS, a disable from outside while a run its time limit stopped writes its record leaves the job to unload itself" {
   as_macos
-  local uid hung=$BATS_TEST_TMPDIR/hung pid rc
+  local uid hung=$BATS_TEST_TMPDIR/hung run_tmp=$BATS_TEST_TMPDIR/run-tmp pid rc tries=0
   uid=$(id -u)
+  mkdir "$run_tmp"
   run_bin -0 team-timers enable
   stub_script claude <<SH
 [[ \$1 == agents ]] || exit 0
@@ -367,19 +368,30 @@ echo "\$\$" >>'$hung'
 command -p sleep 300
 SH
   forget_launchctl
-  TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=2 TEAM_TIMERS_KILL_SECONDS=4 \
+  # The run's temporary files in a directory of the test's own, where bounded_run marks that the
+  # time limit fired (its err file's .fired). The limit leaves the run time to reach the session
+  # list the stub hangs, which a loaded macOS runner has taken over 2 s to; each wait has a
+  # deadline, so a run stopped short fails the test rather than hanging it.
+  TMPDIR=$run_tmp TEAM_HEARTBEAT_JOB=agent-team.heartbeat TEAM_TIMERS_RUN_SECONDS=8 TEAM_TIMERS_KILL_SECONDS=4 \
     "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/run.out" 2>&1 &
   pid=$!
-  until [[ -s $hung ]]; do command -p sleep 0.1; done
+  until [[ -s $hung ]]; do
+    ((++tries < 600)) || { echo "the run never reached its session list in 60 s" >&2; return 1; }
+    command -p sleep 0.1
+  done
+  until compgen -G "$run_tmp/*.fired" >/dev/null; do
+    ((++tries < 1200)) || { echo "the run's time limit never fired in 120 s" >&2; return 1; }
+    command -p sleep 0.1
+  done
   # The time limit has stopped the run, whose lock went with it, and bounded_run is still in its
   # wait before the timed-out log line and record.
-  command -p sleep 3
+  command -p sleep 1
   run_bin -0 --separate-stderr team-timers disable
   assert_equal "$output" "the heartbeat is disabled: agent-team.caffeinate stopped and both removed; agent-team.heartbeat unloads itself when its run in progress ends"
   rc=0
   wait "$pid" || rc=$?
   assert_equal "$rc" 1
-  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 2 s"$ ]]
+  [[ $(tail -n 1 "$log") =~ ^[0-9T:Z-]+" run: failed: timed out after 8 s"$ ]]
   assert_equal "$(still_running "$hung")" ""
   jq -e '.last_run.ended == "timed-out"' "$HOME/.local/state/agent-team/health.json"
   assert_equal "$(stub_calls launchctl | grep -v '"print"' | tail -n 1)" "[\"bootout\",\"gui/$uid/agent-team.heartbeat\"]"
@@ -864,10 +876,10 @@ echo "\$\$" >>'$hung'
 command -p sleep 300
 SH
   local start=$SECONDS
-  TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  TEAM_TIMERS_RUN_SECONDS=8 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
   ((SECONDS - start < 20))
   assert_equal "$output" "$(cat "$log")"
-  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" run: failed: timed out after 8 s"$ ]]
   (($(grep -c . "$hung") >= 1))
   assert_equal "$(still_running "$hung")" ""
   flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true

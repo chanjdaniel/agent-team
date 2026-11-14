@@ -22,7 +22,8 @@
 #   --fill       relaunch each running ticket's stowed or crashed builder, then launch the ready
 #                tickets of the phase being built up to its cap, with no message
 #   --checks     with a review launch, the first review's checks file (the reviewer's checks);
-#                required when the task has no review yet, refused once it has one
+#                required when the task has no review yet, or none since its latest merged part
+#                (a later phase's first review), refused once it has one
 #   --since      with a rereview launch, a file of the coordinator's words, added after the derived
 #                since; refused for the first review and for verify
 #   --template   with a review launch after the first, rereview or verify instead of the rule's
@@ -34,7 +35,9 @@
 # open ("T<n> is closed", "T<n> is not open: the ledger has no opened event for it"), not on
 # Daniel's hold ("T<n> is on Daniel's hold since <since> (<id>): <reason>; only Daniel's word lifts
 # it: ..."), and has no ask to Daniel that nothing settled and no launch went past ("T<n> has an
-# unanswered ask, <id>, since <ts>"); it takes no --past-ask, so a message refused for an ask is
+# unanswered ask, <id>, since <ts>"; an ask that names tickets, team-ask --tickets', refuses no
+# message and no hand-off but its tickets' builders: such a ticket is held, below); it takes no
+# --past-ask, so a message refused for an ask is
 # logged with team-log --from-message, as the manual says. Before that guard, and for every
 # hand-off below, a task whose plan approval stands withdrawn (plan_approval in bin/lib/ledger.jq)
 # is refused naming it ("T<n>'s plan approval was withdrawn at <ts> in Discord message <id>, so no
@@ -52,7 +55,10 @@
 # team-tickets T<n>'s tickets; when a sha is not a commit the sending builder's worktree's HEAD
 # holds; when --next names a ticket that is not ready or waiting once NN is done, or one of
 # another phase than the one being built; or when tickets of that phase remain of which none is
-# ready, each named with what it waits on. A ticket's phase is its Phase: line's, else 1
+# ready, each named with what it waits on. A ticket an unanswered ask names (an ask that names
+# tickets, which no launch went past) is held: never ready nor waiting, so neither the next ticket
+# nor one --next or --fill launches, named "NN held by the unanswered ask <id>" in those
+# refusals and lines. A ticket's phase is its Phase: line's, else 1
 # (team-tickets), and the phase being built is the earliest, up to NN's, with a ticket not done.
 # Otherwise the next ticket, --next's or that phase's lowest-numbered ready one once NN is done,
 # gets team-brief T<n> builder-ticket --set ticket=<NN> --name build-<NN> in its project; when
@@ -148,8 +154,11 @@
 # pr (url and head) or done (session and report) is logged already and a reviewer's launch follows
 # it with no review since ("already handed off"); and for a DONE, when its sha is not the HEAD of
 # the sending builder's worktree. The worktree is the sending builder's, or for a PR the task's
-# worktree in the project whose repo holds the PR. With no review logged yet, the brief is
-# team-brief T<n> reviewer --name review with --checks as its checks (refused without one), the
+# worktree in the project whose repo holds the PR. With no review logged yet, or none since the
+# task's latest merged part (a merged with phases_left, so a later phase's first PR), the brief is
+# team-brief T<n> reviewer --name review (review-<k>, the lowest k from 2, once a launch read the
+# name) with --checks as its checks (refused without one: "T<n> has no review yet", or "no review
+# since its phase merged at <ts>", "so its first reviewer needs --checks <file>, ..."), the
 # PR's url and head (a PR) or the reported head (review-ready; no pr); after one, it is
 # rereview, or verify when the latest review sent findings back and either counted
 # none but plain notes or reviewed the head this message reports (a round that only edited the PR
@@ -212,9 +221,10 @@
 # any rerun, log or hand-off, and the end takes a new pass's facts): launch_refusal's texts for a
 # launch of no role (closed, Daniel's hold, an ask open), "T<n>'s latest review is not a pass on
 # an open PR, so no checks wait for a merge" when checks_wait in bin/lib/ledger.jq is null, "the
-# checks of <short> failed and went back as a round on <ts>" when its state is failed, and, once a
-# wait ended, "the checks wait of T<n> moved to <url> at <short> while it waited on <short>: arm
-# team-next T<n> --ci again" when a catch-up moved it. Else it runs
+# checks of <short> failed and went back as a round on <ts>" when its state is failed (until the
+# round's builder logs a done with no pr of the PR at another head since, a rerun that passed, which
+# waits again), and, once a wait ended, "the checks wait of T<n> moved to <url> at <short> while it
+# waited on <short>: arm team-next T<n> --ci again" when a catch-up moved it. Else it runs
 # team-ci-wait --no-agent-review --json <url> <head> on checks_wait's url and head (the passed
 # head, or the merge the latest team-catch-up made from it), and on its end:
 #   passed or none   once team-state shows the PR open at that head (a later head is the moved
@@ -807,7 +817,12 @@ held_prog="$same_def"' . as $events
      events: [$parsed[] | . as $p
        | {event: $p, at: ([range($anchor + 1; $events | length) | select($events[.] | same($p))] | first)}]}'
 kind='' back='' held='' briefs='' builder_kits='' reviewer_kits='' sender_wt='' launch_project=''
-sender_ticket='' sender_session='' review='' latest=''
+# The index just past the task's latest merged part (a merged with phases left: a phase's PR
+# merged and the next phase still to build), 0 with none: the reviews from there on are this
+# phase's, so a later phase's first PR is a first review.
+phase_def='def phase_start: ([to_entries[] | select(.value.event == "merged" and (.value.phases_left | type) == "array"
+    and .value.phases_left != []) | .key + 1] | last) // 0;'
+sender_ticket='' sender_session='' review='' latest='' phase_merged=''
 json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3]
   | (.[1] // "") as $sub
   | if .[0] == "DONE" and any($parsed[]; .event == "done" and .role == "ops") then "DONE"
@@ -830,7 +845,8 @@ json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3
   sender_wt="$launch_def sender_launch | .worktree | tostring" \
   launch_project="$launch_def sender_launch | .project // empty" \
   sender_ticket="$launch_def sender_launch | .ticket // empty" sender_session="$launch_def sender_launch | .session // empty" \
-  review='$parsed | map(select(.event == "review")) | first | tojson' latest='map(select(.event == "review")) | last | tojson' \
+  review='$parsed | map(select(.event == "review")) | first | tojson' latest="$phase_def"' .[phase_start:] | map(select(.event == "review")) | last | tojson' \
+  phase_merged="$phase_def"' phase_start as $k | if $k == 0 then empty else .[$k - 1].ts end' \
   -- --arg message "$message" --argjson parsed "$parsed" <<<"$events"
 
 # Whether a launch of the task read brief-<name>: brief_launched <name>
@@ -1004,7 +1020,20 @@ project_worktree() {
 }
 
 # A ticket's state with what it waits on, as the hand-offs name it: "02 blocked on 01".
-waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
+waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)",
+  held: " by the unanswered ask \(.held_by)"}[.state] // "");'
+
+# team-tickets T<n>'s tickets as JSON, each one an ask that names tickets holds (no event settled
+# it and no launch went past it: the fold's asks in bin/lib/ledger.jq) marked held_by <its id>, so
+# held (below) takes it from ready or waiting to held, which no hand-off launches: task_tickets
+task_tickets() {
+  local list held
+  list=$(sibling team-tickets "$task" --json) || return
+  held=$(ledger_jq 'lifecycle | [.asks[] | select((.passed | not) and .tickets != null) | .id as $id
+    | .tickets[] | {key: ., value: $id}] | from_entries' -c <<<"$events") || return
+  jq -c --argjson held "$held" 'map(if $held[.ticket] != null then .held_by = $held[.ticket] else . end)' <<<"$list"
+}
+held_def='def held: map(if .held_by != null and (.state | IN("ready", "waiting")) then .state = "held" else . end);'
 
 # The plan's caps, the standing approval's parallel (plan_approval in bin/lib/ledger.jq), 1 when it
 # has none; cap_of <phase>: that phase's, the last one for a later phase, refused when the caps are
@@ -1174,13 +1203,13 @@ tilde() {
 fill() {
   local tickets phase building cap problem open running_tsv candidates_tsv n alone project k=0 c
   local -a running=() waiting=() todo=() todo_projects=() bare=() launched=()
-  tickets=$(sibling team-tickets "$task" --json) || exit
+  tickets=$(task_tickets) || exit
   json_vars phase='.phase' building='.building' problem='.problem' open='.open' \
     running_tsv='[.running[] | [.ticket, .alone] | @tsv] | join("\n")' \
     candidates_tsv='[.candidates[] | [.ticket, .alone, .project] | @tsv] | join("\n")' \
-    <<<"$(jq -c --arg n "$next" --arg task "$task" "$waits"'
+    <<<"$(jq -c --arg n "$next" --arg task "$task" "$waits$held_def"'
     def ph: .phase // 1;
-    ([.[] | select(.state != "done") | ph] | min) as $b
+    held | ([.[] | select(.state != "done") | ph] | min) as $b
     | ($b // ([.[] | ph] | max) // 1) as $p
     | (map(select(.ticket == $n)) | first) as $nx
     | ([sort_by(.ticket)[] | select(.state != "done" and ph == $p) | waits] | join("; ")) as $open
@@ -1499,10 +1528,18 @@ if [[ $handoff == review ]]; then
   fi
 
   if [[ $latest == null ]]; then
-    [[ -n $checks ]] || die "$task has no review yet, so its first reviewer needs --checks <file>, the review's checks"
-    [[ -z $template_opt ]] || die "$task has no review yet, so its first reviewer takes the reviewer brief, not --template $template_opt"
-    [[ -z $since ]] || die "$task has no review yet, so there is no since for --since"
-    template=reviewer name=review
+    none="no review yet"
+    [[ -z $phase_merged ]] || none="no review since its phase merged at $phase_merged"
+    [[ -n $checks ]] || die "$task has $none, so its first reviewer needs --checks <file>, the review's checks"
+    [[ -z $template_opt ]] || die "$task has $none, so its first reviewer takes the reviewer brief, not --template $template_opt"
+    [[ -z $since ]] || die "$task has $none, so there is no since for --since"
+    # review, or review-<k> for a later phase's, from 2, once a launch read the name.
+    template=reviewer name=review k=1
+    while [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]] &&
+      brief_launched "$name"; do
+      k=$((k + 1))
+      name=review-$k
+    done
     sets+=(--set-file "checks=$checks")
   else
     [[ -z $checks ]] || die "$task has a review already, so --checks is for its first reviewer only; a rereview takes --since"
@@ -1549,19 +1586,19 @@ json_vars ticket='$reported.ticket | tostring' commits='[$reported.commits[]? | 
 [[ -z $sender_ticket || $sender_ticket == "$ticket" ]] ||
   die "$task-builder-$sender_ticket ($sender_session) is ticket $sender_ticket's builder, so its DONE $ticket is not integrated"
 
-tickets=$(sibling team-tickets "$task" --json) || exit
+tickets=$(task_tickets) || exit
 
 # In one jq run over the tickets: whether NN is one, and once NN is done (updated): the tickets,
 # NN's phase, whether the task has more than one phase, the phase being built (the earliest, up to
 # NN's, with a ticket not done; empty when none), the ticket chosen (--next's, else that phase's
 # lowest-numbered ready one), whether it is ready or waiting, what it waits on, its phase, its
 # project, and NN's phase's tickets as a list.
-updated='def updated: map(if .ticket == $t then .state = "done" | .session = null else . end)
+updated="$held_def"'def updated: map(if .ticket == $t then .state = "done" | .session = null else . end)
   | [.[] | select(.state == "done") | .ticket] as $done
   | map(if .state == "blocked" then (.on - $done) as $on
       | if $on == [] then .on = [] | .state = (if .waits_for == null then "ready" else "waiting" end) else .on = $on end
     else . end)
-  | sort_by(.ticket);
+  | held | sort_by(.ticket);
   def phase: map(select(.ticket == $t)) | first | .phase // 1;
   def building: phase as $p | [.[] | select(.state != "done" and (.phase // 1) <= $p) | .phase // 1] | min;
   def chosen: if $n != "" then map(select(.ticket == $n)) | first

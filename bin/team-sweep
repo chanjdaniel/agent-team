@@ -15,7 +15,9 @@
 # reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
-# id, no merge-approved whose url its text names), or when a park (held, blocked, waiting, paused)
+# id, no merge-approved whose url its text names; one that names tickets, team-ask --tickets', only
+# while none of the task's work is unfinished, so the work it does not hold is watched, and never
+# for ci-due), or when a park (held, blocked, waiting, paused)
 # stands in the ledger's lifecycle fold; an ask a launch went past (team-worker --past-ask) and its
 # wait park nothing, so that launch's worker is watched; a park of one ticket's builder in a
 # parallel phase (one naming the session of a builder in a ticket worktree, T<n>-builder-NN, or
@@ -169,8 +171,14 @@
 # often the one just acted on) ends it only once it has stood for 30 minutes, at every readable
 # look since, so a worker that stays stuck is never left unwatched for long; one that clears
 # within three minutes (a no-worker between a DONE and the next launch) never ends it; either
-# one, once cleared, counts as new when it comes back. It exits 1 with the reason
-# on stderr when the session list cannot be read for five minutes running. Time is counted in
+# one, once cleared, counts as new when it comes back. It exits 1 with the reason on stderr when
+# its looks fail for five minutes running (the session list unreadable, say): the failing look's
+# last "team-sweep: " line, else its last line on stderr, else "a look failed with exit <n> and
+# nothing on stderr". It exits 1 at the first failing look once its own code (this script and the
+# files of bin/lib, by their sums when it started) changed under it, since a merge leaves the
+# running watch's old code reading the new library: "<that reason>, after its code changed under
+# this watch (<the paths changed>): re-arm it to run the new code"; a change while its looks
+# still pass leaves it looking. Time is counted in
 # looks, WAIT_SECONDS apart (a test steps it with a stub sleep), and TEAM_SWEEP_BASELINE_SECONDS
 # replaces the 30 minutes' seconds (BASELINE_SECONDS, the tests' seam). Re-arm it after acting on
 # what it printed.
@@ -311,12 +319,42 @@ look() {
     --argjson health "$health" --arg self "${CLAUDE_CODE_SESSION_ID:-}" "$ledger")
 }
 
+# The watch's own code, read into memory when it starts: this script and the library's files, one
+# "<crc> <bytes> <path>" line each (cksum's).
+code_sums() {
+  local file files=("$(dirname "$TEAM_LIB")/team-sweep")
+  for file in "$TEAM_LIB"/*; do
+    [[ ! -f $file ]] || files+=("$file")
+  done
+  cksum -- "${files[@]}" 2>/dev/null || true
+}
+
+# The paths, from the code checkout's root, whose sums differ between the lists $1 and $2 (one
+# missing from either among them), joined by ", ": changed_code <sums> <sums>
+changed_code() {
+  awk -v root="$(dirname "$(dirname "$TEAM_LIB")")/" '
+    NR == FNR { was[$3] = $1 " " $2; next }
+    { if (was[$3] != $1 " " $2) out[$3] = 1; delete was[$3] }
+    END { for (p in was) out[p] = 1; for (p in out) print substr(p, length(root) + 1) }' \
+    <(printf '%s\n' "$1") <(printf '%s\n' "$2") | sort | paste -sd , - | sed 's/,/, /g'
+}
+
+# Why the latest look failed, from what it said on stderr ($err): its last "team-sweep: " line,
+# else its last line, else its exit code $1, with ~ for the home directory: look_failure <status>
+look_failure() {
+  local line
+  line=$(sed -n 's/^team-sweep: //p' "$err" | tail -n 1)
+  [[ -n $line ]] || line=$(grep . "$err" | tail -n 1) || line="a look failed with exit $1 and nothing on stderr"
+  printf '%s\n' "${line//"$HOME/"/"~/"}"
+}
+
 # The sweep watch: see --wait in the header.
 wait_for_finding() {
-  local look_n=0 failing_since='' key first=1
+  local look_n=0 failing_since='' key first=1 status started changed
   local -A initial=() since=() now=()
   err=$(mktemp)
   trap 'rm -f "$err"' EXIT
+  started=$(code_sums)
   while :; do
     if look 2>"$err"; then
       failing_since=''
@@ -347,9 +385,15 @@ wait_for_finding() {
         fi
       done
     else
+      status=$?
+      changed=$(changed_code "$started" "$(code_sums)")
+      if [[ -n $changed ]]; then
+        echo "team-sweep: $(look_failure "$status"), after its code changed under this watch ($changed): re-arm it to run the new code" >&2
+        return 1
+      fi
       [[ -n $failing_since ]] || failing_since=$look_n
       if (((look_n - failing_since) * WAIT_SECONDS >= UNREADABLE_SECONDS)); then
-        echo "team-sweep: $(sed -n 's/^team-sweep: //p' "$err" | tail -n 1), for $((UNREADABLE_SECONDS / 60)) minutes running" >&2
+        echo "team-sweep: $(look_failure "$status"), for $((UNREADABLE_SECONDS / 60)) minutes running" >&2
         return 1
       fi
     fi

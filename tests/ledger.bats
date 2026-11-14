@@ -380,6 +380,40 @@ rerun_of() {
   assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'smoke-shards (1)' b2c3d4e5)" "$up")" "$(waiting_on b2c3d4e5 4 waiting '["smoke-shards (1)"]')"
 }
 
+@test "checks_wait follows a second catch-up made from the reviewed head, and a builder's done after a failed wait waits again" {
+  local url=https://github.com/o/p/pull/5
+  local pr='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d4"}'
+  local pass='{"event": "review", "verdict": "pass", "head": "a1b2c3d4"}'
+  local up='{"event": "caught-up", "url": "https://github.com/o/p/pull/5", "from": "a1b2c3d4", "head": "b2c3d4e5", "base": "0f0f0f0f"}'
+  # team-catch-up logs from as the reviewed head, however many catch-ups came before it (T276's PR 115).
+  local again='{"event": "caught-up", "url": "https://github.com/o/p/pull/5", "from": "a1b2c3d4e5f6", "head": "d4e5f6a7", "base": "0d0d0d0d"}'
+  local round='{"event": "done", "role": "builder", "session": "b0000001", "report": "ci passed: test-shards (2) was a flake, rerun green"}'
+  waiting_on() {
+    jq -cn --arg url "$url" --arg head "$1" --arg since "2026-11-01T00:0$2:00Z" --arg state "$3" \
+      '{url: $url, reviewed: "a1b2c3d4", head: $head, since: $since, state: $state, reruns: []}'
+  }
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$again")" "$(waiting_on d4e5f6a7 4 waiting)"
+  # A failed wait on the first merge is an old one once the second is made.
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$again")" "$(waiting_on d4e5f6a7 5 waiting)"
+  # A failed wait stands until the round's builder reports, on the same head, then waits again,
+  # since its report; a later end of the wait counts as before.
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$round")" "$(waiting_on b2c3d4e5 5 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$round" "$(ci_of passed b2c3d4e5)")" \
+    "$(waiting_on b2c3d4e5 6 passed)"
+  # A reviewer's done, or a builder's before the failure, leaves it failed.
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" '{"event": "done", "role": "reviewer", "session": "r0000001"}')" \
+    "$(waiting_on b2c3d4e5 4 failed)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$round" "$(ci_of failed b2c3d4e5)")" "$(waiting_on b2c3d4e5 5 failed)"
+  # A round that pushed a new head answers with that head, not on the same one: a done after a pr
+  # of the PR at another head leaves it failed, and one after a pr at the same head waits again.
+  local moved='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "e5f6a7b8"}'
+  local same='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "b2c3d4e5f6"}'
+  local other='{"event": "pr", "url": "https://github.com/o/q/pull/5", "head": "e5f6a7b8"}'
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$moved" "$round" | jq -c '.state')" '"failed"'
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$same" "$round")" "$(waiting_on b2c3d4e5 6 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)" "$other" "$round")" "$(waiting_on b2c3d4e5 6 waiting)"
+}
+
 @test "checks_wait of a task with two PRs is on the PR the pass names by its head, else its latest PR delivered before the pass" {
   local p='{"event": "pr", "url": "https://github.com/o/p/pull/5", "head": "a1b2c3d4"}'
   local q='{"event": "pr", "url": "https://github.com/o/q/pull/7", "head": "d4e5f6a7"}'
@@ -627,6 +661,16 @@ EVENTS
 {"event": "launch", "role": "ops", "toolkits": ["prod-read"], "request": "https://discord.com/channels/1/2/3"}
 EVENTS
 )" '["builder"]'
+  # A stow leaves nothing unfinished until a launch after it, which brings back only its own role.
+  local stowed='{"event": "launch", "role": "builder"}
+{"event": "launch", "role": "reviewer"}
+{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["builder", "reviewer"], "sessions": ["builder", "reviewer"]}'
+  assert_equal "$(unfinished_roles <<<"$stowed")" '[]'
+  assert_equal "$(unfinished_roles <<EVENTS
+$stowed
+{"event": "launch", "role": "reviewer"}
+EVENTS
+)" '["reviewer"]'
 }
 
 # The library's handed_on_launches over a task's events, given one JSON event per line, each as
@@ -634,6 +678,42 @@ EVENTS
 handed_on() {
   jq -L "$REPO_ROOT/bin/lib" -sc --arg role "$1" \
     'include "ledger"; map({ts: "2026-10-24T12:00:00Z", task: "T1"} + .) | handed_on_launches($role; "/home/x") | map([.session, .handed_on])'
+}
+
+# The launch refusals of a launch of <role> for <ticket> ("" for none), after an approved feature
+# task's events given, one JSON object each: refusals_for <role> <ticket> <event>...
+refusals_for() {
+  local role=$1 ticket=$2
+  shift 2
+  printf '%s\n' "$@" | jq -L "$REPO_ROOT/bin/lib" -sc --arg role "$role" --arg ticket "$ticket" 'include "ledger";
+    [{event: "opened", path: "feature", project: "proj", branch: "feat/T1-x", worktree: "/w/1"},
+     {event: "plan-approved", by: "coordinator"}] + . | map({ts: "2026-11-01T00:00:00Z", task: "T1"} + .)
+    | [launch_refusal("T1"; $role; []; false; if $ticket == "" then null else $ticket end)]'
+}
+
+@test "an ask that names its tickets refuses only the launches of those tickets' builders, by ticket or brief" {
+  local scoped='{"event": "asked", "id": "prune", "text": "Prune phase 2?", "tickets": ["03", "04"]}'
+  local whole='{"event": "asked", "id": "store", "text": "Which store?"}'
+  local held='["T1 has an unanswered ask, prune, since 2026-11-01T00:00:00Z"]'
+  assert_equal "$(refusals_for builder 03 "$scoped")" "$held"
+  assert_equal "$(refusals_for builder 04 "$scoped")" "$held"
+  # Another ticket, another role and a message that launches nothing go on.
+  assert_equal "$(refusals_for builder 02 "$scoped")" "[]"
+  assert_equal "$(refusals_for reviewer '' "$scoped")" "[]"
+  assert_equal "$(refusals_for '' '' "$scoped")" "[]"
+  # An ask that names no tickets holds every launch, as before.
+  assert_equal "$(refusals_for builder 02 "$whole")" '["T1 has an unanswered ask, store, since 2026-11-01T00:00:00Z"]'
+  # Answered, it holds nothing.
+  assert_equal "$(refusals_for builder 03 "$scoped" '{"event": "answered", "id": "prune", "answer": "yes"}')" "[]"
+  # A launch's ticket is its ticket, else its build brief's number, a resume's and a -<k> one's too.
+  assert_equal "$(jq -nc -L "$REPO_ROOT/bin/lib" 'include "ledger"; [{ticket: "03"}, {brief: "brief-build-04"},
+      {brief: "brief-resume-build-03-2"}, {brief: "brief-deliver"}, {}] | map(launch_ticket)')" '["03","04","03",null,null]'
+  # The ledger's own check of a launch reads it so too.
+  assert_equal "$(printf '%s\n' "$scoped" | jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger";
+      [{event: "opened", path: "feature", project: "proj", branch: "feat/T1-x", worktree: "/w/1"},
+       {event: "plan-approved", by: "coordinator"}] + . | map({ts: "2026-11-01T00:00:00Z", task: "T1"} + .)
+      | [transition_problems({task: "T1", event: "launch", role: "builder", session: "b1", brief: "brief-build-03"}),
+         transition_problems({task: "T1", event: "launch", role: "builder", session: "b2", brief: "brief-build-02"})]')" "$held"
 }
 
 @test "a ticket builder ends only by its own done or its ticket's ticket-done, and a task worktree's builder as before" {

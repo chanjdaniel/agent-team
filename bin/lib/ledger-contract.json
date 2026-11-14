@@ -106,9 +106,9 @@
     "asked": {
       "inbox": true,
       "writer": ["team-log", "team-ask"],
-      "about": "a decision put to Daniel, which parks the task by itself until it is answered (the fold adds its wait, cause ask); discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs only once Daniel's latest answer to the ask, read back from Discord, has a line that starts with yes, or, when that answered names an item, a part with that number, every such part starting with yes, and only while the file hashes the same",
+      "about": "a decision put to Daniel, which parks the task by itself until it is answered (the fold adds its wait, cause ask); discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs only once Daniel's latest answer to the ask, read back from Discord, has a line that starts with yes, or, when that answered names an item, a part with that number, every such part starting with yes, and only while the file hashes the same; tickets: the two-digit tickets the ask holds (team-ask --tickets), so that until it is answered it refuses only the launches of those tickets' builders, and parks the task only while none of its work is unfinished, where an ask with none holds the whole task",
       "required": {"id": "string", "text": "string"},
-      "optional": {"discord_message": "id", "script": "string", "sha256": "string"},
+      "optional": {"discord_message": "id", "script": "string", "sha256": "string", "tickets": "array"},
       "field_writers": {"script": "team-ask", "sha256": "team-ask"}
     },
     "answered": {

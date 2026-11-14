@@ -470,10 +470,10 @@ trap '' TERM
 echo "\$\$" >>'$hung'
 command -p sleep 300
 SH
-  TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  TEAM_TIMERS_RUN_SECONDS=8 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
   assert_equal "$(jq -r .last_run.ended "$record")" timed-out
   view
-  jq -e '.text | endswith("(1 run): timed out after 3 s")' <<<"$(problem_of step-run)"
+  jq -e '.text | endswith("(1 run): timed out after 8 s")' <<<"$(problem_of step-run)"
 
   rm "$STUB_FIXTURES/claude.sh"
   run_bin -0 team-timers run

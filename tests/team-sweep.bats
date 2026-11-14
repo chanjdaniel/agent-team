@@ -829,6 +829,23 @@ coordinator-twin: coordinator 5e7b1c04 (background, blocked, started 2025-10-22T
   assert_contains "$output" "T3 no-worker"
 }
 
+@test "an ask that names its tickets parks the task only while none of its work is unfinished" {
+  opened T3
+  launch T3 builder 11111111
+  event T3 asked '{id: "prune", text: "Prune phase 2?", tickets: ["03", "04"]}'
+  # The builder launched beside it is still watched: gone with no done, the task has no worker.
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 no-worker"
+  # Once its work is done, what is left waits on the ask: parked.
+  event T3 'done' '{role: "builder", session: "11111111"}'
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+  # Answered, it parks nothing.
+  event T3 answered '{id: "prune", answer: "yes"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 no-worker"
+}
+
 @test "a merge ask settled by a merge-approved naming its URL no longer parks the task" {
   opened T3
   launch T3 builder 11111111
@@ -969,6 +986,10 @@ due() {
   event T3 asked '{id: "q1", text: "Which name?"}'
   run_bin -0 team-sweep
   event T3 answered '{id: "q1", answer: "Kim"}'
+  # So does an ask that names tickets, which may concern a ticket the PR holds.
+  event T3 asked '{id: "q2", text: "Keep ticket 03 in?", tickets: ["03"]}'
+  run_bin -0 team-sweep
+  event T3 answered '{id: "q2", answer: "yes"}'
   for kind in held blocked; do
     event T3 "$kind" '{reason: "OS update"}'
     run_bin -0 team-sweep
@@ -1563,6 +1584,50 @@ EOF
   assert_equal "$output" ""
   assert_equal "$stderr" "team-sweep: cannot read the live session list (claude agents --json), for 5 minutes running"
   assert_equal "$(waits)" 20
+}
+
+@test "--wait's unreadable exit names the failing look's last line on stderr, or its exit code with none" {
+  opened T3
+  # A session list the sweep cannot read fails the look in jq, which says no "team-sweep: " line.
+  looks '["x"]'
+  run_bin -1 --separate-stderr team-sweep --wait
+  assert_equal "$output" ""
+  # jq 1.8.2, Homebrew's on macOS, quotes the key as ("name"), which jq before it wrote "name".
+  local said='^team-sweep: jq: error \(at <the ledger>:1\): Cannot index string with string ("name"|\("name"\)), for 5 minutes running$'
+  [[ ${stderr//"$TEAM_HOME/ledger.jsonl"/<the ledger>} =~ $said ]] || { echo "stderr: $stderr" >&2; false; }
+  assert_equal "$(waits)" 10
+
+  # A look that fails with nothing on stderr is named by its exit code.
+  code_checkout
+  local lib=$BATS_TEST_TMPDIR/code/bin/lib
+  rm -f "$lib/ledger.jq"
+  { cat "$REPO_ROOT/bin/lib/ledger.jq"; echo 'def sweep($a; $b; $c; $d; $e; $f): "" | halt_error(4);'; } >"$lib/ledger.jq"
+  looks '[]'
+  run_bin -1 --separate-stderr team-sweep --wait
+  assert_equal "$stderr" "team-sweep: a look failed with exit 4 and nothing on stderr, for 5 minutes running"
+}
+
+@test "--wait ends at once on a failing look once its own code changed under it, naming the files" {
+  opened T3
+  code_checkout
+  looks '[]'
+  # A merge replaces the library under the running watch, and its next look fails on the new
+  # definitions, as PR 111's change of own_covered's shape did on 2026-11-12.
+  local code=$BATS_TEST_TMPDIR/code lib=$BATS_TEST_TMPDIR/code/bin/lib
+  printf '%s\n' "{ cat '$lib/ledger.jq'; echo 'def sweep(\$a; \$b; \$c; \$d; \$e; \$f): error(\"Cannot index array\");'; } >'$lib/ledger.jq.new'" \
+    "mv '$lib/ledger.jq.new' '$lib/ledger.jq'" >"$BATS_TEST_TMPDIR/at-look.2"
+  run_bin -1 --separate-stderr team-sweep --wait
+  assert_equal "$output" ""
+  assert_equal "${stderr//"$TEAM_HOME/ledger.jsonl"/<the ledger>}" "team-sweep: jq: error (at <the ledger>:1): Cannot index array, after its code changed under this watch (bin/lib/ledger.jq): re-arm it to run the new code"
+  assert_equal "$(waits)" 2
+
+  # A change the looks still read through leaves the watch looking, until the stub sleep stops it.
+  rm -f "$lib/ledger.jq"
+  cat "$REPO_ROOT/bin/lib/ledger.jq" >"$lib/ledger.jq"
+  printf '%s\n' "{ cat '$code/bin/team-sweep'; echo '# a later line'; } >'$code/bin/team-sweep.new'" \
+    "mv '$code/bin/team-sweep.new' '$code/bin/team-sweep'" >"$BATS_TEST_TMPDIR/at-look.2"
+  looks '[]'
+  LOOK_LIMIT=4 run_bin -99 team-sweep --wait
 }
 
 @test "retro-due: none without a schedule, with every_hours 0, or before the due time" {

@@ -93,6 +93,8 @@ For agent-team, the team's own project (`own_project` in `bin/lib/team.sh`: by n
 
 - On a reviewer's pass on a PR, `team-next` says to arm the checks wait, `team-next T<n> --ci` with Bash `run_in_background`; once the checks pass, that wait prints "merge on the default word: run team-merge T<n> for ..." when the default word holds on the ledger for the reviewed head, else the merge ask's facts, naming each of the six areas the review found and each review of the task that counted a security or real-data finding or logged no counts, with ", so the default word does not hold" while the plan stands approved on a project not the team's own, or on agent-team with the reviewer App on.
 - A failure of the PR's own goes back to the builder from that wait as a fix round, and an infrastructure failure is rerun once (a check with no runner for 20 minutes never), then named in a `blocked:` line.
+  A round that reruns the failed check green on the same head ends with the builder's `DONE`, after which the checks wait waits on that head again, so arm `team-next T<n> --ci` once more.
+  After each `team-catch-up`, the first or a later one, the wait is on the merge that catch-up made.
 - With the review passed and every check green, it queues each plain `before` note as a follow-up, then:
   - when `team-next` says to merge on the default word, or `team-state T<n>` says `default word covers it`, runs `team-merge T<n>` with no ask and tells Daniel where each note went;
   - otherwise asks Daniel in the task's thread to merge, with the full PR URL and where each note went, and on their "merge it" logs `team-log T<n> merge-approved url=<PR url> discord_message=<id> head=<the full sha it asked on>` and runs `team-merge T<n>`.

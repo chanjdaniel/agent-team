@@ -74,6 +74,22 @@ logged() {
     "- **1** T7 sign-in: Which of the two sign-in limits stays? <https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001> - unblocks 1 (1 task)"
 }
 
+@test "--tickets logs the ask with the tickets it holds, which parks the task only once none of its work is unfinished" {
+  run_bin -0 team-ask T7 prune --file "$BATS_TEST_TMPDIR/q.md" --tickets 03,04
+  assert_equal "$(logged)" '{"task":"T7","event":"asked","id":"prune","text":"Which of the two sign-in limits stays?","tickets":["03","04"],"discord_message":"1564000000000000001"}'
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+  assert_equal "$(jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map(select(.task == "T7")) | parked' "$TEAM_HOME/ledger.jsonl")" true
+  # Anything but two-digit numbers joined by commas is a usage error, and nothing is posted.
+  local before bad
+  before=$(stub_calls curl | wc -l)
+  for bad in 3 '03,' '03,,04' '03 04' ab ''; do
+    run_bin -2 team-ask T7 prune --file "$BATS_TEST_TMPDIR/q.md" --tickets "$bad"
+    assert_contains "$output" "--tickets takes two-digit ticket numbers joined by commas, as 03,04"
+  done
+  assert_equal "$(stub_calls curl | wc -l)" "$before"
+}
+
 @test "--script hashes the script first, ends the question with its path, its sha256 and the yes rule, and logs one asked with both" {
   mkdir -p "$TEAM_HOME/tasks/T7/scripts"
   printf 'echo fixing\n' >"$TEAM_HOME/tasks/T7/scripts/fix.sh"
@@ -281,7 +297,7 @@ EOF
     "T7 sign-in --file q.md --script" "T7 sign-in --file q.md --script ''" "T7 sign-in --file q.md --attach" \
     "T7 sign-in --file q.md --attach ''"; do
     eval "run_bin -2 team-ask $args"
-    assert_contains "$output" "usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]..."
+    assert_contains "$output" "usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--tickets <NN,...>] [--attach <image>]..."
   done
   assert_equal "$(stub_calls curl)" ""
   assert_equal "$(logged)" ""
@@ -290,5 +306,6 @@ EOF
 @test "--help prints the header" {
   run_bin -0 team-ask --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-ask")"
-  assert_contains "$output" "Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--attach <image>]..."
+  assert_contains "$output" "Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>] [--tickets <NN,...>]"
+  assert_contains "$output" "--tickets <NN,...>, two-digit ticket numbers joined by commas"
 }

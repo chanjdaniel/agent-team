@@ -311,6 +311,24 @@ launched T7-builder c0000001"
   assert_equal "$(bg_calls | wc -l)" 1
 }
 
+@test "an ask that names tickets holds only those tickets, so the hand-off goes on to another" {
+  # T193: the ask held only later tickets, yet ticket 01's DONE was refused.
+  event asked '{id: "prune", text: "Prune 03?", tickets: ["03"]}'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-build-02.md"
+  assert_contains "$output" "launched T7-builder c0000001"
+}
+
+@test "a ticket an ask holds is neither the next ready one nor one --next may name, until the ask is answered" {
+  event asked '{id: "prune", text: "Prune 02?", tickets: ["02"]}'
+  refused "--next 02 is not ready once 01 is done: 02 held by the unanswered ask prune" T7 --next 02 -- "T7 DONE 01 $sha done"
+  refused "tickets remain once 01 is done, but none is ready: 02 held by the unanswered ask prune" T7 -- "T7 DONE 01 $sha done"
+  # Answered, it holds nothing.
+  event answered '{id: "prune", answer: "keep it"}'
+  run_bin -0 team-next T7 -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-build-02.md"
+}
+
 @test "the brief path in the prompt is the one team-brief printed, and team-worker reads it" {
   run_bin -0 team-next T7 -- "T7 DONE 01 $sha done"
   local brief
@@ -708,6 +726,39 @@ launched T7-reviewer c0000002"
   grep -qF -- "- \`${fix2:0:8}\` fix: finding 2" "$TEAM_HOME/tasks/T7/brief-rereview-3.md"
   if grep -qF "fix: finding 1" "$TEAM_HOME/tasks/T7/brief-rereview-3.md"; then return 1; fi
   assert_equal "$(record rereview-3 | jq -r .values.reviewed)" "$fix"
+}
+
+@test "a later phase's first PR is a first review, with --checks and the reviewer brief as review-2, and its next PR a rereview" {
+  # Phase 1's PR passed and merged with phase 2 left.
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "phase 1's review" >"$TEAM_HOME/tasks/T7/brief-review.md"
+  event pr "$(jq -cn --arg url "$url" --arg h "$sha" '{url: $url, head: $h}')"
+  launched r0000001 brief-review '[]' reviewer
+  review_logged pass "$sha" '[]'
+  event 'done' '{role: "reviewer", session: "r0000001"}'
+  event merged "$(jq -cn --arg url "$url" --arg h "$sha" '{pr: 9, merge: "m0", head: $h, by: "team-merge", url: $url, phases_left: [2]}')"
+  local url2=https://github.com/owner/proj/pull/10 head2 fix
+  head2=$(commit phase2.txt "feat: phase 2")
+  on_github 10 "$head2"
+  refused "T7 has no review since its phase merged at 2026-11-01T10:00:00Z, so its first reviewer needs --checks <file>, the review's checks" \
+    T7 -- "T7 PR $url2"
+  run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 PR $url2"
+  assert_equal "$output" "logged pr url=$url2 head=$head2
+brief $TEAM_HOME/tasks/T7/brief-review-2.md
+launched T7-reviewer c0000001"
+  assert_equal "$(record review-2 | jq -c '{template, pr: .values.pr, head: .values.head, checks: .values.checks}')" \
+    "$(jq -cn --arg url "$url2" --arg h "$head2" '{template: "reviewer", pr: $url, head: $h, checks: "1. team-next launches the reviewer."}')"
+
+  # Phase 2's review is the latest since the merge: its next PR is a rereview, and takes no --checks.
+  review_logged findings "$head2" '[1]' '{"blocking": 1}'
+  fix=$(commit phase2-fix.txt "fix: finding 1")
+  on_github 10 "$fix"
+  refused "T7 has a review already, so --checks is for its first reviewer only; a rereview takes --since" \
+    T7 --checks "$(checks)" -- "T7 PR $url2"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PR $url2"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-rereview-2.md"
+  assert_equal "$(record rereview-2 | jq -c '{template, reviewed: .values.reviewed}')" \
+    "$(jq -cn --arg r "$head2" '{template: "rereview", reviewed: $r}')"
 }
 
 @test "each review brief names the instruction and settings files the PR changes, and one whose list git cannot give launches nothing" {
@@ -2300,6 +2351,27 @@ launched T7-builder-02 c0000002"
   assert_equal "$(tail -n 1 <<<"$output")" "full: 2 of phase 1's cap 2 build (02, 03); ready and waiting for a slot: 04"
   # A running ticket is not ready either.
   refused "--next 02 is not ready: 02 running in session c0000002" T7 --fill --next 02
+}
+
+@test "--fill launches no ticket an ask holds, names it held, and refuses it as --next, until the ask is answered" {
+  fill_ready 2
+  ticket 02-second "Blocked by: 01" "Touches: two.txt"
+  ticket 03-third "Blocked by: None" "Touches: three.txt"
+  ticket 04-fourth "Blocked by: None" "Touches: four.txt"
+  event asked '{id: "prune", text: "Prune 03?", tickets: ["03"]}'
+  refused "--next 03 is not ready: 03 held by the unanswered ask prune" T7 --fill --next 03
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(grep '^launched' <<<"$output")" "launched T7-builder-02 c0000001
+launched T7-builder-04 c0000002"
+  # With a slot free and only the held ticket left, nothing is launched, and the line says why.
+  event ticket-done '{ticket: "04", commits: ["0123456"]}'
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(tail -n 1 <<<"$output")" "nothing to launch: 02 running in session c0000001; 03 held by the unanswered ask prune"
+  assert_equal "$(bg_calls | wc -l)" 2
+  # Answered, it is ready again.
+  event answered '{id: "prune", answer: "keep it"}'
+  run_bin -0 --separate-stderr team-next T7 --fill
+  assert_equal "$(grep '^launched' <<<"$output")" "launched T7-builder-03 c0000003"
 }
 
 @test "a launch refused for room stops --fill with exit 75 and its line, keeping the worktree, and a rerun launches the rest" {
