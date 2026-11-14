@@ -142,8 +142,8 @@
 #          Docker that did not answer ends nothing.
 # status   The newest reading: a line with what other programs and the team use, then one per
 #          task with its use, its sessions and its stacks, and the gate while it runs a pipeline;
-#          then the quota line, from team-quota status --json (Claude's own reading of the plan's
-#          limits, never this machine's): "quota: week <n>% (resets <ddd HH:MM>), 5h <n>%, read
+#          then the quota line, from team-quota status --json (Claude Code's reading of the
+#          plan's limits, the account's): "quota: week <n>% (resets <ddd HH:MM>), 5h <n>%, read
 #          <n> min ago", a window the reading lacks left out, "quota: no reading" with none, or
 #          "quota: could not be read (<why>)" when team-quota fails, prints no team-quota/1 object
 #          or takes over 30 seconds, which changes nothing else. With no reading of the last 10
