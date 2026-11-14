@@ -33,7 +33,8 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
     - `notice.jq`: the notice module, the one lifecycle of every notice of a standing problem the heartbeat posts in `#coordinator`: the notice record `notices.json`, the table of each source's rules, the judging, its outcomes and the move from the old records.
     - `notices.sh`: the notice record's reads and locked writes, and the move of each old record into it, sourced after `team.sh` by `team-timers` and `team-uptime`.
-    - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names on an opencode gate.
+    - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names on an opencode gate, and which loads `opencode-guard.js`.
+    - `opencode-guard.js`: the opencode plugin that runs `command-guard` before each bash call of an opencode gate's agents, refusing the call on any exit but 0.
     - `outbound.py`: whether a Bash command's `curl` or `wget` sends a request body or a file to a literal host outside the team's own local ones, directly or through a proxy, decided on each command of `command_text.py`'s walk, for `command_rules.py`'s upload row.
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
     - `probe.json`: the refusal probe's data, each attempt `team-load-check --probe` has a worker role make and the layer that should refuse it, every deny rule of the worker roles' settings sorted into a family, and their PreToolUse hooks, each with an attempt or the reason it has none.

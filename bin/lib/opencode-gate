@@ -4,7 +4,32 @@
 # the no-mistakes daemon starts reads the gate-only config and none of Claude Code's, under systemd
 # and launchd alike (no-mistakes rewrites its service definition on each start, keeping only HOME,
 # PATH and proxy variables). team-doctor's gate-agent line checks both on an opencode gate.
+# It also loads the code's command-guard plugin, ~/agent-team/bin/lib/opencode-guard.js, through
+# OPENCODE_CONFIG_CONTENT, which opencode adds to that config's plugins, so the gate's agents run
+# command-guard before each bash call and Daniel's opencode-gate.json stays as it is; it refuses to
+# start opencode when that file is not there, when HOME holds a quote or a backslash, which the
+# JSON would need escaped, or when an argument is --pure, which loads no plugin, since an opencode
+# without the plugin would run the agents unguarded; OPENCODE_PURE, the same, it unsets.
+plugin=$HOME/agent-team/bin/lib/opencode-guard.js
+case $HOME in
+*'"'* | *\\*)
+  echo "opencode-gate: HOME ($HOME) holds a quote or a backslash, so it cannot name the command-guard plugin $plugin; the gate's agents would run unguarded" >&2
+  exit 1
+  ;;
+esac
+if [ ! -f "$plugin" ]; then
+  echo "opencode-gate: no command-guard plugin at $plugin, so the gate's agents would run unguarded; the code checkout is ~/agent-team" >&2
+  exit 1
+fi
+for arg; do
+  if [ "$arg" = --pure ]; then
+    echo "opencode-gate: --pure loads no plugin, so the gate's agents would run without command-guard" >&2
+    exit 1
+  fi
+done
+unset OPENCODE_PURE
 OPENCODE_CONFIG=$HOME/.no-mistakes/opencode-gate.json
+OPENCODE_CONFIG_CONTENT=$(printf '{"plugin":["%s"]}' "$plugin")
 OPENCODE_DISABLE_CLAUDE_CODE=1
-export OPENCODE_CONFIG OPENCODE_DISABLE_CLAUDE_CODE
+export OPENCODE_CONFIG OPENCODE_CONFIG_CONTENT OPENCODE_DISABLE_CLAUDE_CODE
 exec opencode "$@"
