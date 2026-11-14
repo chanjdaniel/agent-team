@@ -164,9 +164,12 @@ assert_not_launched() {
     assert_equal "$(jq -r --arg s "$skill" '.skillOverrides[$s] // "on"' "$settings")" on
   done
   # Discord, the synced claude.ai skills and artifacts; but not the synced docs skill, which steers
-  # a session to the Claude Docs connector the launch denies (Daniel's choice of 2026-10-27).
+  # a session to the Claude Docs connector the launch denies (Daniel's choice of 2026-10-27), nor
+  # Claude Code's built-in easel plugin, whose chart tool is an MCP tool Daniel never added to the
+  # coordinator's toolkit.
   assert_equal "$(jq -c '[.enabledPlugins["discord@claude-plugins-official"], .disableClaudeAiConnectors, .syncClaudeAiSkills,
-    .syncClaudeAiPlugins, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" '[true,null,null,false,false]'
+    .syncClaudeAiPlugins, .enabledPlugins["cc-plugin-plugin-authoring@builtin"], .enabledPlugins["cc-plugin-easel@builtin"]]' "$settings")" \
+    '[true,null,null,false,false,false]'
   assert_equal "$(jq -r '.skillOverrides["anthropic-skills:docs"]' "$settings")" off
   for tool in Artifact ArtifactComments ArtifactData SendUserFile PushNotification CronCreate CronList CronDelete \
     ScheduleWakeup Monitor SendMessage ListAgents Agent WebFetch WebSearch; do
