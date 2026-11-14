@@ -5,10 +5,11 @@ Usage: python3 -I command_text.py              (the command on stdin; prints the
        python3 -I command_text.py --commands   (the command on stdin; prints its walk, below)
 
 bin/lib/command_rules.py, the rule table bin/hooks/command-guard runs, imports code_parts,
-blank_heredocs and commands, the walk of each simple command, from it, with heads_behind and the
-other readings of where a command's name may stand, which kill_rules.py reads too; outbound.py
-imports commands and the option readers long_options and short_cluster, and team-tokens
-without_heredocs.
+blank_heredocs and commands, the walk of each simple command, from it, with heads and the other
+readings of where a command's name may stand; its kill rows, kill_rules.py, import command_name
+and heads_behind, and its delete rows, delete_rules.py, those with the walk, simple_commands,
+find's FIND_EXEC and the option readers; outbound.py imports commands and the option readers
+long_options and short_cluster, and team-tokens without_heredocs.
 It reads the command far enough to know its quotes ('...', "..." and $'...'), backslashes, comments,
 arithmetic ($[, and $(( or (( whose two closing parentheses are adjacent, matched as Bash's
 parse_matched_pair does, past quotes, backticks and a $(...) read by this scan: ((cmd) ) is two
@@ -45,8 +46,8 @@ The text it prints is the command with:
     each command piped into a shell, the text of each of its quoted strings and of each of its
     simple commands' words after the first, quotes dropped; each added on a line of its own.
 A shell here is a pipeline segment one of whose simple commands, as the walk below reads it (its
-assignments, redirections and the wrappers' options passed, its words' quotes removed, an escape
-in $'...' such as \\x62 not decoded), or a command that one runs (its string, its find -exec),
+assignments, redirections and the wrappers' options passed, its words' quotes removed, its
+$'...' escapes decoded and its braces expanded), or a command that one runs (its string, its find -exec),
 is bash, sh, zsh, dash, ksh or source by any path, or . with a file; a compound command's body
 (if, a loop, case, { ... }) is part of the segment it stands in; or a segment a group or
 substitution in which starts one, as (bash) or tee >(bash) does; so a shell or . named as an
@@ -74,6 +75,11 @@ never run so keeps its text out, as do a file a shell reads on stdin (bash < x.s
 value (x=...; echo "$x" > f), a script written by an earlier call or by the Write tool, and a file
 run under another name (a copy, a link, a path through a cd).
 
+A word of the walk is the one Bash makes of it: its quotes removed, a $'...' string's escapes
+decoded (\\x70, \\160, \\u, \\cX), and, but for an assignment before a command's name, its unquoted
+brace lists and ranges expanded into words ({pkill,-f,x} is pkill -f x; an empty one dropped; past
+4096 words it raises); one a $'...' escape or a range made is a Word, whose written keeps its
+escapes and its range as they are written.
 commands(text), which --commands prints as one JSON line each, yields a Command for each simple
 command the text runs (simple_commands: those in a group, a substitution, a pipeline or a list
 too): the assignments before its name, env's and an array element's (X[0]=1, its subscript one
@@ -910,11 +916,12 @@ def _command_word(text, i, end):
     as _word reads them, but for a quote's text holding $ or a backtick and a substitution, $(...),
     `...`, ${...}, $((...)) or $[...], which are kept as written, so a word built by one still holds
     its $ or backtick (in a double quote holding one, an escaped double quote or backslash is
-    undone all the same, an escaped $ or backtick kept); a quote that does not close before end
-    ends the word, and the segment with it (end is where it returns): code_text adds a -c string's
-    line with its closing quote left on, and what follows that quote is the outer command's, never
-    the string's."""
-    out = []
+    undone all the same, an escaped $ or backtick kept); a $'...' string's escapes are decoded as
+    Bash decodes them, and a word one changed is a Word whose written keeps them; a quote that does
+    not close before end ends the word, and the segment with it (end is where it returns):
+    code_text adds a -c string's line with its closing quote left on, and what follows that quote
+    is the outer command's, never the string's."""
+    out, kept = [], []
     while i < end:
         c = text[i]
         if c in METACHARACTERS:
@@ -924,6 +931,7 @@ def _command_word(text, i, end):
             j = _group_end(text, i + 1)
         elif c == "\\":
             out.append(text[i + 1 : i + 2].replace("\n", ""))
+            kept.append(out[-1])
             i += 2
             continue
         elif text.startswith("$((", i) and (arith := _arith_end(text, i + 1)):
@@ -941,22 +949,185 @@ def _command_word(text, i, end):
             mark = "'" if ansi else c
             j = _pair_end(text, i + 1 + ansi, mark, mark, "esc" if ansi else "")
             if not _closed(text, i + ansi, j, end):
-                return "".join(out), end
+                i = end
+                break
             inner = text[i + 1 + ansi : j - 1]
             if c == '"':
                 # One holding $ or a backtick keeps its escaped ones, so it still holds one.
                 escaped = r"\\([\\\"])" if "$" in inner or "`" in inner else r"\\([\\\"$`])"
                 inner = re.sub(escaped, r"\1", inner).replace("\\\n", "")
-            out.append(inner)
+            kept.append(inner)
+            out.append(_ansi(inner) if ansi else inner)
             i = j
             continue
         else:
             out.append(c)
+            kept.append(c)
             i += 1
             continue
         out.append(text[i : min(j, end)])
+        kept.append(out[-1])
         i = j
-    return "".join(out), i
+    word, written = "".join(out), "".join(kept)
+    return (word if word == written else Word.of(word, written)), i
+
+
+class Word(str):
+    """A word of the walk that Bash makes otherwise than it is written, by a $'...' escape or a
+    brace range: written is the word as written, its quotes removed and its escapes kept, by which
+    a reader that does not follow such a word (delete_rules.py) names it."""
+
+    written = None
+
+    @classmethod
+    def of(cls, word, written):
+        made = cls(word)
+        made.written = written
+        return made
+
+
+def _ansi(text):
+    """A $'...' string's text with its escapes decoded, as Bash's ansicstr decodes them: \\cX a
+    control character, octal one to three digits, \\x one or two hex digits, \\u four, \\U eight."""
+    out, i = [], 0
+    while (k := text.find("\\", i)) >= 0:
+        out.append(text[i:k])
+        found = ESCAPE.match(text, k)
+        if found is None:
+            out.append(text[k : k + 2])
+            i = k + 2
+            continue
+        plain, octal, hex_, short, long_, control = found.groups()
+        i = found.end()
+        if control:
+            following = text[i : i + 1]
+            out.append(chr(ord(following) & 0x1F) if following else "\\c")
+            i += len(following)
+        elif plain:
+            out.append(ESCAPES.get(plain, plain))
+        elif octal is not None:
+            digits = octal[:3]
+            out.append(chr(int(digits, 8) & 0xFF))
+            i = k + 1 + len(digits)
+        else:
+            code = int(hex_ or short or long_, 16)
+            out.append(chr(code) if code < 0x110000 else found.group())
+    return "".join(out) + text[i:]
+
+
+# The most words one word's brace expansion may give; past it the walk raises, so a guard refuses.
+MAX_BRACED = 4096
+# A brace range's ends: two whole numbers, or two letters, and an optional step.
+RANGE = re.compile(
+    r"([-+]?[0-9]+)\.\.([-+]?[0-9]+)(?:\.\.([-+]?[0-9]+))?|([A-Za-z])\.\.([A-Za-z])(?:\.\.([-+]?[0-9]+))?"
+)
+
+
+def _brace_marks(raw):
+    """Where the {, , and } of a word's text stand outside its quotes, escapes, substitutions and
+    parameters, the only ones Bash's brace expansion reads."""
+    marks, i, n = [], 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "\\":
+            i += 2
+        elif raw.startswith("$((", i) and (arith := _arith_end(raw, i + 1)):
+            i = arith
+        elif raw.startswith("$(", i):
+            i = _group_end(raw, i + 2)
+        elif raw.startswith("${", i):
+            i = _pair_end(raw, i + 2, "{", "}", "first")
+        elif raw.startswith("$[", i):
+            i = _pair_end(raw, i + 2, "[", "]")
+        elif c == "`":
+            i = _pair_end(raw, i + 1, "`", "`")
+        elif raw.startswith("$'", i):
+            i = _pair_end(raw, i + 2, "'", "'", "esc")
+        elif c in "'\"":
+            i = _pair_end(raw, i + 1, c, c)
+        else:
+            if c in "{,}":
+                marks.append(i)
+            i += 1
+    return marks
+
+
+def _range(body):
+    """A brace range's words, as Bash's brace expansion gives them, or None when body is none."""
+    found = RANGE.fullmatch(body)
+    if not found:
+        return None
+    first, last, step, low, high, letter_step = found.groups()
+    step = abs(int(step or letter_step or 1)) or 1
+    if first is not None:
+        a, b = int(first), int(last)
+        padded = re.match(r"[-+]?0[0-9]", first) or re.match(r"[-+]?0[0-9]", last)
+        width = max(len(first), len(last)) if padded else 0
+        values = range(a, b + 1, step) if a <= b else range(a, b - 1, -step)
+        if len(values) > MAX_BRACED:
+            raise ValueError(f"a brace expansion longer than {MAX_BRACED} words")
+        return [f"{value:0{width}d}" if width else str(value) for value in values]
+    a, b = ord(low), ord(high)
+    values = range(a, b + 1, step) if a <= b else range(a, b - 1, -step)
+    return [chr(value) for value in values]
+
+
+def _braced(raw):
+    """A word's text brace-expanded as Bash expands it, each piece still as written, and whether a
+    range made any: its first {...} holding a , outside a nested one, or a range, expanded, then
+    each piece in turn; a { with neither is a character of the word."""
+    marks = _brace_marks(raw)
+    for k, start in enumerate(marks):
+        if raw[start] != "{":
+            continue
+        depth, commas, close = 0, [], None
+        for mark in marks[k:]:
+            if raw[mark] == "{":
+                depth += 1
+            elif raw[mark] == "}":
+                depth -= 1
+                if depth == 0:
+                    close = mark
+                    break
+            elif depth == 1:
+                commas.append(mark)
+        if close is None:
+            continue
+        head, tail = raw[:start], raw[close + 1 :]
+        if commas:
+            bounds = [start] + commas + [close]
+            middles, ranged = [raw[a + 1 : b] for a, b in zip(bounds, bounds[1:])], False
+        else:
+            middles, ranged = _range(raw[start + 1 : close]), True
+            if middles is None:
+                continue
+        out = []
+        for middle in middles:
+            pieces, inner = _braced(head + middle + tail)
+            out += pieces
+            ranged = ranged or inner
+            if len(out) > MAX_BRACED:
+                raise ValueError(f"a brace expansion longer than {MAX_BRACED} words")
+        return out, ranged
+    return [raw], False
+
+
+def _brace_words(raw, word):
+    """The words Bash's brace expansion makes of a word whose text is raw: word itself when it
+    makes none; each piece's quotes removed as _command_word removes them, an empty one dropped,
+    and each a Word, written as word, when a range made them."""
+    if "{" not in raw:
+        return [word]
+    pieces, ranged = _braced(raw)
+    if pieces == [raw]:
+        return [word]
+    out = []
+    for piece in pieces:
+        if not piece:
+            continue
+        made, _ = _command_word(piece, 0, len(piece))
+        out.append(Word.of(made, getattr(word, "written", None) or word) if ranged else made)
+    return out
 
 
 def _segment_commands(text, start, end, bodies, subscripts, redirects=None):
@@ -1013,18 +1184,23 @@ def _segment_commands(text, start, end, bodies, subscripts, redirects=None):
             words.append(text[i:pair] + rest)
             i = after
         else:
-            word, i = _command_word(text, i, end)
-            words.append(word)
+            word, j = _command_word(text, i, end)
+            if ASSIGNMENT.match(word) and all(w in LEADING or ASSIGNMENT.match(w) for w in words):
+                # Bash expands no brace in an assignment before a command's name.
+                words.append(word)
+            else:
+                words += _brace_words(text[i:j], word)
+            i = j
     close()
     return commands
 
 
 def simple_commands(command):
     """Each simple command of every pipeline segment of the command, those in its groups and
-    substitutions too, as the list of its words with their quotes removed (_command_word), but for
-    a subscript read_command read as one bracket pair, kept as written to its ]: its redirections,
-    their targets, its comments, its heredocs' bodies and the reserved words it starts with left
-    out. A word holding a substitution keeps its text, $ or backtick and all; a quote that never
+    substitutions too, as the list of its words with their quotes removed (_command_word) and
+    their braces expanded (_brace_words), but for a subscript read_command read as one bracket
+    pair, kept as written to its ]: its redirections, their targets, its comments, its heredocs'
+    bodies and the reserved words it starts with left out. A word holding a substitution keeps its text, $ or backtick and all; a quote that never
     closes ends its word and the rest of its segment. A segment holding a compound command yields
     its words too, split at its separators, beside the group's own commands."""
     reading = read_command(command)
@@ -1397,7 +1573,7 @@ def leads(words, starts=(0,), wrappers=True):
     a shell (flock with its options and file); a word holding a blank ends the reading.
     It is a second reader of the wrappers' options beside _command, which knows
     which option takes a value and so reads one name; this one reads each name an option's value
-    may hide, as the regexes did. A wrapper or option _command learns may need reading here too."""
+    may hide. A wrapper or option _command learns may need reading here too."""
     reach, n = set(starts), len(words)
     for k, word in enumerate(words):
         if k not in reach:

@@ -15,8 +15,10 @@
 # naming none of team-worker, team-load-check, ui-capture, AGENT_TEAM_, --steal, team-ask,
 # team-answer, team-inbox, team-thread, team-run-approved, curl, wget, kill (pkill, killall and
 # tmux's kill-server among it), fuser, -delete and rm as a word of its own (git rm among it), nor
-# env or exec before an option together with team- or claude-coordinator, at once, with no Python
-# run.
+# env or exec before an option together with team- or claude-coordinator, as written or with its
+# quotes and backslashes removed (pk''ill, r\m), and holding no $', no brace list or range ({,}
+# or {..}), and no printf or echo with a > or tee, by which a name may be spelled otherwise, at
+# once, with no Python run.
 # Any other is decided by one rule table, bin/lib/command_rules.py, run once on the hook's input:
 # it walks each simple command the call runs (past its wrappers, into the strings its shells,
 # eval, su, script, env -S, flock -c, watch, parallel and find -exec run, and a shell's script or
@@ -67,13 +69,19 @@ tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<
 [[ $tool == Bash ]] || exit 0
 command=$(jq -er '.tool_input.command | strings' <<<"$input" 2>/dev/null) ||
   block "it could not read the Bash call's command (tool_input.command, a string)"
-[[ $command == *team-worker* || $command == *team-load-check* || $command == *ui-capture* ||
-  $command == *AGENT_TEAM_* || $command == *--steal* || $command == *team-ask* || $command == *team-answer* ||
-  $command == *team-inbox* || $command == *team-thread* || $command == *team-run-approved* ||
-  $command == *curl* || $command == *wget* || $command == *kill* || $command == *fuser* || $command == *-delete* ||
-  $command =~ (^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$) ||
-  (($command == *env*[[:space:]]-* || $command == *exec*[[:space:]]-*) &&
-  ($command == *team-* || $command == *claude-coordinator*)) ]] || exit 0
+# The trigger words are matched on the command and on it with its quotes and backslashes removed,
+# so a name split by them (pk''ill, r\m) is read; a call that may spell a name otherwise, by a
+# $'...' escape, a brace list or a script printf or echo writes, always goes to Python.
+text=$command$'\n'${command//[\'\"\\]/}
+[[ $text == *team-worker* || $text == *team-load-check* || $text == *ui-capture* ||
+  $text == *AGENT_TEAM_* || $text == *--steal* || $text == *team-ask* || $text == *team-answer* ||
+  $text == *team-inbox* || $text == *team-thread* || $text == *team-run-approved* ||
+  $text == *curl* || $text == *wget* || $text == *kill* || $text == *fuser* || $text == *-delete* ||
+  $text =~ (^|[^[:alnum:]_.-])rm([^[:alnum:]_.-]|$) ||
+  (($text == *env*[[:space:]]-* || $text == *exec*[[:space:]]-*) &&
+  ($text == *team-* || $text == *claude-coordinator*)) ||
+  $command == *"\$'"* || $command == *\{*,*\}* || $command == *\{*..*\}* ||
+  (($text == *printf* || $text == *echo*) && ($command == *'>'* || $text == *tee*)) ]] || exit 0
 
 # The rule table's one line names the first row that refuses; an error of its own, or a row's,
 # is its last line, the upload row's naming outbound.py.

@@ -3,29 +3,31 @@
 bin/lib/command_rules.py appends ROWS to its table after the upload row, before the delete rows
 (bin/lib/delete_rules.py). Each row's test takes one command_text.Command and the call's context,
 and returns its reason when it refuses, else None; each names its allowed way, which command-guard
-puts in the refusal. A command's name is its first word's basename, its quotes removed, read
-past its wrappers as command_text.heads_behind reads it, so a path, a quoted name, sudo, env,
-nohup, xargs -r and the rest are no way around a row; builtin kill and command kill are kill.
+puts in the refusal. A command's name is its first word's basename, its quotes removed, its
+$'...' escapes decoded and its braces expanded as the walk gives it, read past its wrappers as
+command_text.heads_behind reads it, so a path, a quoted name, sudo, env, nohup, xargs -r and the
+rest are no way around a row; builtin kill and command kill are kill.
 The rows, in order:
   kill-by-name: a command named pkill, killall, killall5 or skill, or fuser with k in a short
     option cluster or --kill.
   tmux-kill: tmux with a word starting kill- (kill-server, kill-session, kill-window, kill-pane),
     or killp or killw, their aliases, with or without -L or -S.
   kill-from-input: kill behind xargs or parallel, or run by find's -exec, -execdir, -ok or
-    -okdir, a string they run included.
+    -okdir, a string they run included, whatever its own signal, since what they read may add
+    options (-s 9); only a listing (-l, -L) passes.
   kill-unread-pid: kill with a PID word that is not a literal: digits, or the session's own job
     (a job spec, % and anything; $!, ${!}, $$, $(jobs -p) or `jobs -p`; or a variable, $P or
-    ${P}, whose every mention in the command's text, the first among them, is an assignment from
-    $! or ${!}).
-  kill-group: kill with a PID word 0, 1, -1 or -<digits>, a process group, every process or PID 0
-    or 1; a kill with no PID word whose signal is given as -<digits> (kill -1) is read as naming
-    that word as its PID, since it sends nothing to anything else.
+    ${P}, whose first mention in the command's text is an assignment from $! or ${!}, and every
+    later one another such assignment or a use, $P, ${P} or ${P:-x}).
+  kill-group: kill with a PID word Bash reads as 0 or 1 (0, 1, 00, 01), -1 or -<digits>, a
+    process group, every process or PID 0 or 1; a kill with no PID word whose signal is given as
+    -<digits> (kill -1) is read as naming that word as its PID, since it sends nothing else.
   kill-literal-pid: kill with a literal PID above 1 that proof() does not prove the session's to
     stop.
 kill's words are read as Bash's builtin reads them: -l and -L list, and pass; -s <signal>, -n
 <number>, -s<name>, -n<digits> and one -<signal> set the signal; -- ends the options; after the
 signal, a word starting with - is a PID. A signal of 0 (-0, -s 0, -n 0) only checks, and passes
-for any PID.
+for any PID, but behind a feeder.
 A literal PID's proof, proof(pid, roots), reads the process table at the time of the call, in
 order: a process that is gone (os.kill(pid, 0) finds none) passes; one os.kill may not signal, or
 whose real uid (/proc/<pid>/status on Linux, ps -o ruid= on macOS) is not the user's, is another
@@ -140,7 +142,10 @@ def _tmux(command, context):
 
 
 def _from_input(command, context):
-    for _, behind in _kill_pids(command):
+    # What a feeder reads may add options, -s 9 among them, so any kill but a listing signals.
+    for words, behind in _named(command, {"kill"}):
+        if _kill_words(words[1:])[0]:
+            continue
         for name in reversed(behind):
             if name in FEEDERS:
                 return (
@@ -180,7 +185,7 @@ def _unread(command, context):
 def _group(command, context):
     for pids, _ in _kill_pids(command):
         for pid in pids:
-            if pid in ("0", "1") or GROUP.fullmatch(pid):
+            if (DIGITS.fullmatch(pid) and int(pid) <= 1) or GROUP.fullmatch(pid):
                 return f"a kill of {pid}, a process group, every process or PID 0 or 1"
     return None
 

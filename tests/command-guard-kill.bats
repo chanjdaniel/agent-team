@@ -309,3 +309,36 @@ print(kill_rules.proof(int(sys.argv[2]), (sys.argv[3], sys.argv[4])))
   proof_as_macos "$STARTED" "$bin"
   assert_equal "$output" "$UNPROVEN"
 }
+
+# A name split by quotes or a backslash, a brace list, ANSI-C quoting or a script that printf or
+# echo decodes is the name Bash runs.
+@test "a kill by name spelled with quotes, a backslash, a brace list, ANSI-C quoting or in a decoded script is refused" {
+  refuses "a kill by name or pattern (pkill), $BY_NAME" "$KILL_WAY" "pk''ill -f vite" '"pk"ill -f vite' \
+    'pk\ill -f vite' "{pkill,-f,vite}" "pk{i,}ll -f vite" "{sudo,pkill,x}" "sudo {pkill,-f,x}" \
+    "x=1; {pkill,-f,vite}" "\$'\\x70kill' -f vite" "\$'\\160kill' -f vite" "\$'pk'ill -f vite" \
+    "printf 'pk%sll -f vite\\n' i > x.sh; bash x.sh" "printf '\\x70kill -f vite\\n' > x.sh; bash x.sh" \
+    "echo -e '\\x70kill -f vite' > x.sh; bash x.sh"
+  refuses "a kill by name or pattern (killall), $BY_NAME" "$KILL_WAY" "k\\illall node" "{killall,node}"
+  refuses "tmux kill-server, which reaches other sessions' terminals and the team's own" "$KILL_WAY" \
+    "tm''ux kill-server" "{tmux,kill-server}"
+  passes "echo {pkill,x}" "printf 'pk%sll -f vite\\n' i > notes.md" "echo \$'\\x70kill' > notes.md"
+}
+
+@test "a PID word Bash reads as 0 or 1 is refused as one" {
+  refuses "a kill of 00, $GROUP" "$KILL_WAY" "kill -9 00" "kill -- 00"
+  refuses "a kill of 01, $GROUP" "$KILL_WAY" "kill 01" "kill -TERM 01"
+  refuses "a kill of 000, $GROUP" "$KILL_WAY" "kill 000"
+}
+
+# What a feeder reads may add options, -s 9 among them, so a kill behind one signals whatever its
+# input makes it.
+@test "a signalling kill behind a feeder is refused whatever its own signal, and only a listing passes" {
+  refuses "a kill of PIDs read from input (xargs kill), which the guard cannot read before it runs" "$READ_WAY" \
+    "echo 9 1234 | xargs kill -0 -s" "echo -s 9 1234 | xargs kill -s 0" "xargs kill -n 0 < pids" \
+    "xargs kill -0 < pids" "xargs kill -s0 < pids" "echo 9 1234 | xargs kill -0 -n"
+  refuses "a kill of PIDs read from input (parallel kill), which the guard cannot read before it runs" "$READ_WAY" \
+    "parallel kill -s 0 ::: 1 2"
+  refuses "a kill of PIDs read from input (find -exec kill), which the guard cannot read before it runs" "$READ_WAY" \
+    "find /proc -maxdepth 1 -name 1 -exec kill -0 {} +"
+  passes "echo 9 | xargs kill -l" "xargs kill -L < x"
+}

