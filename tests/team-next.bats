@@ -153,7 +153,7 @@ red_checks() {
     {name: "test", class: "rollup", kind: "rollup", state: "FAILURE", link: "\($j)/9", run: 7, job: 9, step: null, rerun: null},
     {name: "test-shards (2)", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/8", run: 7, job: 8,
      step: "Run the tests", rerun: null},
-    {name: "macos-shards (1)", class: "infrastructure", kind: "never-started", state: "CANCELLED", link: "\($j)/10", run: 7,
+    {name: "smoke-shards (1)", class: "infrastructure", kind: "never-started", state: "CANCELLED", link: "\($j)/10", run: 7,
      job: 10, step: null, rerun: "gh run rerun 7 --job 10 --repo owner/proj"},
     {name: "build", class: "pr", kind: "missing", state: null, link: null, run: null, job: null, step: null, rerun: null},
     {name: "lint", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/11", run: 7, job: 11, step: "Lint", rerun: null}]')"
@@ -168,7 +168,7 @@ look_red() {
     {name: "test", class: "rollup", kind: "rollup", state: "FAILURE", link: "\($j)/9", run: 7, job: 9, step: null, rerun: null},
     {name: "test-shards (2)", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/8", run: 7, job: 8,
      step: "Run the tests", rerun: null},
-    {name: "macos-shards (1)", class: "infrastructure", kind: "never-started", state: "CANCELLED", link: "\($j)/10", run: 7,
+    {name: "smoke-shards (1)", class: "infrastructure", kind: "never-started", state: "CANCELLED", link: "\($j)/10", run: 7,
      job: 10, step: null, rerun: "gh run rerun 7 --job 10 --repo owner/proj"},
     {name: "lint", class: "pr", kind: "failed", state: "FAILURE", link: "\($j)/11", run: 7, job: 11, step: "Lint", rerun: null}]')"
 }
@@ -1318,11 +1318,11 @@ re-arm: the checks of ${sha:0:8} are still pending after 90 minutes ($text): run
   reruns_on_github "$sha"
   # Two shards of run 7 that never started (and their roll-up), a checkout that failed in run 8's
   # setup, and a check of run 9 whose status GitHub lost; then the checks pass.
-  ci_ends "$(infra "macos-shards (1)" never-started 7 10; infra "macos-shards (2)" never-started 7 11; rollup macos 7 12
+  ci_ends "$(infra "smoke-shards (1)" never-started 7 10; infra "smoke-shards (2)" never-started 7 11; rollup smoke 7 12
     infra "test-shards (1)" setup 8 20 "Run actions/checkout@v4"; infra e2e stuck 9 30)" passed
   run_bin -0 --separate-stderr team-next T7 --ci
-  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=macos-shards (1) run=7 job=10
-logged ci-rerun url=$url head=$sha check=macos-shards (2) run=7 job=11
+  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=smoke-shards (1) run=7 job=10
+logged ci-rerun url=$url head=$sha check=smoke-shards (2) run=7 job=11
 logged ci-rerun url=$url head=$sha check=test-shards (1) run=8 job=20
 logged ci-rerun url=$url head=$sha check=e2e run=9 job=30
 logged ci url=$url head=$sha outcome=passed
@@ -1333,7 +1333,7 @@ merge on the default word: run team-merge T7 for $url at $sha, agent-review succ
 ["run","rerun","8","--job","20","--repo","owner/proj"]
 ["run","rerun","9","--repo","owner/proj"]'
   assert_equal "$(logged_from $((count + 1)) | jq -c 'del(.task)')" "$(jq -cn --arg url "$url" --arg h "$sha" '
-    ({check: "macos-shards (1)", run: "7", job: "10"}, {check: "macos-shards (2)", run: "7", job: "11"},
+    ({check: "smoke-shards (1)", run: "7", job: "10"}, {check: "smoke-shards (2)", run: "7", job: "11"},
      {check: "test-shards (1)", run: "8", job: "20"}, {check: "e2e", run: "9", job: "30"}
      | {event: "ci-rerun", url: $url, head: $h} + .),
     {event: "ci", url: $url, head: $h, outcome: "passed"}')"
@@ -1350,33 +1350,33 @@ merge on the default word: run team-merge T7 for $url at $sha, agent-review succ
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   reruns_on_github "$sha"
   # The rerun is logged, then the wait ends unreadable: the coordinator re-arms.
-  ci_ends "$(infra "macos-shards (1)" never-started 7 10; rollup macos 7 12)" unreadable
+  ci_ends "$(infra "smoke-shards (1)" never-started 7 10; rollup smoke 7 12)" unreadable
   run_bin -75 --separate-stderr team-next T7 --ci
-  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=macos-shards (1) run=7 job=10
+  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=smoke-shards (1) run=7 job=10
 team-ci-wait: GitHub not read for now"
   # The restart reads the rerun from the ledger: the check, under the new job id of its new
   # attempt, failing so again is not rerun.
-  ci_ends "$(infra "macos-shards (1)" never-started 7 13; rollup macos 7 14)"
+  ci_ends "$(infra "smoke-shards (1)" never-started 7 13; rollup smoke 7 14)"
   run_bin -1 --separate-stderr team-next T7 --ci
-  blocked="blocked: the checks macos-shards (1) of $url at ${sha:0:8} failed as infrastructure again after a rerun: $link/13; tell Daniel, and run team-next T7 --ci again once they say the runners are back"
+  blocked="blocked: the checks smoke-shards (1) of $url at ${sha:0:8} failed as infrastructure again after a rerun: $link/13; tell Daniel, and run team-next T7 --ci again once they say the runners are back"
   assert_equal "$output" "logged ci url=$url head=$sha outcome=infrastructure failed=$(jq -c '.failures | map({name, class, kind, link, step})' "$STUB_FIXTURES/ci-end-1.out")
 $blocked"
   assert_equal "$(rerun_calls)" '["run","rerun","7","--job","10","--repo","owner/proj"]'
-  assert_equal "$(reruns_logged)" '["macos-shards (1)","7","10"]'
+  assert_equal "$(reruns_logged)" '["smoke-shards (1)","7","10"]'
   assert_equal "$(ci_logged)" "[\"$url\",\"$sha\",\"infrastructure\"]"
-  assert_equal "$(jq -c 'select(.event == "ci") | .failed | map(.name)' "$TEAM_HOME/ledger.jsonl")" '["macos-shards (1)","macos"]'
+  assert_equal "$(jq -c 'select(.event == "ci") | .failed | map(.name)' "$TEAM_HOME/ledger.jsonl")" '["smoke-shards (1)","smoke"]'
   # Once Daniel says the runners are back, the re-armed wait reruns it once more.
-  ci_ends "$(infra "macos-shards (1)" never-started 7 13; rollup macos 7 14)" passed
+  ci_ends "$(infra "smoke-shards (1)" never-started 7 13; rollup smoke 7 14)" passed
   run_bin -0 --separate-stderr team-next T7 --ci
-  assert_equal "$(head -n 2 <<<"$output")" "logged ci-rerun url=$url head=$sha check=macos-shards (1) run=7 job=13
+  assert_equal "$(head -n 2 <<<"$output")" "logged ci-rerun url=$url head=$sha check=smoke-shards (1) run=7 job=13
 logged ci url=$url head=$sha outcome=passed"
   assert_equal "$(rerun_calls | tail -n 1)" '["run","rerun","7","--job","13","--repo","owner/proj"]'
   # A check queued with no runner is never rerun: the blocked line at once, beside a rerun of a
   # check that never started, which is waited on first.
   review_logged pass "$sha" '[]'
-  ci_ends "$(infra build queued 5 50; infra "macos-shards (2)" never-started 6 60)" "$(infra build queued 5 50)"
+  ci_ends "$(infra build queued 5 50; infra "smoke-shards (2)" never-started 6 60)" "$(infra build queued 5 50)"
   run_bin -1 --separate-stderr team-next T7 --ci
-  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=macos-shards (2) run=6 job=60
+  assert_equal "$output" "logged ci-rerun url=$url head=$sha check=smoke-shards (2) run=6 job=60
 logged ci url=$url head=$sha outcome=infrastructure failed=$(jq -c '.failures | map({name, class, kind, link, step})' "$STUB_FIXTURES/ci-end-2.out")
 blocked: the checks build of $url at ${sha:0:8} failed as infrastructure with no runner for 20 minutes: https://github.com/owner/proj/actions/runs/5/job/50; tell Daniel, and run team-next T7 --ci again once they say the runners are back"
   assert_equal "$(rerun_calls | grep -c '"5"')" 0
@@ -1392,14 +1392,14 @@ blocked: the checks build of $url at ${sha:0:8} failed as infrastructure with no
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   # GitHub refuses the rerun.
   echo "run 7 cannot be rerun; This workflow is already running" >"$STUB_FIXTURES/rerun-refused"
-  ci_ends "$(infra "macos-shards (1)" never-started 7 10)" passed
+  ci_ends "$(infra "smoke-shards (1)" never-started 7 10)" passed
   run_bin -1 --separate-stderr team-next T7 --ci
   assert_equal "$output" "blocked: GitHub refused gh run rerun 7 --job 10 --repo owner/proj (run 7 cannot be rerun; This workflow is already running): $link"
   rm "$STUB_FIXTURES/rerun-refused"
   # The run never moves: twelve looks 10 s apart, 2 minutes.
   touch "$STUB_FIXTURES/rerun-stays"
   looks_counted
-  ci_ends "$(infra "macos-shards (1)" never-started 7 10)" passed
+  ci_ends "$(infra "smoke-shards (1)" never-started 7 10)" passed
   run_bin -1 --separate-stderr team-next T7 --ci
   assert_equal "$output" "blocked: run 7 did not start again within 2 minutes of gh run rerun 7 --job 10 --repo owner/proj: $link"
   assert_equal "$(<"$BATS_TEST_TMPDIR/looks")" 12
@@ -1413,14 +1413,14 @@ case "$*" in
   *) source "$STUB_FIXTURES/gh-pr.sh" ;;
 esac
 SH
-  ci_ends "$(infra "macos-shards (1)" never-started 7 10)" passed
+  ci_ends "$(infra "smoke-shards (1)" never-started 7 10)" passed
   run_bin -1 --separate-stderr team-next T7 --ci
   assert_equal "$output" "blocked: run 7 cannot be read before its rerun (HTTP 404: Not Found): $link"
   reruns_on_github "$sha"
   # A fenced machine reruns nothing.
   mkdir -p "$HOME/.local/state/agent-team"
   echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
-  ci_ends "$(infra "macos-shards (1)" never-started 7 10)" passed
+  ci_ends "$(infra "smoke-shards (1)" never-started 7 10)" passed
   run_bin -1 --separate-stderr team-next T7 --ci
   assert_equal "$output" "blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine reruns no check: $link"
   # Nothing was logged, and only the refused rerun and the one that never started reached GitHub.
@@ -1445,7 +1445,7 @@ $(ci_fix "T7-builder (b0000001, 120k)" "$sha")"
   # One ci, holding every failure, the infrastructure one and the roll-up among them.
   assert_equal "$(logged_from $((count + 1)) | jq -c 'del(.task)')" \
     "$(jq -cn --arg url "$url" --arg h "$sha" --argjson f "$(red_logged)" '{event: "ci", url: $url, head: $h, outcome: "failed", failed: $f}')"
-  assert_equal "$(red_logged | jq -r 'map(.name) | join(",")')" "test,test-shards (2),macos-shards (1),build,lint"
+  assert_equal "$(red_logged | jq -r 'map(.name) | join(",")')" "test,test-shards (2),smoke-shards (1),build,lint"
   # The report: the PR's failures first, then infrastructure, then the roll-up, each with its
   # class, name, kind, step, link and rerun, and the closing line.
   assert_equal "$(<"$TEAM_HOME/tasks/T7/ci-$short.md")" "# The failed checks of $url at $sha
@@ -1455,7 +1455,7 @@ The checks wait after the pass ended on these failures, one a line, the PR's fir
 - the PR's: \`test-shards (2)\`, failed, at the step \"Run the tests\", $job/8, no rerun
 - the PR's: \`build\`, missing, at no step, no link, no rerun
 - the PR's: \`lint\`, failed, at the step \"Lint\", $job/11, no rerun
-- infrastructure: \`macos-shards (1)\`, never-started, at no step, $job/10, rerun with \`gh run rerun 7 --job 10 --repo owner/proj\`
+- infrastructure: \`smoke-shards (1)\`, never-started, at no step, $job/10, rerun with \`gh run rerun 7 --job 10 --repo owner/proj\`
 - roll-up: \`test\`, rollup, at no step, $job/9, no rerun
 
 The PR's failures, \`test-shards (2)\`, \`build\` and \`lint\`, are this round's \`blocking\` findings; the others are not, since an infrastructure failure or a roll-up is no defect of the PR, and the round's new head runs every check again."
@@ -1981,8 +1981,8 @@ The PR's failures, \`test-shards (2)\` and \`lint\`, are \`blocking\` findings o
   assert_equal "$(tail -n 1 <<<"$output")" "$(fix_line 3 .scratch/task/review.md)"
   stub_calls gh | grep -qF '"state,headRefOid"'
   # Infrastructure failures and roll-ups alone, a pass so far and checks still pending: today's.
-  ci_wait_ends failed "$sha" 1 "team-ci-wait: the checks on ${sha:0:7} did not pass" "[$(infra "macos-shards (1)" never-started 7 10),
-    $(rollup macos 7 12), $(infra build setup 8 20 "Run actions/checkout@v4")]"
+  ci_wait_ends failed "$sha" 1 "team-ci-wait: the checks on ${sha:0:7} did not pass" "[$(infra "smoke-shards (1)" never-started 7 10),
+    $(rollup smoke 7 12), $(infra build setup 8 20 "Run actions/checkout@v4")]"
   run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "$message"
   assert_equal "$(tail -n 1 <<<"$output")" "$(fix_line 3 .scratch/task/review.md)"
   for end in passed none pending; do

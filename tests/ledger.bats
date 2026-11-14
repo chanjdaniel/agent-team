@@ -366,18 +366,18 @@ rerun_of() {
   assert_equal "$(waits_of "$pr" "$pass" "$up" "$(ci_of failed b2c3d4e5)")" "$(waiting_on b2c3d4e5 4 failed)"
   # The checks rerun on the head, each named once in the order first rerun, since the latest of
   # them, whose wait starts again; a rerun of another head is not.
-  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'macos-shards (1)' a1b2c3d4)" "$(rerun_of 'test-shards (2)' a1b2c3d4)" \
-    "$(rerun_of 'macos-shards (1)' a1b2c3d4)" "$(rerun_of 'test-shards (3)' ffff0000)")" \
-    "$(waiting_on a1b2c3d4 5 waiting '["macos-shards (1)","test-shards (2)"]')"
-  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'macos-shards (1)' a1b2c3d4)" "$up")" "$(waiting_on b2c3d4e5 4 waiting)"
+  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'smoke-shards (1)' a1b2c3d4)" "$(rerun_of 'test-shards (2)' a1b2c3d4)" \
+    "$(rerun_of 'smoke-shards (1)' a1b2c3d4)" "$(rerun_of 'test-shards (3)' ffff0000)")" \
+    "$(waiting_on a1b2c3d4 5 waiting '["smoke-shards (1)","test-shards (2)"]')"
+  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'smoke-shards (1)' a1b2c3d4)" "$up")" "$(waiting_on b2c3d4e5 4 waiting)"
   # A rerun after a wait's end dates the wait from the rerun, its state still that end's; a wait's
   # end after a rerun dates it from the end.
-  assert_equal "$(waits_of "$pr" "$pass" "$(ci_of pending a1b2c3d4)" "$(rerun_of 'macos-shards (1)' a1b2c3d4)")" \
-    "$(waiting_on a1b2c3d4 4 pending '["macos-shards (1)"]')"
-  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'macos-shards (1)' a1b2c3d4)" "$(ci_of pending a1b2c3d4)")" \
-    "$(waiting_on a1b2c3d4 4 pending '["macos-shards (1)"]')"
+  assert_equal "$(waits_of "$pr" "$pass" "$(ci_of pending a1b2c3d4)" "$(rerun_of 'smoke-shards (1)' a1b2c3d4)")" \
+    "$(waiting_on a1b2c3d4 4 pending '["smoke-shards (1)"]')"
+  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'smoke-shards (1)' a1b2c3d4)" "$(ci_of pending a1b2c3d4)")" \
+    "$(waiting_on a1b2c3d4 4 pending '["smoke-shards (1)"]')"
   # A rerun logged before the catch-up the wait is on does not date it.
-  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'macos-shards (1)' b2c3d4e5)" "$up")" "$(waiting_on b2c3d4e5 4 waiting '["macos-shards (1)"]')"
+  assert_equal "$(waits_of "$pr" "$pass" "$(rerun_of 'smoke-shards (1)' b2c3d4e5)" "$up")" "$(waiting_on b2c3d4e5 4 waiting '["smoke-shards (1)"]')"
 }
 
 @test "checks_wait follows a second catch-up made from the reviewed head, and a builder's done after a failed wait waits again" {

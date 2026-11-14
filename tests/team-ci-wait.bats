@@ -170,24 +170,24 @@ both() {
 @test "a workflow run still open on the head holds the wait past checks that all passed" {
   checks 0 "$(check zizmor-online SUCCESS 7002)"
   head_runs 0 7001:CI:queued 7002:Zizmor:completed
-  checks 2 "$(check zizmor-online SUCCESS 7002)" "$(check macos IN_PROGRESS 7001)"
+  checks 2 "$(check zizmor-online SUCCESS 7002)" "$(check smoke IN_PROGRESS 7001)"
   workflow_run 2 7001 in_progress
   head_runs 2 7001:CI:in_progress 7002:Zizmor:completed
-  checks 4 "$(check zizmor-online SUCCESS 7002)" "$(check macos SUCCESS 7001)"
+  checks 4 "$(check zizmor-online SUCCESS 7002)" "$(check smoke SUCCESS 7001)"
   head_runs 4 7001:CI:completed 7002:Zizmor:completed
   run_bin team-ci-wait --no-agent-review "$url" "$head"
   assert_equal "$status" 0
   assert_equal "$(ended_at)" 8
-  assert_contains "$output" "team-ci-wait: every check passed on a1b2c3d: zizmor-online passed, macos passed"
+  assert_contains "$output" "team-ci-wait: every check passed on a1b2c3d: zizmor-online passed, smoke passed"
   # It asks for the PR's head, and prints nothing of a run's text.
   assert_contains "$(stub_calls gh)" "repos/owner/proj/actions/runs?head_sha=$head&per_page=100"
   [[ $output != *OUTPUT-MARKER* ]]
 }
 
 @test "a workflow run still open on the head holds the wait past a failed check, which a re-run may replace" {
-  checks 0 "$(check macos FAILURE 7001)"
+  checks 0 "$(check smoke FAILURE 7001)"
   head_runs 0 7001:CI:queued
-  checks 3 "$(check macos SUCCESS 7001)"
+  checks 3 "$(check smoke SUCCESS 7001)"
   head_runs 3 7001:CI:completed
   run_bin team-ci-wait "$url"
   assert_equal "$status" 0
@@ -278,10 +278,10 @@ team-ci-wait: the checks on a1b2c3d did not pass:
 # The no-runner pattern, as run 41904778858 showed it: a job GitHub never started ends cancelled
 # with no runner and no step, and the run with it, its roll-up failed beside it.
 @test "a failure held past an open run ends the wait once that run completes: a job never started is infrastructure, its roll-up left out" {
-  checks 0 "$(check "macos-shards (1)" QUEUED 7001 81)" "$(check test SUCCESS 7001 83)"
+  checks 0 "$(check "smoke-shards (1)" QUEUED 7001 81)" "$(check test SUCCESS 7001 83)"
   workflow_run 0 7001 in_progress
   head_runs 0 7001:CI:in_progress
-  checks 3 "$(check "macos-shards (1)" CANCELLED 7001 81)" "$(check macos FAILURE 7001 82)" "$(check test SUCCESS 7001 83)"
+  checks 3 "$(check "smoke-shards (1)" CANCELLED 7001 81)" "$(check smoke FAILURE 7001 82)" "$(check test SUCCESS 7001 83)"
   head_runs 3 7001:CI:completed
   job 0 81 ""
   run_bin team-ci-wait "$url"
@@ -289,8 +289,8 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   assert_equal "$(ended_at)" 3
   assert_equal "$output" "team-ci-wait: waiting on the checks of owner/proj#217 at a1b2c3d
 team-ci-wait: the checks on a1b2c3d did not pass:
-  infrastructure: macos-shards (1) never started: no runner took it (https://github.com/owner/proj/actions/runs/7001/job/81); rerun it with gh run rerun 7001 --job 81 --repo owner/proj, then run team-ci-wait again
-  roll-up: macos, of macos-shards (1), left out"
+  infrastructure: smoke-shards (1) never started: no runner took it (https://github.com/owner/proj/actions/runs/7001/job/81); rerun it with gh run rerun 7001 --job 81 --repo owner/proj, then run team-ci-wait again
+  roll-up: smoke, of smoke-shards (1), left out"
   # Its job is read once, at the end; the roll-up's never.
   assert_equal "$(stub_calls gh | jq -c 'select(.[1] | contains("/jobs/"))')" '["api","repos/owner/proj/actions/jobs/81"]'
 }
@@ -666,7 +666,7 @@ team-ci-wait: the checks on a1b2c3d did not pass:
 
 @test "the shard-name rule takes -shard, -shards, ' shard' and ' shards' after the roll-up's name, within one run only" {
   checks 0 "$(check test FAILURE 7001 71)" "$(check test-shard-1 FAILURE 7001 72)" \
-    "$(check macos CANCELLED 7001 73)" "$(check "macos-shards (1)" FAILURE 7001 74)" \
+    "$(check smoke CANCELLED 7001 73)" "$(check "smoke-shards (1)" FAILURE 7001 74)" \
     "$(check e2e FAILURE 7001 75)" "$(check "e2e shard 3/6" FAILURE 7001 76)" "$(check "e2e shard 4/6" FAILURE 7001 77)" \
     "$(check unit FAILURE 7001 78)" "$(check "unit shards 2" FAILURE 7001 79)" \
     "$(check lint FAILURE 7001 80)" "$(check lintshard FAILURE 7001 81)" "$(check "lint-check" FAILURE 7001 82)" \
@@ -678,7 +678,7 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   assert_equal "$output" "team-ci-wait: waiting on the checks of owner/proj#217 at a1b2c3d
 team-ci-wait: the checks on a1b2c3d did not pass:
   the PR's: test-shard-1 failed: https://github.com/owner/proj/actions/runs/7001/job/72
-  the PR's: macos-shards (1) failed: https://github.com/owner/proj/actions/runs/7001/job/74
+  the PR's: smoke-shards (1) failed: https://github.com/owner/proj/actions/runs/7001/job/74
   the PR's: e2e shard 3/6 failed: https://github.com/owner/proj/actions/runs/7001/job/76
   the PR's: e2e shard 4/6 failed: https://github.com/owner/proj/actions/runs/7001/job/77
   the PR's: unit shards 2 failed: https://github.com/owner/proj/actions/runs/7001/job/79
@@ -688,21 +688,21 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   the PR's: docs failed: https://github.com/owner/proj/actions/runs/7002/job/83
   the PR's: docs-shards (1) failed: https://github.com/owner/proj/actions/runs/7001/job/84
   roll-up: test, of test-shard-1, left out
-  roll-up: macos, of macos-shards (1), left out
+  roll-up: smoke, of smoke-shards (1), left out
   roll-up: e2e, of e2e shard 3/6, e2e shard 4/6, left out
   roll-up: unit, of unit shards 2, left out"
 }
 
 @test "a job with no runner and no step that ran is infrastructure, failed or cancelled, with its rerun" {
-  checks 0 "$(check "macos-shards (1)" CANCELLED 7001 81)" "$(check "macos-shards (2)" FAILURE 7001 82)"
+  checks 0 "$(check "smoke-shards (1)" CANCELLED 7001 81)" "$(check "smoke-shards (2)" FAILURE 7001 82)"
   job 0 81 null
   job 0 82 "" "Set up job=skipped" "Run the tests="
   run_bin team-ci-wait "$url"
   assert_equal "$status" 1
   assert_equal "$output" "team-ci-wait: waiting on the checks of owner/proj#217 at a1b2c3d
 team-ci-wait: the checks on a1b2c3d did not pass:
-  infrastructure: macos-shards (1) never started: no runner took it (https://github.com/owner/proj/actions/runs/7001/job/81); rerun it with gh run rerun 7001 --job 81 --repo owner/proj, then run team-ci-wait again
-  infrastructure: macos-shards (2) never started: no runner took it (https://github.com/owner/proj/actions/runs/7001/job/82); rerun it with gh run rerun 7001 --job 82 --repo owner/proj, then run team-ci-wait again"
+  infrastructure: smoke-shards (1) never started: no runner took it (https://github.com/owner/proj/actions/runs/7001/job/81); rerun it with gh run rerun 7001 --job 81 --repo owner/proj, then run team-ci-wait again
+  infrastructure: smoke-shards (2) never started: no runner took it (https://github.com/owner/proj/actions/runs/7001/job/82); rerun it with gh run rerun 7001 --job 82 --repo owner/proj, then run team-ci-wait again"
   [[ $output != *OUTPUT-MARKER* ]]
 }
 
@@ -766,7 +766,7 @@ team-ci-wait: the checks on a1b2c3d did not pass:
 }
 
 @test "a check queued with no runner for 20 minutes of looks is infrastructure and no longer holds the wait" {
-  checks 0 "$(check lint SUCCESS 7001 70)" "$(check "macos-shards (1)" QUEUED 7001 71)"
+  checks 0 "$(check lint SUCCESS 7001 70)" "$(check "smoke-shards (1)" QUEUED 7001 71)"
   workflow_run 0 7001 queued
   head_runs 0 7001:CI:queued
   run_bin team-ci-wait "$url"
@@ -774,7 +774,7 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   assert_equal "$(ended_at)" 40
   assert_equal "$output" "team-ci-wait: waiting on the checks of owner/proj#217 at a1b2c3d
 team-ci-wait: the checks on a1b2c3d did not pass:
-  infrastructure: macos-shards (1) is still queued after 20 minutes of looks: no runner took it (https://github.com/owner/proj/actions/runs/7001/job/71); cancel its run with gh run cancel 7001 --repo owner/proj, then rerun the job with gh run rerun 7001 --job 71 --repo owner/proj, then run team-ci-wait again"
+  infrastructure: smoke-shards (1) is still queued after 20 minutes of looks: no runner took it (https://github.com/owner/proj/actions/runs/7001/job/71); cancel its run with gh run cancel 7001 --repo owner/proj, then rerun the job with gh run rerun 7001 --job 71 --repo owner/proj, then run team-ci-wait again"
   # Its job is never read: its link and state say it all.
   [[ $(stub_calls gh) != *"/jobs/"* ]]
 }
@@ -818,10 +818,10 @@ team-ci-wait: the checks on a1b2c3d did not pass:
 
 @test "a mixed failure prints the PR's first, then infrastructure, then roll-ups, reading only the failed jobs, once" {
   checks 0 "$(check test FAILURE 7001 71)" "$(check docs FAILURE 7001 72)" "$(check "test-shards (1)" FAILURE 7001 73)" \
-    "$(check e2e IN_PROGRESS 7002 74)" "$(check deploy CANCELLED)" "$(check "macos-shards (1)" QUEUED 7003 75)"
+    "$(check e2e IN_PROGRESS 7002 74)" "$(check deploy CANCELLED)" "$(check "smoke-shards (1)" QUEUED 7003 75)"
   workflow_run 0 7002 completed failure
   workflow_run 0 7003 queued
-  head_runs 0 7003:macOS:queued
+  head_runs 0 7003:Smoke:queued
   job 0 72 "GitHub Actions 2" "Set up job=success" "Run actions/checkout@v4=failure"
   job 0 73 "GitHub Actions 3" "Set up job=success" "Run tests/run bats --shard 1/3=failure"
   TEAM_CI_WAIT_QUEUED_SECONDS=600 run_bin team-ci-wait "$url"
@@ -833,7 +833,7 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   the PR's: deploy was cancelled: https://ci.example.invalid/deploy
   infrastructure: docs failed in setup, at its step \"Run actions/checkout@v4\" (https://github.com/owner/proj/actions/runs/7001/job/72); rerun it with gh run rerun 7001 --job 72 --repo owner/proj, then run team-ci-wait again
   infrastructure: e2e is still in_progress, but its run 7002 completed failure at 2026-10-30T18:52:11Z: GitHub lost the job's status; re-run it with gh run rerun 7002 --repo owner/proj, then run team-ci-wait again, and report BLOCKED if it sticks again
-  infrastructure: macos-shards (1) is still queued after 10 minutes of looks: no runner took it (https://github.com/owner/proj/actions/runs/7003/job/75); cancel its run with gh run cancel 7003 --repo owner/proj, then rerun the job with gh run rerun 7003 --job 75 --repo owner/proj, then run team-ci-wait again
+  infrastructure: smoke-shards (1) is still queued after 10 minutes of looks: no runner took it (https://github.com/owner/proj/actions/runs/7003/job/75); cancel its run with gh run cancel 7003 --repo owner/proj, then rerun the job with gh run rerun 7003 --job 75 --repo owner/proj, then run team-ci-wait again
   roll-up: test, of test-shards (1), left out"
   assert_equal "$(stub_calls gh | jq -c 'select(.[1] | contains("/jobs/"))')" '["api","repos/owner/proj/actions/jobs/72"]
 ["api","repos/owner/proj/actions/jobs/73"]'
@@ -858,12 +858,12 @@ team-ci-wait: the checks on a1b2c3d did not pass:
 }
 
 @test "--json on a failure gives each failure's class, kind, state, link, run, job, step and rerun, in the text's order" {
-  required test docs "test-shards (1)" e2e deploy "macos-shards (1)" build
+  required test docs "test-shards (1)" e2e deploy "smoke-shards (1)" build
   checks 0 "$(check test FAILURE 7001 71)" "$(check docs FAILURE 7001 72)" "$(check "test-shards (1)" FAILURE 7001 73)" \
-    "$(check e2e IN_PROGRESS 7002 74)" "$(check deploy CANCELLED)" "$(check "macos-shards (1)" QUEUED 7003 75)"
+    "$(check e2e IN_PROGRESS 7002 74)" "$(check deploy CANCELLED)" "$(check "smoke-shards (1)" QUEUED 7003 75)"
   workflow_run 0 7002 completed failure
   workflow_run 0 7003 queued
-  head_runs 0 7003:macOS:queued
+  head_runs 0 7003:Smoke:queued
   job 0 72 "GitHub Actions 2" "Set up job=success" "Run actions/checkout@v4=failure"
   job 0 73 "GitHub Actions 3" "Set up job=success" "Run tests/run bats --shard 1/3=failure"
   TEAM_CI_WAIT_QUEUED_SECONDS=600 both "$url"
@@ -874,7 +874,7 @@ team-ci-wait: the checks on a1b2c3d did not pass:
 {"name":"deploy","state":"cancelled","link":"https://ci.example.invalid/deploy","run":null,"job":null,"step":null,"rerun":null,"class":"pr","kind":"cancelled"}
 {"name":"docs","state":"failure","link":"https://github.com/owner/proj/actions/runs/7001/job/72","run":7001,"job":72,"step":"Run actions/checkout@v4","rerun":"gh run rerun 7001 --job 72 --repo owner/proj","class":"infrastructure","kind":"setup"}
 {"name":"e2e","state":"in_progress","link":"https://github.com/owner/proj/actions/runs/7002/job/74","run":7002,"job":74,"step":null,"rerun":"gh run rerun 7002 --repo owner/proj","class":"infrastructure","kind":"stuck"}
-{"name":"macos-shards (1)","state":"queued","link":"https://github.com/owner/proj/actions/runs/7003/job/75","run":7003,"job":75,"step":null,"rerun":"gh run rerun 7003 --job 75 --repo owner/proj","class":"infrastructure","kind":"queued"}
+{"name":"smoke-shards (1)","state":"queued","link":"https://github.com/owner/proj/actions/runs/7003/job/75","run":7003,"job":75,"step":null,"rerun":"gh run rerun 7003 --job 75 --repo owner/proj","class":"infrastructure","kind":"queued"}
 {"name":"test","state":"failure","link":"https://github.com/owner/proj/actions/runs/7001/job/71","run":7001,"job":71,"step":null,"rerun":null,"class":"rollup","kind":"rollup"}'
   # Each failure's line in the text is in the same order, the first line before them.
   assert_equal "$(jq -r '.text | split("\n") | map(split(":")[0] | ltrimstr("  ")) | join(",")' <<<"$output")" \
@@ -884,13 +884,13 @@ team-ci-wait: the checks on a1b2c3d did not pass:
 
 @test "--json names a required check not reported as missing, and a job never started with its rerun" {
   required build
-  checks 0 "$(check "macos-shards (1)" CANCELLED 7001 81)" "$(check macos FAILURE 7001 82)"
+  checks 0 "$(check "smoke-shards (1)" CANCELLED 7001 81)" "$(check smoke FAILURE 7001 82)"
   job 0 81 ""
   both "$url"
   assert_equal "$status" 1
   assert_equal "$(jq -c '.failures[] | [.name, .class, .kind, .state, .link, .run, .job, .rerun]' <<<"$output")" \
-'["macos-shards (1)","infrastructure","never-started","cancelled","https://github.com/owner/proj/actions/runs/7001/job/81",7001,81,"gh run rerun 7001 --job 81 --repo owner/proj"]
-["macos","rollup","rollup","failure","https://github.com/owner/proj/actions/runs/7001/job/82",7001,82,null]'
+'["smoke-shards (1)","infrastructure","never-started","cancelled","https://github.com/owner/proj/actions/runs/7001/job/81",7001,81,"gh run rerun 7001 --job 81 --repo owner/proj"]
+["smoke","rollup","rollup","failure","https://github.com/owner/proj/actions/runs/7001/job/82",7001,82,null]'
   echo 0 >"$GH_DIR/look"
   rm "$GH_DIR"/checks.*
   checks 0 "$(check test SUCCESS 7001)"
@@ -1009,13 +1009,13 @@ team-ci-wait: the checks on a1b2c3d did not pass:
 
 @test "--look names no stuck, queued or missing check, only pending ones, since each needs a clock" {
   required test build
-  checks 0 "$(check test SUCCESS 7001)" "$(check e2e IN_PROGRESS 7002 74)" "$(check "macos-shards (1)" QUEUED 7003 75)"
+  checks 0 "$(check test SUCCESS 7001)" "$(check e2e IN_PROGRESS 7002 74)" "$(check "smoke-shards (1)" QUEUED 7003 75)"
   workflow_run 0 7002 completed success
   workflow_run 0 7003 queued
-  head_runs 0 7003:macOS:queued
+  head_runs 0 7003:Smoke:queued
   run_bin team-ci-wait --look "$url"
   assert_equal "$status" 0
-  assert_equal "$output" "team-ci-wait: no check has failed on a1b2c3d so far; still pending: e2e (in_progress, run 7002 completed); macos-shards (1) (queued, run 7003 queued)"
+  assert_equal "$output" "team-ci-wait: no check has failed on a1b2c3d so far; still pending: e2e (in_progress, run 7002 completed); smoke-shards (1) (queued, run 7003 queued)"
   [[ $output != *infrastructure* && $output != *build* ]]
 }
 
