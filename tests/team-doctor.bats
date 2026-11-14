@@ -598,12 +598,13 @@ protected_by() {
     [[ $text$output != *"$secret"* ]] || { echo "the doctor printed $secret" >&2; return 1; }
   done
   # The code, its comments aside, names none of them, but the Discord plugin's access.json, whose
-  # ids the discord access line never prints.
+  # ids the discord access line never prints, and its tools' names, a call the guard hooks line
+  # hands assistant-discord-guard.
   local interview=$REPO_ROOT/bin/lib/doctor.d/167-interview-channel.sh
   run -1 grep -nE 'credentials|\.claude\.json|channels|hosts\.yml|discord_|[Kk]eychain|security find' \
     <(for file in "$REPO_ROOT/bin/team-doctor" "$REPO_ROOT"/bin/lib/doctor.d/*.sh; do
       [[ $file == "$interview" ]] || grep -hv '^[[:space:]]*#' "$file"; done |
-      sed 's|~/\.claude/channels/discord/access\.json||g; s|\$HOME/\.claude/channels/discord/access\.json||g')
+      sed 's|~/\.claude/channels/discord/access\.json||g; s|\$HOME/\.claude/channels/discord/access\.json||g; s|mcp__plugin_discord_discord__[a-z_]*||g')
   # The interview channel line alone uses the bot token, only through the library's Discord calls.
   run -1 grep -nE 'credentials|\.claude\.json|hosts\.yml|[Kk]eychain|security find|DISCORD_BOT_TOKEN=|\.env"' "$interview"
   assert_equal "$(grep -v '^[[:space:]]*#' "$interview" | grep -oE 'discord_[a-z_]+' | sort -u | paste -sd ' ')" "discord_api discord_token"

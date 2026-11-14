@@ -18,7 +18,7 @@ guard_hooks=("scratch-only-edits:30" "command-guard:10" "lease-fence:60" "lease-
 guard_input=$(jq -cn --arg cwd "$scratch" '{session_id: "team-doctor", hook_event_name: "PreToolUse",
   tool_name: "Bash", tool_input: {command: "ls", description: "List files"}, cwd: $cwd}')
 # The Discord guard judges only the Discord tools: its harmless call is a read of #assistant.
-guard_discord_input=$(jq -cn --arg cwd "$scratch" --arg chat "$ASSISTANT_CHANNEL" '{session_id: "team-doctor",
+guard_assistant_input=$(jq -cn --arg cwd "$scratch" --arg chat "$ASSISTANT_CHANNEL" '{session_id: "team-doctor",
   hook_event_name: "PreToolUse", tool_name: "mcp__plugin_discord_discord__fetch_messages",
   tool_input: {channel: $chat, limit: 1}, cwd: $cwd}')
 guard_failed=()
@@ -26,7 +26,7 @@ for guard in "${guard_hooks[@]}"; do
   guard_seconds=${guard##*:} guard=${guard%:*}
   read -ra guard_words <<<"$guard"
   guard_rc=0 guard_call=$guard_input
-  [[ ${guard_words[0]} != assistant-discord-guard ]] || guard_call=$guard_discord_input
+  [[ ${guard_words[0]} != assistant-discord-guard ]] || guard_call=$guard_assistant_input
   (cd "$scratch" && TEAM_HOME=$TEAM_HOME bounded "$guard_seconds" "$bin/hooks/${guard_words[0]}" "${guard_words[@]:1}" \
     >/dev/null 2>"$err" <<<"$guard_call") || guard_rc=$?
   if ((guard_rc == 0)); then
