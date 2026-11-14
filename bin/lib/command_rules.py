@@ -82,7 +82,7 @@ unshare, systemd-run, tmux send-keys, git rebase's --exec); each under an emptie
 too, so a team script one of those runs there goes unseen. Of a kill or a delete, not seen: one in
 a script file written by an earlier call or the Write tool, a package script (npm run, make), an
 interpreter's own code (python3 -c "os.kill(...)"), systemctl, launchctl, docker kill or docker
-rm, ssh's remote command, a single file's rm and git clean (which the worker settings deny); of a
+rm, ssh's remote command, a single file's rm, git clean (which the worker settings deny); of a
 delete, a link or a move the same command makes before it (ln -s /tmp l && rm -rf l/x).
 It is a speed bump, as a deny rule is, which the role's rule against reaching a refused thing
 another way holds.
